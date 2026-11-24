@@ -1,7 +1,7 @@
 # Native light gather and passes
 
-Status: Partly built. Slices L1 and L2 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; and the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`. L3 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
-Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/render-bridge/src/native_lights/frame.rs` (the install), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
+Status: Partly built. Slices L1 to L4 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; and a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`. L5 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
+Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` (the installs), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
 Slice R3 of [retire-d3d.md](retire-d3d.md): the guest's light front-end
@@ -178,7 +178,7 @@ struct `0x0054aa68`.
 | 11 | Visibility | the frusta, `L+0x18`, `L+0x24`, the source struct | `V` whole; `[0x004c0b80]` = `V`; the epochs `[0x004de2fc]`, `[0x004e0308]`, `[0x004e7c1c]` and their flag bytes; the stamps the two Rust gathers write | `0x001320f0`: EAX 1, ECX the count, DL 0; stack `((D flags >> 12) & 0x400, S+0xab0, &L+0x18, L+0x24, 0x00547f88 or 0, 0, cluster)`; `ret 0x1c`; returns `V` |
 | 12 | Geometry flags | as `LIGHT_GEOMETRY_FLAGS` | `V`'s flag columns, `L+0xf8` | `0x00031660`: Rust |
 | 13 | Extra caster, `D` bit 22 | as `LIGHT_EXTRA_CASTER` | `V`'s object list | `0x00031c20`: Rust |
-| 14 | Records | `V`'s three lists | `[0x004c0b78]` = `[0x004c0b7c]`, then the records `0x004ba138 + 0x20·i`, the bytes at `0x004c0b84 + i` and `0x004c0ed6 + i` | `0x0002cb30`; `0x00133390` (EBX `V`); `0x00133520(V)`; `0x00133720` (EAX `V`, one stack word 1) |
+| 14 | Records | `V`'s three lists | `[0x004c0b78]` = `[0x004c0b7c]`, then the records `0x004ba138 + 0x20·i`, the bytes at `0x004c0b84 + i` and `0x004c0ed6 + i` | `0x0002cb30`; `0x00133390` (EBX `V`) and `0x00133520(V)`: Rust (`world_walk::records`); `0x00133720` (EAX `V`, one stack word 1) |
 | 15 | Part visibility | the records, `V` | the records' subpart masks | `0x00044720` |
 | 16 | Passes | below | below | `0x00031170`: EAX the `ligh` datum, ECX `S+0x34`; stack (datum, `&L+0x84`, the dword at `S+0x10`, the row's weight) |
 
@@ -188,7 +188,7 @@ are `[0x004c0b7c, 0x004c0b78)` and each light reuses that tail.
 
 ### One light's passes (E `0x00031170`..`0x00031518`)
 
-1. **The item lists.** `0x00040e90` with EAX 0. In the light's kind it
+1. **The item lists** (Rust: `light_gather::items`). `0x00040e90` with EAX 0. In the light's kind it
    zeroes both lists' intervals and masks (`0x004c1a64`, `0x004c1a68`,
    `0x004c1a6c`; `0x004c1a7c`, `0x004c1a80`, `0x004c1a84`), runs the
    attachment walk `0x00041c80`, and calls `0x00044ac0(kind, -1, 0x1f)`
@@ -287,6 +287,7 @@ visibility, lists, constants, projection, layer 10, the filter
 | Point | Address | The body | Fallback while it exists |
 |---|---|---|---|
 | `RENDER_DYNAMIC_LIGHTS` | `0x00031c80` | `light_gather::frame::run` | the guest function, with the leaf seams of `native_scene_lists` |
+| `SCENE_ITEMS` | `0x00040e90` | `light_gather::items::run` in a light's kind, installed by `render_bridge::native_lights::items` | the guest function: the main view's kind, a refused plan |
 | `RENDER_LIGHT_PASSES` | `0x00031170` | `light_gather::passes::run`, called by the frame body and installed at the point for the fallback loop | the guest function |
 | `FIRST_PERSON_LIGHTS` (new) | `0x000404b0` | `light_gather::first_person::run` | the guest function |
 | `OBJECT_SHADOW_LIST` | `0x000335e0` | `light_gather::object_shadows::run` | the guest function |
@@ -314,11 +315,16 @@ Counters follow the scene lists' scheme
 `light_frame`, `light_passes`, `first_person_lights`,
 `object_shadow_list` and `object_shadow_caster`, each with `_native`,
 `_fallback` and a reason. A step a running body gives to the guest
-counts as its own stage's `_fallback` and reason: `light_volume` from
-the frame body, `light_geometry` and `light_extra_caster` from their
-seams, which run inside the guest call. A frame the body makes counts
-`light_frame_native` and `visible_lights_native`, and each step it makes
-in Rust its stage's `_native`. `render.scene` and `render.stats`
+counts as its own stage's `_fallback` and reason: `light_volume` and
+`light_records` from the frame body, `light_geometry` and
+`light_extra_caster` from their seams, which run inside the guest call.
+A frame the body makes counts `light_frame_native` and
+`visible_lights_native`, and each step it makes in Rust its stage's
+`_native`. `light_records` counts each of a light's two record walks
+(a cold section is `residency`). `light_items` counts each record of a
+light that passes the walk's filters: `_native` for one appended in
+Rust, `_fallback` and the reason for one the guest's part calls make,
+and a call whose plan refuses. `render.scene` and `render.stats`
 report them ([agent-api.md](../runtime/agent-api.md)). The producers of
 `render.residual` are `dynamic_lights`, `light_passes`,
 `object_shadows`, `object_shadow` and `first_person`
@@ -414,57 +420,102 @@ coordinator runs them.
   publication only steps 6, 12 and 13 can refuse, each to its guest
   function.
 
-### L3: the light's records (M)
+### L3: the light's records (M, built)
 
-- **Build.** `engine::render_loop::world_walk::plan` takes the light's
-  kind: `vis` may be `0x0054aa68` with `[vis+0x2a78]` not 0, the cursor
-  starts at `[0x004c0b78]`, and `MAIN_COUNT` is not advanced. The frame
-  body calls it for clusters and placements after doing `0x0002cb30`'s
-  light arm itself. `0x00133720` stays a guest call: it is the reorder
-  `0x00134240` and a loop over `0x00133790`, both Rust behind their
-  hooks, with one repeat of an index whose setup returns AL set in
-  kind 1 (**E** `0x00133759`..`0x00133769`).
+- **Build.** `engine::render_loop::world_walk` takes the light's kind:
+  `vis` is the main view's `0x00547f88` with `[vis+0x2a78]` 0 or a
+  light's `0x0054aa68` with it not 0, and `[0x004c0b80]` is `vis`. The
+  cursor starts at `[0x004c0b78]` in both; in the light's kind
+  `MAIN_COUNT` is neither advanced nor written (**E** `0x0002cf64`).
+  `world_walk::records` is the whole walk with the reason it refuses
+  (`Refused`: the float state, a cold section, a layout, a write).
+  The frame body calls the reset `0x0002cb30` as a guest call, because
+  `lod_distance`'s hook on it scales the pixel scale both walks read for
+  the world caller `0x00031ef5`; in the light's kind the reset is the
+  one write `[0x004c0b78]` = `[0x004c0b7c]` (**E** `0x0002cba7`). It
+  then makes the cluster and the placement walk with `records`, and
+  calls the guest function for a walk that refuses. `0x00133720` stays a
+  guest call: it is the reorder `0x00134240` and a loop over
+  `0x00133790`, both Rust behind their hooks, with one repeat of an
+  index whose setup returns AL set in kind 1 (**E**
+  `0x00133759`..`0x00133769`). `Gathered` keeps how each walk was made
+  (`clusters`, `placements`).
 - **Guest state.** Step 14's row. Reads the camera's depth plane and
   pixel scale (`0x004b9e20`.., `0x004b9ed0`), which are the main view's
-  in the light's kind too (**E** `0x00133390`).
-- **Tests.** Differential roots `0x00133390` and `0x00133520` under a
-  light's `V` (the record writer `0x0002cbf0` lifted). Unit:
-  `a_lights_records_start_at_the_main_views_end`,
-  `a_lights_walk_leaves_the_main_count`.
-- **Live check.** The light's cluster and placement walks native
-  outside cold sections in `render.stats`; hash gate; `render.parity`.
-- **Refusal.** A walk that refuses (a cold section, a layout it does
-  not read) gives that walk to its guest function, whose hooks retry
-  row by row as in the main view.
+  in the light's kind too (**E** `0x00133390`), and the light's own
+  subpart pool (`V+0x25c`, its words used at `V+0xa5c`).
+- **Tests.** Differential `light_record_walks_match_the_lifted_original`:
+  roots `0x00133390` (EBX `V`) and `0x00133520(V)` with the record
+  writer `0x0002cbf0` and its tree lifted, over a seeded structure, a
+  light's struct of kind 1 to 3, fog views, full subpart pools, cold
+  sections and a cursor at the cap; equal memory, and the main view's
+  count left. The frame differential tallies how each walk was made.
+  Unit: `a_lights_records_start_at_the_main_views_end`,
+  `a_lights_walk_leaves_the_main_count`,
+  `a_struct_whose_kind_does_not_match_it_is_left_to_the_guest`
+  (`world_walk.rs`), `a_lights_walks_are_made_in_rust_in_its_kind`
+  (`light_gather.rs`).
+- **Live check.** `light_records_native` at two per drawn light outside
+  cold sections and `light_records_fallback` with `residency` only for
+  them in `render.stats`; hash gate; `render.parity`.
+- **Refusal.** A walk that refuses gives that walk to its guest
+  function, whose hooks retry row by row as in the main view: the
+  row hook at `WORLD_VISIBILITY_FLAGS` takes a light's rows as the main
+  view's.
 
-### L4: the item lists and the first-person table (M)
+### L4: the item lists and the first-person table (M, built)
 
-- **Build.** `light_gather::items`: the light's kind of `0x00040e90`.
-  It zeroes both lists, runs `0x00041c80` as a guest call, and walks
-  the light's records as `0x00044ac0` does: the bit-10 copy into the
-  table (`FirstPersonLights::push`, with the slot rule above), and for
-  the rest the section append of
-  `render_bridge::native_world::section` extended to lists 1 and 2 by
-  the record's bits 1 and 2. Object records keep `0x00041040` as a
-  guest call per part until their append is ported with the world's.
-  The model keeps each light's `receivers` and `casters` ranges and
-  both masks.
+- **Build.** `light_gather::items`: the light's kind of `0x00040e90`
+  (any mode; EAX picks the record filter). `plan` reads and refuses
+  before any write and answers `None` for the main view's kind. `run`
+  zeroes both lists' count, first and layers, calls `0x00041c80` (EDI
+  `V`, EBX the kind) as a guest call, and walks the light's records
+  `[0x004c0b7c, 0x004c0b78)` as `0x00044ac0` does. A record with flag
+  bit 10 is copied into the table by `items::first_person`, with the
+  guest's arithmetic for the slot (`FirstPerson::Copied` or `Full`). A
+  structure record that passes the filters is `items::record_items`: a
+  port of the light arm of `0x00041040` over the part loop (the
+  material visibility `0x00184000`, the subpart mask `0x000460d0`, the
+  level `0x0001bf50`, the bit-21 skip, list 2 first for both bits, the
+  chooser `0x00040de0`, the append `0x0003b9d0`), read whole before the
+  record's writes. It is its own function rather than
+  `render_bridge::native_world::section`, whose append is the main
+  view's list with its caches. Any other record (an object's, an
+  overridden shader, a shader of group `MTPR` or `3trp`, an empty level
+  table, a plane table without the two pure callbacks) is made by the
+  guest's per-part calls `0x000449e0`, `0x00045ce0`, `0x000460d0` and
+  `0x00041040`, made below the record walk's frame so `0x00045ce0` and
+  `0x00041040` are handed the guest's scratch address. `LightItems`
+  keeps the records, `receivers` and `casters` (count, first, layers),
+  how each record was made and each first-person copy; until L5 the
+  install counts them and the scene takes the lists from the guest
+  memory they are written to.
 - **Guest state.** Reads the records, the byte arrays `0x004c0b84` and
-  `0x004c0ed6`, the override table `0x004c1228`, the BSP and model
-  section tables. Writes the list headers `0x004c1a60` and `0x004c1a78`
-  and their items, the table `0x004c6700` with its counts at `+0x404`.
-- **Tests.** Differential root `0x00040e90` in the light's kind over
-  synthetic sections (`0x00044ac0`, `0x000449e0`, `0x00045ce0`,
-  `0x000460d0`, `0x00041040`, `0x00040de0`, `0x00040e30` lifted; the
-  shader queries stubbed). Unit:
+  `0x004c0ed6`, the override table `0x004c1228`, the BSP's section,
+  placement and material tables, the material masks `[0x004ed280]`,
+  the shader and template tags. Writes the list headers `0x004c1a60`
+  and `0x004c1a78` and their items, the table `0x004c6700` with its
+  counts at `+0x404`.
+- **Tests.** Differential `item_lists_match_the_lifted_original`: root
+  `0x00040e90` in the light's kind (kinds 1 to 3) over synthetic
+  sections, shaders and level tables, with `0x00044ac0`, `0x000449e0`,
+  `0x00045ce0`, `0x000460d0`, `0x00041040`, `0x00040de0`, `0x00040e30`,
+  `0x0003b9d0`, `0x0001bf50`, `0x00184000` and the plane lookup lifted
+  and `0x00041c80` stubbed: equal transcripts, EAX and memory. Unit
+  (`light_gather.rs`):
   `a_receiver_goes_to_list_one_and_a_caster_to_list_two`,
   `a_first_person_record_is_copied_to_the_current_slot`,
   `records_past_the_eighth_light_join_the_last_slot`,
-  `a_full_slot_drops_the_record`.
-- **Live check.** `scene_light_entry_remainder_*` unchanged; the
-  groups `render.scene` dumps are equal to master's on a paused tick.
-- **Refusal.** A section the append does not take is appended by the
-  guest's per-part calls for that record, in place.
+  `a_full_slot_drops_the_record`,
+  `a_record_the_port_does_not_take_is_made_by_the_guests_part_calls`,
+  `the_main_views_kind_is_not_the_bodys`.
+- **Live check.** `light_items_native` on a lit interior, its
+  `_fallback` only from objects' records; `scene_light_entry_remainder_*`
+  unchanged; the groups `render.scene` dumps are equal to master's on a
+  paused tick.
+- **Refusal.** A record the port does not take is made by the guest's
+  per-part calls for that record, in place. A plan that refuses (a
+  read, a record range past `0x8000`) runs the guest function whole.
 
 ### L5: the passes body (M)
 

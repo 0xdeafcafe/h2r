@@ -57,7 +57,8 @@ pub(super) fn install(b: &mut Builder) {
 
 /// The frame's counters: the frame, its visible list, and each light's
 /// Rust-made steps. A step given to the guest counts its fallback here
-/// only for the volume, which has no seam of its own.
+/// only for the volume and the record walks, which have no seam of their
+/// own.
 fn count(light_frame: &LightFrame) {
     SceneList::LightFrame.count(SceneListResult::Native);
     SceneList::VisibleLights.count(SceneListResult::Native);
@@ -76,20 +77,31 @@ fn count(light_frame: &LightFrame) {
         if gathered.extra_caster == Some(By::Rust) {
             SceneList::LightExtraCaster.count(SceneListResult::Native);
         }
+        for walk in [gathered.clusters, gathered.placements] {
+            match walk {
+                By::Rust => SceneList::LightRecords.count(SceneListResult::Native),
+                By::Guest(why) => refused(SceneList::LightRecords, why),
+            }
+        }
     }
 }
 
-fn refused(stage: SceneList, why: Refusal) {
+pub(super) fn refused(stage: SceneList, why: Refusal) {
     stage.count(SceneListResult::Fallback);
     stage.count(match why {
         Refusal::Memory => SceneListResult::Memory,
         Refusal::Layout => SceneListResult::Layout,
         Refusal::Unsupported => SceneListResult::Unsupported,
+        Refusal::Residency => SceneListResult::Residency,
     });
 }
 
-/// The original at `addr`, for a frame the body declines.
-fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAbi, GuestFault> {
+/// The original at `addr`, for a call the body declines.
+pub(super) fn original(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    addr: u32,
+) -> Result<TransferAbi, GuestFault> {
     if let Some(original) = ctx.runtime().resolve_original(addr) {
         return Ok(original.invoke(cpu, ctx, addr));
     }
