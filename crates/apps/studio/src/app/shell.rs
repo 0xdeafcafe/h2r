@@ -463,6 +463,15 @@ impl App {
             .filter(|&d| self.shows(d, ToolKind::Tags))
     }
 
+    /// The tag whose tab is in front while the Tags tool shows it: the
+    /// document a tag-kind editor (the sound editor) draws.
+    pub fn front_tag_doc(&self) -> Option<TagId> {
+        match self.undo_target()? {
+            Doc::Tag(id) => Some(id),
+            _ => None,
+        }
+    }
+
     /// One tab as `shell.tabs` lists it.
     pub fn tab_json(&self, tab: &Tab) -> Value {
         let doc = tab.doc;

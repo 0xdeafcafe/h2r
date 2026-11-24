@@ -187,4 +187,4 @@ impl Provider for Sound {
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+pub(crate) mod tests;

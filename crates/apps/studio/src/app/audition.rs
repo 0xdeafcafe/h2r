@@ -497,6 +497,21 @@ pub struct PermInfo {
     pub chunks: usize,
 }
 
+/// One permutation's row in the sound document: its size, its levels
+/// (the numbers `sound.measure` gives it) or why they are not there, and
+/// the length of its mouth curve.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundRow {
+    pub range: usize,
+    pub permutation: usize,
+    pub encoded_bytes: u32,
+    /// Measured on the decoded audio, or the refusal's words.
+    pub levels: Result<audio::meter::Levels, String>,
+    /// Ticks of the mouth curve; `None` when the permutation is unvoiced
+    /// or the curve did not read.
+    pub mouth_ticks: Option<usize>,
+}
+
 /// What is playing and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayState {
@@ -780,6 +795,37 @@ impl App {
             l.mouths.insert((range, permutation), curve.clone());
         }
         Ok(curve)
+    }
+
+    /// Every permutation of sound `id` as the sound document lists it: the
+    /// levels of each ([`audio::meter::measure`] on the clip `sound_clip`
+    /// decodes, the numbers `sound.measure` reports) and its mouth
+    /// curve's length. A permutation that does not decode keeps its row
+    /// with the reason.
+    pub fn sound_rows(&mut self, id: TagId) -> Result<Vec<SoundRow>, SoundError> {
+        let info = self.sound_info(id)?;
+        let mut rows = Vec::new();
+        for (range, perms) in info.ranges.iter().enumerate() {
+            for (permutation, perm) in perms.iter().enumerate() {
+                let levels = self
+                    .sound_clip(id, range, permutation)
+                    .map(|c| audio::meter::measure(&c.pcm, c.channels, c.rate))
+                    .map_err(|e| e.to_string());
+                let mouth_ticks = self
+                    .sound_mouth(id, range, permutation)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.len());
+                rows.push(SoundRow {
+                    range,
+                    permutation,
+                    encoded_bytes: perm.encoded_bytes,
+                    levels,
+                    mouth_ticks,
+                });
+            }
+        }
+        Ok(rows)
     }
 
     /// Play a permutation from `from_ms` into it, replacing what plays.
