@@ -7,6 +7,9 @@ description = "The native collision world: BSPs decoded once, queries as single 
 
 [dependencies]
 sim-core.workspace = true
+# The MOPP bit model: opcode helpers for the decoder, and the oracle the
+# box query is tested against (`mopp::boxvm`).
+mopp = { path = "../../formats/mopp" }
 
 [features]
 # `synth`: synthetic collision BSPs laid out in guest form, for the unit

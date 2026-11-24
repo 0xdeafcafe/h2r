@@ -345,8 +345,9 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
 
 /// `impl.sim.native.collision`: the collision world, phase 2 of the
 /// simulation rewrite (docs/engine/collision-queries.md). It takes over
-/// point to leaf and the structure location. Vector and instance traces
-/// execute their original bodies while we measure their float environments.
+/// point to leaf, the structure location and the MOPP box query. Vector
+/// and instance traces execute their original bodies while we measure
+/// their float environments.
 pub const COLLISION: &str = "sim.native.collision";
 
 fn collision_on(switches: &hooks::Switches) -> bool {
@@ -359,7 +360,7 @@ type CollisionBody = fn(
     &engine::sim_collision::CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault>;
 
-const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 2] = [
+const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 3] = [
     (
         &points::COLLISION_POINT_TO_LEAF,
         Entry::PointToLeaf,
@@ -369,6 +370,11 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 2] = [
         &points::COLLISION_LOCATION,
         Entry::Location,
         engine::sim_collision::location,
+    ),
+    (
+        &points::COLLISION_MOPP_BOX,
+        Entry::MoppBox,
+        engine::sim_collision::mopp_box,
     ),
 ];
 
@@ -746,7 +752,7 @@ mod tests {
             let env = Bail::Env as usize;
             assert_eq!(
                 new.bails[env] - old.bails[env],
-                u64::from(matches!(entry, Entry::PointToLeaf | Entry::Location))
+                u64::from(matches!(entry, Entry::PointToLeaf | Entry::Location | Entry::MoppBox))
             );
         }
     }

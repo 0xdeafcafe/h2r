@@ -3,7 +3,8 @@
 //! docs/engine/collision-queries.md).
 //!
 //! Each collision BSP the guest names is decoded once, from the bytes the
-//! guest itself would read, into flat arrays ([`Bsp`]). A query is then one
+//! guest itself would read, into flat arrays ([`Bsp`]), and each MOPP
+//! program into a flat tree ([`mopp::Tree`]). A query is then one
 //! Rust call over those arrays and a few live guest words read through
 //! [`GuestRead`]. Nothing here writes guest memory: a kernel returns plain
 //! result structs, and the engine adapter (`engine::sim_collision`) writes
@@ -18,6 +19,7 @@
 
 pub mod bsp;
 pub mod mem;
+pub mod mopp;
 pub mod structure;
 mod world;
 
@@ -50,12 +52,16 @@ pub enum Bail {
     Alias,
     /// The debugger needs the original guest memory access sequence.
     Trap,
-    /// The resident budget or bounded address index cannot admit this BSP.
+    /// The resident budget or bounded address index cannot admit this BSP
+    /// or MOPP program.
     Budget,
+    /// The guest's output array is too small for the answer: the original
+    /// grows it with a guest call (entry F's `hkArray`).
+    Grow,
 }
 
 /// The number of [`Bail`] reasons.
-pub const BAILS: usize = 8;
+pub const BAILS: usize = 9;
 
 impl Bail {
     pub const ALL: [Bail; BAILS] = [
@@ -67,6 +73,7 @@ impl Bail {
         Bail::Alias,
         Bail::Trap,
         Bail::Budget,
+        Bail::Grow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -79,6 +86,7 @@ impl Bail {
             Bail::Alias => "alias",
             Bail::Trap => "trap",
             Bail::Budget => "budget",
+            Bail::Grow => "grow",
         }
     }
 }

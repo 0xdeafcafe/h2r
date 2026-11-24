@@ -1,5 +1,6 @@
-//! Guest adapters for native point and location queries and the differential
-//! BSP segment kernels. See docs/engine/collision-queries.md.
+//! Guest adapters for native point and location queries, the MOPP box
+//! query, and the differential BSP segment kernels. See
+//! docs/engine/collision-queries.md.
 //!
 //! Each adapter reads the entry's arguments and the live guest words its
 //! query needs, runs the kernel against the decoded BSP, and only then
@@ -16,9 +17,11 @@
 //! The x87 precision flag the original's split divisions raise is set.
 mod cluster;
 pub mod layout;
+mod mopp_box;
 mod point;
 mod preflight;
 mod sources;
+pub use mopp_box::mopp_box;
 pub use point::{location, point_to_leaf};
 pub use preflight::CollisionMemory;
 use preflight::Outputs;

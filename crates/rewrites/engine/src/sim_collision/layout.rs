@@ -73,3 +73,46 @@ pub const VECTOR_DEAD_BELOW: u32 = 0x3c + CONTEXT_DEAD_BELOW;
 /// Bytes of stack arguments the vector-test entries pop (they also write
 /// into their own argument slots).
 pub const VECTOR_ARGS: u32 = 0x10;
+
+/// Entry F, `0x00300150`: the box VM `ecx` points at, the stack arguments
+/// (`code`, `aabb`, `array`) and the `hkArray` of keys.
+pub mod mopp_box {
+    /// VM words the setup writes: the key array, the maximum then minimum
+    /// full-precision corners (no fourth lane) and the code pointer.
+    pub const ARRAY: u32 = 0x00;
+    pub const HI: u32 = 0x10;
+    pub const LO: u32 = 0x20;
+    pub const CODE: u32 = 0x30;
+    pub const VM_SIZE: u32 = 0x34;
+    /// The AABB: minimum at `+0x00`, maximum at `+0x10`, three binary32
+    /// each.
+    pub const AABB_MAX: u32 = 0x10;
+    pub const AABB_SIZE: u32 = 0x1c;
+    /// Bytes of stack arguments the entry pops.
+    pub const ARGS: u32 = 12;
+    /// The `hkArray`: data pointer, size, capacity with flags in bit 31.
+    pub const DATA: u32 = 0x00;
+    pub const SIZE: u32 = 0x04;
+    pub const CAPACITY: u32 = 0x08;
+    pub const CAPACITY_MASK: u32 = 0x7fff_ffff;
+    pub const ARRAY_SIZE: u32 = 0x0c;
+    /// The setup pushes EBP and aligns ESP down to 16 (`A`). Below `A` it
+    /// keeps 0x4c bytes, pushes ESI and two arguments and calls the
+    /// interpreter, which keeps 0x38 bytes and saves four registers: its
+    /// lowest byte is `A - 0xa4`.
+    pub const ROOT_FRAME: u32 = 0xa4;
+    /// Each self-call of the interpreter: two arguments, the return
+    /// address, 0x38 bytes and four saved registers.
+    pub const NESTED_FRAME: u32 = 0x54;
+    /// The interpreter's last flag producer is its epilogue's
+    /// `add esp, 0x38` at `A - 0x94`.
+    pub const FLAGS_ESP: u32 = 0x94;
+    pub const INTERPRETER_LOCALS: u32 = 0x38;
+    /// The deepest dead stack below the entry ESP: four bytes of saved
+    /// EBP, up to 15 of alignment, the root frame and
+    /// `sim_collision::mopp::MAX_FRAMES` self-calls.
+    pub const DEAD_BELOW: u32 =
+        4 + 15 + ROOT_FRAME + sim_collision::mopp::MAX_FRAMES * NESTED_FRAME;
+    /// The x87 precision flag, which the conversions set when inexact.
+    pub const X87_PE: u16 = 0x20;
+}

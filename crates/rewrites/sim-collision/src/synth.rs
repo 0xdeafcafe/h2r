@@ -346,3 +346,88 @@ pub fn random(rng: &mut Rng, depth: u32) -> Builder {
     }
     b
 }
+
+/// A random MOPP bytecode program over every box opcode class: splits of
+/// each form, bounds, rescales (most chains legal, a few past shift 0),
+/// key offsets, jumps over junk, property 0 writes, terminals and a bad
+/// opcode now and then. Made up here; for `mopp` tests and entry F's
+/// differential test.
+pub fn random_mopp(rng: &mut Rng, depth: u32) -> Vec<u8> {
+    mopp_subtree(rng, depth, 0)
+}
+
+fn mopp_subtree(rng: &mut Rng, depth: u32, bits: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut bits = bits;
+    // Prefixes that fold away.
+    for _ in 0..rng.below(3) {
+        match rng.below(6) {
+            0 => {
+                let k = 1 + rng.below(4);
+                if bits + k <= 16 || rng.chance(8) {
+                    bits += k;
+                    out.extend([k as u8, rng.below(256) as u8, rng.below(256) as u8, rng.below(256) as u8]);
+                }
+            }
+            1 => out.extend([0x09, rng.below(256) as u8]),
+            2 => out.extend([0x0a, rng.below(256) as u8, rng.below(256) as u8]),
+            3 => {
+                let junk = rng.below(4) as u8;
+                out.extend([0x05, junk]);
+                out.extend((0..junk).map(|_| 0x08));
+            }
+            4 => out.extend([0x60, rng.below(256) as u8]),
+            _ => out.extend([0x0b, 0, 0, rng.below(4) as u8, rng.below(256) as u8]),
+        }
+    }
+    if depth == 0 || rng.chance(5) {
+        match rng.below(10) {
+            0 => out.push(0x00),
+            1 => out.push(0x08),
+            2 => out.extend([0x50, rng.below(256) as u8]),
+            3 => out.extend([0x51, rng.below(256) as u8, rng.below(256) as u8]),
+            _ => out.push(0x30 + rng.below(32) as u8),
+        }
+        return out;
+    }
+    fn b(rng: &mut Rng) -> u8 {
+        rng.below(256) as u8
+    }
+    match rng.below(7) {
+        0 | 1 => {
+            // Bounds then a subtree.
+            if rng.chance(2) {
+                out.extend([0x26 + rng.below(3) as u8, b(rng), b(rng)]);
+            } else {
+                let (lo, hi) = (rng.below(1 << 24), rng.below(1 << 24));
+                out.push(0x29 + rng.below(3) as u8);
+                out.extend(&lo.to_be_bytes()[1..]);
+                out.extend(&hi.to_be_bytes()[1..]);
+            }
+            out.extend(mopp_subtree(rng, depth - 1, bits));
+        }
+        kind => {
+            let low = mopp_subtree(rng, depth - 1, bits);
+            let high = mopp_subtree(rng, depth - 1, bits);
+            match kind {
+                2 if low.len() < 256 => {
+                    out.extend([0x10 + rng.below(3) as u8, b(rng), b(rng), low.len() as u8]);
+                }
+                3 if low.len() < 256 => {
+                    out.extend([0x20 + rng.below(3) as u8, b(rng), low.len() as u8]);
+                }
+                4 if low.len() < 256 => {
+                    out.extend([0x13 + rng.below(10) as u8, b(rng), b(rng), low.len() as u8]);
+                }
+                _ => {
+                    let n = low.len() as u16;
+                    out.extend([0x23 + rng.below(3) as u8, b(rng), b(rng), 0, 0]);
+                    out.extend(n.to_be_bytes());
+                }
+            }
+            out.extend(low);
+            out.extend(high);
+        }
+    }
+    out
+}
