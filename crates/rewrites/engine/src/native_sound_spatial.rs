@@ -11,6 +11,8 @@ use runtime::{CpuAbi, Guest};
 use sim_sound::spatial::{SourceSpace, transition_start};
 use x87::abi as fp;
 
+mod attenuation;
+
 const ENTRY: u32 = points::SOUND_CHANNEL_SPATIAL.base;
 const SITES: &[u32] = &[
     0x129b3e, 0x129b4c, 0x129b57, 0x129b6b, 0x129c02, 0x129c26,
@@ -22,7 +24,7 @@ pub const BODIES: &[Body] = &[Body {
     point: &points::SOUND_CHANNEL_SPATIAL,
     sites: SITES,
     run: update,
-}];
+}, attenuation::RAMP_BODY, attenuation::DISTANCE_BODY, attenuation::CONE_BODY];
 
 const CHANNELS: u32 = points::SOUND_CHANNELS.base;
 const INSTANCES: u32 = points::SOUND_INSTANCES.base;
