@@ -139,8 +139,10 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   so its slice, tick and call counts are exact, and at most 150 ticks of
   the game are lost. Everything past that mark is dropped, including
   checkpoints and call batches recorded past it, so a replay is never
-  asked for state the tape does not hold. A recovered film lists with no
-  map, variant or scores, and opens at boot; a tape with no such mark —
+  asked for state the tape does not hold. A recovered film has no
+  map, variant or scores, and opens at boot; Theater's list shows games
+  only (a film with no map and no players is left out), so it is on disk
+  and not listed; a tape with no such mark —
   a session that died outside a game — is deleted, as a session that
   played no game leaves no film.
 
@@ -667,8 +669,13 @@ execution order and the core game, clock, player and object table addresses.
 It includes hook owners, guest addresses, calling conventions, hook kinds,
 instruction sites, permitted continuation addresses, guest-callable entries
 and the allocations placed for those features.
-The player checks it after installing its features and before entering the
-guest. The guest image has its own stamp. Editing Live, the web viewer,
+The recorder's boot header is written before the features are installed, so
+it holds no digest: once the features are installed the recorder appends a
+header that carries it (`Session::set_simulation_hooks`). A cut copies the
+tape with that header and writes its final header from the tape's, and
+recovery takes the digest from the tape's later header, so every film
+carries it. The player checks it after installing its features and before
+entering the guest. The guest image has its own stamp. Editing Live, the web viewer,
 codecs, diagnostic labels or documentation leaves this contract intact.
 Earlier experimental v2/v3 recordings with source-based runtime stamps
 require their corresponding simulator for engine playback.

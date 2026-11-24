@@ -137,7 +137,11 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
                 .is_some_and(|tick| tick <= end_tick),
             t if t == blam::DESC || t == blam::SUMM || t == blam::TIDX => false,
             t if t == *b"PSUM" || t == range::CIDX || t == crate::INDX => false,
-            crate::HEAD | crate::DATA => true,
+            // The tape's later headers (the one that carries the simulation
+            // hook digest, a sealing session's own) are read for their
+            // digest and rewritten as the one sealed header below.
+            crate::HEAD => false,
+            crate::DATA => true,
             _ => true,
         };
         if keep {
@@ -261,6 +265,17 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     }
 
     let mut header = boot.clone();
+    // The recorder appends a header once the installed hooks are known: the
+    // boot header cannot hold their digest, so the last header of the tape
+    // that is this tape's own supplies it.
+    for later in rest.iter().filter(|e| e.tag == HEAD) {
+        if let Ok(later) = crate::decode::<_, crate::Header>(&mut source, later)
+            && later.meta.id == boot.meta.id
+            && later.simulation_hooks.is_some()
+        {
+            header.simulation_hooks = later.simulation_hooks;
+        }
+    }
     header.meta.length_ticks = end_tick;
     let mut ranges = range::Build::new(&boot);
     ranges.directory = range::Directory { version: 1, chunks, keyframes: keys };

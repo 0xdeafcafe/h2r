@@ -254,6 +254,32 @@ fn each_game_is_cut_into_a_film_of_its_own_while_the_tape_records_on() {
 }
 
 #[test]
+fn a_film_cut_after_the_hooks_are_installed_carries_their_digest() {
+    let dir = Temp::new("digest");
+    let auto = local(&dir, &dir.0.join("auto-tape.h2film"), true);
+    // Boot installs the hooks after the tape's first header is written.
+    auto.set_simulation_hooks("digest-of-the-installed-hooks".into()).unwrap();
+    ticks(&auto, &crate::theater::tests::arena(), 40);
+    end_game(&auto, 10, 80);
+    let (cut, reader) = cut_films(&dir.0).pop().expect("the game's film");
+    assert_eq!(reader.header.simulation_hooks.as_deref(), Some("digest-of-the-installed-hooks"));
+    let entry = film::LibraryEntry::read(&cut).unwrap();
+    assert_eq!(entry.simulation_hooks.as_deref(), Some("digest-of-the-installed-hooks"));
+}
+
+#[test]
+fn a_tape_sealed_after_a_hard_kill_keeps_the_digest_the_session_put_on_it() {
+    let dir = Temp::new("digest-recover");
+    let dead = dir.0.join(file_name(UNIX_EPOCH + Duration::from_secs(1_795_000_000)));
+    dead_tape_with(&dead, Some("digest-of-the-installed-hooks"));
+    let hours_ago = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
+    fs::File::options().write(true).open(&dead).unwrap().set_modified(hours_ago).unwrap();
+    assert_eq!(recover(&dir.0, SystemTime::now()), vec![dead.clone()]);
+    let entry = film::LibraryEntry::read(&dead).unwrap();
+    assert_eq!(entry.simulation_hooks.as_deref(), Some("digest-of-the-installed-hooks"));
+}
+
+#[test]
 fn a_cut_plays_back_with_the_recordings_player_features() {
     let dir = Temp::new("replay");
     let auto = local(&dir, &dir.0.join("auto-tape.h2film"), true);
@@ -625,6 +651,12 @@ fn a_campaign_mission_left_mid_session_is_cut_and_the_next_describes_itself() {
 /// manifest, three time chunks' worth of ticks with the third still
 /// pending, and a capture mark inside the second chunk.
 fn dead_tape(path: &Path) {
+    dead_tape_with(path, None)
+}
+
+/// [`dead_tape`] whose session had installed its hooks, and so appended the
+/// header that carries their digest, before it died.
+fn dead_tape_with(path: &Path, hooks: Option<&str>) {
     use film::blam::{Tick, TrackWriter};
     use film::tape::{Call, Check, Mark};
     let header = film::Header {
@@ -663,6 +695,10 @@ fn dead_tape(path: &Path) {
     };
     let mut tape = film::Writer::new(fs::File::create(path).unwrap(), &header).unwrap();
     tape.chunk(film::DATA, &film::manifest::Manifest::default()).unwrap();
+    if let Some(hooks) = hooks {
+        let later = film::Header { simulation_hooks: Some(hooks.into()), ..header.clone() };
+        tape.chunk(film::HEAD, &later).unwrap();
+    }
     let mut track = TrackWriter::default();
     for n in 1..=300u64 {
         track

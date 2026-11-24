@@ -300,13 +300,27 @@ impl Session {
         plan: &hooks::Plan,
         installed: &hooks::Installed,
     ) -> Result<()> {
+        let actual = hook_digest(plan, installed);
+        self.set_simulation_hooks(actual)
+    }
+
+    /// Record mode takes `actual` as the film's digest and puts it on the
+    /// tape, whose boot header was written before the hooks were installed;
+    /// every film cut from the tape, and a tape sealed after a hard kill,
+    /// read it from there. Replay requires the film's digest to equal it.
+    pub(super) fn set_simulation_hooks(&self, actual: String) -> Result<()> {
         let mut state = self.lock();
         if state.header.version < 3 {
             return Ok(());
         }
-        let actual = hook_digest(plan, installed);
         if matches!(&state.mode, Mode::Record(_)) {
             state.header.simulation_hooks = Some(actual);
+            let header = state.header.clone();
+            if let Mode::Record(rec) = &mut state.mode
+                && let Some(out) = rec.out.as_mut()
+            {
+                out.chunk(film::HEAD, &header)?;
+            }
         } else {
             ensure!(
                 state.header.simulation_hooks.as_ref() == Some(&actual),

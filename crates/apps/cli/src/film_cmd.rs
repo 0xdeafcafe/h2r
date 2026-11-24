@@ -132,8 +132,34 @@ struct Row {
     anchor: Option<Option<u64>>,
 }
 
+/// The error for a file that begins as a v3 film but has no range footer: a
+/// tape a session was killed in the middle of writing. It is sealed by the
+/// next recording session (`theater::autorecord::recover`), not read here.
+fn unsealed(path: &Path, error: anyhow::Error) -> anyhow::Error {
+    use std::io::{Read, Seek, SeekFrom};
+    let ends = || -> std::io::Result<([u8; 8], [u8; 8])> {
+        let mut file = std::fs::File::open(path)?;
+        let (mut first, mut last) = ([0; 8], [0; 8]);
+        file.read_exact(&mut first)?;
+        file.seek(SeekFrom::End(-(film::range::FOOTER_BYTES as i64)))?;
+        file.read_exact(&mut last)?;
+        Ok((first, last))
+    };
+    match ends() {
+        Ok((first, last))
+            if first == film::range::MAGIC && last != film::range::FOOTER_MAGIC =>
+        {
+            anyhow::anyhow!(
+                "{}: an unsealed tape, not a film: its session ended without sealing it, and the next recording session seals what is playable ({error})",
+                path.display()
+            )
+        }
+        _ => error,
+    }
+}
+
 pub fn stat(path: &Path) -> Result<String> {
-    let mut reader = film::Reader::open(path)?;
+    let mut reader = film::Reader::open(path).map_err(|error| unsealed(path, error))?;
     let mut out = String::new();
     let header = &reader.header;
     writeln!(out, "film: {}", path.display())?;
