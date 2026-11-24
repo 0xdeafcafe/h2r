@@ -1451,6 +1451,42 @@ h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-
 The tests (`api/tests/assets_tests.rs`) run over an invented tree of two
 maps and one package.
 
+### Problems
+
+`problems.list {source?}` is the Problems panel's list
+(docs/editor/studio-redesign.md, "The shell"; `app/problems.rs`,
+`api/problems.rs`), read again on every call. A row is
+`{source, area, code, severity, message, target, path?, asset?, field?,
+tool?}`, worst first. The sources:
+
+| `source` | Rows from |
+|---|---|
+| `check` | `check.run`'s `models` and `sounds` checks |
+| `ui` | `ui.check` |
+| `hud` | `hud.check` and the HUD kit's check |
+| `package` | the manifest checks `h2 package check` runs over the packages under `<data>/packages/`: an item with no builder, a missing or oversize source, a source its builder refuses, two items that add one tag path |
+| `build` | what the game's package set refuses to load, as the boot log says it: an unreadable package, a refused id, a `requires` that is missing, a set that cannot be ordered |
+
+Each row names what opens it: `asset` (`tag:<group>:<path>` for a tag of
+the open map, `package:<id>` or `item:<package>:<n>`), `field` (the field
+of the tag the finding names, from a model finding's `tag.set path`), or
+`tool` (`ui-screens` or `hud` for a screen or a HUD, which are not
+assets). The answer is `{problems, counts: {error, warning, note, total,
+by_source}, ran: [{source, check, findings}], skipped: [{source, check,
+why}]}`; a check that cannot run is under `skipped`. With `source` only
+that source is read and the panel's other rows stay. The panel's
+double-click on a row is `Action::OpenProblem`: a tag opens in its editor
+with the field shown, a package or item shows in the browser, a screen or
+a HUD shows its tool.
+
+```sh
+h2 studio problems.list '{"source":"package"}'
+```
+
+The tests are `app/problems_tests.rs` (findings of two invented sources
+list together, a row opens its document and field), `api/tests/problems_tests.rs`
+and `headless::tests::the_problems_panel_lists_rows_and_a_double_click_opens_them`.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`

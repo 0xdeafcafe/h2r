@@ -17,6 +17,7 @@ mod playtest_tests;
 mod image_gen_tests;
 mod script_variants_tests;
 mod assets_tests;
+mod problems_tests;
 mod shell_tests;
 mod ui_export_tests;
 

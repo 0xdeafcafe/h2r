@@ -28,7 +28,8 @@ use crate::App;
 mod anim;
 mod assets;
 mod bitmaps;
-mod checks;
+pub(crate) mod checks;
+mod problems;
 mod collision;
 mod curves;
 mod docs;
@@ -227,6 +228,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"asset":"string (tag:<group>:<path>)","package":"string","to?":"string"}"#,
         r#"{"package":"string","from":"string","tag":"string","source":"string","item":"integer","dir":"string"}"#,
         r#"{"asset":"tag:weap:objects\weapons\rifle","package":"pogo"}"#,
+    ),
+    def(
+        m::PROBLEMS_LIST,
+        "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
+        r#"{"source?":"check|ui|hud|package|build"}"#,
+        r#"{"problems":"[{source,area,code,severity,message,target,path?,asset?,field?,tool?}]","counts":"{error,warning,note,total,by_source:{source:integer}}","ran":"[{source,check,findings}]","skipped":"[{source,check,why}]"}"#,
+        r#"{"source":"package"}"#,
     ),
     def(
         m::WORKSPACE_STATUS,
@@ -866,6 +874,7 @@ impl Api {
             "source" | "doc" => docs::call(app, method, &p),
             "shell" => shell::call(app, method, &p),
             "asset" => assets::call(app, method, &p),
+            "problems" => problems::call(app, method, &p),
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
             "volume" => scenario::volume(app, method, &p),

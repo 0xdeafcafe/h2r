@@ -30,6 +30,7 @@ pub(super) struct Keys {
     pub viewport: WindowKey,
     pub inspector: WindowKey,
     pub log: WindowKey,
+    pub problems: WindowKey,
     pub game: WindowKey,
     pub pending_edits: WindowKey,
     pub bytes: WindowKey,
@@ -56,6 +57,7 @@ impl Keys {
             viewport: key("viewport", icon::EYE, "Viewport"),
             inspector: key("inspector", icon::SLIDERS, "Inspector"),
             log: key("log", icon::LOG, "Log"),
+            problems: key("problems", icon::ALERT, "Problems"),
             game: key("game", icon::ZAP, "Game"),
             pending_edits: key("pending_edits", icon::SLIDERS, "Pending"),
             bytes: key("tag-bytes", icon::INFO, "Data and bytes"),
@@ -97,7 +99,13 @@ impl Keys {
         DockLayout::split(
             DockSplit::Down,
             0.22,
-            DockLayout::tabs([&self.game, &self.log, &self.pending_edits, &self.bytes]),
+            DockLayout::tabs([
+                &self.game,
+                &self.log,
+                &self.problems,
+                &self.pending_edits,
+                &self.bytes,
+            ]),
             DockLayout::split(
                 DockSplit::Left,
                 0.22,
@@ -147,7 +155,10 @@ impl Keys {
         );
         seed(&self.viewport, tools.map(|t| &t.center).into_iter().chain([&self.rules]));
         seed(&self.inspector, tools.map(|t| &t.inspector));
-        seed(&self.log, [&self.game, &self.pending_edits, &self.bytes]);
+        seed(
+            &self.log,
+            [&self.game, &self.problems, &self.pending_edits, &self.bytes],
+        );
     }
 }
 
