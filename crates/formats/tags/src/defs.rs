@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 pub mod attrs;
 pub mod skeleton;
 pub mod value;
-pub use attrs::{Title, Unit};
+pub use attrs::{FieldView, Title, Unit};
 pub use value::*;
 
 #[cfg(test)]
@@ -160,6 +160,8 @@ pub struct FieldDef {
     pub unit: Option<Unit>,
     /// `axes=a|b|c`: the component letters of an array, one per element.
     pub axes: Vec<String>,
+    /// `view=<word>`: how a rich editor shows the field.
+    pub view: Option<FieldView>,
 }
 
 /// A field's type.
@@ -625,6 +627,34 @@ impl Defs {
                     axes
                 }
             };
+            let view = match params.get("view") {
+                None => None,
+                Some(w) => {
+                    let v = FieldView::from_word(w)
+                        .ok_or_else(|| err(format!("unknown view={w}")))?;
+                    let fits = match (v, &kind) {
+                        (FieldView::Rgb | FieldView::HdrRgb, Kind::Float { count: 3 }) => true,
+                        (FieldView::Argb, Kind::Float { count: 4 }) => true,
+                        (
+                            FieldView::Rgb8 | FieldView::Argb8 | FieldView::Xrgb8,
+                            Kind::Int {
+                                bytes: 4,
+                                count: 1,
+                                ..
+                            },
+                        ) => true,
+                        (FieldView::Function, Kind::Data { .. }) => true,
+                        _ => false,
+                    };
+                    if !fits {
+                        return Err(err(format!(
+                            "view={w} does not fit the field's type: {}",
+                            view_needs(v)
+                        )));
+                    }
+                    Some(v)
+                }
+            };
             out.push(FieldDef {
                 offset,
                 name,
@@ -639,6 +669,7 @@ impl Defs {
                 label,
                 unit,
                 axes,
+                view,
             });
         }
         Ok(out)
@@ -647,6 +678,16 @@ impl Defs {
     /// The root definition of `group`.
     pub fn group(&self, group: FourCC) -> Option<&StructDef> {
         self.groups.get(&group)
+    }
+}
+
+/// The type a view word needs, for the parse error.
+fn view_needs(v: FieldView) -> &'static str {
+    match v {
+        FieldView::Rgb | FieldView::HdrRgb => "f32[3]",
+        FieldView::Argb => "f32[4]",
+        FieldView::Rgb8 | FieldView::Argb8 | FieldView::Xrgb8 => "a 4-byte integer (u32)",
+        FieldView::Function => "a data reference",
     }
 }
 
@@ -923,6 +964,9 @@ impl StructDef {
                 && let Some(Title::Field(t)) = &s.title
             {
                 let _ = write!(out, " title={t}");
+            }
+            if let Some(v) = f.view {
+                let _ = write!(out, " view={}", v.word());
             }
             if let Some(a) = f.applies {
                 let _ = write!(out, " applies={a}");

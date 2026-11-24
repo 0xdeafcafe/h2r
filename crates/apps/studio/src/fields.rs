@@ -20,6 +20,7 @@
 //! otherwise.
 pub mod find;
 pub mod picker;
+pub mod rich;
 pub mod row;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -90,6 +91,10 @@ pub struct Settings {
     /// The filter row's **Changed only**: the fields that differ from the
     /// file. Not saved with the layout.
     pub changed: bool,
+    /// The tab shown for a tag whose group has tag views
+    /// ([`rich::tab`]): `""` or `fields` for the field panel. Not saved
+    /// with the layout.
+    pub tab: String,
 }
 
 /// The ini section the settings are saved in, after Dear ImGui's own.
@@ -1484,6 +1489,7 @@ mod tests {
             label: None,
             unit: None,
             axes: Vec::new(),
+            view: None,
         };
         let key = show_as_key(weap, "", 0x6);
         assert_eq!(shown_as(&settings, &key, &word, 7), View::Hex);

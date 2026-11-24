@@ -107,6 +107,7 @@ review, as a name does: the evidence goes in the line's meaning text.
 | `axes=a\|b\|...` | an integer or float array | One word per component, as many as the array has. |
 | `title="..."` | a `group` or `struct` line | The kind in words (`Weapon`). |
 | `title=<field>` | a `block` line | The element's field whose value titles each element. It names a field with a value: not a block, data reference, struct, `unknown` or `pad`. |
+| `view=<word>` | a field line | How a rich editor shows the field: `rgb`, `hdr_rgb` (`f32[3]`), `argb` (`f32[4]`), `rgb8`, `argb8`, `xrgb8` (a `u32`) or `function` (a `data` reference). A word on another type, or any other word, fails the parse ([rich-editors.md](../editor/rich-editors.md)). Needs evidence of the stored form in the meaning text. |
 | `applies=frame\|use\|creation` | a field, `block`, `struct`, `group` line | When a live write shows. Inherited, below. |
 
 ```text
@@ -145,8 +146,8 @@ it has `None`, which the editor reads as "not known". The evidence for an
 `applies` on a `group`, `struct` or `block` line goes in that line's
 meaning text, naming the reader that reads every field below it.
 
-In the registry (`tags::registry`), `Field` carries `label`, `unit`
-and `axes`; `Layout::title` holds a group's or a block's `title`; and
+In the registry (`tags::registry`), `Field` carries `label`, `unit`,
+`axes` and `view`; `Layout::title` holds a group's or a block's `title`; and
 `Layout::section_titles` maps the path of each embedded struct
 (`Field::section`) to its `title="..."`.
 

@@ -32,6 +32,7 @@ pub fn from_schema(name: &str, s: &Struct) -> StructDef {
                 label: None,
                 unit: None,
                 axes: Vec::new(),
+                view: None,
             });
             o = end;
         }
@@ -66,6 +67,7 @@ pub fn from_schema(name: &str, s: &Struct) -> StructDef {
             label: None,
             unit: None,
             axes: Vec::new(),
+            view: None,
         });
         at = o + w;
     }

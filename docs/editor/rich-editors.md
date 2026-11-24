@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except "Data that changes length", sound audition (A1) and Scripts, read (H1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1) and Scripts, read (H1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -21,8 +21,10 @@ The editor is Dear ImGui (`dear_imgui_rs`) on wgpu, native Rust
 
 ### One seam for every rich view
 
-`fields::rich` (new, `crates/apps/studio/src/fields/rich.rs`) holds a
-table of views. A view is one of two shapes:
+`fields::rich` (`crates/apps/studio/src/fields/rich.rs`) holds the
+seam: the tag-view table and the tab logic. A field view is the
+`view=` attribute the definitions parse (`tags::defs::FieldView`, carried
+as `registry::Field::view`). A view is one of two shapes:
 
 | Shape | Attached by | Shown as | Examples |
 |---|---|---|---|
@@ -34,6 +36,19 @@ table of views. A view is one of two shapes:
 the parser refuses any other word: `rgb`, `argb`, `rgb8`, `argb8`,
 `xrgb8`, `hdr_rgb`, `function`. Each line carries its evidence as a name
 does ([tag-definitions.md](../formats/tag-definitions.md)).
+
+`tag.fields` rows carry the field's word in `view` (null for a field with
+none), and `tag.view` gives `tabs` and `tab` and takes `tab`. The parser
+refuses a word outside the list, and a word on a type it does not fit:
+`rgb` and `hdr_rgb` need `f32[3]`, `argb` `f32[4]`, the three packed forms
+a `u32`, `function` a `data` reference.
+
+A tag view is one line in `fields::rich::TAG_VIEWS` (`id`, `label`,
+`groups`, `draw`). A tag whose group has a view shows **Fields** and the
+view's tab as a row of buttons over the panel (`rich::tab_bar`, in
+`ui/tags.rs`); the chosen tab is `fields::Settings::tab`, not saved, and a
+tab the selected tag's group lacks shows **Fields**. A group with no view
+has no bar. The table is empty until a slice that adds a view.
 
 A view reads and writes through three things only:
 
@@ -641,7 +656,7 @@ the first one whose needs are met.
 
 | # | Slice | Size | Needs | Accepted when |
 |---|---|---|---|---|
-| X1 | **The seam**: `fields::rich`, the `view=` attribute and its parser, tag-view tabs, `view` on `tag.fields` rows | S | T2, T4 | an invented group with one `view=` word of each kind lists them; an unknown word fails the `defs` suite |
+| X1 (built) | **The seam**: `fields::rich`, the `view=` attribute and its parser, tag-view tabs, `view` on `tag.fields` rows | S | T2, T4 | an invented group with one `view=` word of each kind lists them; an unknown word fails the `defs` suite |
 | C1 | **Colour picker**: the five forms, the dialog, recent and saved colours, hex in `tag.set`, `tag.colours` | M | X1, T6 | headless: pick a colour through the dialog on an invented tag of each form; the bytes equal the picked value after quantisation; a drag is one undo step |
 | C2 | **Colour forms for a group** (repeatable): `view=` on a group's colour fields with evidence | S each | X1 | the group's colour rows in `tag.colours` rise; each line cites its source |
 | A1 | **Sound audition**: decode, the host output, waveform, play and scrub, `sound.read`, `sound.play` | M | X1 | an invented ADPCM sound plays through the headless sink to its sample count; a WMA sound without the executable is refused by name |

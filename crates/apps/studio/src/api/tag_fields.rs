@@ -45,9 +45,9 @@ const SET: MethodDef = MethodDef {
 
 const FIELDS: MethodDef = def(
     m::TAG_FIELDS,
-    "The field panel's rows for a tag or one block element, as the Tags tool and the inspector draw them (fields::rows): the named rows, then the Unnamed fields group's (padding last). Each row has the label in words, the type in words, the unit, whether the field is named, editable (else read_only says why), edited (file_value is the file's value), when a change takes effect, the chip the row shows (only with a game connected) and the tag.set path. `unnamed: false` leaves the unnamed rows out",
+    "The field panel's rows for a tag or one block element, as the Tags tool and the inspector draw them (fields::rows): the named rows, then the Unnamed fields group's (padding last). Each row has the label in words, the type in words, the unit, whether the field is named, editable (else read_only says why), edited (file_value is the file's value), when a change takes effect, the chip the row shows (only with a game connected) and the tag.set path. `unnamed: false` leaves the unnamed rows out. `view` is the field's definition `view=` word (a colour form or `function`), else null",
     r#"{"tag":"string|integer","path?":"string (block element, e.g. parts[0])","unnamed?":"boolean (default true)"}"#,
-    r#"{"fields":"[{name,offset,kind,size,value,description,evidence,section,label,named,type,unit,editable,read_only,edited,file_value,effect:{id,text,why},chip,live:{kind,text}|null,path,summary,choices?:[{value,name}],bits?:[{bit,name}],groups?:[string],count?,capacity?,show_as?}]"}"#,
+    r#"{"fields":"[{name,offset,kind,size,value,description,evidence,section,label,named,type,unit,editable,read_only,edited,file_value,effect:{id,text,why},chip,live:{kind,text}|null,path,summary,view:string|null,choices?:[{value,name}],bits?:[{bit,name}],groups?:[string],count?,capacity?,show_as?}]"}"#,
     r#"{"tag":"itmc"}"#,
 );
 
@@ -132,9 +132,9 @@ fn rows(
 
 const VIEW: MethodDef = def(
     m::TAG_VIEW,
-    "Drive the Tags tool's field panel and read what it shows. `tag` selects a tag in the Tags tool; `path` (a list element, `parts[1]`) shows that element as the whole panel, as Open alone does (empty for the root); `field` (a tag.set path) focuses a field, opening its lists and its Unnamed fields group (alone, from the root, and clearing the filters); `search` sets the filter row's Search fields (empty clears it); `changed` sets Changed only; `unnamed` sets Show unnamed fields; `show_as` sets how an unnamed value is shown (`as` null for the guess), kept for that field of every tag of the kind. With none it only reads. `path` is the element shown and `breadcrumbs` its crumbs as drawn, `rows` the rows the panel shows of it — with a search or Changed only on, the hit list's rows, each a `tag.fields` row of the field it found — `unnamed_hidden` the unnamed rows in a folded group (0 with a filter on), `header` the header's lines as drawn, with the search budget's sentence last when the walk stopped at 5,000 list items",
-    r#"{"tag?":"string|integer","path?":"string (a list element shown alone, parts[1]; empty for the root)","field?":"string","search?":"string","changed?":"boolean","unnamed?":"boolean","show_as?":"{path: string, as: decimal|whole_number|hex|null}"}"#,
-    r#"{"tag":"string|null","path":"string","breadcrumbs":"[string]","field":"string|null","search":"string (empty when none)","changed":"boolean","unnamed":"boolean","rows":"[tag.fields row]","unnamed_hidden":"integer","header":"[string]"}"#,
+    "Drive the Tags tool's field panel and read what it shows. `tag` selects a tag in the Tags tool; `path` (a list element, `parts[1]`) shows that element as the whole panel, as Open alone does (empty for the root); `field` (a tag.set path) focuses a field, opening its lists and its Unnamed fields group (alone, from the root, and clearing the filters); `search` sets the filter row's Search fields (empty clears it); `changed` sets Changed only; `unnamed` sets Show unnamed fields; `show_as` sets how an unnamed value is shown (`as` null for the guess), kept for that field of every tag of the kind; `tab` shows one of the tag's `tabs` (`fields`, or a tag view of its group), refused when the group has no such view. With none it only reads. `path` is the element shown and `breadcrumbs` its crumbs as drawn, `rows` the rows the panel shows of it — with a search or Changed only on, the hit list's rows, each a `tag.fields` row of the field it found — `unnamed_hidden` the unnamed rows in a folded group (0 with a filter on), `header` the header's lines as drawn, with the search budget's sentence last when the walk stopped at 5,000 list items",
+    r#"{"tag?":"string|integer","path?":"string (a list element shown alone, parts[1]; empty for the root)","field?":"string","search?":"string","changed?":"boolean","unnamed?":"boolean","show_as?":"{path: string, as: decimal|whole_number|hex|null}","tab?":"string"}"#,
+    r#"{"tag":"string|null","path":"string","breadcrumbs":"[string]","field":"string|null","search":"string (empty when none)","changed":"boolean","unnamed":"boolean","rows":"[tag.fields row]","unnamed_hidden":"integer","header":"[string]","tabs":"[{id,label}]","tab":"string (the tab shown)"}"#,
     r#"{"tag":"itmc","search":"reload"}"#,
 );
 
@@ -204,9 +204,24 @@ fn view(app: &mut App, p: &P) -> Reply {
             None => app.tag_fields.show_as.remove(&key),
         };
     }
+    if let Some(v) = p.get("tab") {
+        let want = v
+            .as_str()
+            .ok_or_else(|| err(code::INVALID_PARAMS, "tab: a string"))?;
+        let tag = need("tab")?;
+        let group = app.shown_tags().tag(tag).map_or(FourCC(*b"????"), |t| t.group);
+        if panel::rich::tab(group, want) != want {
+            let have: Vec<_> = panel::rich::tabs(group).iter().map(|t| t.id).collect();
+            return Err(err(
+                code::REFUSED,
+                format!("tab: no tab `{want}` on this tag; it has {}", have.join(", ")),
+            ));
+        }
+        app.tag_fields.tab = want.to_owned();
+    }
     let Some(tag) = selected else {
         return Ok(json!({
-            "tag": null, "path": "", "breadcrumbs": [], "field": null,
+            "tag": null, "tabs": [], "tab": panel::rich::FIELDS_TAB, "path": "", "breadcrumbs": [], "field": null,
             "search": app.tag_fields.search, "changed": app.tag_fields.changed,
             "unnamed": app.tag_fields.unnamed, "rows": [],
             "unnamed_hidden": 0, "header": [],
@@ -264,8 +279,15 @@ fn view(app: &mut App, p: &P) -> Reply {
     if let Some(why) = budget {
         header.push(why);
     }
+    let group = doc.tag(tag).map_or(FourCC(*b"????"), |t| t.group);
+    let tabs: Vec<Value> = panel::rich::tabs(group)
+        .iter()
+        .map(|t| json!({"id": t.id, "label": t.label}))
+        .collect();
     Ok(json!({
         "tag": format!("{:#010x}", tag.0),
+        "tabs": tabs,
+        "tab": panel::rich::tab(group, &app.tag_fields.tab),
         "path": element,
         "breadcrumbs": crumbs,
         "field": field,
