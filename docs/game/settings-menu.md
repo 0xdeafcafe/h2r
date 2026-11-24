@@ -176,7 +176,7 @@ and **Voice**. Selecting Video opens the display options below.
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
 | Resolution | Native (current physical width x height), then sizes at that aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
-| Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
+| Lighting | Retail, E3 (default Retail). A [BSP review launch](../graphics/relighting-review.md) displays its locked lamp state | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | HUD Position | Pinned (default), Centered | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
 | LOD Distance | Retail, 0.5x, 1x (default), 1.5x, 2x, 3x, 4x | `[graphics] lod_distance` (number or `"retail"`) | next view | `H2_LOD_DISTANCE` |
 

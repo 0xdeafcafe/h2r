@@ -1711,6 +1711,7 @@ h2 agent render.capture '{"tick": 9000}'
 h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
 h2 agent render.capture '{"lighting":"retail"}' # latest sealed scene, private draw
 h2 agent render.capture '{"lighting":"e3","tick":42}' # use the first reply's tick
+h2 agent render.capture '{"lighting":"relight-off","tick":42}' # installed lamp, same scene
 h2 agent render.scene '{"dump": true}'
 h2 agent sim.hashes '{"from_tick": 3000}'
 h2 agent render.parity '{"arm": true}'
@@ -1770,7 +1771,8 @@ h2 agent render.parity '{"arm": true}'
   with a pose, give `INVALID_PARAMS`; no loaded scenario gives
   `UNAVAILABLE`. Types: `ViewParams` and its `check` in
   `crates/extensions/agent-proto/src/render.rs`.
-- **`render.capture`.** With `lighting: "retail" | "e3"`, the native
+- **`render.capture`.** With `lighting: "retail" | "e3" | "relight-on" |
+  "relight-off"`, the native
   renderer draws a sealed scene into a private target. The default is
   the latest sealed scene. An explicit `tick` selects that exact scene
   tick, up to 240 ticks ahead of the latest seal. The draw uses the
@@ -1785,7 +1787,16 @@ h2 agent render.parity '{"arm": true}'
   A renderer reset releases the retained scene. A missing private
   renderer or an unreplayable scene gives `UNAVAILABLE`. Combining
   `lighting` with `pass` gives `INVALID_PARAMS`. The override applies
-  only to the private draw.
+  only to the private draw. The relight modes require a run started with
+  either reconstruction selected and a matching installed bake. Each
+  successfully recorded world stage counts selected ranges that bind a page
+  whose baked states differ.
+  Zero such ranges across the whole frame gives `UNAVAILABLE` with
+  `no native world range in this scene uses the installed lightmap`.
+  `lighting` in a successful reply echoes the requested state.
+  See the [three-render comparison](../graphics/relighting-review.md).
+  Tests: `private_captures_draw_the_same_pinned_scene_with_each_requested_mode`
+  and `retained_stage_uses_the_current_private_attachments_on_every_draw`.
 
   Without `lighting`, the frame is taken for game tick `tick` (as `at.tick`
   counts it; default the next one, at most 240 ahead). On the D3D path

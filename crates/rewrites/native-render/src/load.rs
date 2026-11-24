@@ -22,6 +22,7 @@ pub const PART_TRANSPARENT: u16 = 4;
 /// One BSP's world, ready to upload.
 pub struct LoadedWorld {
     pub bsp: TagId,
+    pub checksum: u32,
     pub world: World,
     /// Shader tag per BSP material (`sbsp+0xa4`, stride `0x20`, shader at
     /// `+0xc`).
@@ -243,6 +244,7 @@ pub fn load_world<R: Read + Seek>(
     }
     Ok(LoadedWorld {
         bsp: bsp_id,
+        checksum: bsp.checksum,
         world: b.finish(),
         shaders,
         lightmap_bitmap: group.as_ref().and_then(|g| g.bitmap),

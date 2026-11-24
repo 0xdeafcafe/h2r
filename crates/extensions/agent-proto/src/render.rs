@@ -448,6 +448,10 @@ impl CompareReply {
 pub enum CaptureLighting {
     Retail,
     E3,
+    #[serde(rename = "relight-on")]
+    RelightOn,
+    #[serde(rename = "relight-off")]
+    RelightOff,
 }
 
 /// `render.capture`: the frame of a sim tick as a PNG.
@@ -1191,6 +1195,11 @@ mod tests {
         assert!(!s.dump);
         let c: FrameCaptureParams = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(c, FrameCaptureParams::default());
+        for (name, mode) in [("relight-on", CaptureLighting::RelightOn), ("relight-off", CaptureLighting::RelightOff)] {
+            let p: FrameCaptureParams = serde_json::from_value(serde_json::json!({"lighting": name})).unwrap();
+            assert_eq!(p.lighting, Some(mode));
+            assert_eq!(serde_json::to_value(p).unwrap(), serde_json::json!({"lighting": name}));
+        }
         assert!(serde_json::from_value::<FrameCaptureParams>(serde_json::json!({"tik": 3})).is_err());
         assert!(serde_json::from_value::<CompareParams>(serde_json::json!({"a": "x"})).is_err());
         let v = serde_json::to_value(CaptureReply::default()).unwrap();

@@ -1,8 +1,8 @@
 # Dynamic lighting: a live sun over the baked lightmaps
 
-Status: The static BSP census and the offline split tool are implemented. Retail page review is the gate for renderer work. The runtime mode is a design.
+Status: Partly built. The static BSP census, offline split and single-BSP display atlas replacement have implementations. The live sun and indirect transport modes are designs. The room comparison needs an owner-disc run.
 Code: `crates/apps/cli/src/lighting/census.rs` and `crates/apps/cli/src/lighting/solver/`. The entry point is `crates/apps/cli/src/lighting/split.rs`. Tests: the census module, `crates/formats/tags/src/lighting_tests.rs` and the solver's invented forward bakes in `solver/solve/tests.rs` and `solver/lamp.rs`.
-Switch: [offline lighting options](../runtime/switches.md#tools). The runtime design adds `dynamic` to the Lighting row (`H2_LIGHTING`).
+Switch: [offline lighting options](../runtime/switches.md#tools) and the [lighting launch setting](../runtime/switches.md#settings). The live-sun design adds `dynamic` to the Lighting row.
 
 An opt-in mode that takes the sun out of Halo 2's baked lightmaps and
 lights it live, with shadow maps, so that the level and everything in it
@@ -176,8 +176,8 @@ dependency this design takes at run time.
 `h2 lighting split` produces a private set of display lightmap pages for one
 BSP and one light. Open `index.html` in the chosen output directory to see
 retail, reconstructed lamp on and reconstructed lamp off together. The
-comparison is in atlas space. Cache loading and drawing the pages in the
-game belong to slice 2.
+report compares the atlases. A successful placed-lamp split also produces
+the display bundle for the [room comparison](relighting-review.md).
 
 The split tool reads display group zero after matching its structure checksum
 to the BSP, expands each bound P8 image through its bound palette
@@ -256,6 +256,55 @@ sky light 0 on each. Each invocation writes a separate report outside Git.
 An incomplete input, a fit with no visible change or closure beyond one
 step stops the gate. Otherwise the owner decides after reviewing the three
 reports. The command syntax is in [switches.md](../runtime/switches.md#tools).
+
+### One BSP with a switchable baked lamp
+
+**Design.** The first room for review is Foundation's fan room, BSP 0.
+The owner-disc placement listing and a view of the direct pool must
+identify the same fixture. Its placement number and the suitability of
+the room are unverified. The [room comparison](relighting-review.md)
+gives the bake and capture procedure.
+
+**Code.** The selected sphere and this BSP's chart geometry determine
+two complete display atlases at bake time. A successful placed-lamp split
+writes `lightmaps.json` beside the review PNGs. The installed directory
+is `<data>/relighting/` (one map, BSP and lamp per installation).
+`content::relight::Manifest` identifies the format
+`h2-display-lightmaps-v1`, internal map name, map header and structure
+checksums, BSP index and placed-lamp index. Each entry identifies a page,
+palette, mip, width and height, with SHA-256 digests of the decoded retail,
+on and off RGBA8 pixels. For group zero the two display files are
+`g0-pageP-palQ-mipM-{on,off}.png`, with `-rgba` before the extension
+when the corresponding retail mip has translucent pixels. The PNGs keep
+the original alpha, mip sizes and stored colour units. Names come from
+numeric keys. The report, bundle and captures contain private pixels and
+belong outside Git. A stopped split can retain a report for diagnosis
+without publishing a runtime manifest.
+
+**Code.** At native BSP load, `game::relight::load` compares the
+manifest to the active map and to each resident retail page, including
+palettes and lower mips. Both arms must decode with matching dimensions,
+digests and retail alpha. `ProgramSet::install_relight` creates material
+bindings for the reconstructed textures. The [native world
+stage](native-world.md) selects them on the display copy of the layer-3
+pass. An invalid bake or incomplete native opaque coverage leaves the
+BSP on retail and reports the reason. The guest reference retains its
+original textures for readbacks. Ordinary retail launches do no bundle
+I/O. Live edits invalidate the alternative bindings.
+
+**Scope.** This swaps the sampled atlas itself. The split fits direct
+light in stored RGB units. Source bounce survives in the residual.
+Vertex lighting, self-illumination, live lights, objects and later
+material passes retain their ordinary lighting. Inspecting a bounce-only
+wall and the fixture face records which parts of the lamp are still
+visible. Removing its indirect light requires an additional transport
+bake, and extinguishing its visible emission requires control of that
+material pass.
+
+**Test.** `binds_each_palette_and_mip_preserving_alpha_and_retail_pixels`
+uses two invented palettes, a translucent page and a lower mip.
+`refuses_both_arms_on_missing_extra_corrupt_or_duplicate_mip` covers
+incomplete and damaged bundles.
 
 ### The frame
 

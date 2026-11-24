@@ -63,6 +63,7 @@ pub fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
 
 /// Boot owns the mount. Render workers can borrow it until boot returns.
 pub struct MountedVfs {
+    data_root: std::path::PathBuf,
     vfs: Arc<Mutex<Vfs>>,
     rebind: Option<vfs::MapRebind>,
     active: Mutex<Option<ActiveSource>>,
@@ -78,14 +79,21 @@ struct ActiveSource {
 static SOURCES: Mutex<Weak<MountedVfs>> = Mutex::new(Weak::new());
 
 #[must_use]
-pub fn mount(vfs: Arc<Mutex<Vfs>>, rebind: Option<vfs::MapRebind>) -> Arc<MountedVfs> {
+pub fn mount(vfs: Arc<Mutex<Vfs>>, rebind: Option<vfs::MapRebind>, data_root: &std::path::Path) -> Arc<MountedVfs> {
     let sources = Arc::new(MountedVfs {
+        data_root: data_root.to_owned(),
         vfs,
         rebind,
         active: Mutex::new(None),
     });
     *SOURCES.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&sources);
     sources
+}
+
+/// The active boot's data root, including a command-line override.
+pub(crate) fn data_root() -> Option<std::path::PathBuf> {
+    let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
+    Some(sources.data_root.clone())
 }
 
 /// Only the editor's activation observer publishes a private generation.

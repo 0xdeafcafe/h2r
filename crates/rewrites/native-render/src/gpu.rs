@@ -1349,6 +1349,23 @@ impl GpuWorld {
             })
     }
 
+    /// Both arms have bindings for all sampled layer-3 pages.
+    pub fn has_relight(&self) -> bool {
+        self.programs.as_ref().is_some_and(ProgramSet::has_relight)
+    }
+
+    /// Selected draws sampling a reconstructed page whose two arms differ.
+    pub fn relit_lightmap_ranges(&self, selection: &WorldSelection) -> usize {
+        let Some(programs) = self.programs.as_ref() else { return 0 };
+        selection.spans.iter().filter(|(batch, _, _)| programs.changed_lightmap_batch(*batch))
+            .map(|(_, first, last)| last - first).sum()
+    }
+
+    /// A live change to the geometry, lightmap or materials invalidates an offline bake.
+    pub fn discard_relight(&mut self) -> bool {
+        self.programs.as_mut().is_some_and(ProgramSet::discard_relight)
+    }
+
     /// Stage one target copy of a selection admitted by `prepare_selection` on this world.
     pub fn write_selection(
         &self, uploads: &mut gfx::ring::EncoderUploads<'_>, selection: &WorldSelection, view: Option<&ViewInputs>,
@@ -1451,7 +1468,7 @@ impl GpuWorld {
             }));
         }
         self.prepare_pipelines(device, color_format, depth_format);
-        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, false)
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, false, d3d::Lighting::Retail)
     }
 
     /// All selected draws passed the owner and frustum checks before admission.
@@ -1461,7 +1478,16 @@ impl GpuWorld {
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
         selection: &WorldSelection,
     ) -> usize {
-        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, true)
+        self.encode_selection_lit(encoder, color, color_format, depth, depth_format, viewport, target_size,
+            selection, d3d::Lighting::Retail)
+    }
+
+    pub fn encode_selection_lit(
+        &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
+        selection: &WorldSelection, lighting: d3d::Lighting,
+    ) -> usize {
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, true, lighting)
     }
 
     /// [`GpuWorld::write_selection`] and [`GpuWorld::encode_selection`] as
@@ -1474,6 +1500,13 @@ impl GpuWorld {
     pub fn selection_draws(
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        self.selection_draws_lit(color_format, depth_format, target_size, selection, view, d3d::Lighting::Retail)
+    }
+
+    pub fn selection_draws_lit(
+        &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
@@ -1511,7 +1544,7 @@ impl GpuWorld {
         };
         for &(i, first, last) in &selection.spans {
             let batch = &world.batches[i];
-            let textures = p.batch_textures(i).ok_or("world batch textures unavailable")?;
+            let textures = p.lit_batch_textures(i, lighting).ok_or("world batch textures unavailable")?;
             let draws = &world.draws[first..last];
             let mut k = 0;
             while k < draws.len() {
@@ -1585,7 +1618,7 @@ impl GpuWorld {
     fn record_spans(
         &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
-        spans: &[(usize, usize, usize)], selected: bool,
+        spans: &[(usize, usize, usize)], selected: bool, lighting: d3d::Lighting,
     ) -> usize {
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1641,7 +1674,7 @@ impl GpuWorld {
         for &(i, first, last) in spans {
             let b = &self.world.batches[i];
             if let Some(p) = &self.programs {
-                let Some(textures) = p.batch_textures(i) else {
+                let Some(textures) = p.lit_batch_textures(i, lighting) else {
                     unbound += 1;
                     continue;
                 };

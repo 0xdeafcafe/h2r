@@ -283,6 +283,9 @@ pub trait ExternalPass: Send {
     /// and uploads supplied to that recording, with no guest feedback.
     fn replays_scene(&self) -> bool { false }
 
+    /// Selected world ranges that bind a private page whose two lamp states differ.
+    fn relit_lightmap_ranges(&self) -> usize { 0 }
+
     fn indexed_tail(&self) -> Option<IndexedTail> { None }
 
     /// All these ranges share the textures resolved at the first draw.
@@ -452,6 +455,9 @@ pub struct ExternalTarget<'a> {
     /// Indexed live colour surfaces in the same order as the plan's slots.
     pub slots: &'a [Option<ExternalColor>],
     pub uploads: &'a gfx::ring::SubmissionUploads,
+    /// Lightmap arm permitted for this physical target. An isolated
+    /// display copy or a private capture may select reconstructed pages.
+    pub lighting: crate::Lighting,
     pub copy: TargetCopy,
     pub stages: [Option<&'a wgpu::TextureView>; 4],
     /// An initially empty list for [`ExternalPass::record_ranges`] on an
@@ -578,6 +584,9 @@ pub struct ExternalAttachments {
     pub stages: [Option<wgpu::TextureView>; 4],
     /// The active scaled policy requires just the display recording.
     pub(crate) single_display: bool,
+    /// Lightmap arm permitted for this physical target. An isolated
+    /// display copy or a private capture may select reconstructed pages.
+    pub lighting: crate::Lighting,
     pub copy: TargetCopy,
 }
 
@@ -595,6 +604,7 @@ impl ExternalAttachments {
             display_projection_factor: request.display_projection_factor,
             z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
             uploads: &self.uploads, slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
+            lighting: self.lighting,
             on_submit,
         }
     }

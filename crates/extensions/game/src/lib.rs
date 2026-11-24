@@ -166,6 +166,8 @@ pub mod native_water_glue;
 #[cfg(feature = "gpu")]
 pub mod native_world_glue;
 #[cfg(feature = "gpu")]
+pub(crate) mod relight;
+#[cfg(feature = "gpu")]
 pub mod native_world_layers_glue;
 #[cfg(feature = "gpu")]
 pub mod opaque_streams;

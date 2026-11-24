@@ -179,7 +179,9 @@ impl<'a> GuestDrawPass<'a> {
         scale: u32,
         lighting: crate::Lighting,
     ) -> Result<Self, String> {
-        Self::start(gpu, frame, scale, false, None, lighting == crate::Lighting::E3)
+        let mut pass = Self::start(gpu, frame, scale, false, None, lighting == crate::Lighting::E3)?;
+        pass.commands.private_lighting = Some(lighting);
+        Ok(pass)
     }
 
     /// The window draw. Visibility reports belong only to this playback.
@@ -412,6 +414,7 @@ impl<'a> GuestDrawPass<'a> {
 
     /// Reads the completed private frame. Its attachments are released.
     pub fn read_rgba(mut self) -> Result<([u32; 2], Vec<u8>), String> {
+        self.commands.check_private_lightmaps()?;
         self.read_target(self.presented)
     }
 
@@ -493,8 +496,9 @@ impl SceneDevice for GfxBackend {
         &mut self,
         stage: &crate::SceneStage<TargetRef>,
         surfaces: crate::ExternalSurfaces<SurfaceId>,
-    ) -> Result<(), String> {
-        self.record_replay_stage(stage, surfaces)
+        private_lighting: Option<crate::Lighting>,
+    ) -> Result<usize, String> {
+        self.record_replay_stage(stage, surfaces, private_lighting)
     }
 
     fn scene_upload(&mut self, asset: &Arc<DecodedTexture>) -> Result<HostTexture, String> {

@@ -30,6 +30,7 @@ pub mod map_pack;
 pub mod package;
 pub mod patch;
 pub mod patch_lvl;
+pub mod relight;
 mod resolve;
 pub mod store;
 
