@@ -18,6 +18,7 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
+        "//:content",
     ],
 )
 
@@ -25,12 +26,33 @@ crate_tree(
     name = "test-tree",
     files = [
         ":all",
+        "//:content",
         "//crates/runtime/kernel:all",
     ],
 )
 
+workspace_buildscript(
+    name = "build-script",
+    features = [
+        "default",
+        "desktop-runtime",
+        "gpu",
+        "local-io",
+        "movie-playback",
+        "perf",
+        "rules",
+        "test-maps",
+    ],
+    manifest = "crates/apps/boot",
+    package = "boot",
+    tree = ":lib-tree",
+    version = "0.1.0",
+    deps = [],
+)
+
 workspace_library(
     name = "boot",
+    buildscript = ":build-script",
     crate = "boot",
     crate_root = "crates/apps/boot/src/lib.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -130,6 +152,7 @@ workspace_library(
 
 workspace_test(
     name = "unit-tests",
+    buildscript = ":build-script",
     crate = "boot",
     crate_root = "crates/apps/boot/src/lib.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -230,6 +253,7 @@ workspace_test(
 
 workspace_test(
     name = "audio_idle",
+    buildscript = ":build-script",
     crate = "audio_idle",
     crate_root = "crates/apps/boot/tests/audio_idle.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -331,6 +355,7 @@ workspace_test(
 
 workspace_test(
     name = "bridge",
+    buildscript = ":build-script",
     crate = "bridge",
     crate_root = "crates/apps/boot/tests/bridge.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -432,6 +457,7 @@ workspace_test(
 
 workspace_test(
     name = "content_sign",
+    buildscript = ":build-script",
     crate = "content_sign",
     crate_root = "crates/apps/boot/tests/content_sign.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -533,6 +559,7 @@ workspace_test(
 
 workspace_test(
     name = "crt_copy",
+    buildscript = ":build-script",
     crate = "crt_copy",
     crate_root = "crates/apps/boot/tests/crt_copy.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -634,6 +661,7 @@ workspace_test(
 
 workspace_test(
     name = "feature_plan",
+    buildscript = ":build-script",
     crate = "feature_plan",
     crate_root = "crates/apps/boot/tests/feature_plan.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -735,6 +763,7 @@ workspace_test(
 
 workspace_test(
     name = "headless_interp",
+    buildscript = ":build-script",
     crate = "headless_interp",
     crate_root = "crates/apps/boot/tests/headless_interp.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -836,6 +865,7 @@ workspace_test(
 
 workspace_test(
     name = "health_xbe",
+    buildscript = ":build-script",
     crate = "health_xbe",
     crate_root = "crates/apps/boot/tests/health_xbe.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -937,6 +967,7 @@ workspace_test(
 
 workspace_test(
     name = "hosted",
+    buildscript = ":build-script",
     crate = "hosted",
     crate_root = "crates/apps/boot/tests/hosted.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -1038,6 +1069,7 @@ workspace_test(
 
 workspace_test(
     name = "keyboard",
+    buildscript = ":build-script",
     crate = "keyboard",
     crate_root = "crates/apps/boot/tests/keyboard.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -1139,6 +1171,7 @@ workspace_test(
 
 workspace_test(
     name = "live",
+    buildscript = ":build-script",
     crate = "live",
     crate_root = "crates/apps/boot/tests/live.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -1240,6 +1273,7 @@ workspace_test(
 
 workspace_test(
     name = "live_notice",
+    buildscript = ":build-script",
     crate = "live_notice",
     crate_root = "crates/apps/boot/tests/live_notice.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -1341,6 +1375,7 @@ workspace_test(
 
 workspace_test(
     name = "new_account_prompt",
+    buildscript = ":build-script",
     crate = "new_account_prompt",
     crate_root = "crates/apps/boot/tests/new_account_prompt.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -1442,6 +1477,7 @@ workspace_test(
 
 workspace_test(
     name = "render_points_xbe",
+    buildscript = ":build-script",
     crate = "render_points_xbe",
     crate_root = "crates/apps/boot/tests/render_points_xbe.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -1543,6 +1579,7 @@ workspace_test(
 
 workspace_test(
     name = "signin_prompt",
+    buildscript = ":build-script",
     crate = "signin_prompt",
     crate_root = "crates/apps/boot/tests/signin_prompt.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
@@ -1644,6 +1681,7 @@ workspace_test(
 
 workspace_test(
     name = "write_barrier",
+    buildscript = ":build-script",
     crate = "write_barrier",
     crate_root = "crates/apps/boot/tests/write_barrier.rs",
     description = "The composition root: a built module run on the runtime with the kernel HLE, the hooks and every feature attached",
