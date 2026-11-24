@@ -81,8 +81,11 @@ const CAMERA_CONTROLLER: u32 = 0x004e_8c44;
 const FIRST_PERSON_CAMERA: u32 = 0x0023_c110;
 const PLAYER_IDENTITIES: u32 = 0x004e_8c20;
 const LIGHT_OPTIONS: u32 = 0x0051_07e8;
-const VISIBILITY_OPTIONS: u32 = 0x004e_9ae8;
-const LIGHT_BSP_OVERRIDES: u32 = 0x0055_e4d0;
+/// The multiplayer engine globals (`points::GAME_ENGINE`); `+0xc14` the
+/// engine index, `+0` a flags byte.
+const GAME_ENGINE: u32 = 0x004e_9ae8;
+/// The engine table (`points::ENGINE_TABLE`): one engine object per index.
+const ENGINE_TABLE: u32 = 0x0055_e4d0;
 const RENDER_MODE: u32 = 0x0048_5602;
 const OVERRIDE: u32 = 0x0051_0c50;
 const PROJECTION_DEPTH: [u32; 4] = visible::PROJECTION_DEPTH;
@@ -109,7 +112,7 @@ const SCENARIO: u32 = 0x0306_0000;
 const PLACEMENTS: u32 = 0x0306_1000;
 const CANDIDATE_LIST: u32 = 0x0307_0000;
 const OPTIONS: u32 = 0x0308_0000;
-const VIS_OPTIONS: u32 = 0x0308_1000;
+const ENGINE_GLOBALS: u32 = 0x0308_1000;
 const OVERRIDE_STRUCT: u32 = 0x0308_2000;
 const IDENTITIES: u32 = 0x0308_3000;
 const VIS_LISTS: u32 = 0x0309_0000;
@@ -527,13 +530,13 @@ impl World {
         // Options.
         put(&mut m, LIGHT_OPTIONS, OPTIONS);
         put8(&mut m, OPTIONS + 8, u8::from(!r.chance(12)));
-        put(&mut m, VISIBILITY_OPTIONS, VIS_OPTIONS);
-        put(&mut m, VIS_OPTIONS + 0xc14, r.below(4));
-        put8(&mut m, VIS_OPTIONS, r.u32() as u8);
-        for bsp in 0..4 {
+        put(&mut m, GAME_ENGINE, ENGINE_GLOBALS);
+        put(&mut m, ENGINE_GLOBALS + 0xc14, r.below(4));
+        put8(&mut m, ENGINE_GLOBALS, r.u32() as u8);
+        for index in 0..4 {
             put(
                 &mut m,
-                LIGHT_BSP_OVERRIDES + 4 * bsp,
+                ENGINE_TABLE + 4 * index,
                 if r.chance(3) { 1 } else { 0 },
             );
         }
