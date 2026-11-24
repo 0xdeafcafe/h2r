@@ -462,6 +462,9 @@ fn install_collision(b: &mut Builder) {
                     if entry == Entry::VectorTest {
                         engine::sim_collision::vector_parity::begin(o.thread_id, o.cpu, &mut *o.guest(), world);
                     }
+                    if entry == Entry::VectorContext {
+                        engine::sim_collision::vector_parity::begin_context(o.thread_id, o.cpu, &mut *o.guest(), world);
+                    }
                     if entry == Entry::MoppRay {
                         engine::sim_collision::mopp_ray::begin(o.cpu, &mut *o.guest(), world);
                     }
@@ -473,6 +476,12 @@ fn install_collision(b: &mut Builder) {
     b.raw().observe_after(vector, "collision-vector-end", move |o| {
         if o.addr == vector.base {
             engine::sim_collision::vector_parity::end(o.thread_id, o.cpu, &*o.guest(), &engine::sim_collision::WORLD);
+        }
+    }).optional();
+    let context = &points::COLLISION_BSP_SEGMENT;
+    b.raw().observe_after(context, "collision-context-end", move |o| {
+        if o.addr == context.base {
+            engine::sim_collision::vector_parity::end_context(o.thread_id, o.cpu, &*o.guest(), &engine::sim_collision::WORLD);
         }
     }).optional();
     let ray = &points::COLLISION_MOPP_RAY;

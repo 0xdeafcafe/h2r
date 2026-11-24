@@ -53,6 +53,8 @@ pub struct Stats {
     pub ray: RayParity,
     #[serde(default)]
     pub vector: VectorParity,
+    #[serde(default)]
+    pub context: VectorParity,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -35,7 +35,7 @@ use preflight::Outputs;
 use crate::sim_native::Memory;
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::bsp::NONE;
-pub use sim_collision::{Bail, CollisionWorld, Entry, Stats};
+pub use sim_collision::{Bail, CollisionWorld, Entry, Stats, VectorParity};
 use sim_collision::{Consts, Fault, GuestRead, Outcome, Segment};
 use sim_core::Epoch;
 use sim_core::det::{self, Fp};
@@ -256,10 +256,7 @@ fn commit(c: &mut CpuAbi, g: &mut impl Memory, plan: Plan) -> Result<TransferAbi
         g.write_bytes(plan.record.wrapping_add(offset), bytes, 1)
     })?;
     if let Some(context) = plan.context {
-        use layout::context as ctx;
-        g.set_u32(context.wrapping_add(ctx::PREV_LEAF), o.prev_leaf)?;
-        g.set_u8(context.wrapping_add(ctx::PREV_KIND), o.prev_kind)?;
-        g.set_u32(context.wrapping_add(ctx::PLANE), o.plane)?;
+        o.write_context(|offset, bytes| g.write_bytes(context.wrapping_add(offset), bytes, 1))?;
     }
     if o.inexact {
         c.x87.status |= 0x20;
