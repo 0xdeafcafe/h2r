@@ -439,7 +439,12 @@ Notes on some:
     else null; [rich-editors.md](rich-editors.md)); a `function` view's
     row also carries `function: {type, ranged, range, length}`, its
     curve's shape (null when the data is not a function blob, and the
-    row says why);
+    row says why); a colour row (a colour `view=` word, or three floats
+    whose name says colour) carries `colour: {form, by, hex, rgba,
+    intensity?}`: the stored form (`rgb`, `argb`, `rgb8`, `argb8`,
+    `xrgb8`, `hdr_rgb`), `by` (`view` or `name`), the colour as
+    `#aarrggbb`, its channels in 0 to 1, and an `hdr_rgb` colour's
+    intensity (the hex and channels are at intensity 1);
   - `editable`, and `read_only`, the reason as a sentence when not;
   - `edited` (the value differs from the loaded file) and `file_value`
     (the file's value when edited, else null);
@@ -462,6 +467,17 @@ Notes on some:
     switches, `groups` for a tag reference, `count` and `capacity` for a
     list, and `show_as` (`decimal`, `whole_number` or `hex`) for an
     unnamed value.
+
+  A colour field's `tag.set` value may also be `"#aarrggbb"`,
+  `"#rrggbb"` or `{rgba: [r, g, b, a], intensity?}`, converted to the
+  field's form as the colour picker writes it (a form without alpha drops
+  it, a packed form without alpha keeps its top byte, an `hdr_rgb` field
+  keeps its intensity unless one is given); channels outside 0 to 1, an
+  intensity below 0 or on another form are `INVALID_PARAMS`.
+  `tag.colours {tag}` lists every colour row of the tag, every element of
+  every list walked as `tag.find` walks: `{colours: [{path, label, form,
+  by, hex, rgba, intensity?}], truncated}`
+  ([rich-editors.md](rich-editors.md), "Colours"; `api/colours.rs`).
 
   An offset path in `tag.set` addresses the typed field that starts
   there. Its row gives the width accepted for an integer or enum value.
@@ -2026,6 +2042,11 @@ the window and the API stay one path.
   same length at the data's start through `App::perform`, or, for a
   type change, a `TagAction::ResizeData` (rich editors F2), one undo
   step, exactly as the dialog's drags and type picker write.
+- **Colours (rich editors C1).** `api/colours.rs` registers `Colours`
+  for `tag.colours`, over the field panel's rows (`fields::find`) and
+  the colour picker's helpers (`fields/colour.rs`); a colour's `tag.set`
+  is `app::tag_api::set_field` with `fields::colour::from_json`, a
+  `TagAction::Write` of the field's own length, as the dialog writes.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for
   `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
   window draws; `rules.reload` leaves the blob in its outbox and

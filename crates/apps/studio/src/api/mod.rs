@@ -31,6 +31,7 @@ mod bitmaps;
 pub(crate) mod checks;
 mod problems;
 mod collision;
+mod colours;
 mod curves;
 mod docs;
 mod game_script;

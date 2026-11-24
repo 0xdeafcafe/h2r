@@ -666,3 +666,59 @@ fn builtin_applies_timings_for_the_covered_groups() {
     assert_eq!(at(b"matg", "player_control.slowdown"), Some("frame"));
     assert_eq!(at(b"matg", "player_representations.unit"), Some("creation"));
 }
+
+/// Every `view=` in the checked-in definitions cites its source: an `E`
+/// or `V` word in the meaning, or the retail reference
+/// (`docs/editor/rich-editors.md`, "Colours"). The colour forms of slice
+/// C2 are on their fields.
+#[test]
+fn builtin_view_lines_cite_their_source() {
+    fn walk(
+        path: &str,
+        def: &StructDef,
+        found: &mut Vec<(String, FieldView)>,
+        bad: &mut Vec<String>,
+    ) {
+        for field in &def.fields {
+            let here = format!("{path}.{}", field.name);
+            if let Some(v) = field.view {
+                found.push((here.clone(), v));
+                let cited = field
+                    .meaning
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|w| w == "E" || w == "V")
+                    || field.meaning.contains("retail reference");
+                if !cited {
+                    bad.push(here.clone());
+                }
+            }
+            if let Kind::Block(child) | Kind::Struct(child) = &field.kind {
+                walk(&here, child, found, bad);
+            }
+        }
+    }
+    let defs = Defs::builtin();
+    let (mut found, mut bad) = (Vec::new(), Vec::new());
+    for (g, def) in &defs.groups {
+        walk(&fourcc_text(*g), def, &mut found, &mut bad);
+    }
+    for (name, def) in &defs.structs {
+        walk(name, def, &mut found, &mut bad);
+    }
+    assert!(bad.is_empty(), "view= without a source: {bad:?}");
+    for want in [
+        "deca.colour_lower",
+        "deca.colour_upper",
+        "lens.reflections.tint_colour",
+        "fog_a.color",
+        "obje.change_colors.initial_permutations.color_lower_bound",
+        "obje.change_colors.initial_permutations.color_upper_bound",
+        "obje.change_colors.functions.color_lower_bound",
+        "obje.change_colors.functions.color_upper_bound",
+    ] {
+        assert!(
+            found.iter().any(|(p, v)| p.ends_with(want) && *v == FieldView::Rgb),
+            "{want} has view=rgb; found {found:?}"
+        );
+    }
+}

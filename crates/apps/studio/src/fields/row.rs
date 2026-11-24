@@ -285,7 +285,12 @@ fn row<'a>(
         field: f,
         address: a,
         label: label(f),
-        type_words: type_words(&f.kind),
+        // A colour field of any form reads as a colour.
+        type_words: if super::colour::form(f).is_some() {
+            "Colour"
+        } else {
+            type_words(&f.kind)
+        },
         unit: unit(f),
         edited,
         read_only,
@@ -811,7 +816,12 @@ impl Row<'_> {
             Kind::Data if f.view.is_some_and(|v| v == FieldView::Function) => {
                 out["function"] = super::curve::row_json(doc, tag, self.address);
             }
-            _ => {}
+            // A colour row: its form, hex, channels and (hdr) intensity.
+            _ => {
+                if let Some(c) = super::colour::row_json(doc, tag, self.address, f) {
+                    out["colour"] = c;
+                }
+            }
         }
         out
     }

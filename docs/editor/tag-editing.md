@@ -110,7 +110,7 @@ Type words, shown in tooltips, details and `tag.fields`:
 | `Int` | `Whole number` (with `0 to 65535` style range in details) |
 | `Float`, plain | `Decimal number` |
 | `Float`, `Hint::Angle` | `Angle` |
-| `Float`, `Hint::Colour`; packed colour | `Colour` |
+| `Float`, `Hint::Colour`; any field with a colour `view=` word | `Colour` |
 | `Float`, `Hint::Bounds` | `Range` |
 | `Enum` | `Choice` |
 | `Flags` | `Switches` |

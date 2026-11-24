@@ -53,14 +53,14 @@ struct obje 0xbc
   0xac block change_colors 0x10 align 4 doc="Holds the initial colours and the functions that modify them." -- V: object_new reserves 0x18 bytes per element; name D
     0x0 block initial_permutations 0x20 align 4
       0x0 f32 weight
-      0x4 f32[3] color_lower_bound
-      0x10 f32[3] color_upper_bound
+      0x4 f32[3] color_lower_bound view=rgb -- the retail reference's RGB float triplet (docs/editor/notes/tag-field-names.md)
+      0x10 f32[3] color_upper_bound view=rgb -- the retail reference's RGB float triplet (docs/editor/notes/tag-field-names.md)
       0x1c string variant_name
     0x8 block functions 0x28 align 4 -- V: filled on the needler shard projectile only
       0x0 unknown 0x4
       0x4 flags32 scale_flags
-      0x8 f32[3] color_lower_bound
-      0x14 f32[3] color_upper_bound
+      0x8 f32[3] color_lower_bound view=rgb -- E 0xbe9a7 interpolates the two RGB bounds; the retail reference's RGB float triplet (docs/editor/notes/tag-field-names.md)
+      0x14 f32[3] color_upper_bound view=rgb -- E as above; the retail reference's RGB float triplet (docs/editor/notes/tag-field-names.md)
       0x20 string darken_by -- E 0xbea15 multiplies the current RGB by this function
       0x24 string scale_by -- E 0xbe9a7 interpolates the two RGB bounds by this function
   0xb4 block predicted_resources 0x8 align 4 doc="Lists resources the engine can load with this object." -- V: element +4 is the full salted datum of an existing tag; name D (resources loaded with the object)

@@ -9,7 +9,8 @@
 //! effect. `tag.fields` returns the same rows. Numbers drag; an enum
 //! shows its value's name and opens the pick dialog ([`picker`]);
 //! switches show how many are on and open to checkboxes, the unnamed bits
-//! folded; colours pick; angles show degrees; bounds drag as a pair;
+//! folded; a colour shows its swatch and numbers and opens the picker
+//! ([`colour`]); angles show degrees; bounds drag as a pair;
 //! string IDs edit as text (any string the map has); a tag reference
 //! shows its kind and name, with **Open** and **Change...** (the dialog,
 //! every tag of the allowed kinds); blocks list their elements with add,
@@ -19,6 +20,7 @@
 //! labelled by type and offset and shown as their value suggests (a
 //! float, an integer or hex), with **Show as** (the dialog) to view them
 //! otherwise.
+pub mod colour;
 pub mod curve;
 pub mod find;
 pub mod picker;
@@ -97,6 +99,14 @@ pub struct Settings {
     /// ([`rich::tab`]): `""` or `fields` for the field panel. Not saved
     /// with the layout.
     pub tab: String,
+    /// The colour picker's recent colours, newest first, as `#aarrggbb`
+    /// ([`colour::remember`]).
+    pub recent_colours: Vec<String>,
+    /// The colour picker's saved palette, as `#aarrggbb`.
+    pub saved_colours: Vec<String>,
+    /// The colour a swatch's **Copy** holds, as `#aarrggbb`, for any
+    /// colour field's **Paste**. Not saved with the layout.
+    pub colour_clip: String,
 }
 
 /// The ini section the settings are saved in, after Dear ImGui's own.
@@ -108,6 +118,12 @@ impl Settings {
         let mut out = format!("{INI_SECTION}\nShowUnnamed={}\n", u8::from(self.unnamed));
         for (key, view) in &self.show_as {
             out.push_str(&format!("ShowAs={key}={}\n", view.id()));
+        }
+        for hex in &self.recent_colours {
+            out.push_str(&format!("RecentColour={hex}\n"));
+        }
+        for hex in &self.saved_colours {
+            out.push_str(&format!("SavedColour={hex}\n"));
         }
         out
     }
@@ -132,6 +148,16 @@ impl Settings {
                 && let Some(view) = View::from_id(id)
             {
                 out.show_as.insert(key.to_owned(), view);
+            } else if let Some(v) = line.strip_prefix("RecentColour=")
+                && colour::parse_hex(v).is_some()
+                && out.recent_colours.len() < colour::RECENT
+            {
+                out.recent_colours.push(v.to_owned());
+            } else if let Some(v) = line.strip_prefix("SavedColour=")
+                && colour::parse_hex(v).is_some()
+                && out.saved_colours.len() < colour::SAVED
+            {
+                out.saved_colours.push(v.to_owned());
             }
         }
         out
@@ -209,6 +235,8 @@ pub struct PanelState {
     pick: Option<picker::Open>,
     /// The curve dialog, while open.
     curve: Option<curve::Open>,
+    /// The colour dialog, while open.
+    colour: Option<colour::Open>,
     /// The labels the pick dialog lists this frame (every one, clipped or
     /// not): what `tag.choices` returns.
     pub listed: Vec<String>,
@@ -408,6 +436,7 @@ pub(crate) fn panel_with_marks(
     cx.element(at, &layout);
     picker::draw(ui, doc, st, actions);
     curve::draw(ui, doc, st, actions);
+    colour::draw(ui, doc, st, actions);
 }
 
 /// The `tag.set` path of the element at `path` with its trailing dot
@@ -787,6 +816,8 @@ impl Cx<'_, '_> {
         let is_ref = matches!(f.kind, Kind::TagRef { .. } | Kind::Datum { .. });
         let off = ui.begin_disabled_with_cond(r.read_only.is_some() && !is_ref);
         match &f.kind {
+            // A colour field: its swatch, numbers and picker.
+            _ if colour::form(f).is_some() => colour::row(self, r, &b),
             Kind::Int {
                 bytes,
                 signed,
@@ -978,12 +1009,6 @@ impl Cx<'_, '_> {
             .collect();
         let deg = 180.0 / std::f32::consts::PI;
         let changed = match hint {
-            Hint::Colour if count == 3 => {
-                let mut c = [v[0], v[1], v[2]];
-                let ch = ui.color_edit3("##v", &mut c);
-                v.copy_from_slice(&c);
-                ch
-            }
             Hint::Bounds if count == 2 => {
                 let (mut lo, mut hi) = (v[0], v[1]);
                 let ch = DragRange::<f32, _>::new("##v")
