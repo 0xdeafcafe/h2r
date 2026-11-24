@@ -563,22 +563,17 @@ fn run_configured(
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
     // The pogo stick is the `pogo` package (content/pogo), on while the
     // `pogo` feature is.
-    // The set alone here (no kit inputs yet): the maps it names. The mount
-    // below reads it again with the kits' inputs.
-    let map_packages = {
+    // Read the set before preparing its maps. The mount gives the same set
+    // the kits' inputs once the campaigns and fonts are ready.
+    let content_set = {
         let switches = features.switches();
-        packages::at_boot(
-            &opts.data_root,
-            &|name| switches.feature(name, true),
-            workspace::KitInputs::default(),
-            None,
-        )
+        packages::read_set(&opts.data_root, &|name| switches.feature(name, true))
     };
     // The maps those packages build (`map` and `map-patch` items) are written
     // as map packages under <data>/maps before the content library reads
     // that folder: a map built for the same inputs is left alone
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
-    packages::prepare_maps(&opts.data_root, &opts.disc, &map_packages.set.loaded());
+    packages::prepare_maps(&opts.data_root, &opts.disc, &content_set.loaded);
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
@@ -656,18 +651,15 @@ fn run_configured(
         .map(|i| Box::new(i.font_rewrite()) as Box<dyn vfs::Rewrite>);
     #[cfg(not(feature = "desktop-runtime"))]
     let font_icons: Option<Box<dyn vfs::Rewrite>> = None;
-    let content_packages = {
-        let switches = features.switches();
-        packages::at_boot(
-            &opts.data_root,
-            &|name| switches.feature(name, true),
-            workspace::KitInputs {
-                cards,
-                icons: font_icons,
-            },
-            cfg.store_maps.as_deref(),
-        )
-    };
+    let content_packages = packages::at_boot(
+        &opts.data_root,
+        content_set,
+        workspace::KitInputs {
+            cards,
+            icons: font_icons,
+        },
+        cfg.store_maps.as_deref(),
+    );
     // With `store-maps`, a level the set lays items over is served from its
     // image under <data>/store/images (docs/engine/asset-store.md,
     // "Runtime assembly").
@@ -1409,11 +1401,7 @@ fn run_configured(
     }
     // packages.list: the content set and each map read (packages.rs).
     if let Some(a) = &agent {
-        packages::install(
-            &a.agent,
-            Arc::clone(&content_packages.set),
-            content_packages.served.clone(),
-        );
+        packages::install(&a.agent, content_packages.summary, content_packages.served);
     }
     // store.status: the tag store and whether its maps are served
     // (store_status.rs).

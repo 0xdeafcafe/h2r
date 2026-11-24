@@ -121,7 +121,7 @@ pub fn box_chain(width: u32, height: u32, rgba: &[u8], mips: usize) -> Option<Im
         levels.push(next);
         (w, h) = (nw, nh);
     }
-    Some(Image { width, height, rgba: rgba.to_vec(), mips: levels, blocks: None })
+    Some(Image::from_rgba(width, height, rgba.to_vec(), levels))
 }
 
 /// `image` with its colour (not alpha) times `num / den`, every level.
@@ -135,13 +135,12 @@ fn scaled(image: &Image, num: u16, den: u16) -> Image {
             })
             .collect()
     };
-    Image {
-        width: image.width,
-        height: image.height,
-        rgba: scale(&image.rgba),
-        mips: image.mips.iter().map(|m| scale(m)).collect(),
-        blocks: None,
-    }
+    Image::from_rgba(
+        image.width,
+        image.height,
+        scale(&image.rgba),
+        image.mips.iter().map(|m| scale(m)).collect(),
+    )
 }
 
 /// The depth rule the editor's world writes: view depth over the far

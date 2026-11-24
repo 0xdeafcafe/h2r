@@ -838,13 +838,7 @@ mod tests {
 
     #[test]
     fn an_images_well_formed_levels_are_uploaded() {
-        let image = |mips: Vec<Vec<u8>>| Image {
-            width: 4,
-            height: 2,
-            rgba: vec![0; 32],
-            mips,
-            blocks: None,
-        };
+        let image = |mips: Vec<Vec<u8>>| Image::from_rgba(4, 2, vec![0; 32], mips);
         assert_eq!(levels(&image(Vec::new())).unwrap().len(), 1);
         // 4x2, 2x1, 1x1.
         assert_eq!(

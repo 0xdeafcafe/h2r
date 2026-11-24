@@ -10,7 +10,7 @@
 //! formats. The checks run on every call, including after a map reload.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::colour_pass;
 use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
@@ -23,7 +23,7 @@ use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
     self, ConvolutionDraw, ConvolutionGrid, Dest, QuadFrame, ScreenConvolution, ScreenDraw,
-    ScreenKey, ScreenSet, ScreenTarget, StripRaster, StripVertex,
+    ScreenKey, ScreenTarget, StripRaster, StripVertex,
 };
 use native_render::screen_look::ScreenStage;
 use render_bridge::native_post::{
@@ -699,12 +699,9 @@ fn swallow_call(site: CallSite) -> d3d::SwallowCall {
     }
 }
 
-type ScreenCache = Arc<Mutex<(Weak<ScreenEffects>, ScreenSet)>>;
-
 struct ScreenPass {
     effects: Arc<ScreenEffects>,
     call: ScreenCall,
-    screens: ScreenCache,
     raster: OnceLock<Vec<StripRaster>>,
 }
 
@@ -719,11 +716,7 @@ impl ScreenPass {
         &self,
         t: PostCopy<'_>,
     ) -> Result<screen_gpu::ScreenCommands, screen_gpu::ScreenRefused> {
-        let mut screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
-        if !screens.0.ptr_eq(&Arc::downgrade(&self.effects)) {
-            screens.1.clear();
-            screens.0 = Arc::downgrade(&self.effects);
-        }
+        let mut screens = self.effects.screens.lock().unwrap_or_else(|e| e.into_inner());
         let mut draws = Vec::new();
         let raster = self
             .raster
@@ -763,7 +756,6 @@ impl ScreenPass {
             z_scale: t.z_scale,
         };
         screens
-            .1
             .prepare(target, &draws, self.call.frame.as_ref(), &mut stage_image)
     }
 
@@ -1206,7 +1198,6 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     /// The current map's screen effects, loaded here whatever the native
     /// world does ([`EffectsSlot`]).
     effects: Arc<Mutex<EffectsSlot>>,
-    screens: ScreenCache,
 }
 
 /// Read the live pass and both rows after the template sets its state.
@@ -1252,6 +1243,14 @@ fn live_strip(mem: &dyn GuestMemory, esp: u32, mxcsr: u32) -> Option<Vec<[[f32; 
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_map(&self) {
+        let retired = self.effects.lock().unwrap_or_else(|e| e.into_inner())
+            .take_stale(render_bridge::native_map_work::generation());
+        if let Some(retired) = retired {
+            crate::native_map::retire_owned(timeline::setup::Stage::World, retired);
+        }
+    }
+
     fn draw_strip(
         &self,
         mem: &mut dyn GuestMemory,
@@ -1447,7 +1446,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let pass = Box::new(ScreenPass {
             effects,
             call,
-            screens: Arc::clone(&self.screens),
             raster: OnceLock::new(),
         });
         self.arm(
@@ -1502,6 +1500,14 @@ pub struct EffectsSlot {
 }
 
 impl EffectsSlot {
+    fn take_stale(&mut self, generation: u64) -> Option<Arc<ScreenEffects>> {
+        if self.map.as_ref().is_some_and(|(_, old)| *old != generation) {
+            self.map = None;
+            return self.effects.take();
+        }
+        None
+    }
+
     /// Map `name`'s effects at load `generation` once loaded, and whether
     /// a load of them must start now: at the first ask on a map load,
     /// which forgets the last one's.
@@ -1558,11 +1564,17 @@ pub fn map_effects(
 /// Loads map `name`'s screen effects on a thread of their own into
 /// `slot`; a map that does not load keeps every effect on D3D.
 fn spawn_load(name: String, generation: u64, slot: Arc<Mutex<EffectsSlot>>) {
-    let spawned = std::thread::Builder::new().name("native-post load".into()).spawn(move || match load_effects(&name) {
-        Ok(e) => {
-            slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, generation, e);
+    let spawned = background::spawn("native-post load", move || {
+        let current = || generation == render_bridge::native_map_work::generation();
+        let Some(_load) = native_map::begin_load(timeline::setup::Stage::World, current) else { return };
+        let _scope = mem_watch::scope("native.post.load");
+        match load_effects(&name) {
+            Ok(e) if current() => {
+                slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, generation, e);
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); every screen effect keeps its D3D draws"),
         }
-        Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); every screen effect keeps its D3D draws"),
     });
     if let Err(e) = spawned {
         eprintln!(
@@ -1585,7 +1597,6 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
         effects: Arc::new(Mutex::new(EffectsSlot::default())),
-        screens: Arc::new(Mutex::new((Weak::new(), ScreenSet::new()))),
     }));
 }
 
@@ -2448,6 +2459,23 @@ mod tests {
     }
 
     #[test]
+    fn activation_forgets_screen_effects_without_waiting_for_another_screen_draw() {
+        let mut slot = EffectsSlot::default();
+        slot.ask("synthetic", 1);
+        assert!(slot.loaded("synthetic", 1, ScreenEffects::default()));
+        let in_flight = slot.ask("synthetic", 1).0.unwrap();
+        let old = Arc::downgrade(&in_flight);
+
+        assert!(slot.take_stale(1).is_none());
+        drop(slot.take_stale(2).unwrap());
+        assert!(!slot.loaded("synthetic", 1, ScreenEffects::default()));
+        assert!(slot.ask("synthetic", 2).1);
+        assert!(old.upgrade().is_some());
+        drop(in_flight);
+        assert!(old.upgrade().is_none());
+    }
+
+    #[test]
     fn a_pass_draws_where_its_kind_says() {
         assert_eq!(dest(&pass(0, vec![])), Some(Dest::Bound));
         let half = screen_effect::Pass {
@@ -2899,12 +2927,10 @@ mod tests {
             values: [0; 4],
             frame: None,
         };
-        let screens = Arc::new(Mutex::new((Weak::new(), ScreenSet::new())));
         assert!(
             ScreenPass {
                 effects,
                 call: call(),
-                screens,
                 raster: OnceLock::new()
             }
             .colour_only(),

@@ -14,7 +14,7 @@ use native_render::camera::GuestRead;
 use native_render::world_layers::{
     DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
 };
-use native_render::world_layers_gpu::{Cache, IndexedPass};
+use native_render::world_layers_gpu::IndexedPass;
 
 struct Memory<'a>(&'a runtime::Guest);
 
@@ -216,7 +216,7 @@ pub fn matches_triangle_range(draw: &ResolvedDraw, expected: usize) -> bool {
 
 #[derive(Default)]
 struct Admission {
-    cache: Arc<Cache>,
+    cache: crate::native_map::MapIndexedCache,
 }
 
 pub fn owns_scene_world(switches: &hooks::Switches) -> bool {
@@ -280,7 +280,7 @@ impl DrawAdmission for Admission {
             Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
             Owner::Object { .. } => timeline::native::Stage::Objects,
         };
-        let pass = IndexedPass::for_section(draw, Arc::clone(&self.cache), c.frame, texaccum,
+        let pass = IndexedPass::for_section(draw, self.cache.get(), c.frame, texaccum,
             (c.generation, c.bsp?), geometry, layer.number)?;
         Some((
             ExternalPlan {

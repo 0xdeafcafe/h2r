@@ -8,6 +8,7 @@ license.workspace = true
 xiso.workspace = true
 memmap2 = "0.9"
 thiserror.workspace = true
+mem-watch.workspace = true
 # Map packages (PackageBackend): manifests, patches, the resolver.
 content.workspace = true
 # `Config::for_title`: the app data directory.

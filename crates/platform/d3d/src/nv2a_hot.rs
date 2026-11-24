@@ -90,7 +90,7 @@ impl Nv2aShaders {
         for (key, compiled) in &self.programs {
             let Ok(c) = compiled else { continue };
             let id = *hot.ids.entry(c.id).or_insert_with(|| {
-                let id = program_id(key);
+                let id = program_id(key.as_ref());
                 hub.publish(id, info(key, c));
                 id
             });
@@ -167,7 +167,7 @@ impl Nv2aShaders {
             }
             for (key, compiled) in &self.programs {
                 let Ok(c) = compiled else { continue };
-                let id = *self.hot.ids.entry(c.id).or_insert_with(|| program_id(key));
+                let id = *self.hot.ids.entry(c.id).or_insert_with(|| program_id(key.as_ref()));
                 if req.program.is_some_and(|p| p != id) {
                     continue;
                 }

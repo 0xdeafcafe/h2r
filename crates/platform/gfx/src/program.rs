@@ -40,6 +40,8 @@ const UNIFORM_RING: u64 = 4 << 20;
 const GROUP_FRAMES: u64 = 4;
 const TEXTURE_GROUPS: usize = 4096;
 const SAMPLERS: usize = 256;
+static TEXTURE_GROUP_ENTRIES: mem_watch::Counter =
+    mem_watch::Counter::new("gfx.texture_group_cache_entries");
 
 /// A texture group's dimensions and, per sampled stage, the view bound (a
 /// stand-in when `None`) and its sampler.
@@ -85,6 +87,7 @@ pub struct ProgramBindings {
     last: [LastUniform; 2],
     uniform_align: u64,
     texture_groups: HashMap<TextureGroupKey, (Option<wgpu::BindGroup>, u64)>,
+    texture_group_entries: mem_watch::Gauge,
     frame: u64,
 }
 
@@ -151,6 +154,7 @@ impl ProgramBindings {
                 .max(4)
                 .next_power_of_two(),
             texture_groups: HashMap::new(),
+            texture_group_entries: TEXTURE_GROUP_ENTRIES.track(0),
             frame: 0,
         }
     }
@@ -310,6 +314,13 @@ impl ProgramBindings {
         }
     }
 
+    /// Release sampled views cached for the displaced level. Draws already
+    /// recorded retain their bind groups.
+    pub fn clear_texture_groups(&mut self) {
+        self.texture_groups = HashMap::new();
+        self.texture_group_entries.set(0);
+    }
+
     /// A frame ended: texture groups unused for a few frames are dropped,
     /// releasing the views (and textures) they hold.
     pub fn end_frame(&mut self) {
@@ -317,6 +328,7 @@ impl ProgramBindings {
         let frame = self.frame;
         self.texture_groups
             .retain(|_, (_, used)| frame - *used <= GROUP_FRAMES);
+        self.texture_group_entries.set(self.texture_groups.len() as u64);
     }
 
     /// The sampler for `key` (cached).
@@ -437,6 +449,7 @@ impl ProgramBindings {
             self.texture_groups.clear();
         }
         self.texture_groups.insert(key, (group.clone(), self.frame));
+        self.texture_group_entries.set(self.texture_groups.len() as u64);
         group
     }
 }

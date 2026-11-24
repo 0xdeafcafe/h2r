@@ -35,7 +35,8 @@ use crate::context::GfxContext;
 use crate::occlusion::{COUNT_FORMAT, COUNT_FRAGMENT_WGSL, PixelCounter};
 use crate::persistent::{PersistentStats, PersistentVertices};
 use crate::pipeline::{
-    PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline,
+    COUNT_PIPELINES, PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats,
+    create_render_pipeline,
 };
 use crate::presenter::RenderTarget;
 use crate::repack::{FetchMode, RepackError, RepackPlan};
@@ -341,6 +342,7 @@ const BUILTIN_UNIFORM_SIZE: u64 = 48;
 const VERTEX_RING: u64 = 4 << 20;
 /// Initial size of the built-in uniform ring.
 const UNIFORM_RING: u64 = 1 << 20;
+static SHADER_ENTRIES: mem_watch::Counter = mem_watch::Counter::new("gfx.shader_cache_entries");
 
 /// The built-in shader's alpha-test code for a compare function (0 = test
 /// off); matches `alpha_passes` in `xyzrhw_diffuse.wgsl`.
@@ -364,6 +366,7 @@ fn builtin_alpha_func(rs: &RenderState) -> f32 {
 pub struct Renderer {
     _census: mem_watch::gpu::DeviceRegistration,
     shaders: HashMap<ShaderId, ShaderProgram>,
+    shader_entries: mem_watch::Gauge,
     builtin_bgl: wgpu::BindGroupLayout,
     cache: PipelineCache<Arc<PendingPipeline>>,
     clearer: Clearer,
@@ -620,6 +623,7 @@ impl Renderer {
         );
         Self {
             _census: census,
+            shader_entries: SHADER_ENTRIES.track(shaders.len() as u64),
             shaders,
             builtin_bgl: bgl,
             cache: PipelineCache::new(),
@@ -645,7 +649,7 @@ impl Renderer {
             uniform_align: (ctx.device.limits().min_uniform_buffer_offset_alignment as u64)
                 .max(4)
                 .next_power_of_two(),
-            count_cache: PipelineCache::new(),
+            count_cache: PipelineCache::with_limit(COUNT_PIPELINES),
             count_fragment: None,
             vertex_fetch: FetchMode::Gpu,
             scratch: Vec::new(),
@@ -682,9 +686,11 @@ impl Renderer {
             return false;
         }
         if self.shaders.insert(id, program).is_some() {
+            self.drop_prewarms();
             self.cache.clear();
             self.count_cache.clear();
         }
+        self.shader_entries.set(self.shaders.len() as u64);
         true
     }
 
@@ -701,6 +707,7 @@ impl Renderer {
     /// Builds pipelines on `compiler`'s workers instead of the global one
     /// (`Compiler::new(0)`: on the first draw that encodes them).
     pub fn set_compiler(&mut self, compiler: Arc<Compiler>) {
+        self.drop_prewarms();
         self.compiler = compiler;
     }
 
@@ -716,7 +723,7 @@ impl Renderer {
     /// later draw that needs it finds it built. A cached one that is not
     /// built, nor queued (its prewarm was dropped), is queued again.
     /// Returns `false` if it is built, being built or already queued, or
-    /// `key.shader` is not registered.
+    /// `key.shader` is not registered or the cache has no room for a new key.
     pub fn prewarm(&mut self, ctx: &GfxContext, key: &PipelineKey, count: bool) -> bool {
         let Some(program) = self.shaders.get(&key.shader) else {
             return false;
@@ -728,6 +735,9 @@ impl Renderer {
         };
         if let Some(cached) = cache.get(key) {
             return self.compiler.prewarm(cached, self.prewarm_owner);
+        }
+        if cache.is_full() {
+            return false;
         }
         let pending = if count {
             let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
@@ -1276,6 +1286,12 @@ impl Renderer {
             }
         }
         Ok(passes)
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        self.drop_prewarms();
     }
 }
 

@@ -87,6 +87,8 @@ pub struct CallSite {
 
 /// What the colour pass becomes: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
+    fn retire_map(&self) {}
+
     fn draw_strip(
         &self, _mem: &mut dyn GuestMemory, _esp: u32, _call_esp: u32, _mxcsr: u32,
     ) -> Result<bool, runtime::GuestFault> {
@@ -132,6 +134,11 @@ static EFFECTS_ARMED: AtomicU64 = AtomicU64::new(0);
 /// Installs the host (boot). Without one nothing is armed.
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+pub(crate) fn retire_map() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host { host.retire_map(); }
 }
 
 /// The calls so far.

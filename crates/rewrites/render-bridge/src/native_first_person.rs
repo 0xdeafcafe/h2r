@@ -78,6 +78,8 @@ impl ItemMasks {
 
 /// What draws first-person objects: boot's glue over the object programs.
 pub trait Host: Send + Sync {
+    fn retire_map(&self) {}
+
     /// Activate the model set. Capture the draw entry only for a sole layer-3 item.
     fn native(&self, mem: &mut dyn GuestMemory, prepare_draw: bool) -> Option<Arc<NativeSet>>;
     /// Load a record's mode met in the first-person list (cheap to repeat).
@@ -105,6 +107,15 @@ static REFUSED: AtomicU64 = AtomicU64::new(0);
 
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+pub(crate) fn forget_pending() {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
+pub(crate) fn retire_map() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host { host.retire_map(); }
 }
 
 /// First-person layer-3 calls, native draws, objects and suppressed items,

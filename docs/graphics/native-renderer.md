@@ -65,6 +65,31 @@ Shared modules: `native-render`: `program`, `look`, `pass_state`, `instances`. S
 Stage 1: the static world, Stage 2: objects and skinning, Stage 3:
   transparents, Stage 4: lights and shadows, Stage 4b: water, fog and
   camouflage, Stage 5: post and HUD are the table rows above.
+## Map resource lifetime
+
+`render_bridge::native_map_work::reset` invalidates the prior generation and
+detaches its BSP, object, light-model, viewmodel, screen-effect and indexed
+draw caches before requesting the next BSP. A same-map BSP switch or revert
+also detaches the old BSP and its indexed and packed draw caches through
+`reload_bsp`. Object and screen data for the map remain available. The packed
+transparent binding cache holds up to 4,096 bindings and 16 MiB of payload
+(`game::native_transparents_glue::Cache`). A queued draw can retain its own resources
+until it finishes. A late loader can publish only to its own generation
+and mailbox.
+
+The native map loader workers serialize their bulk decode and upload work
+through `game::native_map::begin_load`. They wait for queued retirement on
+the worker thread. First-person loading opens the map for a batch of model
+requests and releases its map readers and decoded images when the batch
+ends. Material images share their backing allocation across passes. Object
+and shader readers share ordinary tag metadata within a model load. Sun
+caster and receiver lookup holds weak references to the owning map state.
+
+Memory probes and loader scopes are listed in
+[Explain memory growth](../runtime/agent-api.md#explain-memory-growth).
+The play-run measurements are in
+[Map-load memory](notes/2026-11-24-map-load-memory.md).
+
 ## Admission
 
 World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry

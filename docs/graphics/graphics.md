@@ -503,6 +503,15 @@ persisted through wgpu. What is done instead:
   workers and with or without the cache (`d3d/tests/pipeline_cache.rs`).
   The cost of a cold miss is what is left of the compile at encode time,
   and several misses in one pass compile in parallel.
+- **Bounded residency.** Each renderer holds up to 1,536 draw pipelines
+  and 128 count pipelines (`gfx::pipeline::PipelineCache`). A draw miss
+  at the cap evicts the coldest quarter, including entries kept only
+  for prewarming. Prewarming takes available slots. Recorded draws
+  retain their pipelines, and queued compile slots use weak references
+  so eviction can free the inputs of work that has yet to start.
+  `Nv2aShaders::follow_map` drops cached texture groups on map changes.
+  The upload pool keeps up to four idle submissions within 128 MiB of
+  combined CPU staging capacity and GPU buffer size (`gfx::ring::UploadPool`).
 - **Persisted keys, prewarmed.** `d3d::pipeline_store` appends every
   pipeline a draw needed to a JSON-lines file: the NV2A program
   (`ProgramKey`: microcode or the pre-transformed program, the combiner
@@ -536,8 +545,8 @@ persisted through wgpu. What is done instead:
     publishes after the startup scope went out is not a new scope; the
     menu after a level is (`next_scope` in `nv2a.rs`). A scope's programs
     that are registered already have their recorded pipelines queued
-    again, so a dropped prewarm is redone when its map comes back. A
-    dropped pipeline stays in the cache unbuilt: a draw that needs it
+    again, so a dropped prewarm is redone when its map comes back. An
+    unbuilt pipeline still in the cache can be reused: a draw that needs it
     queues it at draw priority. Left queued, a level's thousands of
     guessed pipelines compiled ahead of the menu's, and the menu's draws
     built theirs on the drawing thread meanwhile

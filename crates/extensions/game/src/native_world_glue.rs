@@ -71,6 +71,7 @@ use setup::StageReady;
 #[derive(Default)]
 pub struct Ready {
     retire: Option<crate::native_map::RetireQueue>,
+    pub(super) sun_world: Option<native_render::sun_casters::SharedWorld>,
     opaque: opaque_materials::Library,
     gpu: Mutex<Option<GpuWorld>>,
     /// Published with the GPU bindings. A live edit clears it under the
@@ -215,6 +216,11 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_bsp(&self) {
+        self.retire_stale_bsp();
+        crate::native_map::retire_indexed_caches();
+    }
+
     fn try_opaque_simple(&self, mem: &mut dyn GuestMemory, header: u32, value: u32) -> bool {
         let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
         self.device.lock().is_ok_and(|mut d| {
@@ -237,22 +243,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let (finished, pending) = mpsc::channel();
         let retired = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !key.current() {
+                return false;
+            }
             if state.key.as_ref() == Some(&key) {
                 return true;
             }
             std::mem::replace(&mut *state, MapState::loading(key.clone(), pending))
         };
+        retired.retire();
         let inputs = self.device.lock().ok().and_then(|d| {
             Some((d.backend.upload_device()?, scene_load_palettes(&d, mem)))
         });
         let relight_requested = self.relight_requested;
         let launched = background::spawn("native-world load", move || {
-            // Releasing all the previous BSP's resources can itself take a
-            // frame, including stages the guest never admitted.
-            {
-                let _retire = timeline::setup::Stage::World.worker();
-                drop(retired);
-            }
             if let Some((device, palettes)) = inputs
                 && let Err(e) = load_ready(&key, device, palettes, relight_requested, &finished)
                 && key.current()
@@ -269,7 +273,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn begin_frame(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).publish();
+        let retired = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let retired = state.take_stale();
+            state.publish();
+            retired
+        };
+        if let Some(retired) = retired {
+            retired.retire();
+        }
         self.refresh_edits();
     }
 
@@ -457,6 +469,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 timeline::native::WorldOpaque::Prereserved, owners);
         }
         Some(cleared)
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    fn retire_stale_bsp(&self) {
+        let retired = self.state.lock().unwrap_or_else(|e| e.into_inner()).take_stale();
+        if let Some(retired) = retired {
+            retired.retire();
+        }
     }
 }
 
@@ -1298,8 +1319,12 @@ fn load_ready(
     relight_requested: bool, finished: &mpsc::Sender<StageReady>,
 ) -> Result<(), load::Error> {
     use timeline::setup::Stage as Setup;
+    let Some(_load) = crate::native_map::begin_load(Setup::World, || key.current()) else {
+        return Ok(());
+    };
     let started = std::time::Instant::now();
     let world_setup = Setup::World.worker();
+    let _scope = mem_watch::scope("native.world.load");
     if !key.current() { return Ok(()); }
     let retire = crate::native_map::retire_queue()?;
     let (mut map, files) = crate::native_map::open(&key.map)?;
@@ -1473,7 +1498,10 @@ fn load_ready(
         queue.submit([]);
         finished.send(stage).is_ok()
     };
+    let bsp = key.clone();
+    let sun_world = Arc::new(sun_world.with_current(move || bsp.current()));
     if !send(StageReady::World(Arc::new(Ready {
+        sun_world: Some(sun_world),
         relit: AtomicBool::new(gpu.has_relight()),
         retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
         shaders: refresh_shaders_list, no_lightmap_group: lightmap_bitmap_missing, pages: page_set,
@@ -1482,17 +1510,13 @@ fn load_ready(
         decorators: OnceLock::new(), lights: OnceLock::new(),
         lightmaps: lightmap_bitmap.map(|bitmap| (bitmap, lightmap_palettes.clone())),
     }))) { return Ok(()); }
-    let bsp = key.clone();
-    native_render::sun_casters::set_world(
-        key.generation,
-        Some(Arc::new(sun_world.with_current(move || bsp.current()))),
-    );
-
     drop(world_setup);
+    drop(layered_images);
 
     // Each result owns all of its GPU resources before it enters the mailbox.
     // No map walk or upload takes a lock used by an admitted draw.
     let empty_lights = {
+        let _scope = mem_watch::scope("native.lights.load");
         let _setup = Setup::Lights.worker();
         let lights = if native.is_empty() { None } else {
             crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, &accepts, decoder.palettes())
@@ -1511,6 +1535,7 @@ fn load_ready(
     if !key.current() { return Ok(()); }
 
     let empty_fog = {
+        let _scope = mem_watch::scope("native.fog.load");
         let _setup = Setup::Fog.worker();
         let mut fog = crate::native_fog_glue::load(
             &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
@@ -1530,6 +1555,7 @@ fn load_ready(
     if !key.current() { return Ok(()); }
 
     let empty_water = {
+        let _scope = mem_watch::scope("native.water.load");
         let _setup = Setup::Water.worker();
         let mut water = crate::native_water_glue::load(
             &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
@@ -1549,6 +1575,7 @@ fn load_ready(
     if !key.current() { return Ok(()); }
 
     if render_bridge::native_layers::placed() {
+        let _scope = mem_watch::scope("native.layers.load");
         let _setup = Setup::Layers.worker();
         let mut layers = crate::native_layers_glue::load(
             &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
@@ -1561,9 +1588,11 @@ fn load_ready(
     }
     if !key.current() { return Ok(()); }
 
+    drop(lightmaps);
     let decorators = {
+        let _scope = mem_watch::scope("native.decorators.load");
         let _setup = Setup::Decorators.worker();
-        crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder)
+        crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder, stage_images)
     };
     if key.current() && finished.send(StageReady::Decorators(decorators)).is_ok() {
         native_map_work::bsp_loaded(key.generation, &key.map, index, bsps.len(), [

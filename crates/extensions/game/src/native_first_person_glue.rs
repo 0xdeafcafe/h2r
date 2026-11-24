@@ -58,7 +58,10 @@ fn reload_on_shader_edit(state: &Mutex<Option<MapState>>, name: &str) {
         return;
     }
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    if state.take().is_some() {
+    let retired = state.take();
+    drop(state);
+    if let Some(retired) = retired {
+        retired.retire();
         eprintln!("native-first-person: {name}: a shader edit reloads the viewmodels");
     }
 }
@@ -76,6 +79,17 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_map(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let generation = render_bridge::native_map_work::generation();
+        if state.as_ref().is_some_and(|s| s.map_generation != generation) {
+            let retired = state.take().expect("a stale map exists");
+            drop(state);
+            retired.retire();
+            *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
     fn native(&self, mem: &mut dyn GuestMemory, prepare_draw: bool) -> Option<Arc<NativeSet>> {
         *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut map_name = [0; 32];
@@ -108,6 +122,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             *generation += 1;
             let next = *generation;
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if map_generation != render_bridge::native_map_work::generation() {
+                return None;
+            }
             if !current(&state) {
                 let models = Arc::new(Models::default());
                 let set = Arc::new(NativeSet {
@@ -117,14 +134,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 });
                 let worker = native_first_person_load::spawn_worker(
                     Arc::clone(&set),
-                    Arc::clone(&models),
+                    Arc::downgrade(&models),
                     Arc::downgrade(&self.state),
                     palettes,
                     formats,
                     self.gpu.clone(),
                     map_generation,
                 );
-                *state = Some(MapState {
+                let retired = state.replace(MapState {
                     name: name.into_owned(),
                     generation: next,
                     map_generation,
@@ -135,11 +152,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     requested: Default::default(),
                     worker,
                 });
+                drop(state);
+                if let Some(retired) = retired {
+                    retired.retire();
+                }
             }
         }
         let (set, models) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let state = state.as_mut()?;
+            let state = state.as_mut().filter(|s| s.map_generation == map_generation)?;
             state.activate(timeline::frames());
             (Arc::clone(&state.set), Arc::clone(&state.models))
         };

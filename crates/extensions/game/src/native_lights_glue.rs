@@ -893,6 +893,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_map(&self) {
+        self.clear_admission();
+        self.models.invalidate();
+    }
+
     fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch) -> bool {
         self.refresh_edits(&*mem);
         let shader_gel = dispatch.shader_gel.is_some();

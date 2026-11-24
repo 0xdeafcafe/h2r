@@ -4,7 +4,7 @@
 //! texture residency. The backend still owns ordering and attachments.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use d3d::device::IndexedGeometry;
 use d3d::{CachedBytes, ResolvedDraw, StreamBytes, StreamData};
@@ -19,7 +19,8 @@ use timeline::native::Stage;
 
 struct Walk<B: d3d::Backend> {
     device: d3d::abi::SharedDevice<B>,
-    cache: Arc<IndexedCache>,
+    cache: crate::native_map::MapIndexedCache,
+    packed: Arc<Mutex<Cache>>,
 }
 
 struct IndexedRange<'a> {
@@ -47,6 +48,13 @@ impl d3d::DrawAdmission for IndexedRange<'_> {
 }
 
 impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B> {
+    fn retire_bsp(&self) {
+        let packed = self.packed.lock().unwrap_or_else(|e| e.into_inner()).take_map();
+        if !packed.by_streams.is_empty() {
+            crate::native_map::retire_owned(timeline::setup::Stage::World, packed);
+        }
+    }
+
     fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, stage: Stage, range: native_transparents::IndexRange) -> bool {
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let (primitive, water) = match &range.topology {
@@ -54,7 +62,8 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
             native_transparents::IndexTopology::Strip => (PrimitiveType::TriangleStrip, None),
             native_transparents::IndexTopology::Water(geometry) => (PrimitiveType::QuadList, Some(geometry)),
         };
-        let candidate = IndexedRange { stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &self.cache };
+        let cache = self.cache.get();
+        let candidate = IndexedRange { stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &cache };
         self.device.lock().is_ok_and(|mut device| {
             device.try_native_indexed_draw(
                 &mut crate::native_lights_glue::DeviceMemory(mem), primitive, range.count, range.indices, &candidate,
@@ -69,14 +78,18 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
     if !native_transparents::on(&switches) {
         return;
     }
-    native_transparents::set_walk_host(Arc::new(Walk { device: device.clone(), cache: Arc::default() }));
+    let packed = Arc::new(Mutex::new(Cache::default()));
+    native_transparents::set_walk_host(Arc::new(Walk {
+        device: device.clone(),
+        cache: Default::default(),
+        packed: Arc::clone(&packed),
+    }));
     if let Ok(mut device) = device.lock() {
-        let mut cache = Cache::default();
         device.set_scoped_indexed_geometry(
             native_transparents::in_indexed_handler,
             Box::new(move |mem, esp, draw| {
                 let (map, _) = native_transparents::indexed_entry(&ReadMemory(mem), esp)?;
-                cache.geometry(map, draw)
+                packed.lock().ok()?.geometry(map, draw)
             }),
         );
     }
@@ -114,19 +127,31 @@ struct Binding {
     packed: IndexedGeometry,
 }
 
+const PACKED_BYTES_BUDGET: usize = 16 * 1024 * 1024;
+const PACKED_BINDINGS_BUDGET: usize = 4_096;
+static PACKED_BYTES: mem_watch::Counter = mem_watch::Counter::new("native.transparent_packed_bytes");
+static PACKED_BINDINGS: mem_watch::Counter = mem_watch::Counter::new("native.transparent_packed_bindings");
+
 #[derive(Default)]
 struct Cache {
     generation: Option<MapGeneration>,
     by_streams: HashMap<StreamKey, Vec<Binding>>,
     bytes: usize,
+    bindings: usize,
+    byte_probe: Option<mem_watch::Gauge>,
+    binding_probe: Option<mem_watch::Gauge>,
     accepted: u64,
 }
 
 impl Cache {
+    fn take_map(&mut self) -> Self {
+        let next = Self { accepted: self.accepted, ..Self::default() };
+        std::mem::replace(self, next)
+    }
+
     fn use_map(&mut self, generation: MapGeneration) {
         if self.generation != Some(generation) {
-            self.by_streams.clear();
-            self.bytes = 0;
+            self.take_map();
             self.generation = Some(generation);
         }
     }
@@ -157,7 +182,6 @@ impl Cache {
     }
 
     fn binding(&mut self, key: StreamKey, original: &VertexLayout, sources: &[StreamBytes]) -> Option<&IndexedGeometry> {
-        const BUDGET: usize = 16 * 1024 * 1024;
         let find = |bindings: &Vec<Binding>| bindings.iter().position(|b| b.original == *original);
         if let Some(existing) = self.by_streams.get(&key).and_then(find) {
             return Some(&self.by_streams[&key][existing].packed);
@@ -167,11 +191,12 @@ impl Cache {
         for (view, source) in views.iter_mut().zip(sources) {
             *view = VertexStream { data: &source.data, stride: source.stride };
         }
-        let packed = transparent_streams::pack(original, views, key.vertices, BUDGET)?;
+        let packed = transparent_streams::pack(original, views, key.vertices, PACKED_BYTES_BUDGET)?;
         let size = packed.bytes.len();
-        if size + self.bytes > BUDGET {
-            self.by_streams.clear();
+        if size + self.bytes > PACKED_BYTES_BUDGET || self.bindings == PACKED_BINDINGS_BUDGET {
+            self.by_streams = HashMap::new();
             self.bytes = 0;
+            self.bindings = 0;
         }
         let bindings = self.by_streams.entry(key).or_default();
         bindings.push(Binding {
@@ -185,6 +210,9 @@ impl Cache {
             },
         });
         self.bytes += size;
+        self.bindings += 1;
+        self.byte_probe.get_or_insert_with(|| PACKED_BYTES.track(0)).set(self.bytes as u64);
+        self.binding_probe.get_or_insert_with(|| PACKED_BINDINGS.track(0)).set(self.bindings as u64);
         Some(&bindings.last().expect("just added").packed)
     }
 }
@@ -205,6 +233,43 @@ mod tests {
             }],
         };
         VertexLayout { streams: vec![stream(0, 0), stream(2, 5)], pretransformed: false }
+    }
+
+    #[test]
+    fn packed_geometry_releases_its_budget_with_the_retired_map() {
+        let mut cache = Cache::default();
+        let stream = || StreamBytes {
+            stride: 4,
+            data: StreamData::Cached(CachedBytes::derived(1.0f32.to_le_bytes().to_vec())),
+        };
+        let streams = [stream(), stream()];
+        let key = StreamKey::new(&streams, 1).unwrap();
+        cache.binding(key, &layout(), &streams).unwrap();
+
+        let retired = cache.take_map();
+        assert!(cache.by_streams.is_empty());
+        assert_eq!(cache.bytes, 0);
+        assert_eq!(retired.bytes, 8);
+        assert_eq!(retired.byte_probe.as_ref().unwrap().get(), 8);
+    }
+
+    #[test]
+    fn small_packed_bindings_cannot_grow_to_the_byte_budget_in_cache_entries() {
+        let mut cache = Cache::default();
+        let layout = layout();
+        let stream = || StreamBytes {
+            stride: 4,
+            data: StreamData::Cached(CachedBytes::derived(1.0f32.to_le_bytes().to_vec())),
+        };
+        for _ in 0..=PACKED_BINDINGS_BUDGET {
+            let sources = [stream(), stream()];
+            let key = StreamKey::new(&sources, 1).unwrap();
+            cache.binding(key, &layout, &sources).unwrap();
+        }
+        assert_eq!(cache.by_streams.len(), 1);
+        assert_eq!(cache.bindings, 1);
+        assert_eq!(cache.binding_probe.as_ref().unwrap().get(), 1);
+        assert_eq!(cache.byte_probe.as_ref().unwrap().get(), 8);
     }
 
     #[test]

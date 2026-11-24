@@ -135,16 +135,16 @@ fn set_shaders<R: Read + Seek>(map: &Map<R>, lib: &tags::material::ShaderLibrary
 /// Called from the world's worker.
 pub fn load<R: Read + Seek>(
     map: &mut Map<R>, files: &mut assets::ResourceFiles, decoder: &mut StageDecoder,
+    mut images: StageImages,
 ) -> Arc<DecoratorLooks> {
     let mut looks = HashMap::new();
-    let mut images = StageImages::new();
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(lib) => lib,
         Err(e) => {
             eprintln!("native-decorators: the shader tags do not read ({e}); the D3D path draws the decorators");
             return Arc::new(DecoratorLooks {
                 looks,
-                images,
+                images: StageImages::new(),
                 edited: Mutex::default(),
                 lightmap: None,
                 palettes: StagePalettes::default(),
@@ -217,6 +217,14 @@ pub fn load<R: Read + Seek>(
         looks.values().filter(|l| l.is_ok()).count(),
         looks.len(),
     );
+    let used: HashSet<_> = looks.values().filter_map(|look| look.as_ref().ok())
+        .flat_map(|look| &look.look.textures)
+        .filter_map(|stage| match *stage {
+            Stage::Bitmap { bitmap, image } => Some((bitmap, image)),
+            _ => None,
+        })
+        .collect();
+    images.retain(|key, _| used.contains(key));
     Arc::new(DecoratorLooks {
         looks,
         images,
@@ -308,6 +316,7 @@ struct MaterialJob {
 
 impl MaterialJob {
     fn upload(&self) -> MaterialResult {
+        let _scope = mem_watch::scope("native.decorators.upload");
         let Some(Ok(look)) = self.looks.look(&self.material) else {
             return Err("the load has no supported decorator pass for the shader".into());
         };

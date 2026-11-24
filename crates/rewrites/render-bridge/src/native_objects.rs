@@ -105,6 +105,8 @@ pub fn item_refusal(
 
 /// What draws the objects: boot's glue over the GPU models and the device.
 pub trait Host: Send + Sync {
+    fn retire_map(&self) {}
+
     /// Start the tag-index load on map activation or a snapshot's first view.
     fn preload(&self, _mem: &dyn GuestMemory) {}
 
@@ -272,6 +274,10 @@ pub fn set_host(host: Arc<dyn Host>) {
 /// render's, built again each frame.
 pub fn forget_pending() {
     WALK_LAYER.with(|state| *state.borrow_mut() = None);
+}
+
+pub(crate) fn retire_map() {
+    if let Some(host) = host() { host.retire_map(); }
 }
 
 pub struct NativeObjects;

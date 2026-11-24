@@ -20,6 +20,7 @@ use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::cell::Cell;
 use std::io::{Read, Seek};
+use std::sync::Arc;
 
 pub const SHAD: FourCC = FourCC(*b"shad");
 pub const STEM: FourCC = FourCC(*b"stem");
@@ -150,10 +151,13 @@ impl RawBlock {
 #[derive(Clone, Debug)]
 pub struct Metadata {
     base: u32,
-    bytes: Vec<u8>,
+    bytes: Arc<Vec<u8>>,
 }
 impl Metadata {
     pub fn new(base: u32, bytes: Vec<u8>) -> Self {
+        Self::from_shared(base, Arc::new(bytes))
+    }
+    pub(crate) fn from_shared(base: u32, bytes: Arc<Vec<u8>>) -> Self {
         Self { base, bytes }
     }
     /// Reads the map's whole ordinary metadata region (BSP regions excluded:
