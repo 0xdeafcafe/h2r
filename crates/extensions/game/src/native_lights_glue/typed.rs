@@ -94,8 +94,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             // Both layers' target helper reasserts the viewport and clears
             // any inherited scissor. Neither crops to the projected sphere.
             let rect = [x, y, w, h];
-            if run.scissor.is_some_and(|scissor| intersect_scissor(scissor, targets.rect) != rect) {
-                return Err(Keep::Unsupported("light scissor differs from the layer viewport"));
+            if run
+                .scissor
+                .is_some_and(|scissor| intersect_scissor(scissor, targets.rect) != rect)
+            {
+                return Err(Keep::Unsupported(
+                    "light scissor differs from the layer viewport",
+                ));
             }
             let light = self.prepare_planned(
                 &device,
@@ -107,6 +112,30 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 false,
                 Some(rect),
             )?;
+            let upload = &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0;
+            let (set, vertices, indices) = ready
+                .gpu()
+                .as_mut()
+                .and_then(|gpu| gpu.retain_light(upload, light.constants.gel))
+                .ok_or(Keep::NoWorld)?;
+            let materials = light
+                .draws
+                .iter()
+                .map(|draw| {
+                    let mut gpu = draw
+                        .compiled
+                        .gpu
+                        .try_lock()
+                        .map_err(|_| Keep::Unsupported("light material is busy"))?;
+                    Ok(gpu.retain())
+                })
+                .collect::<Result<Vec<_>, Keep>>()?;
+            let retained = RetainedLight {
+                set,
+                vertices,
+                indices,
+                materials,
+            };
             let plan = d3d::ExternalPlan {
                 stage: timeline::native::Stage::Lights,
                 view: batch.view,
@@ -114,6 +143,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 slots: Vec::new(),
             };
             let pass = RunPass {
+                retained: Some(retained),
                 light,
                 view: None,
                 clip: None,

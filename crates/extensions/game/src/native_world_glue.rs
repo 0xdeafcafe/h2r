@@ -599,7 +599,7 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
     if plan.sections.is_empty() && plan.images.is_empty() {
         return;
     }
-    let Some((_, queue)) = ready.upload_device.as_ref() else { return };
+    let Some((device, queue)) = ready.upload_device.as_ref() else { return };
     let (mut map, files) = match crate::native_map::open(&key.map) {
         Ok(opened) => opened,
         Err(e) => return reload(format!("the map does not open: {e}")),
@@ -683,7 +683,7 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
         }
     }
     for (bitmap, pixels) in &gels {
-        if let Err(why) = gpu.rewrite_gel(queue, bitmap.0, pixels) {
+        if let Err(why) = gpu.rewrite_gel(device, queue, bitmap.0, pixels) {
             eprintln!(
                 "native-world: {} BSP {}: gel {:#010x} keeps its pixels until the map reloads ({why:?})",
                 key.map, key.index, bitmap.0

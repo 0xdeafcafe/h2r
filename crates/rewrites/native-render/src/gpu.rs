@@ -246,6 +246,8 @@ pub struct GpuWorld {
     /// ([`GpuWorld::set_inherited_cull`]).
     inherited_cull: crate::program::InheritedCull,
     vertices: wgpu::Buffer,
+    /// A retained light holds the current program vertex allocation.
+    light_mesh_device: Option<wgpu::Device>,
     /// [`World::program_vertices`]: what the material programs read.
     program_vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -691,6 +693,7 @@ impl GpuWorld {
             stencil: PassStencil::default(),
             inherited_cull: crate::program::InheritedCull::default(),
             vertices,
+            light_mesh_device: None,
             program_vertices,
             indices,
             indirect,
@@ -850,16 +853,42 @@ impl GpuWorld {
     /// Rewrite gel `datum`'s texture with `image` (image 0 of the gel's
     /// bitmap, as the light set uploaded it). Returns how many were
     /// written: none when the world has no light set or no such gel.
-    pub fn rewrite_gel(&self, queue: &wgpu::Queue, datum: u32, image: &Image) -> Result<usize, ImageRefusal> {
-        self.lights.as_ref().map_or(Ok(0), |l| l.rewrite_gel(queue, datum, image))
+    pub fn rewrite_gel(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, datum: u32, image: &Image) -> Result<usize, ImageRefusal> {
+        self.lights.as_mut().map_or(Ok(0), |l| l.rewrite_gel(device, queue, datum, image))
     }
 
-    fn write_run(&self, queue: &wgpu::Queue, run: crate::world::SectionRun) {
+    /// Pin the immutable index buffer, the current program vertices and the
+    /// light's textures. A subsequent edit publishes a new vertex allocation.
+    pub fn retain_light(
+        &mut self,
+        device: &wgpu::Device,
+        gel: Option<u32>,
+    ) -> Option<(LightSet, wgpu::Buffer, wgpu::Buffer)> {
+        let set = self.lights.as_ref()?.retain(gel);
+        self.light_mesh_device = Some(device.clone());
+        Some((set, self.program_vertices.clone(), self.indices.clone()))
+    }
+
+    fn write_run(&mut self, queue: &wgpu::Queue, run: crate::world::SectionRun) {
         let range = run.first_vertex as usize..(run.first_vertex + run.vertex_count) as usize;
         let offset = (run.first_vertex as usize * std::mem::size_of::<WorldVertex>()) as u64;
-        queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range.clone()]));
         let separate = self.world.program_vertices.len() == self.world.vertices.len()
             && !self.world.program_vertices.is_empty();
+        if let Some(device) = self.light_mesh_device.take() {
+            let vertices = if separate { &self.world.program_vertices } else { &self.world.vertices };
+            self.program_vertices = gfx::churn::create_buffer_init(&device, &wgpu::util::BufferInitDescriptor {
+                label: Some("edited light vertices"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+            if !separate {
+                self.vertices = self.program_vertices.clone();
+            } else {
+                queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range]));
+            }
+            return;
+        }
+        queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range.clone()]));
         if separate {
             queue.write_buffer(
                 &self.program_vertices,

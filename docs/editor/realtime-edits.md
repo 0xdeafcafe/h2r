@@ -507,6 +507,10 @@ resident and no refresh of its own is running:
 | `Lights` | `native_lights_glue` | | the light models load again (`models::Loader::invalidate`) | the built world passes' stage textures, and the edited image for passes built later (`materials::Resolver::refresh_images`) |
 | `Decorators` | `native_decorators_glue` | prepared materials forgotten, made again from guest memory | the same | prepared materials' stage textures (`MaterialGpu::held`), and the edited image for materials made later |
 
+A retained diffuse or specular light keeps its mesh, stage texture views and static gel.
+A section edit replaces the retained vertex buffer. Bitmap and gel edits give later light
+draws the new texels while a captured scene replays with its original views.
+
 A section that is not a model's goes to `World` and `Decorators`; a model
 to `Objects`, `FirstPerson`, `Lights` and `Decorators`; an image to all
 five. `Tag` goes to `World` and `Objects`; `Shader` goes to `World`,

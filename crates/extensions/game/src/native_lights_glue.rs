@@ -493,6 +493,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             slots: Vec::new(),
         };
         let pass = RunPass {
+            retained: None,
             light: prepared,
             view: None,
             clip: None,
@@ -690,6 +691,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             slots: Vec::new(),
         };
         let pass = RunPass {
+            retained: None,
             light: prepared,
             view: None,
             clip: None,
@@ -764,7 +766,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let Some(lights) = ready.lights.get().cloned() else {
             return;
         };
-        let Some((_, queue)) = ready.upload_device.clone() else {
+        let Some((device, queue)) = ready.upload_device.clone() else {
             return;
         };
         let edits = native_edits::drain(Consumer::Lights);
@@ -791,7 +793,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let launched = background::spawn("native-lights edits", move || {
             match crate::native_map::open(key.map()) {
                 Ok((mut map, mut files)) if key.current() => {
-                    lights.refresh_images(&mut map, &mut files, &queue, &images);
+                    lights.refresh_images(&mut map, &mut files, &device, &queue, &images);
                 }
                 Ok(_) => {}
                 Err(e) => eprintln!(
@@ -1049,6 +1051,7 @@ impl d3d::DrawAdmission for LightAdmission {
         };
         let gel_slot = light.binding.map(|binding| binding.append(&mut plan));
         let pass = RunPass {
+            retained: None,
             light,
             view: None,
             clip: None,
@@ -1535,6 +1538,7 @@ impl LightsWorld {
         &self,
         map: &mut Map<R>,
         files: &mut assets::ResourceFiles,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         edited: &[(TagId, u32)],
     ) {
@@ -1562,7 +1566,7 @@ impl LightsWorld {
             }
         }
         if !decoded.is_empty() {
-            self.resolver.refresh_images(queue, &decoded);
+            self.resolver.refresh_images(device, queue, &decoded);
         }
     }
 
@@ -2257,10 +2261,20 @@ fn scale_scissor(rect: [u32; 4], guest: (u32, u32), target: (u32, u32)) -> Optio
     Some(scale.rect(x, y, w, h))
 }
 
+/// Resources captured from this BSP and its material variants at admission.
+struct RetainedLight {
+    set: LightSet,
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    materials: Vec<Arc<Mutex<LightGpu>>>,
+}
+
 /// One admitted light draw, appended as packets to the D3D pass open on
 /// its attachments ([`d3d::ExternalPass::record_draws`]) with the light
 /// passes' cached pipelines and texture groups and resident uniforms.
 struct RunPass {
+    /// Only the whole typed path snapshots its materials, gel and geometry.
+    retained: Option<RetainedLight>,
     light: PreparedLight,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     clip: Option<d3d::DepthClip>,
@@ -2274,6 +2288,10 @@ struct RunPass {
 }
 
 impl d3d::ExternalPass for RunPass {
+    fn replays_scene(&self) -> bool {
+        self.retained.is_some()
+    }
+
     fn uses_validated_resources(&self) -> bool {
         true
     }
@@ -2364,9 +2382,6 @@ impl RunPass {
             z_scale: request.z_scale,
             w_clip: Some((clip.range, clip.clamp)),
         };
-        let ready = &self.light.ready;
-        let mut gpu = ready.gpu();
-        let gpu = gpu.as_mut().ok_or("world upload failed")?;
         // Resolve the pinned slot on this copy before replacing the guest draw.
         let sample = match self.light.binding {
             Some(binding) => Some(
@@ -2379,8 +2394,12 @@ impl RunPass {
             .light
             .draws
             .iter()
-            .map(|p| {
+            .enumerate()
+            .map(|(i, p)| {
                 let mut draw = self.light.draw(p);
+                if let Some(held) = &self.retained {
+                    draw.gpu = &held.materials[i];
+                }
                 draw.gel_view = sample;
                 if let Some(m) = &p.model {
                     draw.model = Some(
@@ -2401,7 +2420,11 @@ impl RunPass {
             depth_format: t.depth_format,
             size: t.size,
         };
-        gpu.prepare_lights(&target, scissor, &view, &draws)
+        if let Some(held) = &self.retained {
+            return held.set.draws(&target, &held.vertices, &held.indices, &view, scissor, &draws);
+        }
+        let mut gpu = self.light.ready.gpu();
+        gpu.as_mut().ok_or("world upload failed")?.prepare_lights(&target, scissor, &view, &draws)
     }
 }
 
