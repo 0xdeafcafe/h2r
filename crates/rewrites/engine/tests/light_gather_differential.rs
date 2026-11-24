@@ -1,6 +1,6 @@
 //! `engine::render::light_gather` against the original, lifted and run on
 //! the IR interpreter from the same seeded 64 MB state
-//! (docs/graphics/native-light-gather.md, slices L1 to L4).
+//! (docs/graphics/native-light-gather.md, slices L1 to L5).
 //!
 //! **The leaves (L1).** Each root runs lifted with its whole tree (no
 //! stub) to its return; the port runs on a copy and its writes are
@@ -27,6 +27,9 @@
 //!
 //! **The item lists and the first-person table (L4).** See
 //! [`item_lists_match_the_lifted_original`].
+//!
+//! **One light's passes (L5).** See
+//! [`passes_transcripts_match_the_lifted_original`].
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
@@ -2295,5 +2298,348 @@ fn items_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
         "a full list",
     ] {
         assert!(tally.get(k) > 0, "never {k}: {:#?}", tally.0);
+    }
+}
+
+// ---------------------------------------------------------------------
+// L5: one light's passes.
+
+use engine::render::light_gather::passes::{self, LightPasses};
+
+const PASS_TAGS: u32 = 0x0340_0000;
+const PASS_DATA: u32 = 0x0341_0000;
+const PASS_CONTEXT: u32 = 0x0342_0000;
+const PASS_OVERRIDE: u32 = 0x0343_0000;
+const PASS_SCRATCH: u32 = 0x0344_0000;
+const PASS_LIGHT_MASK: u32 = 0x004c_1a68;
+const PASS_CASTER_MASK: u32 = 0x004c_1a80;
+const PASS_FLAGS: u32 = 0x004b_a014;
+const PASS_COUNT: u32 = 0x004b_a134;
+const PASS_VIEW_TARGET: u32 = 0x0048_58b8;
+const PASS_COLOUR_B: u32 = 0x0048_5950;
+const PASS_FALLOFF_4: u32 = 0x0048_5a40;
+
+/// The passes' callees, all stubbed: target, the registers the original
+/// hands it (`Cpu::gpr` indices), its stack arguments and the bytes it
+/// pops.
+const PASS_STUBS: [(u32, &[usize], u32, u32); 14] = [
+    (passes::call::ITEMS, &[0], 0, 0),
+    (passes::call::CONSTANTS, &[0, 1, 2, 6, 7], 4, 16),
+    (passes::call::SHADOW_SETUP, &[1, 3, 6, 7], 1, 4),
+    (passes::call::LAYER_BEGIN, &[6, 7], 0, 0),
+    (passes::call::LAYER_DRAW, &[3, 6, 7], 0, 0),
+    (passes::call::LAYER_END, &[3, 6, 7], 0, 0),
+    (passes::call::TARGET, &[0, 6, 7], 2, 8),
+    (passes::call::CLIP_MODE, &[0, 6, 7], 0, 0),
+    (passes::call::STENCIL, &[3, 6, 7], 0, 0),
+    (passes::call::RECEIVER_BLEND, &[6, 7], 0, 0),
+    (passes::call::ADDITIONAL_CASTERS, &[6, 7], 0, 0),
+    (passes::call::STENCIL_ENABLE, &[3, 6, 7], 1, 4),
+    (passes::call::SCISSORS, &[3, 6, 7], 3, 12),
+    (passes::call::DEPTH_RANGE, &[3, 6, 7], 2, 8),
+];
+
+fn pass_stub(target: u32) -> Option<(&'static [usize], u32, u32)> {
+    PASS_STUBS
+        .iter()
+        .find(|s| s.0 == target)
+        .map(|&(_, regs, args, pop)| (regs, args, pop))
+}
+
+/// The stub's effect, seeded by the call's place in the transcript: what
+/// a real callee writes that the passes read after it (the lists' masks,
+/// the constants' colour B and falloff, the flags, the draw byte), and
+/// EAX and EDX. `shadow_at` is the shadow argument's address.
+fn pass_effect(seed: u64, k: usize, c: &Callout, m: &mut FlatMemory, shadow_at: u32) -> (u32, u32) {
+    let mut r = Rng(seed ^ ((k as u64) << 32) ^ u64::from(c.target));
+    let float = |r: &mut Rng| match r.below(4) {
+        0 => 0.0,
+        1 => -r.float(0.0, 1.0),
+        _ => r.float(0.0, 1.0),
+    };
+    match c.target {
+        passes::call::ITEMS => {
+            put(m, PASS_LIGHT_MASK, (r.u32() & 0x1f) << 10);
+            put(m, PASS_CASTER_MASK, (r.u32() & 0x3) << 10);
+        }
+        passes::call::CONSTANTS => {
+            for i in 0..3 {
+                putf(m, PASS_COLOUR_B + 4 * i, float(&mut r));
+            }
+            putf(m, PASS_FALLOFF_4, float(&mut r));
+        }
+        passes::call::LAYER_BEGIN => return (r.u32() & !0xff | r.below(2), r.u32()),
+        passes::call::SHADOW_SETUP | passes::call::LAYER_END if r.chance(4) => {
+            // The flags are read again after the shadow layer.
+            let f = word(m, PASS_FLAGS) ^ (r.u32() & 0x3);
+            put(m, PASS_FLAGS, f);
+        }
+        passes::call::STENCIL if r.chance(4) => {
+            // The mask and the draw byte are read again at each layer.
+            put(m, PASS_LIGHT_MASK, (r.u32() & 0x1f) << 10);
+            put8(m, shadow_at, r.below(2) as u8);
+        }
+        _ => put(m, PASS_SCRATCH + 4 * k as u32, r.u32()),
+    }
+    (r.u32(), r.u32())
+}
+
+/// A light's passes' inputs: the definition, the context, the override,
+/// the additional casters' count, the lists, the flags and the view's
+/// target, and the call's four stack words above `esp`. Returns EAX and
+/// ECX at the entry.
+fn pass_world(m: &mut FlatMemory, r: &mut Rng, esp: u32) -> (u32, u32) {
+    let definition = (0xe00a << 16) | r.below(16);
+    put(m, TAGS_POINTER, PASS_TAGS);
+    put(m, PASS_TAGS + (definition & 0xffff) * 16 + 8, PASS_DATA);
+    put8(m, PASS_DATA, if r.chance(2) { 0x20 } else { 0 });
+    put16(m, PASS_DATA + 4, r.below(2) as u16);
+    put16(m, PASS_DATA + 0x14, [2, 0, 1][r.below(3) as usize]);
+    put16(m, PASS_CONTEXT, if r.chance(3) { 0 } else { 1 + r.below(3) as u16 });
+    if r.chance(3) {
+        put(m, OVERRIDE, 0);
+    } else {
+        put(m, OVERRIDE, PASS_OVERRIDE);
+        put8(m, PASS_OVERRIDE + 5, r.below(2) as u8);
+    }
+    put(m, PASS_COUNT, [u32::MAX, 0, 3][r.below(3) as usize]);
+    put(m, PASS_LIGHT_MASK, r.u32());
+    put(m, PASS_CASTER_MASK, r.u32());
+    put(m, PASS_FLAGS, r.u32());
+    put(m, PASS_VIEW_TARGET, r.u32());
+    for i in 0..3 {
+        putf(m, PASS_COLOUR_B + 4 * i, r.float(-1.0, 1.0));
+    }
+    put(m, esp + 4, light_datum(r.below(8)));
+    put(m, esp + 8, light_record(r.below(8)) + 0x84);
+    put(m, esp + 0xc, (r.u32() & !0xff) | [0, 1, 2][r.below(3) as usize]);
+    putf(m, esp + 0x10, r.float(0.0, 1.0));
+    (definition, PASS_CONTEXT)
+}
+
+/// `0x00031170` lifted, every callee stubbed. Returns the transcript and
+/// EAX.
+fn original_passes(
+    lifted: &mut Lifted<'_>,
+    m: &mut FlatMemory,
+    cpu: &mut Cpu,
+    esp: u32,
+    seed: u64,
+) -> Result<(Vec<Callout>, u32), String> {
+    put(m, esp, HARNESS_EXIT);
+    cpu.gpr[4] = esp;
+    cpu.eip = passes_entry();
+    let shadow_at = esp + 0xc;
+    let mut transcript = Vec::new();
+    lifted.run(cpu, m, &[HARNESS_EXIT], |pc, cpu, m| {
+        let Some((regs, args, pop)) = pass_stub(pc) else {
+            return false;
+        };
+        let sp = cpu.gpr[4];
+        let c = Callout {
+            target: pc,
+            site: word(m, sp),
+            regs: regs.iter().map(|&i| cpu.gpr[i]).collect(),
+            args: (0..args).map(|i| word(m, sp + 4 + 4 * i)).collect(),
+        };
+        let (eax, edx) = pass_effect(seed, transcript.len(), &c, m, shadow_at);
+        cpu.gpr[0] = eax;
+        cpu.gpr[2] = edx;
+        cpu.gpr[4] = sp + 4 + pop;
+        cpu.eip = c.site;
+        transcript.push(c);
+        true
+    })?;
+    if cpu.gpr[4] != esp + 4 + 0x10 {
+        return Err(format!("esp {:#x} after the passes", cpu.gpr[4]));
+    }
+    Ok((transcript, cpu.gpr[0]))
+}
+
+fn passes_entry() -> u32 {
+    engine::points::RENDER_LIGHT_PASSES.base
+}
+
+/// The body, every guest call a stub, its return site the one its slot
+/// names ([`passes::return_site`]).
+fn port_passes(
+    m: FlatMemory,
+    esp: u32,
+    plan: passes::Plan,
+    seed: u64,
+) -> (
+    Vec<Callout>,
+    engine::entry::EntryResult,
+    Option<LightPasses>,
+    FlatMemory,
+) {
+    use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Step, poll, resume};
+    let mem = Arc::new(Mutex::new(Ram(m)));
+    let cx = Cx::new(
+        Arc::clone(&mem),
+        Regs {
+            esp,
+            ..Regs::default()
+        },
+    );
+    let out = Arc::new(Mutex::new(None));
+    let body = cx.clone();
+    let kept = Arc::clone(&out);
+    let mut fut: EntryFuture = Box::pin(async move {
+        let (ret, light) = passes::run(&body, plan).await?;
+        *kept.lock().unwrap() = Some(light);
+        Ok::<_, engine::entry::EntryError>(ret)
+    });
+    let shadow_at = esp + 0xc;
+    let mut transcript = Vec::new();
+    let result = loop {
+        match poll(&mut fut, &cx) {
+            Step::Done(r) => break r,
+            Step::Call(c) => {
+                let mut g = mem.lock().unwrap();
+                let m = &mut g.0;
+                let sp = c.esp(esp);
+                let set = |c: &GuestCall, i: usize| match i {
+                    0 => c.eax,
+                    1 => c.ecx,
+                    2 => c.edx,
+                    3 => c.ebx,
+                    6 => c.esi,
+                    7 => c.edi,
+                    _ => None,
+                };
+                let (declared, _, _) = pass_stub(c.target)
+                    .unwrap_or_else(|| panic!("an unknown callee {:#x}", c.target));
+                for (i, &a) in c.args.iter().enumerate() {
+                    put(m, sp + 4 + 4 * i as u32, a);
+                }
+                put(m, sp, STUB_RETURN);
+                let callout = Callout {
+                    target: c.target,
+                    site: passes::return_site(sp).unwrap_or(0),
+                    regs: declared
+                        .iter()
+                        .map(|&i| set(&c, i).unwrap_or(0xdead_beef))
+                        .collect(),
+                    args: c.args.clone(),
+                };
+                let (eax, edx) = pass_effect(seed, transcript.len(), &callout, m, shadow_at);
+                transcript.push(callout);
+                drop(g);
+                resume(
+                    &cx,
+                    Regs {
+                        eax,
+                        edx,
+                        esp,
+                        ..Regs::default()
+                    },
+                );
+            }
+        }
+    };
+    drop(fut);
+    drop(cx);
+    let light = out.lock().unwrap().take();
+    let m = Arc::try_unwrap(mem)
+        .ok()
+        .expect("the body kept no memory")
+        .into_inner()
+        .unwrap()
+        .0;
+    (transcript, result, light, m)
+}
+
+/// Equal transcripts (target, return site, the registers each callee is
+/// handed, its stack arguments), equal EAX and `ret 0x10`, and equal
+/// memory outside the dead stack and the four saved registers, over
+/// every flag combination the seeds reach: a shadow byte the casters keep
+/// or drop, a sphere context, a dark or zeroed colour B, the falloff and
+/// the definition's word `+0x14`, each layer's mask bit, a layer-10 begin
+/// that answers either way, the override's byte and the additional
+/// casters' count, and flags and masks a callee changes.
+#[test]
+fn passes_transcripts_match_the_lifted_original() {
+    if !with_image(passes_cases) {
+        eprintln!("SKIPPED passes_transcripts_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn passes_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    let mut tally = Tally::default();
+    for seed in seeds() {
+        for n in 0..200u32 {
+            let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(n) ^ 0x1170);
+            let mut m = image.clone();
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4] - 0x20;
+            let (eax, ecx) = pass_world(&mut m, &mut r, esp);
+            c.gpr[0] = eax;
+            c.gpr[1] = ecx;
+            put(&mut m, esp, HARNESS_EXIT);
+            let label = format!("seed {seed} case {n}");
+            let case_seed = r.next();
+            let plan = match passes::plan(&Ram(m.clone()), esp, eax, ecx, FPU) {
+                Ok(plan) => plan,
+                Err(why) => {
+                    tally.add(format!("refused {why:?}"));
+                    continue;
+                }
+            };
+            let (port_calls, result, light, port) = port_passes(m.clone(), esp, plan, case_seed);
+            let mut a = m;
+            let (calls, eax) = original_passes(&mut lifted, &mut a, &mut c, esp, case_seed)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            for (i, (x, y)) in calls.iter().zip(&port_calls).enumerate() {
+                assert_eq!(x, y, "{label}: callout {i} (original, then port)");
+            }
+            assert_eq!(calls.len(), port_calls.len(), "{label}: the number of callouts");
+            assert_eq!(
+                result.map(|ret| (ret.eax, ret.pop)),
+                Ok((eax, 0x10)),
+                "{label}: the return"
+            );
+            // Below the entry ESP: the dead stack and the four saved
+            // registers, the original's alone.
+            if let Some(at) = first_difference(&a, &port, esp) {
+                panic!(
+                    "{label}: memory differs first at {at:#x} (E{:+#x}): {:#04x} (original) vs {:#04x} (port)",
+                    (at as u32).wrapping_sub(esp) as i32,
+                    a.bytes[at],
+                    port.bytes[at]
+                );
+            }
+            tally.add("native");
+            let light = light.expect("what it did");
+            tally.add(if light.shadow { "shadowed" } else { "unshadowed" });
+            if light.additional_casters {
+                tally.add("additional casters");
+            }
+            for layer in [10, 11, 12, 13, 14] {
+                if light.drawn & 1 << layer != 0 {
+                    tally.add(format!("layer {layer} drawn"));
+                } else if light.reached & 1 << layer != 0 {
+                    tally.add(format!("layer {layer} reached only"));
+                }
+            }
+        }
+    }
+    eprintln!("passes: {:#?}", tally.0);
+    assert!(tally.get("native") >= 400, "too few answered: {:#?}", tally.0);
+    for need in [
+        "shadowed",
+        "unshadowed",
+        "additional casters",
+        "layer 10 drawn",
+        "layer 10 reached only",
+        "layer 11 drawn",
+        "layer 11 reached only",
+        "layer 12 drawn",
+        "layer 12 reached only",
+        "layer 13 drawn",
+        "layer 14 drawn",
+        "layer 14 reached only",
+    ] {
+        assert!(tally.get(need) > 0, "never {need}: {:#?}", tally.0);
     }
 }

@@ -1,7 +1,7 @@
 # Native light gather and passes
 
-Status: Partly built. Slices L1 to L4 and L5's hand-off are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`; and the scene's dynamic lights, made from the frame body's hand-off (`frame::Passes`) and the item body's lists (`render_bridge::native_lights::handoff`). L5's passes body and L6 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
-Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` (the installs), `handoff.rs` (the scene's lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
+Status: Partly built. Slices L1 to L5 are built: the model's rows and histories and the leaves (the visible-light list, the geometry flags, the extra caster, the light volume) in `engine::render::light_gather`, which the seams of [native-renderer.md](native-renderer.md), "Scene list builders", call; the frame body of `0x00031c80` (`light_gather::frame`), which `render_bridge::native_lights::frame` installs at `RENDER_DYNAMIC_LIGHTS`; a light's cluster and placement records (`engine::render_loop::world_walk::records` in the light's kind), which the frame body makes; a light's item lists and the first-person table (`light_gather::items`), which `render_bridge::native_lights::items` installs at `SCENE_ITEMS`; and the scene's dynamic lights, made from the frame body's hand-off (`frame::Passes`) and the item body's lists (`render_bridge::native_lights::handoff`); and one light's passes, `0x00031170` (`light_gather::passes`), which `render_bridge::native_lights::passes` installs at `RENDER_LIGHT_PASSES`. L6 on are design. The other leaf ports it starts from (the light constants, the pass flags, the shadow projection, the gathered groups) are described in [native-lights.md](native-lights.md).
+Code: `crates/rewrites/engine/src/render/light_gather.rs` and `light_gather/` (the model and the bodies), `crates/rewrites/engine/src/render_loop/world_walk.rs` (the record walks), `crates/rewrites/render-bridge/src/native_lights/frame.rs` and `items.rs` and `passes.rs` (the installs), `handoff.rs` (the scene's lights), `crates/rewrites/render-bridge/src/native_scene_lists/lights.rs` (the leaf seams that stay for the fallback). Tests: `crates/rewrites/engine/tests/light_gather_differential.rs`, `light_gather.rs`, the unit tests of `world_walk.rs` and `native_lights/handoff.rs`, `crates/rewrites/render-bridge/tests/native_lights.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). No slice adds a switch.
 
 Slice R3 of [retire-d3d.md](retire-d3d.md): the guest's light front-end
@@ -337,7 +337,9 @@ A frame the body makes counts `light_frame_native` and
 (a cold section is `residency`). `light_items` counts each record of a
 light that passes the walk's filters: `_native` for one appended in
 Rust, `_fallback` and the reason for one the guest's part calls make,
-and a call whose plan refuses. `light_handoff` counts each light
+and a call whose plan refuses. `light_passes` counts each passes call:
+`_native` for one the passes body runs, `_fallback` and the reason for
+a plan that refuses (the original runs whole). `light_handoff` counts each light
 the frame body hands over: `_native` for one the scene takes from the
 hand-off, `_fallback` and the reason for one it reads from memory (the
 item body declined, or no item lists' call took the hand-off:
@@ -535,9 +537,9 @@ coordinator runs them.
   per-part calls for that record, in place. A plan that refuses (a
   read, a record range past `0x8000`) runs the guest function whole.
 
-### L5: the scene's lights, then the passes body (M, hand-off built)
+### L5: the scene's lights, then the passes body (M, built)
 
-The hand-off is built; the passes body is design.
+The hand-off and the passes body are built.
 
 - **Build, the hand-off.** `light_gather::frame::run_with(cx, plan,
   on_passes)` hands each drawn light's `Gathered`, with `Passes` (step
@@ -554,14 +556,31 @@ The hand-off is built; the passes body is design.
   from memory. The guest's writes are unchanged: the passes still run
   whole as a guest call, and the lists are still written for the layer
   builds and handlers that read them.
-- **Build, the passes body.** `light_gather::passes::run(cx, light)`:
-  steps 1 to 6 of "One light's passes" in Rust order control, with the
-  constants call, the projection call and each layer's begin, draw and
-  end still guest calls, so the stage's existing whole-group draws apply
-  unchanged. `LightPasses` is computed before the first layer from
-  `pass_flags` and `light_passes::steps`; the hand-off's scene light and
-  the candidate for layers 12 and 13 come from it, and the observation
-  at the passes' entry goes with the guest loop (L9).
+- **Build, the passes body.** `light_gather::passes::plan(m,
+  entry_esp, definition, context, fpu)` reads the passes' inputs at
+  entry (`FlagInputs`: the context word, the colour B words, the falloff
+  word; the override byte, the casters' and receivers' masks, the
+  additional casters' count) and refuses only when the FPU state is not
+  one the flags support. `light_gather::passes::run(cx, plan)` then runs
+  the body in Rust order control: the item lists call, the constants
+  call, the shadow setup when the flags have bit 2, layer 10 (begin,
+  draw, end), layer 11 when the flags ask, the additional casters, layers
+  14, 12 and 13, and the tail's four calls, each a guest call with the
+  guest's registers and stack words, so the stage's whole-group draws
+  apply unchanged. Each layer block writes the mask byte, the target and
+  layer words and `[0x004858b4]` as the guest does, and re-reads the
+  byte before its draw. The flags are `light_passes::flags_of`, the same
+  function `pass_flags` uses. `render_bridge::native_lights::passes`
+  installs it at `RENDER_LIGHT_PASSES`; the hand-off's pairing at entry
+  still runs, as an observer before the implementation.
+- **Return sites.** A guest call from the body returns to a
+  continuation, not to the guest's site inside `0x00031170`. While a
+  call runs, `passes::return_site(slot)` names the guest's site for its
+  return slot, and `passes::caller(m, slot)` gives it, or the word in
+  memory outside the body. The hooks that tell layers apart by their
+  caller (`native_lights` layer draws, the item lists' take, the walk's
+  restore and layer builds, `native_shadows` draw and end) read the site
+  through `caller`.
 - **Guest state.** The hand-off reads the light record, the tag table,
   the constants' inputs and the additional casters' globals; it writes
   nothing. The passes body: `[0x004ba014]`, `[0x004ba018]`, the colour B
@@ -575,23 +594,31 @@ The hand-off is built; the passes body is design.
   equal steps for every flag),
   `at_the_passes_entry_the_lists_are_the_last_lights` and
   `a_hand_off_is_taken_only_by_its_own_passes_item_lists`
-  (`render-bridge/src/native_lights/handoff.rs`). The passes body:
-  differential root `0x00031170` with its callees stubbed, equal
-  transcripts over every flag combination, each mask bit, the override
-  byte and the additional casters' condition; the existing
-  `engine/tests/light_passes*.rs` stay.
+  (`render-bridge/src/native_lights/handoff.rs`). The passes body,
+  unit: `each_layer_block_runs_in_the_guests_order` and
+  `a_return_slot_names_its_site_only_while_its_call_runs`
+  (`light_gather/passes.rs`), and `passes_body` in
+  `engine/tests/light_gather.rs` (a shadowed light's whole call order, a
+  shadow the casters do not take, a refused plan that only reads).
+  Differential: `passes_transcripts_match_the_lifted_original`
+  (`engine/tests/light_gather_differential.rs`), root `0x00031170` with
+  its fourteen callees stubbed, equal transcripts and memory over random
+  flags, mask bits, the override byte and the additional casters'
+  condition; the existing `engine/tests/light_passes*.rs` stay.
 - **Live check.** The hand-off: `native_scene_lists_light_handoff_native`
   equal to the drawn lights (`light_frame_native` frames times their
   lights), `_compared` equal to it and `_mismatch` zero, `_fallback`
   zero on a lit interior; `render.scene` lists each view's lights with
   the master's handles and weights, and steps whose `draws` follow the
-  light's own lists. The passes body: `light_passes_native` equals the
-  drawn lights; `lights_walked_native` and `scene_light_layers_alone`
+  light's own lists. The passes body:
+  `native_scene_lists_light_passes_native` equals the drawn lights and
+  `_fallback` is zero; `lights_walked_native` and `scene_light_layers_alone`
   unchanged; `render.parity`.
 - **Refusal.** The hand-off: an item body that declines, a passes'
   entry that is not the hand-off's call, or a hand-off no item lists'
   call takes leaves the light to the read from memory, counted. The
-  passes body: none after entry, every step has its guest call.
+  passes body: a plan that refuses runs the original whole, counted;
+  none after entry, every step has its guest call.
 
 ### L6: the first-person lights (M)
 

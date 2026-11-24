@@ -28,7 +28,8 @@ pub(super) fn install(b: &mut Builder) {
                 let runtime = std::sync::Arc::clone(ctx.runtime());
                 let (plan, taken) = {
                     let mem = runtime.memory();
-                    let ret = mem.u32(cpu.esp).unwrap_or(0);
+                    let ret =
+                        engine::render::light_gather::passes::caller(&*mem, cpu.esp).unwrap_or(0);
                     (items::plan(&*mem, cpu.esp, cpu.eax), handoff::take(ret))
                 };
                 let plan = match plan {

@@ -829,3 +829,234 @@ fn a_lights_walks_are_made_in_rust_in_its_kind() {
     let gathered = ran.frame.unwrap().lights[0].gathered.clone().unwrap();
     assert_eq!(gathered.clusters, frame::By::Guest(Refusal::Layout));
 }
+
+// ---------------------------------------------------------------------
+// L5: one light's passes (`engine::render::light_gather::passes`).
+
+mod passes_body {
+    use super::*;
+    use engine::render::light_gather::passes::{self, LightPasses, call, site};
+
+    const E: u32 = 0x0010_0000;
+    const TABLE: u32 = 0x0206_0000;
+    const DATA: u32 = 0x0207_0000;
+    const CONTEXT: u32 = 0x0210_0000;
+    const DEFINITION: u32 = 0xa000_0003;
+    const POSITION: u32 = 0x0205_0084;
+    const LIGHT: u32 = 0x0001_0000;
+    const PUSHED: u32 = 0x1234_5678;
+    const LIGHT_MASK: u32 = 0x004c_1a68;
+    const CASTER_MASK: u32 = 0x004c_1a80;
+    const PASS_FLAGS: u32 = 0x004b_a014;
+    const PASSES: u32 = 0x004b_a018;
+    const VIEW_TARGET: u32 = 0x0048_58b8;
+
+    /// A light whose constants left colour B bright, in a context that is
+    /// not a sphere, with the light's list's `receivers` and the casters'
+    /// `casters` masks as its item lists made them.
+    fn guest(shadow: u8, receivers: u32, casters: u32) -> FakeGuest {
+        let mut g = FakeGuest::new();
+        g.map(E - 0x2000, 0x2020);
+        g.put_u32(E + 4, LIGHT)
+            .put_u32(E + 8, POSITION)
+            .put_u32(E + 0xc, 0x0000_ab00 | u32::from(shadow))
+            .put_u32(E + 0x10, 0.5f32.to_bits());
+        g.put_u32(engine::tags::TAG_ENTRIES_GLOBAL, TABLE)
+            .put_u32(TABLE + (DEFINITION & 0xffff) * 16 + 8, DATA);
+        g.put_u8(DATA, 0)
+            .put_u16(DATA + 4, 1)
+            .put_u16(DATA + 0x14, 0);
+        g.put_u16(CONTEXT, 1);
+        g.put_u32(0x0003_11ba, PUSHED);
+        g.put_u32(0x0045_dc7c, 0);
+        g.map(0x0046_7130, 0x10);
+        g.put_u32(VIEW_TARGET, 0x0000_3407);
+        g.put_f32(0x0048_5950, 0.5).put_f32(0x0048_5a40, 1.0);
+        g.map(0x0048_58b4, 0x10);
+        g.map(0x004b_843c, 4);
+        g.put_u32(PASS_FLAGS, 0x55).put_u8(PASSES, 0);
+        g.put_u32(0x004b_a134, 0);
+        g.put_u32(LIGHT_MASK, receivers)
+            .put_u32(CASTER_MASK, casters);
+        g.put_u32(0x0051_0c50, 0);
+        g
+    }
+
+    struct Ran {
+        run: testing::Run,
+        passes: Option<LightPasses>,
+        /// Each call's target and the return site its slot names.
+        sites: Vec<(u32, Option<u32>)>,
+    }
+
+    fn run_passes(g: FakeGuest) -> Ran {
+        let plan = passes::plan(&g, E, DEFINITION, CONTEXT, FPU).expect("the plan");
+        let out = Arc::new(Mutex::new(None));
+        let kept = Arc::clone(&out);
+        let f = move |cx: Cx| -> EntryFuture {
+            let plan = plan.clone();
+            let kept = Arc::clone(&kept);
+            Box::pin(async move {
+                let (ret, light) = passes::run(&cx, plan).await?;
+                *kept.lock().unwrap() = Some(light);
+                Ok::<_, engine::entry::EntryError>(ret)
+            })
+        };
+        let mut sites = Vec::new();
+        let regs = Regs {
+            esp: E,
+            ..Regs::default()
+        };
+        let run = testing::run(&f, g, regs, |c: &GuestCall, _m: &mut dyn GuestMemory| {
+            sites.push((c.target, passes::return_site(c.esp(E))));
+            match c.target {
+                call::LAYER_BEGIN => Regs {
+                    eax: 0xffff_ff01,
+                    ..Regs::default()
+                },
+                call::TARGET => Regs {
+                    eax: 0x77,
+                    ..Regs::default()
+                },
+                _ => Regs::default(),
+            }
+        });
+        let passes = out.lock().unwrap().take();
+        Ran { run, passes, sites }
+    }
+
+    #[test]
+    fn a_shadowed_lights_passes_call_the_guest_in_its_order() {
+        let ran = run_passes(guest(1, 1 << 11 | 1 << 12, 1 << 10));
+        assert_eq!(ran.run.result, Ok(Ret::new(0x77, 0x10)));
+        let targets: Vec<u32> = ran.run.calls.iter().map(|c| c.target).collect();
+        assert_eq!(
+            targets,
+            [
+                call::ITEMS,
+                call::CONSTANTS,
+                call::SHADOW_SETUP,
+                call::LAYER_BEGIN,
+                call::LAYER_DRAW,
+                call::LAYER_END,
+                // 11: in the list.
+                call::TARGET,
+                call::CLIP_MODE,
+                call::RECEIVER_BLEND,
+                call::STENCIL,
+                call::LAYER_DRAW,
+                call::LAYER_END,
+                // 14: not in the list.
+                call::STENCIL,
+                // 12.
+                call::TARGET,
+                call::CLIP_MODE,
+                call::STENCIL,
+                call::LAYER_DRAW,
+                call::LAYER_END,
+                // No 13: not a sphere. The tail.
+                call::STENCIL_ENABLE,
+                call::SCISSORS,
+                call::DEPTH_RANGE,
+                call::TARGET,
+            ]
+        );
+        for c in &ran.run.calls {
+            assert_eq!(c.reserve, passes::FRAME, "{:#x}", c.target);
+        }
+        let named: Vec<Option<u32>> = ran.sites.iter().map(|s| s.1).collect();
+        assert_eq!(named[0], Some(site::ITEMS));
+        assert_eq!(named[4], Some(site::CASTER_DRAW));
+        assert_eq!(named[10], Some(passes::RECEIVERS.draw));
+        assert_eq!(named[16], Some(passes::DIFFUSE.draw));
+        assert_eq!(named[21], Some(site::VIEW_TARGET));
+        assert!(named.iter().all(Option::is_some));
+        assert_eq!(
+            passes::return_site(E - 0x14),
+            None,
+            "cleared after the last call"
+        );
+
+        let made = |i: usize| &ran.run.calls[i];
+        assert_eq!(made(0).eax, Some(0), "the item lists' mode");
+        let constants = made(1);
+        assert_eq!(
+            (constants.eax, constants.ecx, constants.edx),
+            (Some(POSITION), Some(CONTEXT), Some(LIGHT))
+        );
+        assert_eq!(
+            constants.args,
+            [DATA, PUSHED, 0x0000_ab01, 0.5f32.to_bits()],
+            "the shadow byte kept by the casters' layer 10"
+        );
+        assert_eq!((made(2).ecx, made(2).ebx), (Some(CONTEXT), Some(POSITION)));
+        assert_eq!(made(2).args, [DATA]);
+        assert_eq!(made(3).edi, Some(10));
+        assert_eq!(
+            made(6).eax,
+            Some(0x0000_3401),
+            "AL 1 over the view's target"
+        );
+        assert_eq!(made(6).args, [0x0000_3407, 0]);
+        assert_eq!(made(9).ebx, Some(0), "the stencil off");
+        assert_eq!(made(21).eax, Some(0x0000_3401));
+        assert_eq!(made(21).args, [0x3407, 0]);
+
+        let light = ran.passes.expect("what it did");
+        let flags = 2 | 4 | 8 | 0x20;
+        assert_eq!(
+            light,
+            LightPasses {
+                shadow: true,
+                flags,
+                reached: 1 << 10 | 1 << 11 | 1 << 14 | 1 << 12,
+                drawn: 1 << 10 | 1 << 11 | 1 << 12,
+                additional_casters: false,
+            }
+        );
+        let g = &ran.run.guest;
+        assert_eq!(g.u32(PASS_FLAGS).unwrap(), 0, "zeroed by the tail");
+        assert_eq!(g.u8(PASSES).unwrap(), 0);
+        assert_eq!(g.u8(E + 0xc).unwrap(), 1, "the last layer's draw byte");
+        assert_eq!(g.u32(0x0046_7130).unwrap(), 12, "the last layer word");
+    }
+
+    #[test]
+    fn a_shadow_the_casters_do_not_take_draws_no_layer_10() {
+        let ran = run_passes(guest(1, 1 << 12, 0));
+        let light = ran.passes.unwrap();
+        assert!(!light.shadow);
+        assert_eq!(light.flags & 4, 0);
+        assert!(
+            !ran.run
+                .calls
+                .iter()
+                .any(|c| c.target == call::SHADOW_SETUP || c.target == call::LAYER_BEGIN)
+        );
+        // Colour B still runs layer 11, which its list does not hold.
+        assert_eq!(light.reached & 1 << 11, 1 << 11);
+        assert_eq!(light.drawn, 1 << 12);
+        assert_eq!(
+            ran.run.calls[1].args[2], 0x0000_ab00,
+            "the byte is the casters' bit"
+        );
+    }
+
+    #[test]
+    fn a_refused_plan_reads_only() {
+        let g = guest(0, 0, 0);
+        let flush = Fpu {
+            mxcsr: 0x9f80,
+            ..FPU
+        };
+        assert_eq!(
+            passes::plan(&g, E, DEFINITION, CONTEXT, flush).err(),
+            Some(Refusal::Unsupported)
+        );
+        assert_eq!(
+            passes::plan(&g, E, DEFINITION, 0x0700_0000, FPU).err(),
+            Some(Refusal::Memory),
+            "a context that does not read"
+        );
+    }
+}

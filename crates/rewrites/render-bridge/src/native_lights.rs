@@ -4,8 +4,9 @@
 //! light's layers 12 and 13 its passes draw. At the passes' entry the
 //! light and its steps (`scene_extract::layout::light_passes`) go into
 //! the frame step's open view. The light frame body ([`frame`]) runs
-//! `RENDER_DYNAMIC_LIGHTS` itself, and [`items`] a light's item lists at
-//! `SCENE_ITEMS`. Under the body the scene's light is made from its
+//! `RENDER_DYNAMIC_LIGHTS` itself, [`items`] a light's item lists at
+//! `SCENE_ITEMS`, and [`passes`] a light's passes at
+//! `RENDER_LIGHT_PASSES`. Under the body the scene's light is made from its
 //! hand-off and the item body's lists ([`handoff`]); the guest loop's
 //! lights are read at their passes' entry. The first-person lights
 //! (`0x000404b0`) go into the first person's view at their first layer
@@ -15,6 +16,7 @@
 mod frame;
 mod handoff;
 mod items;
+mod passes;
 pub mod walk;
 
 pub use handoff::Source;
@@ -751,6 +753,7 @@ impl Feature for NativeLights {
         }
         frame::install(b);
         items::install(b);
+        passes::install(b);
         b.raw()
             .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| {
                 if !Stage::Lights.standing_down() {
@@ -785,7 +788,9 @@ impl Feature for NativeLights {
                     return;
                 }
                 let mem = o.guest();
-                let ret = mem.u32(o.cpu.esp).unwrap_or(0);
+                // The passes body's layer draws name the guest's site.
+                let ret = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
+                    .unwrap_or(0);
                 enter_layer(&*mem, ret);
                 first_person_layer(&*mem, o.cpu.esp, ret);
             })
