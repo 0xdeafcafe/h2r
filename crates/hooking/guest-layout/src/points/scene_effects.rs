@@ -18,6 +18,12 @@ pub const DECAL_RENDER_END: Point = Point::new("DECAL_RENDER_END", 0x0004_41aa, 
 // The contiguous-range branch of the standard geometry emitter, after
 // state commit. EDI holds the index array, ESI its count, BL its topology.
 pub const GEOMETRY_RANGE_READY: Point = Point::new("SCENE_GEOMETRY_RANGE_READY", 0x0004_dad0, Sig::Site, RENDERER);
+// Calls with the standard emitter's selected index range already on the stack.
+pub static GEOMETRY_SUBRANGES: [(Point, u32); 3] = [
+    (Point::new("GEOMETRY_SUBPART_STRIP", 0x0004_db40, Sig::Site, RENDERER), 0x0004_db45),
+    (Point::new("GEOMETRY_SUBPART_LIST", 0x0004_dbdc, Sig::Site, RENDERER), 0x0004_dbe1),
+    (Point::new("GEOMETRY_SUBPART_LIST_END", 0x0004_dc3a, Sig::Site, RENDERER), 0x0004_dc3f),
+];
 // All exits from the sorted loop join here, before the guest view cleanup.
 pub const SCENE_TRANSPARENTS_END: Point = Point::new("SCENE_TRANSPARENTS_END", 0x0001_e406, Sig::Site, RENDERER);
 
@@ -137,6 +143,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         MODEL_GEOMETRY_CALL.base,
     ]
     .into_iter()
+    .chain(GEOMETRY_SUBRANGES.iter().flat_map(|(call, resume)| [call.base, *resume]))
     .chain(leaves.into_iter().flat_map(|l| [l.begin.base, l.end.base]))
 }
 

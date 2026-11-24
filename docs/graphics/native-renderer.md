@@ -297,7 +297,7 @@ The walks are on whenever the native renderer is. The effects walk shares the pa
 
 | Stage | Instruction boundary and guest work skipped |
 | --- | --- |
-| Transparents | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. Skip the indexed submission and resume at `0x0004dae0`. |
+| Transparents | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. The subrange branches at `0x0004db40`, `0x0004dbdc` and `0x0004dc3a` supply topology, count and indices on the stack. Each admitted range skips one indexed call and resumes at its return address. A refusal runs that call in sorted order. |
 | First person | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list can supply contiguous ranges in layers 1, 3, 7, 8 and 20. |
 | Decals | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, then skip the array submission through `0x00044190`. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
 | Particles | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |

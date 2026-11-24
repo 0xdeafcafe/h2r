@@ -99,6 +99,20 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     }
 }
 
+// Immediately before DrawIndexedVertices the three stdcall arguments
+// sit below the emitter frame used by walk_stage.
+fn subrange(mem: &dyn GuestRead, esp: u32) -> Option<(IndexRange, u32)> {
+    let frame = esp.checked_add(12)?;
+    let strip = match mem.read_u32(esp)? {
+        5 => false,
+        6 => true,
+        _ => return None,
+    };
+    let count = mem.read_u32(esp + 4)?;
+    let indices = mem.read_u32(esp + 8)?;
+    Some((IndexRange { indices, count, strip }, frame))
+}
+
 fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool {
     stage.count(Metric::WalkExamined, 1);
     if range.count < 3 || range.indices == 0 || (!range.strip && range.count % 3 != 0) {
@@ -269,7 +283,7 @@ pub struct NativeTransparents;
 
 impl Feature for NativeTransparents {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "Ordered native vertex bindings for sorted transparents")
+        Manifest::new(ID, "Ordered native indexed draws for sorted transparents")
             .doc("docs/graphics/native-renderer.md")
     }
 
@@ -279,6 +293,30 @@ impl Feature for NativeTransparents {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         if !on(b.switches()) {
             return Ok(());
+        }
+        for (call, resume) in &points::scene_effects::GEOMETRY_SUBRANGES {
+            let resume = *resume;
+            b.raw().before(call, call.name, move |c| {
+                if WALK_DATA.get().is_none() {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                if !rt.read_dispatch(|dispatch| dispatch.has_resume(resume)) {
+                    return Ok(Flow::Continue);
+                }
+                let mut mem = rt.memory();
+                let read = ReadMemory(&*mem);
+                let Some((range, frame)) = subrange(&read, c.cpu.esp) else {
+                    return Ok(Flow::Continue);
+                };
+                if walk_stage(&read, frame) != Some(Stage::Transparents)
+                    || !walk_range(&mut *mem, Stage::Transparents, range)
+                {
+                    return Ok(Flow::Continue);
+                }
+                c.cpu.esp = frame;
+                Ok(Flow::Return(TransferAbi::resume(resume)))
+            }).context_only().optional();
         }
         b.raw().before(&GEOMETRY_RANGE_READY, "native_scene_walk_indexed", |c| {
             let rt = Arc::clone(c.ctx.runtime());
@@ -339,6 +377,64 @@ mod walk_tests {
     use super::*;
     use engine::memory::FlatMemory;
     use native_render::skip::CURRENT_LIST;
+
+    #[test]
+    fn subrange_uses_the_pushed_draw_arguments_and_pops_only_those_words() {
+        let stack = 0x2000;
+        let mut mem = FlatMemory::new(stack, 16);
+        mem.set_u32(stack + 4, 9).unwrap();
+        mem.set_u32(stack + 8, 0x3100).unwrap();
+        for (primitive, strip) in [(5, false), (6, true)] {
+            mem.set_u32(stack, primitive).unwrap();
+            let (range, frame) = subrange(&ReadMemory(&mem), stack).unwrap();
+            assert_eq!((range.indices, range.count, range.strip), (0x3100, 9, strip));
+            assert_eq!(frame, stack + 12);
+        }
+        mem.set_u32(stack, 7).unwrap();
+        assert!(subrange(&ReadMemory(&mem), stack).is_none());
+        assert!(subrange(&ReadMemory(&mem), u32::MAX - 7).is_none());
+    }
+
+    #[test]
+    fn subpart_walk_requires_the_live_sorted_layer_15_handler() {
+        let mut mem = FlatMemory::new(0x0040_0000, 0x0021_0000);
+        let scene = 0x005f_1000;
+        let handler = scene - 0x100;
+        let stack = handler - 0x200;
+        let data = 0x0060_0000 + transparent::DATA_OFFSET;
+        for (addr, value) in [
+            (points::GAME_GLOBALS.base, 0x005e_0000),
+            (crate::native_world::ACTIVE_BSP, 0x005d_0000),
+            (scene, 0x1234),
+            (handler, SORTED_HANDLER_RETURN),
+            (handler + 4, data),
+            (data - 4, transparent::GEOMETRY_HANDLER),
+            (native_render::skip::RENDER_RECORDS + 4, u32::MAX),
+            (stack, 6),
+            (stack + 4, 7),
+            (stack + 8, 0x005a_0000),
+            (stack + 12 + 0x18, GEOMETRY_EMITTER_CALLER),
+            (stack + 12 + 0x68, TRANSPARENT_DRAW_CALLER),
+            (stack + 12 + 0x78, 15),
+        ] {
+            mem.set_u32(addr, value).unwrap();
+        }
+        let read = ReadMemory(&mem);
+        let (_, frame) = subrange(&read, stack).unwrap();
+        let mut scope = Scope::default();
+        scope.begin_view(&read, scene);
+        scope.begin_entry(&read, handler);
+        SCOPE.set(scope);
+        WALK_DATA.set(Some(data));
+        assert_eq!(walk_stage(&read, frame), Some(Stage::Transparents));
+        WALK_DATA.set(Some(data + ENTRY_BYTES));
+        assert_eq!(walk_stage(&read, frame), None);
+        WALK_DATA.set(Some(data));
+        mem.set_u32(frame + 0x78, 7).unwrap();
+        assert_eq!(walk_stage(&ReadMemory(&mem), frame), None);
+        WALK_DATA.set(None);
+        SCOPE.set(Scope::default());
+    }
 
     #[test]
     fn sorted_data_uses_live_indices_and_refuses_stale_entries() {

@@ -307,7 +307,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "transparents",
         entry: 0x0001_e370,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
@@ -1352,7 +1352,7 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if matches!(r.name, "scene_clear" | "target_select" | "screen_effect") { Status::Partial } else { Status::D3d },
+                if matches!(r.name, "scene_clear" | "target_select" | "screen_effect" | "transparents") { Status::Partial } else { Status::D3d },
                 "{}",
                 r.name
             );
