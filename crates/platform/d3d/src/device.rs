@@ -6179,6 +6179,12 @@ impl<B: Backend> Device<B> {
                     && level.identity[2] == pixels.size
             });
         }
+        #[cfg(feature = "gpu")]
+        self.projection.fit_camera_bumps(
+            &shader,
+            self.ui_fit.is_none() && (target.width, target.height) == (640, 480),
+            &mut extras,
+        );
         // A draw that samples a frame-sized render target into a frame-sized
         // target copies the frame (the blur under a menu dialog ping-pongs
         // two of them). The UI fit places widgets; it must not shrink a

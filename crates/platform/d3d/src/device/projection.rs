@@ -1,9 +1,10 @@
-//! The host draw's horizontal lens. The GPU register file and guest memory
-//! retain their original values, including the matrix used for visibility.
+//! Horizontal correction for draws whose captured projection or screen-space
+//! material inputs still use the retail lens.
 use super::*;
 
 pub(super) struct DisplayProjection {
     factor: f32,
+    camera_factor: f32,
     #[cfg(feature = "gpu")]
     last: Option<(crate::shader::Constants, usize, crate::shader::Constants)>,
 }
@@ -12,6 +13,7 @@ impl Default for DisplayProjection {
     fn default() -> Self {
         Self {
             factor: 1.0,
+            camera_factor: 1.0,
             #[cfg(feature = "gpu")]
             last: None,
         }
@@ -20,9 +22,22 @@ impl Default for DisplayProjection {
 
 impl<B: Backend> Device<B> {
     pub fn set_projection_factor(&mut self, factor: f32) {
-        if factor.is_finite() && factor > 0.0 && factor != self.projection.factor {
+        if factor.is_finite() && factor > 0.0
+            && (factor != self.projection.factor || self.projection.camera_factor != 1.0)
+        {
             self.projection = DisplayProjection {
                 factor,
+                ..Default::default()
+            };
+        }
+    }
+
+    /// The camera already projects through this lens. Screen-space offsets
+    /// stored outside the projection matrix still need its horizontal factor.
+    pub fn set_camera_projection_factor(&mut self, factor: f32) {
+        if factor.is_finite() && factor > 0.0 {
+            self.projection = DisplayProjection {
+                camera_factor: factor,
                 ..Default::default()
             };
         }
@@ -67,14 +82,7 @@ pub fn widen_projection_rows(rows: &mut [[f32; 4]], factor: f32) -> bool {
 
 #[cfg(feature = "gpu")]
 impl DisplayProjection {
-    pub(super) fn for_draw(
-        &mut self,
-        shader: &mut ShaderInputs,
-        scene_target: bool,
-    ) -> Option<crate::shader::Constants> {
-        if !scene_target || self.factor == 1.0 {
-            return None;
-        }
+    fn matrix_row(shader: &ShaderInputs) -> Option<usize> {
         let VertexProcessing::Program { microcode, .. } = &shader.vertex else {
             return None;
         };
@@ -84,6 +92,37 @@ impl DisplayProjection {
             Position::Fixed | Position::Unknown => return None,
         };
         let row = usize::from(row);
+        (row + 4 <= shader.constants.len()).then_some(row)
+    }
+
+    pub(super) fn fit_camera_bumps(
+        &self,
+        shader: &ShaderInputs,
+        scene_target: bool,
+        extras: &mut [crate::state::StageExtras],
+    ) {
+        if self.camera_factor == 1.0 || !scene_target || !extras.iter().any(|stage| stage.samples_frame) {
+            return;
+        }
+        let Some(row) = Self::matrix_row(shader) else { return };
+        if !is_perspective(&shader.constants[row..row + 4]) {
+            return;
+        }
+        for stage in extras.iter_mut().filter(|stage| stage.samples_frame) {
+            stage.bump_env_mat[0] *= self.camera_factor;
+            stage.bump_env_mat[2] *= self.camera_factor;
+        }
+    }
+
+    pub(super) fn for_draw(
+        &mut self,
+        shader: &mut ShaderInputs,
+        scene_target: bool,
+    ) -> Option<crate::shader::Constants> {
+        if !scene_target || self.factor == 1.0 {
+            return None;
+        }
+        let row = Self::matrix_row(shader)?;
         // The shader projects X, Y and W with this matrix.
         // Post quads and orthographic menus keep their own mappings.
         if let Some((source, r, result)) = &self.last
@@ -164,6 +203,17 @@ mod tests {
         let mut offscreen = base.clone();
         assert!(projection.for_draw(&mut offscreen, false).is_none());
         assert!(Arc::ptr_eq(&offscreen.constants, &source));
+        let mut projected = DisplayProjection { camera_factor: 0.75, ..Default::default() };
+        let mut scene = world.clone();
+        let mut extras = StateWords::defaults(false).stage_extras();
+        for stage in &mut extras { stage.bump_env_mat = [8., 7., -4., 5.]; }
+        extras[0].samples_frame = true;
+        projected.fit_camera_bumps(&scene, false, &mut extras);
+        assert_eq!(extras[0].bump_env_mat, extras[1].bump_env_mat);
+        projected.fit_camera_bumps(&scene, true, &mut extras);
+        assert_eq!(extras[0].bump_env_mat, [6., 7., -3., 5.]);
+        assert_eq!(extras[1].bump_env_mat, [8., 7., -4., 5.]);
+        assert!(projected.for_draw(&mut scene, true).is_none());
         let mut quad = base;
         let pass = Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None)
             .to_out(false, OutReg::Pos, 15)

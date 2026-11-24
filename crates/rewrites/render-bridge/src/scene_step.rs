@@ -249,7 +249,7 @@ fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
 pub enum VisibilityLens {
     #[default]
     Retail,
-    /// Bounds applied in the single-copy guest frustum builder.
+    /// Lens applied to the single-copy camera projection by the view builder.
     Guest(f32),
     /// Extra visible space on the exact-mode display copy.
     Display(f32),
@@ -383,11 +383,7 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                 .and_then(|()| step.builder.set_world(extract::world(&m)))
                 .and_then(|()| {
                     if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
-                        let lens = view_record_arm(&m, &camera, key);
-                        let guest_lens = match step.visibility_lens {
-                            VisibilityLens::Guest(factor) => native_render::camera::display_camera(lens, factor),
-                            _ => lens,
-                        };
+                        let guest_lens = view_record_arm(&m, &camera, key, step.visibility_lens);
                         let display_factor = match step.visibility_lens {
                             VisibilityLens::Display(factor) => Some(factor),
                             _ => None,
@@ -1265,9 +1261,9 @@ fn visibility_arm(
 /// `camera`, the start cluster and the mode, and counted. The visibility
 /// takes the Rust camera only when the whole record is equal; otherwise,
 /// and on a decline, the guest's.
-fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey) -> Camera {
+fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey, lens: VisibilityLens) -> Camera {
     use scene_extract::visibility::view::{self, Decline};
-    let (rust, guest) = match view::build(m, camera) {
+    let (mut rust, guest) = match view::build(m, camera) {
         Ok(pair) => pair,
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
@@ -1276,6 +1272,9 @@ fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey) -> Camera {
         }
     };
     VIEW_RECORD_CHECKED.fetch_add(1, Ordering::Relaxed);
+    if let VisibilityLens::Guest(factor) = lens {
+        rust.camera = native_render::camera::display_camera(rust.camera, factor);
+    }
     let (lens, parity) = view::arm(&rust, &guest);
     match parity.first {
         None => {
