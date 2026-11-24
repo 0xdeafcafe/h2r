@@ -91,6 +91,11 @@ clean-up's bit width (`+0x48` in 15 bits, the type area per engine through
 the jump table at `0x7da38`, and so on). The decoder ends by running the
 clean-up and the caller treats a change as a failed decode (`0x7d9b7`,
 `0xb0c1e`, `0xb1e17`).
+`variants::wire` is the codec's model, field by field and bit by bit,
+checked against the lifted original
+(`crates/rewrites/engine/tests/variant_record_differential.rs`); the
+`rules` feature answers both routines with it for a record of the script
+index ([game-types-without-carriers.md](game-types-without-carriers.md#no-retail-engine-object)).
 
 Two consequences:
 

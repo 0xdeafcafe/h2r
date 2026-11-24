@@ -13,6 +13,12 @@
 //!   original alone resets every one of them.
 //! - The protocol map answers as the original, registers included, for
 //!   every index but the script index, which plays distributed.
+//! - The wire codec (`variants::wire`, encode `0x7cc50`, decode
+//!   `0x7d520`) writes and reads the bits the original does for invented
+//!   records and streams of every retail index, garbage streams included;
+//!   a script record goes on the wire as a Slayer record would, less
+//!   Slayer's type area, and comes off it with a zero one, where the
+//!   original alone refuses it.
 //!
 //! ```sh
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential \
@@ -30,6 +36,7 @@ use variants::record::{
     self, CleanUp, DISTRIBUTED, ENGINE_AT, GameType, GameVariant, RECORD_SIZE, SCRIPT_INDEX,
     SYNCHRONOUS, TYPE_AREA, check,
 };
+use variants::wire::{self, Bits, Decoded};
 
 const STACK: u32 = 0x007f_f000;
 /// Where the record under test lives.
@@ -373,5 +380,282 @@ fn the_protocol_map_answers_as_the_game_and_the_script_index_plays_distributed()
         }
         assert_eq!(cpu.gpr[3], gpr[3], "EBX is the caller's");
         assert_eq!(cpu.gpr[6..], gpr[6..], "ESI and EDI are the caller's");
+    }
+}
+
+/// Where the bit stream's header and its words live.
+const STREAM: u32 = 0x0063_0000;
+const WORDS: u32 = 0x0064_0000;
+
+/// Puts `bits` in memory as the game's stream.
+fn seed_bits(mem: &mut Ram<'_>, bits: &Bits) {
+    let mut head = [0u8; 0x18];
+    head[0..4].copy_from_slice(&WORDS.to_le_bytes());
+    head[4..8].copy_from_slice(&bits.size.to_le_bytes());
+    head[0x10..0x14].copy_from_slice(&bits.pos.to_le_bytes());
+    head[0x14] = u8::from(bits.error);
+    assert!(mem.put(STREAM, &head));
+    let words: Vec<u8> = bits.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    assert!(mem.put(WORDS, &words));
+}
+
+/// The stream as the game left it.
+fn bits_of(mem: &Ram<'_>, like: &Bits) -> Bits {
+    let mut head = [0u8; 0x18];
+    assert!(mem.get(STREAM, &mut head));
+    let mut words = vec![0u8; like.words.len() * 4];
+    assert!(mem.get(WORDS, &mut words));
+    Bits {
+        words: words
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect(),
+        size: like.size,
+        pos: u32::from_le_bytes(head[0x10..0x14].try_into().unwrap()),
+        error: head[0x14] != 0,
+    }
+}
+
+/// A record of a retail type for the wire: its stock record with some
+/// fields drawn anew inside their bits (the encoder formats a warning for
+/// a value past them, and a 16-bit store it sign-extends past 0x7fff),
+/// sometimes a new name of 0 to 32 units, and, when `noisy`, noise in the
+/// spare bytes the wire does not carry (docs/game/game-options.md, "Spare
+/// bytes").
+fn wire_record(rng: &mut Rng, ty: GameType, noisy: bool) -> [u8; RECORD_SIZE] {
+    let mut b = GameVariant::stock(ty).unwrap().to_bytes();
+    if noisy {
+        for range in [
+            0x02..0x03,
+            0x5c..0x74,
+            0x8c..0xa4,
+            0xb0..0xb4,
+            0xb8..0xcc,
+            0xd8..0xf0,
+            0x10c..RECORD_SIZE,
+        ] {
+            for x in &mut b[range] {
+                *x = rng.u32() as u8;
+            }
+        }
+    }
+    if rng.below(4) == 0 {
+        b[0] = rng.below(2) as u8;
+    }
+    if rng.below(2) == 0 {
+        let len = rng.below(33) as usize;
+        for k in 0..32 {
+            let u = if k < len {
+                1 + rng.below(0xffff) as u16
+            } else {
+                0
+            };
+            let at = record::NAME_AT + 2 * k;
+            b[at..at + 2].copy_from_slice(&u.to_le_bytes());
+        }
+    }
+    // The description goes on the wire plus one, in 7 bits.
+    if rng.below(3) == 0 {
+        b[record::DESCRIPTION_AT] = rng.below(0x7f) as u8;
+    }
+    for (at, bytes, bits) in wire::fields(ty.engine()).unwrap() {
+        if rng.below(4) != 0 {
+            continue;
+        }
+        let mut v = rng.u32() & ((1u64 << bits) - 1) as u32;
+        if bytes == 2 && bits == 16 {
+            v &= 0x7fff;
+        }
+        b[at..at + bytes].copy_from_slice(&v.to_le_bytes()[..bytes]);
+    }
+    b
+}
+
+/// A stream for the encoder: noise in its words, a random start, and
+/// sometimes too short for the record.
+fn writer(rng: &mut Rng) -> Bits {
+    let size = if rng.below(4) == 0 {
+        4 + rng.below(40)
+    } else {
+        0x80 + rng.below(0x80)
+    };
+    let mut bits = Bits::new(size);
+    if rng.below(2) == 0 {
+        for w in &mut bits.words {
+            *w = rng.u32();
+        }
+    }
+    bits.pos = rng.below(40).min(size * 8);
+    bits
+}
+
+/// Runs the original encode of the record at `REC` into the stream.
+fn run_encode(original: &mut lifted::Original, mem: &mut Ram<'_>, rng: &mut Rng) {
+    assert!(mem.put(STACK + 4, &STREAM.to_le_bytes()));
+    assert!(mem.put(STACK + 8, &REC.to_le_bytes()));
+    let mut gpr = regs(rng);
+    gpr[4] = STACK;
+    assert!(mem.put(STACK, &HARNESS_EXIT.to_le_bytes()));
+    let mut cpu = Cpu {
+        gpr,
+        eip: points::VARIANT_ENCODE.base,
+        eflags: 0x202,
+        ..Cpu::default()
+    };
+    cpu.flags_valid = u32::MAX;
+    lifted::code::run_until(original, &mut cpu, mem, STEPS, |c| c.eip == HARNESS_EXIT)
+        .unwrap_or_else(|e| panic!("encode: {e}"));
+    assert_eq!(cpu.gpr[4], STACK + 12, "the encode pops its two arguments");
+}
+
+/// Runs the original decode from the stream into the record at `REC`: AL.
+fn run_decode(original: &mut lifted::Original, mem: &mut Ram<'_>, rng: &mut Rng) -> u32 {
+    let mut gpr = regs(rng);
+    gpr[0] = REC; // eax
+    gpr[1] = STREAM; // ecx
+    run(original, mem, points::VARIANT_DECODE.base, gpr).gpr[0] & 0xff
+}
+
+#[test]
+fn the_encode_writes_what_the_model_writes_for_every_retail_index() {
+    let image = Image::require();
+    let mut original = image.original();
+    let base = Ram::new(image);
+    let mut rng = Rng(0x0007_cc50);
+    for n in 0..1500 {
+        let ty = GameType::ALL[rng.below(GameType::ALL.len() as u32) as usize];
+        let r = wire_record(&mut rng, ty, true);
+        let start = writer(&mut rng);
+        let mut want = start.clone();
+        wire::encode(&r, &mut want).unwrap();
+
+        let mut mem = base.clone();
+        mem.set_record(&r);
+        seed_bits(&mut mem, &start);
+        run_encode(&mut original, &mut mem, &mut rng);
+        assert_eq!(bits_of(&mem, &start), want, "{n} {ty:?}");
+        assert_eq!(mem.record(), r, "{n}: the encode reads only");
+    }
+}
+
+#[test]
+fn the_decode_reads_what_the_model_reads_for_every_retail_index() {
+    let image = Image::require();
+    let mut original = image.original();
+    let base = Ram::new(image);
+    let mut rng = Rng(0x0007_d520);
+    let (mut kept, mut refused, mut garbage) = (0, 0, 0);
+    for n in 0..1500 {
+        // A stream the encoder made, or noise.
+        let stream = if rng.below(3) == 0 {
+            garbage += 1;
+            let mut bits = Bits::new(0x20 + rng.below(0xe0));
+            for w in &mut bits.words {
+                *w = rng.u32();
+            }
+            bits
+        } else {
+            let ty = GameType::ALL[rng.below(GameType::ALL.len() as u32) as usize];
+            let mut bits = Bits::new(0x100);
+            wire::encode(&wire_record(&mut rng, ty, false), &mut bits).unwrap();
+            if rng.below(8) == 0 {
+                // Cut short.
+                bits.size = rng.below(bits.pos / 8 + 1);
+                bits.words.truncate(bits.size.div_ceil(4) as usize);
+            }
+            bits.pos = 0;
+            bits
+        };
+        if wire::peek_engine(&stream) == SCRIPT_INDEX as u32 {
+            continue;
+        }
+        // The record decoded into: zero, or noise the decode leaves where
+        // it writes nothing (and the clean-up then mostly refuses).
+        let mut out = [0u8; RECORD_SIZE];
+        if rng.below(4) == 0 {
+            for x in &mut out {
+                *x = rng.u32() as u8;
+            }
+        }
+        let mut want_bits = stream.clone();
+        let mut want = out;
+        let answer = wire::decode(&mut want, &mut want_bits);
+
+        let mut mem = base.clone();
+        mem.set_record(&out);
+        seed_bits(&mut mem, &stream);
+        let al = run_decode(&mut original, &mut mem, &mut rng);
+        let what = format!("{n} engine {}", wire::peek_engine(&stream));
+        assert_eq!(al == 1, answer == Decoded::Kept, "{what}");
+        assert_eq!(mem.record(), want, "{what}: the record");
+        assert_eq!(bits_of(&mem, &stream), want_bits, "{what}: the stream");
+        match answer {
+            Decoded::Kept => kept += 1,
+            Decoded::Refused => refused += 1,
+        }
+    }
+    assert!(
+        kept > 100 && refused > 200 && garbage > 300,
+        "{kept} {refused} {garbage}"
+    );
+}
+
+#[test]
+fn a_script_record_crosses_the_wire_as_slayer_does_less_its_type_area() {
+    let image = Image::require();
+    let mut original = image.original();
+    let base = Ram::new(image);
+    let mut rng = Rng(0x0006_0006);
+    for n in 0..200 {
+        let ty = GameType::ALL[rng.below(GameType::ALL.len() as u32) as usize];
+        let mut r = wire_record(&mut rng, ty, false);
+        r[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&SCRIPT_INDEX.to_le_bytes());
+        r[TYPE_AREA].fill(0);
+        let mut slayer = r;
+        slayer[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&2i32.to_le_bytes());
+
+        // The encode: ours for the script record, the game's for Slayer's.
+        let start = Bits::new(0x100);
+        let mut ours = start.clone();
+        wire::encode(&r, &mut ours).unwrap();
+        let mut mem = base.clone();
+        mem.set_record(&slayer);
+        seed_bits(&mut mem, &start);
+        run_encode(&mut original, &mut mem, &mut rng);
+        let game = bits_of(&mem, &start);
+        assert_eq!(game.pos, ours.pos + 3, "{n}: Slayer's 3 type-area bits");
+        let mut as_slayer = ours.clone();
+        as_slayer.words[0] = (as_slayer.words[0] & !0xf) | 2;
+        as_slayer.pos += 3;
+        assert_eq!(game, as_slayer, "{n}: the same bits but the index");
+
+        // The decode: ours of our stream, the game's of Slayer's.
+        let mut stream = ours.clone();
+        stream.pos = 0;
+        let mut got = [0u8; RECORD_SIZE];
+        let answer = wire::decode(&mut got, &mut stream.clone());
+        let mut mem = base.clone();
+        mem.set_record(&[0; RECORD_SIZE]);
+        let mut game_stream = game.clone();
+        game_stream.pos = 0;
+        seed_bits(&mut mem, &game_stream);
+        let al = run_decode(&mut original, &mut mem, &mut rng);
+        let mut want = mem.record();
+        assert_eq!(engine_of(&want), 2);
+        want[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&SCRIPT_INDEX.to_le_bytes());
+        assert_eq!(got, want, "{n}: Slayer's record but the index");
+        assert_eq!(got[TYPE_AREA], [0; 0x1c]);
+        let v = GameVariant::from_bytes(&got).unwrap();
+        assert_eq!(answer == Decoded::Kept, check(&v).is_empty(), "{n}");
+        assert_eq!(
+            al == 1,
+            answer == Decoded::Kept,
+            "{n}: as the game keeps Slayer's"
+        );
+
+        // The game alone refuses the script stream.
+        let mut mem = base.clone();
+        seed_bits(&mut mem, &stream);
+        assert_eq!(run_decode(&mut original, &mut mem, &mut rng), 0, "{n}");
     }
 }

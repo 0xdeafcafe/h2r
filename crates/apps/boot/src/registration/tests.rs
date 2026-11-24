@@ -594,13 +594,18 @@ fn the_rules_runtime_answers_the_carriers_scoring_unless_turned_off() {
     assert!(befores("-rules").is_empty());
 }
 
-/// With the rules runtime on, the record clean-up and the protocol map
-/// each have the runtime's `before` (`rules::record`), and no other
-/// feature's; off, neither is hooked.
+/// With the rules runtime on, the record clean-up, the wire codec and the
+/// protocol map each have the runtime's `before` (`rules::record`), and no
+/// other feature's; off, none is hooked.
 #[cfg(feature = "rules")]
 #[test]
 fn the_rules_runtime_answers_the_record_paths_unless_turned_off() {
-    const PATHS: [&str; 2] = ["VARIANT_CLEAN_UP", "VARIANT_PROTOCOL"];
+    const PATHS: [&str; 4] = [
+        "VARIANT_CLEAN_UP",
+        "VARIANT_DECODE",
+        "VARIANT_ENCODE",
+        "VARIANT_PROTOCOL",
+    ];
     let hooks = |switches: &str| {
         let plan = plan(&Case::full(switches)).unwrap();
         let mut at: Vec<_> = plan

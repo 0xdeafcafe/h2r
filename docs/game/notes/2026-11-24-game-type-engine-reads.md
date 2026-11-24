@@ -441,3 +441,61 @@ h2 disasm disc/default.xbe 0x1959c0 70      # the bit reader
   words, `+4` the size in bytes, `+0x10` the bit position), the count on
   the stack (`ret 4`): it reads LSB first, up to the bits left, and
   advances the position by the full count.
+
+## 2026-11-24: GE2, the wire codec
+
+The same image and tools. `variants::wire` is the layout below;
+`crates/rewrites/engine/tests/variant_record_differential.rs` runs it
+against the lifted encode and decode for invented records and streams of
+every retail index, garbage streams included.
+
+**Reproduce.**
+
+```sh
+h2 disasm disc/default.xbe 0x7cc50 700      # the encode, 0x7cc50..0x7d4f8
+h2 disasm disc/default.xbe 0x7d520 330      # the decode, 0x7d520..0x7da36
+h2 disasm disc/default.xbe 0x195720 80      # the bit writer
+h2 disasm disc/default.xbe 0x1947e0 40      # the checked write
+h2 disasm disc/default.xbe 0x194fa0 60      # the name reader
+python3 -I words.py disc/default.xbe 0x7d4f8 9   # the encode's type-area table
+python3 -I words.py disc/default.xbe 0x7da38 9   # the decode's
+```
+
+- **Calls.** Encode: the stream and the record on the stack, `ret 8`.
+  Decode: EAX the record out, ECX the stream (moved to EDI for the
+  reader), `ret`, AL the answer.
+- **The stream.** `+0` the words, `+4` the size in bytes, `+0x10` the bit
+  position, `+0x14` an error byte. The writer `0x195720` (EAX the
+  stream, EDX the value, the count on the stack) cuts the count to the
+  bits left, masks the value to it, ORs it into its word, or across two
+  ORs into the first and stores the second, and moves the position by
+  the whole count. The reader `0x1959c0` is its mirror (above). Neither
+  sets the error byte.
+- **Order and widths** (a width is the bits of the clean-up's limit): the
+  index, 4; if it is 0, nothing more (the decode zeroes the record and
+  answers AL 1). Then `+0` 1 bit; the name, 16 bits a unit, up to 32
+  units and stopping after the first 0 (the reader `0x194fa0` stores
+  each unit, and after 32 with no 0 zeroes the last and sets the error
+  byte); `+3` plus one, 7 bits (the decode stores it less one); `+0x48`
+  15; `+0x4c` 3; `+0x50`, `+0x54` 16; `+0x58` 2; `+0x74`, `+0x78` 5;
+  `+0x7c`, `+0x80`, `+0x84` 16; `+0x88`, `+0xa4`, `+0xa8` 2; `+0xac` 16;
+  `+0xb4` 4; the bytes `+0xcc` 2, `+0xcd`..`+0xd3` 3, `+0xd4` 5, `+0xd5`
+  2, `+0xd6`, `+0xd7` 5. The `+0x44`, `+0x48`..`+0xb4` fields are dwords,
+  the bytes bytes.
+- **The type areas.** CTF: `+0xf0` 8, `+0xf4` 16, `+0xf8` 2, `+0xfc` 1,
+  `+0x100` 2, `+0x104` 2 (dwords). Assault: words `+0x108`, `+0x10a` 16,
+  then CTF's. Slayer: `+0xf0` 3. Oddball: `+0xf0` 3, words `+0xf4` 2,
+  `+0xf6` 1, `+0xf8` 2, `+0xfa` 2. King: `+0xf0` 5, word `+0xf4` 16.
+  Juggernaut: `+0xf0` 7, word `+0xf4` 2. Territories: words `+0xf0` 4,
+  `+0xf2` 16, `+0xf4` 16.
+- **5, 6 and out of range.** The encode's type-area jump (`0x7d14d`) has
+  no bounds check, and its table holds 0 for 5 and 6: a record of either
+  jumps to address 0, and one out of 1..9 through whatever follows the
+  table. The decode checks (`0x7d82a`) and refuses them (AL 0) with the
+  common fields already stored.
+- **Values past their bits.** The encode compares most fields with their
+  limit and formats a warning into its frame (`0xb66f0`, through the
+  checked write `0x1947e0` for the narrow ones) when one is past it; the
+  value still goes out masked. Word fields are sign-extended first, so a
+  16-bit one above `0x7fff` takes the warning. Nothing else follows from
+  it.

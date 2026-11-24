@@ -13,7 +13,7 @@
 //! map's labelled things, for the start gate and the script's label reads;
 //! `gate` is the lobby's start gate, which holds Start Game on a map that
 //! lacks what the variant's script needs; `record` answers the record
-//! clean-up and the protocol map for the script index.
+//! clean-up, the wire codec and the protocol map for the script index.
 
 pub mod census;
 pub mod feature;

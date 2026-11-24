@@ -719,6 +719,19 @@ points! { ALL;
     /// record and AL 0. Called by the codec's decode (`0x7d9b7`), the
     /// options copy at game start (`0x137e05`) and the content reads.
     VARIANT_CLEAN_UP @ 0x0019_d650: [fn(record: ebx) -> al ret 0], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// The variant record's wire encode: the bit stream (`+0` words, `+4`
+    /// size in bytes, `+0x10` bit position) and the record on the stack.
+    /// Writes the index (4 bits), then for a nonzero one the common fields
+    /// and the type area through a jump table with no bounds check
+    /// (`0x7d151`, table `0x7d4f8`): 5, 6 and anything out of 1..9 jump
+    /// through a zero or a stray entry.
+    VARIANT_ENCODE @ 0x0007_cc50: [fn(writer: stack 0, record: stack 1) ret 8], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// The variant record's wire decode: EAX the record out, ECX the bit
+    /// stream. Reads the fields the encode writes, refuses 5, 6 and
+    /// anything out of 1..9 at the type area (`0x7d82a`), zeroes the
+    /// record for index 0 (AL 1), and otherwise answers the clean-up's AL
+    /// on a copy (`0x7d9b7`).
+    VARIANT_DECODE @ 0x0007_d520: [fn(record: eax, reader: ecx) -> al ret 0], Optional; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
     /// The lobby protocol map: ECX the variant record; EAX 2 (distributed)
     /// for `+0x44` 1..4 and 7..9, 1 (synchronous) for 5, 6 and anything out
     /// of range, through a byte table (`0x161cbc`). Called from the
