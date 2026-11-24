@@ -29,6 +29,9 @@ pub struct LoadedWorld {
     pub shaders: Vec<TagId>,
     /// The lightmap group's bitmap and palettes, when the BSP is lit.
     pub lightmap_bitmap: Option<TagId>,
+    /// Placement lighting mode at +0x56. With a matching lightmap group,
+    /// the BSP record builder selects implementation 1 for a nonzero mode.
+    pub per_vertex_placements: Vec<bool>,
     /// A damaged lightmap tag makes the lighting selector unknown.
     /// Geometry remains available to other passes.
     pub lightmap_error: Option<String>,
@@ -249,6 +252,9 @@ pub fn load_world<R: Read + Seek>(
         shaders,
         lightmap_bitmap: group.as_ref().and_then(|g| g.bitmap),
         lightmap_error,
+        per_vertex_placements: bsp.instances.iter().map(|inst| {
+            u16::from_le_bytes([inst.raw[0x56], inst.raw[0x57]]) != 0
+        }).collect(),
         palettes: group.map(|g| g.palettes).unwrap_or_default(),
         failed_sections: failed,
     })

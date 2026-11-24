@@ -203,7 +203,19 @@ pub fn unlit_bsp_pass_sampled(
     pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
     properties: &[tags::shader::AnimatedProperty],
 ) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
-    let (imp, animation) = sampled(unlit_bsp_implementation(pass)?, properties)?;
+    unlit_bsp_implementation(pass)?;
+    selected_bsp_pass_sampled(pass, inputs, normalization, properties)
+}
+
+/// Compile the implementation selected by the structure render record.
+/// The part mask covers every pass in the layer, so a batched material
+/// must still have exactly one pass.
+pub fn selected_bsp_pass_sampled(
+    pass: &tags::material::SelectedImplementation, inputs: &EngineInputs, normalization: Option<TagId>,
+    properties: &[tags::shader::AnimatedProperty],
+) -> Result<(WorldPass, Option<crate::layer_pass::PassAnimation>), Refusal> {
+    if pass.layer_passes != 1 { return Err(Refusal::Passes(pass.layer_passes)); }
+    let (imp, animation) = sampled(&pass.implementation, properties)?;
     let look = world_implementation_look(pass.pass, &imp, normalization)?;
     Ok((world_pass(look, &imp, inputs)?, animation))
 }
