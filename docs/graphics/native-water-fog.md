@@ -1,6 +1,6 @@
 # Native renderer stage 4b: water, fog and camouflage
 
-Status: Partly built. The native renderer draws planar fog (layer 16), the water edge blend (layer 6), sorted pool surfaces (layer 15), active camouflage (layers 18 and 19) and holograms (layer 21). Parity with D3D remains unverified.
+Status: Partly built. The native renderer draws planar fog (layer 16), the water edge blend (layer 6), active camouflage (layers 18 and 19) and holograms (layer 21). Parity with D3D remains unverified.
 Code: `crates/rewrites/render-bridge/src/native_fog.rs`, `native_water.rs`, `native_layers.rs`, `crates/extensions/game/src/native_fog_glue.rs`, `native_water_glue.rs`, `native_layers_glue.rs`, `native_objects_glue.rs`, `crates/rewrites/native-render/src/fog.rs`, `fog_gpu.rs`, `water_gpu.rs`, `object_program_gpu.rs`, `crates/rewrites/scene-extract/src/layout/world_layers.rs` (`sorted_site`). Tests: `crates/rewrites/render-bridge/tests/native_fog.rs`, the unit tests of `render_bridge::native_layers`, `native_render::object_program` and `object_program_gpu`, `scene_extract::layout::world_layers`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -12,8 +12,8 @@ The late scene-list passes include the water edge blend (6), planar fog
 (16), active camouflage (18, 19) and holograms (21). They use the layer
 draw (`0x00044550`) and scene list (`0x004c1a48`) also used by layer 3.
 A whole-layer native replacement clears the layer bit for the items it
-draws and restores the bit at the next layer draw. Pool surfaces use the
-sorted layer-15 handler. The water passes can read scene-copy and reflection inputs.
+draws and restores the bit at the next layer draw. Pool surfaces stay on
+the D3D path at the sorted layer-15 handler. The water passes can read scene-copy and reflection inputs.
 
 ### The census (Code, from the lifted `render_scene_passes` and layer draw ports, `engine::render_loop::scene` and `layer`; pass counts are V on the owner's disc, e3-lighting.md "Pass taxonomy")
 
@@ -191,17 +191,16 @@ the cached pipelines with their own uniforms and sampled textures.
   Towers and Ivory Tower use this route. The sorted geometry handler
   (`0x00041020` through `0x00040f60`) selects and binds each pass before
   issuing its indexed range. `native_transparents::pool_issue` checks the
-  sorted entry, shader, emitter frame and indexed call. The native pass
-  translates the resolved vertex and pixel programs with the evaluated
-  constants, ripple frame, bump matrices, reflection, refraction and
-  Fresnel bindings. Fog and blend come from that issue. Frame replay
-  prepares the retained packet with its own texture views. A frame
-  snapshot uses the physical extent of each target copy, including the
-  full width of the display copy. Shader or pipeline unavailability,
-  missing textures, incompatible dimensions and attachment aliases leave
-  the packet on D3D. Recording refusals are counted by cause per BSP.
-  Mainmenu's aerial water is an alpha-tested environment material. Lockout
-  has no pool template. Neither requires a layer-6 pool pass.
+  sorted entry, shader, emitter frame and indexed call. The native
+  transparents walk leaves these shaders to the guest handler, and
+  `game::native_residual_glue` refuses the resolved draw
+  (`layer_plan_15_pool_on_d3d`), so the guest's D3D packet draws the pool.
+  `IndexedPass::for_pool` translates the resolved programs, ripple frame,
+  bump matrices, reflection, refraction and Fresnel bindings. Its depth
+  and lens against the scene are unproven (its Delta Towers bay covers the
+  cliffs and terrain), so it is not admitted. Mainmenu's aerial water is an alpha-tested
+  environment material. Lockout has no pool template. Neither requires a
+  layer-6 pool pass.
 - **The water edge blend, drawn natively (layer 6).** The skip, the
   scene and the reservation are the fog's: one context-only observer before the layer draw, ordered
   after the world's and the fog's. It runs for layer 6 when the caller
