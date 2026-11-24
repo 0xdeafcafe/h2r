@@ -131,3 +131,45 @@ mod promotion_tests {
         assert_eq!(admission(1, 1, 9, 9), Admission::AdmitAndArm);
     }
 }
+
+/// A class-wide or per-tag ceiling supplies a list of occupied channels.
+/// Prefer a strictly older owner beyond the class's minimum age. A higher
+/// per-sound priority may also evict a younger owner.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct CappedSelection {
+    pub channel: Option<u16>,
+    pub age: i32,
+}
+
+impl CappedSelection {
+    pub fn old_enough(self, age: i32, minimum: i32) -> bool {
+        age >= minimum && age > self.age
+    }
+
+    pub fn select(&mut self, channel: u16, age: i32) {
+        self.channel = Some(channel);
+        self.age = age;
+    }
+}
+
+/// Reusing another sound on the same loop carries only its source nibble.
+pub fn inherit_source(current: u8, playing: u8) -> u8 {
+    (current & 0xf0) | (playing & 0xf)
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    #[test]
+    fn capped_age_needs_both_thresholds_and_keeps_first_on_ties() {
+        let mut chosen = CappedSelection::default();
+        assert!(!chosen.old_enough(0, 0));
+        assert!(chosen.old_enough(4, 4));
+        chosen.select(3, 4);
+        assert!(!chosen.old_enough(4, 1));
+        assert!(!chosen.old_enough(5, 6));
+        assert!(chosen.old_enough(5, 5));
+        assert_eq!(inherit_source(0xb7, 0x23), 0xb3);
+    }
+}

@@ -16,6 +16,10 @@ caches edge origins and deltas for short surface rings and tests them
 four at a time ([ring layout](sim-rewrite-collision.md#44-rings-and-the-inside-test)).
 The whole query's object-reference sphere pretest runs through the Rust
 sphere kernel at its guest call site ([sphere pretest](collision-queries.md#object-reference-sphere-pretest)).
+Phase 4 runs as an opt-in sound arm. Its synthetic differential harness compares the
+guest and Rust sound bodies at each call and return. The owner-image, match,
+campaign, cross-architecture and timing results are pending.
+
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
@@ -411,8 +415,20 @@ as runtime before).
   Voice start, pitch, completion order and the callback grid must match,
   because completion feeds the guest ([sim-budget.md](../perf/sim-budget.md),
   "Headless guest dependencies").
-- *Hosts.* With the scheduling in Rust, a silent host can skip the
-  per-voice DirectSound calls it now makes only to keep a clock.
+- *Implementation.* `sim-sound` owns the working data for a sound update,
+  including listener axes, channel levels, track selection and obstruction
+  weights. The engine adapters gather each set of inputs from the current
+  guest state. They submit the results to the existing mixer and reload live
+  records across callbacks. The driver fuses calls between sound bodies and
+  uses the original stack at calls to other systems. Reverting an arena
+  restores the persistent sound records directly.
+- *Verification.* Full sim reports with arena hashes include the ordered
+  `sound.voices` component. Compare complete reports from the lifted and
+  native arms with `h2 sim diff`. A quiet tick has an empty event list.
+  The clock-only arm still submits the room and filter parameters and
+  delivers any callbacks at the setters. [Sound reporting](../runtime/sim.md#finding-the-first-differing-state)
+- *Hosts.* Per-voice DirectSound submissions still drive the silent clock. Replacing
+  a submission requires preserving its completion and callback order.
 
 **Havok world (phase 5).**
 
@@ -474,7 +490,7 @@ still uses them.
 | **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. Retires `native_graph_resolve`. |
 | **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. |
 | **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (units, then bipeds, vehicles, weapons) | `impl.sim.native.objects` | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
-| **4** | Sound sim | `impl.sim.native.sound` | Ladder clean, with voice start and completion order compared per tick. ≥ 0.6 ms more. Retires `submix-fx`. |
+| **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm. Promote after the ladder matches, including voice start and completion order per tick, and Waterworks saves ≥ 0.6 ms/tick. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |
 | **6** | Effects, particles, decals | `impl.sim.native.effects` | Ladder clean. ≥ 0.4 ms more. **Waterworks ≤ 7.5 ms/tick** if *k* ≥ 3.3; otherwise after phase 7. |
 | **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | `impl.sim.native.seats` | Ladder clean. ≥ 0.9 ms more on four local seats. Retires `native_observer_camera` and `observer-resources`. Skipped for hosts if phantom seats do not run it. |

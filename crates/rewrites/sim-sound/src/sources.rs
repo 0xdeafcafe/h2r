@@ -140,3 +140,47 @@ mod allocation_tests {
         }
     }
 }
+
+/// A candidate's sound-class priority. Within a class, the layer is a
+/// tie-breaker only for instances of the same tag. A remaining tie is
+/// broken by distance to the assigned listener (128b90).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VoicePriority {
+    pub class: i16,
+    pub tag: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PriorityTest {
+    Prefer(bool),
+    CompareLayer,
+    CompareDistance,
+}
+
+impl VoicePriority {
+    pub fn compare(self, other: Self) -> PriorityTest {
+        use std::cmp::Ordering::*;
+        match self.class.cmp(&other.class) {
+            Greater => PriorityTest::Prefer(true),
+            Less => PriorityTest::Prefer(false),
+            Equal if self.tag == other.tag => PriorityTest::CompareLayer,
+            Equal => PriorityTest::CompareDistance,
+        }
+    }
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    #[test]
+    fn class_decides_then_same_tag_layer_then_distance() {
+        let a = VoicePriority { class: 2, tag: 7 };
+        let b = VoicePriority { class: 1, tag: 7 };
+        assert_eq!(a.compare(b), PriorityTest::Prefer(true));
+        assert_eq!(b.compare(a), PriorityTest::Prefer(false));
+        assert_eq!(a.compare(a), PriorityTest::CompareLayer);
+        let c = VoicePriority { class: 2, tag: 8 };
+        assert_eq!(a.compare(c), PriorityTest::CompareDistance);
+    }
+}

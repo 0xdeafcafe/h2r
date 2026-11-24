@@ -86,9 +86,9 @@ The instruction list identifies 11 more owners. Their hottest instruction can ra
 - **Sound.** `127805` passes a listener point to `11bed0`, which calls `14a280` and returns the leaf, cluster and BSP. The listener stores the result at `127b04..127b0d`. Code at `221dd6..221e14` uses the cluster for a transmission threshold. The verdict at `127d9e` affects nearest-listener selection. Substituting a constant can change which voices play and when their packets complete, even on the silent clock. Keep the listener update, BSP queries, sound service and voice scheduling. Weapon collision shares `14a280`. [Listener ownership](../game/bots.md#43-hiding-the-views-traced) · [Clock-only host](../live/dedicated-host.md#light-host)
 
 - `impl.sim.observer-resources` shortens the current cluster's prediction list at `3f549 → 16e5e0`. In mode 1, types 0, 7 and 8 branch at `16e61c`, `16e6d6` and `16e6e8` straight to the common loop tail. Those cases issue no calls, touch no persistent state and leave accumulated success unchanged. The hook checks up to 64 trailing entries and passes a shortened block header in two unused caller stack words. The guest still executes the prefix over the same loaded BSP metadata and handles every cache request. The cluster's neighbour scan and its separate call at `3f619` run as before. Counting each retail cluster once, 298 of 616 entries qualify on Lockout (16 clusters) and 864 of 1,495 on Waterworks (56 clusters). Tick cost depends on which clusters the cameras visit. [Cluster resource layout](../formats/structure-bsp.md)
-- `impl.sim.submix-fx` skips conversion of obstruction and room levels into reverb and filter coefficients at `2211e0`. Its caller at `220fbd` updates the submix state, calls the leaf, then marks the record valid. The leaf builds two stack descriptors. The silent path supplies neutral descriptors to the same `SetI3DL2Source` and `SetFilter` calls, in order, reloading the buffer handle between calls and returning the final HRESULT. Either setter can deliver a pending stream callback. These parameters shape PCM on a mix-in. The clock-only mixer advances voice cursors and completion events without using the mix-in filter or room gains. The guest's sound admission, pitch, DSP submission points and callback processing still run. [DirectSound setters](../../crates/platform/dsound/src/state.rs) · [Callback delivery](../../crates/platform/dsound/src/register.rs) · [Audio clock](../../crates/platform/audio/src/mixer.rs)
+- The sound arm computes the mix-in room and filter descriptors and submits both setters in guest order. Either setter can deliver a pending stream callback. After the first call the pass reloads the mix-in handle for the filter. Silent hosts use the same submissions on the packet clock. [Sound simulation](../engine/sim-rewrite.md#sketches) · [Callback delivery](../audio/dsound.md)
 
-Both switches default on only in the light profile. Normal play and a sim with `-host-light` install none of the hooks. Static analysis used the retail image and map data offline. The coordinator can use the existing sim report for both state hashes and timing.
+Observer prediction defaults on in the light profile. Sound simulation is opt-in on both light and playback hosts.
 
 ## Subsystem boundaries
 
@@ -148,8 +148,8 @@ Use one optimised coordinator-built CLI and its full clang image for every arm. 
 set -euo pipefail
 out=$(mktemp -d "${RUSH_KEEP:?}/guest-skips.XXXXXX")
 unset H2_PROFILE H2_TIMELINE H2_HOST_AUDIT H2_LOCKSTEP H2_HOST_MODULE H2_SERVER_MAP_DIR
-off='-impl.sim.observer-resources,-impl.sim.submix-fx'
-on='impl.sim.observer-resources,impl.sim.submix-fx'
+off='-impl.sim.observer-resources,-impl.sim.native.sound'
+on='impl.sim.observer-resources,impl.sim.native.sound'
 
 run_arm() (
     arm=$1; pass=$2; arena=$3
@@ -180,17 +180,21 @@ for case_id in lockout waterworks; do
         bot: [range(4) as $i | {name: (["Red 1","Blue 1","Red 2","Blue 2"][$i]),
             skill: "legendary", team: ($i % 2)}]
     }' > "$out/$case_id.json"
-    for arm in off repeat observer-resources submix-fx all; do
+    for arm in off repeat observer-resources native.sound all; do
         run_arm "$arm" parity on
         diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.off.json") \
                 <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.$arm.json")
+        jq -e '.state_components_v1 | .truncated_after == null and
+            (.ticks[0].changed | has("sound.voices"))' "$out/$case_id.parity.$arm.json" >/dev/null
+        result=$(h2 sim diff "$out/$case_id.parity.off.json" "$out/$case_id.parity.$arm.json")
+        [[ "$result" == "identical: 1800 ticks, every component agrees" ]] || { echo "$result"; exit 1; }
     done
     for pass in 1 2 3; do
-        arms=(off observer-resources submix-fx all)
-        if [[ $pass == 2 ]]; then arms=(all submix-fx observer-resources off); fi
+        arms=(off observer-resources native.sound all)
+        if [[ $pass == 2 ]]; then arms=(all native.sound observer-resources off); fi
         for arm in "${arms[@]}"; do run_arm "$arm" "$pass" off; done
     done
-    for arm in off observer-resources submix-fx all; do
+    for arm in off observer-resources native.sound all; do
         for pass in 1 2 3; do
             diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.1.off.json") \
                     <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.$pass.$arm.json")
@@ -202,7 +206,7 @@ for case_id in lockout waterworks; do
 done
 ```
 
-The `repeat` arm checks baseline repeatability before any flag comparison. A diff shows the first differing tick, including whether the gameplay or checkpoint-arena digest changed. If A/A differs, keep both reports and resolve repeatability before attributing a difference to a skip. For each case report each arm's median, its difference from `off` in ms/tick and the ratio `off / arm`. Only an all-on ratio of at least 2 meets the throughput target. For guest attribution, run the pair below in the same shell with a profiling-enabled CLI. Compare on-CPU guest sample shares and per-function counts across the same 1,800 ticks. Use the unprofiled medians for the speedup. The profile gives no isolated savings estimate for observer prediction or submix coefficients.
+The `repeat` arm checks baseline repeatability before any flag comparison. A diff shows the first differing tick, including whether the gameplay or checkpoint-arena digest changed. If A/A differs, keep both reports and resolve repeatability before attributing a difference to a skip. For each case report each arm's median, its difference from `off` in ms/tick and the ratio `off / arm`. Only an all-on ratio of at least 2 meets the throughput target. For guest attribution, run the pair below in the same shell with a profiling-enabled CLI. Compare on-CPU guest sample shares and per-function counts across the same 1,800 ticks. Use the unprofiled medians for the speedup. The profile gives no isolated savings estimate for observer prediction or the sound pass.
 
 ```bash
 case_id=waterworks
