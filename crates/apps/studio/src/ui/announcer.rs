@@ -86,14 +86,6 @@ fn backend_label(b: Backend) -> &'static str {
     }
 }
 
-/// What a backend is called in the picker.
-fn backend_label(b: Backend) -> &'static str {
-    match b {
-        Backend::F5Mlx => "f5-mlx: zero-shot or fine-tune",
-        Backend::Qwen3Tts => "qwen3-tts: zero-shot only (no training)",
-    }
-}
-
 /// A button that is off, with its reason shown on hover, when `why` is
 /// set. True when it was clicked and is on.
 fn action(ui: &Ui, label: &str, why: Option<&str>) -> bool {
