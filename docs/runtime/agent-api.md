@@ -5677,9 +5677,13 @@ game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
   packages on with a `sim` item), or `null` when the set did not order.
 - `local_only`: why a Live or System Link session would be refused with
   this set (an unsigned package with a `sim` item, named), or `null`.
-- `maps`: by map name, each map the rewrite was asked for: `scope` (its
+- `maps`: by map name, each map the rewrite was asked for (or, with
+  `store-maps`, each level opened from the store): `scope` (its
   header's class), `packages` applied in order, `held` (packages whose
-  tags the map has already, left out), `key` (the cache key; with
+  tags the map has already, left out), `refused` when packages are off
+  for this map (each `package` and `why`: a `from`, `was` or `replaces`
+  that does not match what the map holds, a clash with an earlier
+  package, or a `requires` that is off), `key` (the cache key; with
   `store-maps`, the level's `LevelId`, empty for a level with nothing
   over it), `hits` and `builds`, `added` and `changed` tag counts, and
   `error` when the map was served without its packages.

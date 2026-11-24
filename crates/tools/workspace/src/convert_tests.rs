@@ -333,6 +333,8 @@ fn check_recipe(text: &str) -> Result<(), Failure> {
         inputs: vec![],
         tag: None,
         maps: Maps::default(),
+        replaces: None,
+        was: None,
     };
     let files = BTreeMap::new();
     (builder(Kind::Convert).unwrap().check)(&Job {
@@ -357,6 +359,8 @@ fn the_convert_builder_checks_the_recipe_and_changes_no_map() {
         inputs: vec![],
         tag: None,
         maps: Maps::default(),
+        replaces: None,
+        was: None,
     };
     assert!(!changes_map(&item));
 }

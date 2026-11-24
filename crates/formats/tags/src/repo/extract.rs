@@ -52,8 +52,9 @@ const SIZE_OVERRIDES: [SizeOverride; 2] = [
 ];
 
 /// Groups whose paired raw sizes are noise (one instance per map): the
-/// length is at least the distance to the next raw start.
-const NOISY_SIZES: [&[u8; 4]; 2] = [b"matg", b"scnr"];
+/// length is at least the distance to the next raw start. Their normal
+/// forms cut a resource back to the stored size (`super::normal`).
+pub(crate) const NOISY_SIZES: [&[u8; 4]; 2] = [b"matg", b"scnr"];
 
 /// One cache's file and its raw starts.
 pub struct RawFile<R> {

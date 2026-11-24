@@ -1169,3 +1169,766 @@ fn compile_without_a_disc_names_what_needs_one() {
     assert!(e.contains("beta") && e.contains("disc image"), "{e}");
     assert_eq!(snapshot(&root), before);
 }
+
+// --- Normal forms and the catalogue (docs/engine/asset-store.md, AS5) ---
+
+/// An invented sound: the playback row it uses (by a marker byte), its
+/// permutations as the chunk bytes of each, and whether a dialogue's extra
+/// info goes with it.
+struct Sound {
+    playback: u8,
+    permutations: Vec<Vec<Vec<u8>>>,
+    dialogue: bool,
+}
+
+fn sample_a() -> Sound {
+    Sound {
+        playback: 0x21,
+        permutations: vec![
+            vec![b"first chunk of alpha".to_vec(), b"and its second".to_vec()],
+            vec![b"alpha's other permutation".to_vec()],
+        ],
+        dialogue: false,
+    }
+}
+
+fn sample_b() -> Sound {
+    Sound {
+        playback: 0x42,
+        permutations: vec![vec![b"bravo's only permutation".to_vec()]],
+        dialogue: true,
+    }
+}
+
+/// The sound gestalt of an invented map that holds `sounds`, and their
+/// `snd!` tags (`sound\<name>`): each is one pitch range, at the index its
+/// place in `sounds` gives, and each permutation's chunks are its bytes.
+fn invented_sounds(sounds: &[(&str, &Sound)]) -> (LooseTag, Vec<LooseTag>) {
+    const PLAYBACK: usize = 0x38;
+    const RANGE: usize = 0xc;
+    const PERMUTATION: usize = 0x10;
+    const CHUNK: usize = 0xc;
+    const EXTRA: usize = 0x2c;
+    const LOCATOR: usize = 0x10;
+    let gestalt_key = TagKey::new(g(b"ugh!"), "sound\\gestalt");
+    let mut playbacks = Vec::new();
+    let mut ranges = Vec::new();
+    let mut permutations = Vec::new();
+    let mut chunks = Vec::new();
+    let mut chunk_fields = Vec::new();
+    let mut extra_infos = Vec::new();
+    let mut extra_fields = Vec::new();
+    let mut locators = Vec::new();
+    let mut raws = Vec::new();
+    let mut tags = Vec::new();
+    let put = |bytes: &[u8], raws: &mut Vec<RawRes>| -> u32 {
+        let i = raws.len() as u32;
+        raws.push(RawRes {
+            origin: Origin::Local,
+            len: bytes.len() as u32,
+            hash: sha256(bytes),
+        });
+        i
+    };
+    for (i, (name, s)) in sounds.iter().enumerate() {
+        let mut row = vec![0u8; PLAYBACK];
+        row[0] = s.playback;
+        playbacks.extend(row);
+        let first_permutation = (permutations.len() / PERMUTATION) as u16;
+        for (j, permutation) in s.permutations.iter().enumerate() {
+            let first_chunk = (chunks.len() / CHUNK) as u16;
+            for sample in permutation {
+                let at = chunks.len();
+                chunks.extend([0; 4]);
+                chunks.extend((sample.len() as u32).to_le_bytes());
+                chunks.extend([0xff; 4]);
+                let raw = put(sample, &mut raws);
+                chunk_fields.push(((at / CHUNK) as u32 * CHUNK as u32, Value::Raw(raw)));
+            }
+            let mut row = vec![
+                j as u8,
+                0x11,
+                0x22,
+                0x33,
+                0x44,
+                if s.dialogue { j as u8 } else { 0xff },
+            ];
+            row.extend((100 * j as u16 + 7).to_le_bytes());
+            let size: u32 = permutation.iter().map(|c| c.len() as u32).sum();
+            row.extend(size.to_le_bytes());
+            row.extend(first_chunk.to_le_bytes());
+            row.extend((permutation.len() as u16).to_le_bytes());
+            assert_eq!(row.len(), PERMUTATION);
+            permutations.extend(row);
+        }
+        let mut row = vec![0xaa; 8];
+        row.extend(first_permutation.to_le_bytes());
+        row.extend((s.permutations.len() as u16).to_le_bytes());
+        ranges.extend(row);
+        let extra_info = if s.dialogue {
+            let at = extra_infos.len();
+            let base = (at / EXTRA) as u32 * EXTRA as u32;
+            let mut row = vec![0u8; EXTRA];
+            row[0] = s.playback;
+            row[0xc..0x10].copy_from_slice(&0x40u32.to_le_bytes());
+            row[0x10] = 16;
+            let raw = put(&vec![s.playback; 0x40], &mut raws);
+            extra_fields.push((base + 0x8, Value::Raw(raw)));
+            for l in 0..2u8 {
+                let mut locator = vec![0u8; LOCATOR];
+                locator[0] = s.playback;
+                locator[8..12].copy_from_slice(&8u32.to_le_bytes());
+                locator[12..16].copy_from_slice(&(u32::from(l) * 8).to_le_bytes());
+                locators.extend(locator);
+            }
+            extra_fields.push((base + 0x18, Value::Block(6)));
+            extra_fields.push((base + 0x20, Value::Ref(gestalt_key.clone())));
+            extra_infos.extend(row);
+            at as u16
+        } else {
+            0xffff
+        };
+        let first = (ranges.len() / RANGE - 1) as u16;
+        let mut bytes = Vec::new();
+        bytes.extend(3u16.to_le_bytes());
+        bytes.extend([2, 1, 0, 1]);
+        bytes.extend((i as u16).to_le_bytes());
+        bytes.extend(first.to_le_bytes());
+        bytes.push(1);
+        bytes.extend([9, 9, 9]);
+        bytes.extend(extra_info.to_le_bytes());
+        bytes.extend(250u32.to_le_bytes());
+        assert_eq!(bytes.len(), 0x14);
+        tags.push(LooseTag {
+            key: TagKey::new(g(b"snd!"), format!("sound\\{name}")),
+            body: Body::Tree(Tree {
+                region: Region::Metadata,
+                nodes: vec![Node {
+                    bytes,
+                    count: 1,
+                    size: 0x14,
+                    align: 4,
+                    fields: Vec::new(),
+                }],
+                raws: Vec::new(),
+                losses: Vec::new(),
+            }),
+        });
+    }
+    let node = |count: usize, size: usize, bytes: Vec<u8>, fields: Vec<(u32, Value)>| Node {
+        bytes,
+        count: count as u32,
+        size: size as u32,
+        align: 4,
+        fields,
+    };
+    let mut root_fields = Vec::new();
+    for (offset, at, len) in [
+        (0x0u32, 1u32, playbacks.len()),
+        (0x20, 2, ranges.len()),
+        (0x28, 3, permutations.len()),
+        (0x40, 4, chunks.len()),
+        (0x50, 5, extra_infos.len()),
+    ] {
+        if len > 0 {
+            root_fields.push((offset, Value::Block(at)));
+        }
+    }
+    let gestalt = LooseTag {
+        key: gestalt_key,
+        body: Body::Tree(Tree {
+            region: Region::Metadata,
+            nodes: vec![
+                node(1, 0x58, vec![0; 0x58], root_fields),
+                node(playbacks.len() / PLAYBACK, PLAYBACK, playbacks, Vec::new()),
+                node(ranges.len() / RANGE, RANGE, ranges, Vec::new()),
+                node(
+                    permutations.len() / PERMUTATION,
+                    PERMUTATION,
+                    permutations,
+                    Vec::new(),
+                ),
+                node(chunks.len() / CHUNK, CHUNK, chunks, chunk_fields),
+                node(extra_infos.len() / EXTRA, EXTRA, extra_infos, extra_fields),
+                node(locators.len() / LOCATOR, LOCATOR, locators, Vec::new()),
+            ],
+            raws,
+            losses: Vec::new(),
+        }),
+    };
+    (gestalt, tags)
+}
+
+/// The form of the `snd!` `tag` as read for the map whose gestalt is `gestalt`.
+fn sound_form(tag: &LooseTag, gestalt: &LooseTag) -> LooseTag {
+    let mut tables = normal::Tables {
+        gestalt: Some(gestalt),
+        ..normal::Tables::none()
+    };
+    normal::form(tag, &mut tables).unwrap()
+}
+
+/// Two maps hold one sound at two indices of their gestalts: one asset. A
+/// third map's copy with another sample is another asset.
+#[test]
+fn a_sound_at_two_indices_of_two_gestalts_is_one_asset() {
+    let (a, b) = (sample_a(), sample_b());
+    let (gestalt_a, sounds_a) = invented_sounds(&[("alpha", &a), ("bravo", &b)]);
+    let (gestalt_b, sounds_b) = invented_sounds(&[("bravo", &b), ("alpha", &a)]);
+    // The same two sounds the other way round: other indices in each map.
+    let header = |t: &LooseTag| t.tree().unwrap().nodes[0].bytes.clone();
+    assert_ne!(header(&sounds_a[0]), header(&sounds_b[1]));
+    assert_ne!(header(&sounds_a[1]), header(&sounds_b[0]));
+    for (x, y) in [(&sounds_a[0], &sounds_b[1]), (&sounds_a[1], &sounds_b[0])] {
+        let (fx, fy) = (sound_form(x, &gestalt_a), sound_form(y, &gestalt_b));
+        assert_eq!(fx, fy);
+        assert_eq!(normal::hash(&fx), normal::hash(&fy));
+        // A form is a tag: it encodes and reads back the same.
+        assert_eq!(decode(&encode(&fx)).unwrap(), fx);
+    }
+
+    let form = sound_form(&sounds_a[0], &gestalt_a);
+    let nodes = &form.tree().unwrap().nodes;
+    // The indices are out: the playback, the first pitch range.
+    let root = &nodes[0];
+    assert_eq!(root.size, 0x14 + 8 + 8);
+    assert_eq!(&root.bytes[0x6..0xa], &[0, 0, 0, 0]);
+    assert_eq!(&root.bytes[0xa], &1);
+    assert_eq!(&root.bytes[0xe..0x10], &[0xff, 0xff]);
+    assert_eq!(
+        root.fields,
+        vec![(0x14, Value::Block(1)), (0x1c, Value::Block(2))]
+    );
+    // The rows are in: the playback, the range (its first permutation out,
+    // its count kept), each permutation (its first chunk out), each chunk.
+    assert_eq!(nodes.len(), 8);
+    assert_eq!((&nodes[1].bytes[..1], nodes[1].size), (&[0x21][..], 0x38));
+    assert_eq!(nodes[2].size, 0xc + 8 * 2);
+    assert_eq!(&nodes[2].bytes[0x8..0xc], &[0, 0, 2, 0]);
+    assert_eq!(
+        nodes[2].fields,
+        vec![(0xc, Value::Block(3)), (0x14, Value::Block(6))]
+    );
+    assert_eq!(
+        nodes[3].fields,
+        vec![(0x10, Value::Block(4)), (0x18, Value::Block(5))]
+    );
+    assert_eq!(&nodes[3].bytes[0xc..0x10], &[0, 0, 2, 0]);
+    assert_eq!(nodes[4].size, 0xc);
+    assert_eq!(nodes[4].fields, vec![(0, Value::Raw(0))]);
+    assert_eq!(form.tree().unwrap().raws.len(), 3);
+    assert_eq!(canonical(&form).len(), 8);
+
+    // A dialogue sound brings the extra info it names, without the datum
+    // of the gestalt it came from.
+    let bravo = sound_form(&sounds_a[1], &gestalt_a);
+    let nodes = &bravo.tree().unwrap().nodes;
+    assert_eq!(nodes[0].size, 0x14 + 8 + 8 + 8);
+    assert_eq!(
+        &nodes[0].bytes[0x14 + 8 + 8..0x14 + 8 + 8 + 4],
+        &1u32.to_le_bytes()
+    );
+    let extra = nodes.last().unwrap();
+    assert_eq!(extra.size, 0x2c);
+    assert_eq!(
+        extra.fields,
+        vec![(0x8, Value::Raw(1)), (0x18, Value::Block(6))]
+    );
+    assert_eq!(nodes[6].count, 2);
+    assert_eq!(&nodes[6].bytes[..1], &[0x42]);
+    assert_eq!(bravo.tree().unwrap().raws.len(), 2);
+
+    // Another sample is another asset.
+    let other = Sound {
+        permutations: vec![
+            vec![
+                b"first chunk of alpha".to_vec(),
+                b"and its OTHER second".to_vec(),
+            ],
+            vec![b"alpha's other permutation".to_vec()],
+        ],
+        ..sample_a()
+    };
+    let (gestalt_c, sounds_c) = invented_sounds(&[("alpha", &other)]);
+    assert_ne!(
+        normal::hash(&form),
+        normal::hash(&sound_form(&sounds_c[0], &gestalt_c))
+    );
+    // A map with no gestalt leaves its sounds as extracted.
+    let as_is = normal::form(&sounds_a[0], &mut normal::Tables::none()).unwrap();
+    assert_eq!(as_is, sounds_a[0]);
+    // An index that names no row is an error naming the sound and the gestalt.
+    let mut broken = sounds_a[0].clone();
+    if let Body::Tree(t) = &mut broken.body {
+        t.nodes[0].bytes[8..10].copy_from_slice(&7u16.to_le_bytes());
+    }
+    let e = normal::form(
+        &broken,
+        &mut normal::Tables {
+            gestalt: Some(&gestalt_a),
+            ..normal::Tables::none()
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        e.contains("sound\\alpha.snd!")
+            && e.contains("sound\\gestalt.ugh!")
+            && e.contains("pitch range 7"),
+        "{e}"
+    );
+}
+
+/// An invented bitmap of one image whose low-detail picture is `size` bytes
+/// at `offset` of its map's region.
+fn invented_bitmap(offset: u32, size: u32) -> LooseTag {
+    let mut image = vec![0u8; 0x74];
+    image[0..4].copy_from_slice(b"bitm");
+    image[4..8].copy_from_slice(&16u16.to_le_bytes().repeat(2));
+    image[0x60..0x64].copy_from_slice(&offset.to_le_bytes());
+    image[0x64..0x68].copy_from_slice(&size.to_le_bytes());
+    let node = |size: u32, bytes: Vec<u8>, fields: Vec<(u32, Value)>| Node {
+        bytes,
+        count: 1,
+        size,
+        align: 4,
+        fields,
+    };
+    LooseTag {
+        key: TagKey::new(g(b"bitm"), "objects\\picture"),
+        body: Body::Tree(Tree {
+            region: Region::Metadata,
+            nodes: vec![
+                node(0x4c, vec![0; 0x4c], vec![(0x44, Value::Block(1))]),
+                node(0x74, image, Vec::new()),
+            ],
+            raws: Vec::new(),
+            losses: Vec::new(),
+        }),
+    }
+}
+
+/// The same picture at two places of two maps' low-detail regions is one
+/// asset; other pixels are another.
+#[test]
+fn a_bitmaps_low_detail_picture_is_hashed_not_placed() {
+    let picture: Vec<u8> = (0..48u32).map(|i| (i * 5) as u8).collect();
+    let region = |fill: u8, at: usize, picture: &[u8]| -> Vec<u8> {
+        let mut r = vec![fill; 0x300];
+        r[at..at + picture.len()].copy_from_slice(picture);
+        r
+    };
+    let mut other = picture.clone();
+    other[47] ^= 1;
+    let (a, b, c) = (
+        region(0xaa, 0x20, &picture),
+        region(0xbb, 0x180, &picture),
+        region(0xcc, 0x20, &other),
+    );
+    let form = |bitmap: &LooseTag, region: &[u8]| -> LooseTag {
+        let mut tables = normal::Tables {
+            low_detail: region,
+            ..normal::Tables::none()
+        };
+        normal::form(bitmap, &mut tables).unwrap()
+    };
+    let (fa, fb, fc) = (
+        form(&invented_bitmap(0x20, 48), &a),
+        form(&invented_bitmap(0x180, 48), &b),
+        form(&invented_bitmap(0x20, 48), &c),
+    );
+    assert_eq!(fa, fb);
+    assert_eq!(normal::hash(&fa), normal::hash(&fb));
+    assert_ne!(normal::hash(&fa), normal::hash(&fc));
+    // The offset is out and the picture is a raw resource of the image.
+    let images = &fa.tree().unwrap().nodes[1];
+    assert_eq!(&images.bytes[0x60..0x64], &[0; 4]);
+    assert_eq!(&images.bytes[0x64..0x68], &48u32.to_le_bytes());
+    assert_eq!(images.fields, vec![(0x60, Value::Raw(0))]);
+    assert_eq!(
+        fa.tree().unwrap().raws,
+        vec![RawRes {
+            origin: Origin::Local,
+            len: 48,
+            hash: sha256(&picture),
+        }]
+    );
+    assert_eq!(decode(&encode(&fa)).unwrap(), fa);
+    // With no region, or a picture the region does not hold, the place
+    // stays as extracted.
+    let place = |t: &LooseTag| t.tree().unwrap().nodes[1].bytes[0x60..0x64].to_vec();
+    let as_is = normal::form(&invented_bitmap(0x20, 48), &mut normal::Tables::none()).unwrap();
+    assert_eq!(place(&as_is), 0x20u32.to_le_bytes());
+    assert!(as_is.tree().unwrap().nodes[1].fields.is_empty());
+    let short = form(&invented_bitmap(0x2f0, 48), &a);
+    assert_eq!(place(&short), 0x2f0u32.to_le_bytes());
+    assert!(short.tree().unwrap().raws.is_empty());
+}
+
+/// A raw resource of the globals or the scenario that was extracted with
+/// the padding after it is cut to the size its element stores. A locale's,
+/// another group's, or one with no layout to say so is left as extracted.
+#[test]
+fn a_padded_raw_of_the_globals_is_cut_to_its_stored_size() {
+    let schema = Schema::parse(
+        "group matg 0x1a4 align 4\n  0x0 raw\n  0x4 size 0x0\n  0x19c raw\n  0x1a0 size 0x19c\n\
+         group weap 0x8 align 4\n  0x0 raw\n  0x4 size 0x0\n",
+    )
+    .unwrap();
+    // A tag of `group` with a root of `root` bytes holding one raw
+    // resource, its size stored at `size_at`.
+    let tag = |group: &[u8; 4],
+               path: &str,
+               root: usize,
+               field: usize,
+               size_at: usize,
+               stored: u32,
+               bytes: Vec<u8>| {
+        let mut b = vec![0u8; root];
+        b[size_at..size_at + 4].copy_from_slice(&stored.to_le_bytes());
+        LooseTag {
+            key: TagKey::new(g(group), path),
+            body: Body::Tree(Tree {
+                region: Region::Metadata,
+                nodes: vec![Node {
+                    bytes: b,
+                    count: 1,
+                    size: root as u32,
+                    align: 4,
+                    fields: vec![(field as u32, Value::Raw(0))],
+                }],
+                raws: vec![RawRes {
+                    origin: Origin::Local,
+                    len: bytes.len() as u32,
+                    hash: sha256(&bytes),
+                }],
+                losses: Vec::new(),
+            }),
+        }
+    };
+    let data: Vec<u8> = (0..100u32).map(|i| (i * 3) as u8).collect();
+    let padded = |fill: u8, n: usize| -> Vec<u8> {
+        let mut b = data.clone();
+        b.extend(std::iter::repeat(fill).take(n));
+        b
+    };
+    // Both maps' files, by hash.
+    let mut files: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+    for bytes in [padded(0, 200), padded(0xcd, 4)] {
+        files.insert(sha256(&bytes), bytes);
+    }
+    let mut read = |hash: &[u8; 32]| -> Result<Vec<u8>> { Ok(files[hash].clone()) };
+    let mut tables = normal::Tables {
+        raw: Some(&mut read),
+        schema: Some(&schema),
+        ..normal::Tables::none()
+    };
+    let globals = |bytes: Vec<u8>| tag(g(b"matg"), "globals\\globals", 0x1a4, 0x0, 0x4, 100, bytes);
+    let (a, b) = (
+        normal::form(&globals(padded(0, 200)), &mut tables).unwrap(),
+        normal::form(&globals(padded(0xcd, 4)), &mut tables).unwrap(),
+    );
+    assert_eq!(a, b);
+    assert_eq!(
+        a.tree().unwrap().raws,
+        vec![RawRes {
+            origin: Origin::Local,
+            len: 100,
+            hash: sha256(&data),
+        }]
+    );
+    assert_eq!(decode(&encode(&a)).unwrap(), a);
+    // A size of zero, or one past the resource, cuts nothing.
+    let whole = |stored: u32| {
+        tag(
+            g(b"matg"),
+            "globals\\globals",
+            0x1a4,
+            0x0,
+            0x4,
+            stored,
+            padded(0, 200),
+        )
+    };
+    for stored in [0, 300, 400] {
+        assert_eq!(
+            normal::form(&whole(stored), &mut tables)
+                .unwrap()
+                .tree()
+                .unwrap()
+                .raws[0]
+                .len,
+            300
+        );
+    }
+    // A locale's resource keeps the length its descriptor gives it.
+    let locale = |bytes: Vec<u8>| {
+        tag(
+            g(b"matg"),
+            "globals\\globals",
+            0x1a4,
+            0x19c,
+            0x1a0,
+            50,
+            bytes,
+        )
+    };
+    assert_ne!(
+        normal::form(&locale(padded(0, 200)), &mut tables).unwrap(),
+        normal::form(&locale(padded(0xcd, 4)), &mut tables).unwrap()
+    );
+    // Another group's sizes the extractor trusts: nothing is cut.
+    let weapon = |bytes: Vec<u8>| tag(g(b"weap"), "objects\\gun", 0x8, 0x0, 0x4, 100, bytes);
+    assert_ne!(
+        normal::form(&weapon(padded(0, 200)), &mut tables).unwrap(),
+        normal::form(&weapon(padded(0xcd, 4)), &mut tables).unwrap()
+    );
+    // With no store to read the bytes from, or no layout, nothing is cut.
+    let mut tables = normal::Tables {
+        schema: Some(&schema),
+        ..normal::Tables::none()
+    };
+    assert_ne!(
+        normal::form(&globals(padded(0, 200)), &mut tables).unwrap(),
+        normal::form(&globals(padded(0xcd, 4)), &mut tables).unwrap()
+    );
+}
+
+/// An invented store of three maps. `alpha` and `beta` hold the same two
+/// sounds the other way round, `gamma` the first with another sample; each
+/// has a globals tag of its own and a weapon that names `sound\alpha`.
+fn sound_store(dir: &std::path::Path) {
+    let mut repo = TagRepo::create(dir).unwrap();
+    let (a, b) = (sample_a(), sample_b());
+    let other = Sound {
+        permutations: vec![
+            vec![
+                b"first chunk of alpha".to_vec(),
+                b"and its OTHER second".to_vec(),
+            ],
+            vec![b"alpha's other permutation".to_vec()],
+        ],
+        ..sample_a()
+    };
+    let maps: [(&str, Vec<(&str, &Sound)>); 3] = [
+        ("alpha", vec![("alpha", &a), ("bravo", &b)]),
+        ("beta", vec![("bravo", &b), ("alpha", &a)]),
+        ("gamma", vec![("alpha", &other), ("bravo", &b)]),
+    ];
+    for (i, (stem, sounds)) in maps.iter().enumerate() {
+        let (gestalt, sounds) = invented_sounds(sounds);
+        let mut globals = sample().tags[0].clone();
+        if let Body::Tree(t) = &mut globals.body {
+            t.nodes[0].bytes[12] = 0x10 + i as u8;
+        }
+        let gun = LooseTag {
+            key: TagKey::new(g(b"weap"), "objects\\gun"),
+            body: Body::Tree(Tree {
+                region: Region::Metadata,
+                nodes: vec![Node {
+                    bytes: vec![0; 4],
+                    count: 1,
+                    size: 4,
+                    align: 4,
+                    fields: vec![(0, Value::Ref(TagKey::new(g(b"snd!"), "sound\\alpha")))],
+                }],
+                raws: Vec::new(),
+                losses: Vec::new(),
+            }),
+        };
+        let mut m = store::Manifest {
+            map: (*stem).to_owned(),
+            ..Default::default()
+        };
+        for tag in [globals, gestalt, gun].into_iter().chain(sounds) {
+            let variant = match repo.put(&tag).unwrap() {
+                store::Stored::New | store::Stored::Same => None,
+                store::Stored::Variant(v) => Some(v),
+            };
+            m.tags.push((tag.key.clone(), variant));
+        }
+        repo.put_manifest(&m, &[0; 0x800]).unwrap();
+    }
+}
+
+/// The catalogue lists each asset by hash with the maps reading it and the
+/// keys that reference it; one rebuilt from the manifests equals the one
+/// kept, and a changed manifest makes it stale.
+#[test]
+fn the_catalogue_lists_each_asset_by_hash_and_is_rebuilt_to_the_same() {
+    let dir = TempDir::new("catalogue");
+    sound_store(&dir.0);
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let (c, report) = catalogue::build(&dir.0, &schema).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    assert_eq!(report.maps, 3);
+    let key = |group: &[u8; 4], path: &str| TagKey::new(g(group), path);
+    let names = |a: &catalogue::Asset| -> Vec<&str> { a.maps.iter().map(String::as_str).collect() };
+    // One sound at two indices in two maps: one asset, read from two files.
+    let alpha = c.of_key(&key(b"snd!", "sound\\alpha"));
+    assert_eq!(alpha.len(), 2, "{alpha:?}");
+    let shared = alpha.iter().find(|a| a.maps.len() == 2).unwrap();
+    assert_eq!(names(shared), ["alpha", "beta"]);
+    assert_eq!(shared.files.len(), 2);
+    assert_eq!(
+        c.hash_in("alpha", &key(b"snd!", "sound\\alpha")),
+        c.hash_in("beta", &key(b"snd!", "sound\\alpha"))
+    );
+    assert_ne!(
+        c.hash_in("alpha", &key(b"snd!", "sound\\alpha")),
+        c.hash_in("gamma", &key(b"snd!", "sound\\alpha"))
+    );
+    // The other is one asset in all three maps.
+    let bravo = c.of_key(&key(b"snd!", "sound\\bravo"));
+    assert_eq!(bravo.len(), 1);
+    assert_eq!(names(&bravo[0]), ["alpha", "beta", "gamma"]);
+    assert!(bravo[0].hash.len() == 64);
+    // Before the normal forms: the files. After: the assets.
+    let variants = |group: &[u8; 4], m: &BTreeMap<FourCC, catalogue::Variants>| m[&g(group)];
+    assert_eq!(
+        variants(b"snd!", &report.before),
+        // A sound's file is its header alone: gamma's copy of alpha's is
+        // the main file, though its map plays other samples.
+        catalogue::Variants {
+            keys: 2,
+            contents: 4,
+            split: 2,
+            instances: 6,
+            others: 2
+        }
+    );
+    assert_eq!(
+        variants(b"snd!", &report.after),
+        catalogue::Variants {
+            keys: 2,
+            contents: 3,
+            split: 1,
+            instances: 6,
+            others: 1
+        }
+    );
+    assert_eq!(
+        variants(b"weap", &report.before),
+        catalogue::Variants {
+            keys: 1,
+            contents: 1,
+            split: 0,
+            instances: 3,
+            others: 0
+        }
+    );
+    let (before, after) = report.totals();
+    assert_eq!(
+        (before.contents, before.split, after.contents, after.split),
+        (11, 4, 10, 3)
+    );
+    // The weapon names alpha's sound.
+    assert_eq!(
+        c.users(&key(b"snd!", "sound\\alpha")).unwrap(),
+        &BTreeSet::from([key(b"weap", "objects\\gun")])
+    );
+    assert!(c.users(&key(b"weap", "objects\\gun")).is_none());
+    // A map's assets, each with its hash, sorted by key.
+    let of_alpha = c.of_map("alpha");
+    assert_eq!(of_alpha.len(), 5);
+    assert!(of_alpha.windows(2).all(|w| w[0].0 < w[1].0));
+    assert_eq!(c.of_map("nowhere").len(), 0);
+
+    // Written and read back: the same catalogue, and current.
+    catalogue::write(&dir.0, &c).unwrap();
+    let back = catalogue::read(&dir.0).unwrap().unwrap();
+    assert_eq!(back, c);
+    assert_eq!(back.to_text(), c.to_text());
+    assert!(back.is_current(&dir.0).unwrap());
+    assert_eq!(
+        TagRepo::open(&dir.0).unwrap().catalogue().unwrap(),
+        Some(back.clone())
+    );
+    assert_eq!(catalogue::update(&dir.0, &schema, false).unwrap(), None);
+    // Rebuilt from the manifests, it is the one kept.
+    let (again, _) = catalogue::build(&dir.0, &schema).unwrap();
+    assert_eq!(again, c);
+    assert_eq!(
+        catalogue::update(&dir.0, &schema, true)
+            .unwrap()
+            .map(|b| b.maps),
+        Some(3)
+    );
+    // A manifest that changes makes it stale, and the next run rebuilds it.
+    let repo = TagRepo::open(&dir.0).unwrap();
+    let mut m = repo.manifest("beta").unwrap();
+    m.name = "renamed".into();
+    repo.write_manifest(&m).unwrap();
+    assert!(!back.is_current(&dir.0).unwrap());
+    assert!(catalogue::update(&dir.0, &schema, false).unwrap().is_some());
+    let text = std::fs::read_to_string(dir.0.join("maps").join("beta.txt")).unwrap();
+    assert_eq!(
+        catalogue::read(&dir.0).unwrap().unwrap().maps["beta"],
+        hex(&sha256(text.as_bytes()))
+    );
+    // A file that does not read is a line in the report, not a failure.
+    let junk = TagKey::new(g(b"jpt!"), "invented\\broken");
+    std::fs::create_dir_all(repo.path_of(&junk, None).parent().unwrap()).unwrap();
+    std::fs::write(repo.path_of(&junk, None), b"not a tag file").unwrap();
+    for stem in ["alpha", "beta", "gamma"] {
+        let mut m = repo.manifest(stem).unwrap();
+        m.tags.push((junk.clone(), None));
+        repo.write_manifest(&m).unwrap();
+    }
+    let (c, report) = catalogue::build(&dir.0, &schema).unwrap();
+    assert_eq!(report.problems.len(), 3, "{:?}", report.problems);
+    assert!(
+        report.problems[0].contains("alpha")
+            && report.problems[0].contains("invented\\broken.jpt!"),
+        "{}",
+        report.problems[0]
+    );
+    assert!(c.of_key(&junk).is_empty());
+}
+
+/// `prepare` writes the catalogue with the store, leaves a current one
+/// alone, writes a deleted one again, and a reset takes it.
+#[test]
+fn prepare_writes_the_catalogue_and_leaves_a_current_one_alone() {
+    let dir = TempDir::new("compile-catalogue");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    let root = dir.0.join("store");
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    let report = p.catalogue.as_ref().expect("the catalogue is written");
+    assert_eq!(report.maps, 2);
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    let c = catalogue::read(&root).unwrap().unwrap();
+    assert_eq!(c.normal, normal::VERSION);
+    assert!(c.is_current(&root).unwrap());
+    // Each map: its globals, the bitmap, its alias and the scenario.
+    assert_eq!(c.of_map("alpha").len(), 4);
+    assert_eq!(
+        c.of_key(&TagKey::new(g(b"matg"), "globals\\globals")).len(),
+        2
+    );
+    assert_eq!(c.of_key(&TagKey::new(g(b"bitm"), "a\\pixels")).len(), 1);
+    assert_eq!(
+        c.users(&TagKey::new(g(b"bitm"), "a\\pixels")).unwrap(),
+        &BTreeSet::from([TagKey::new(g(b"matg"), "globals\\globals")])
+    );
+    // Nothing stale: the catalogue is not written again.
+    let before = snapshot(&root);
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.catalogue.is_none());
+    assert_eq!(snapshot(&root), before);
+    // Deleted, it is written again by the next run.
+    std::fs::remove_file(root.join(catalogue::CATALOGUE_FILE)).unwrap();
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.catalogue.is_some());
+    assert_eq!(catalogue::read(&root).unwrap().unwrap(), c);
+    // A reset takes the catalogue with the rest.
+    TagRepo::create(&root)
+        .unwrap()
+        .reset(extract::EXTRACT_VERSION, format::VERSION)
+        .unwrap();
+    assert!(!root.join(catalogue::CATALOGUE_FILE).exists());
+}

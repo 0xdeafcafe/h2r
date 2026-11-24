@@ -10,7 +10,7 @@ use content::package::{
 };
 
 use crate::build::Loaded;
-use crate::builders::{self, Job};
+use crate::builders::{self, Job, overrides_whole};
 
 /// A source larger than this is refused: the content store's cap.
 pub const MAX_FILE_BYTES: u64 = 64 << 20;
@@ -158,7 +158,8 @@ impl fmt::Display for Finding {
 }
 
 /// Everything wrong with one package that needs no map: an item with no
-/// builder, a missing or oversize source, a source its builder refuses.
+/// builder, a missing or oversize source, a source its builder refuses, a
+/// `replaces` its builder cannot act on.
 pub fn check_package(loaded: &Loaded) -> Vec<Finding> {
     let manifest = &loaded.package.manifest;
     let package = manifest.package.id.clone();
@@ -178,6 +179,18 @@ pub fn check_package(loaded: &Loaded) -> Vec<Finding> {
             ));
             continue;
         };
+        if let Some(want) = &item.replaces
+            && !overrides_whole(item.kind)
+        {
+            out.push(found(
+                None,
+                format!(
+                    "`replaces` ({want}) is for a `tag` item: the {} builder writes its tags through the map and overrides nothing whole",
+                    builder.name
+                ),
+            ));
+            continue;
+        }
         let source: &[u8] = match &item.source {
             Some(path) => match loaded.files.get(path) {
                 Some(b) if b.len() as u64 > MAX_FILE_BYTES => {
@@ -256,6 +269,74 @@ pub fn forbidden_files(dir: &Path) -> Vec<String> {
     out
 }
 
+/// Files of `loaded` that the tag store at `store` holds
+/// (docs/engine/asset-store.md, "Rules and limits"): a raw resource by that
+/// SHA-256 (`<store>/raw/<hh>/<sha256>`), or a tag file with those bytes
+/// (`<store>/tags/**`, read only where one is as long as a file of the
+/// package). The user's own store is the retail list on their machine: no
+/// list of the disc's hashes is shipped. Each finding names the file and
+/// the item that names it. A store that is not there names nothing.
+pub fn store_findings(store: &Path, loaded: &Loaded) -> Vec<Finding> {
+    let manifest = &loaded.package.manifest;
+    let found = |file: &str, hash: &str, what: &str| Finding {
+        package: manifest.package.id.clone(),
+        item: manifest
+            .items
+            .iter()
+            .position(|i| i.source.as_deref() == Some(file) || i.inputs.iter().any(|x| x == file)),
+        file: Some(file.to_owned()),
+        line: None,
+        what: format!(
+            "{what} of the store, by its SHA-256 {hash}: a package never holds the store's bytes"
+        ),
+    };
+    // Files not yet found in the store, by length.
+    let mut by_len: BTreeMap<u64, Vec<(&str, String)>> = BTreeMap::new();
+    let mut out = Vec::new();
+    for (path, bytes) in &loaded.files {
+        let hash = Sha256::of(bytes).to_string();
+        if store.join("raw").join(&hash[..2]).join(&hash).is_file() {
+            out.push(found(path, &hash, "a raw resource"));
+        } else if !bytes.is_empty() {
+            by_len
+                .entry(bytes.len() as u64)
+                .or_default()
+                .push((path.as_str(), hash));
+        }
+    }
+    let mut todo = vec![store.join("tags")];
+    while let Some(dir) = todo.pop()
+        && !by_len.is_empty()
+    {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in read.flatten() {
+            // A link is not followed: the store's tree is folders and files.
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                todo.push(e.path());
+                continue;
+            }
+            let Some(want) = e.metadata().ok().and_then(|m| by_len.get_mut(&m.len())) else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(e.path()) else {
+                continue;
+            };
+            let hash = Sha256::of(&bytes).to_string();
+            want.retain(|(file, h)| {
+                if *h != hash {
+                    return true;
+                }
+                out.push(found(file, &hash, "a tag file"));
+                false
+            });
+        }
+        by_len.retain(|_, files| !files.is_empty());
+    }
+    out
+}
+
 fn overlap(a: &Maps, b: &Maps) -> bool {
     use content::package::MapScope::All;
     match (a, b) {
@@ -289,15 +370,39 @@ fn adds(item: &content::package::Item) -> Option<(String, String)> {
 }
 
 /// Two items, in the same package or different ones, that add the same tag
-/// path for maps they could share: the build stops on them, so `check`
-/// names both before it.
+/// path, or override the same asset whole, for maps they could share: on a
+/// map they share the later package is off, so `check` names both before it.
 pub fn check_set(packages: &[Loaded]) -> Vec<Finding> {
     let mut seen: BTreeMap<(String, String), Vec<(&str, usize, &Maps)>> = BTreeMap::new();
+    let mut overridden: BTreeMap<(String, String), Vec<(&str, usize, &Maps)>> = BTreeMap::new();
     let mut out = Vec::new();
     for p in packages {
         let id = p.package.manifest.package.id.as_str();
         for (i, item) in p.package.manifest.items.iter().enumerate() {
             let Some(key) = adds(item) else { continue };
+            if item.replaces.is_some() {
+                // Two packages override one asset whole: the later is off
+                // where their maps meet.
+                let list = overridden.entry(key.clone()).or_default();
+                if let Some((first, fi)) = list
+                    .iter()
+                    .find(|(_, _, m)| overlap(m, &item.maps))
+                    .map(|(p, i, _)| (*p, *i))
+                {
+                    out.push(Finding {
+                        package: id.to_owned(),
+                        item: Some(i),
+                        file: item.source.clone(),
+                        line: None,
+                        what: format!(
+                            "overrides {}.{}, which package {first:?} item {fi} overrides too",
+                            key.1, key.0
+                        ),
+                    });
+                }
+                list.push((id, i, &item.maps));
+                continue;
+            }
             let list = seen.entry(key.clone()).or_default();
             if let Some((first, fi, _)) = list.iter().find(|(_, _, m)| overlap(m, &item.maps)) {
                 out.push(Finding {

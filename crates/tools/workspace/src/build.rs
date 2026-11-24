@@ -14,16 +14,25 @@
 //!   report lists the override;
 //! - an edit whose tag or path does not resolve, or whose `was` is not the
 //!   tag it was made on, stops the build with the file's line.
+//!
+//! A `from`, `was` or `replaces` that does not match what the base holds is
+//! a **refusal**: the item is for other content, and so is a patch of an
+//! asset an earlier package overrides whole without naming its hash, or a
+//! second override of one asset (docs/engine/asset-store.md, "Conflicts").
+//! Here it stops the build like any failure. [`crate::build_map_settled`] is
+//! the same build for the game, where a refused package is off for the map,
+//! whole, with its reason in [`Report::refused`], and the rest still apply.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use content::package::{Item, Kind, MapScope, Maps, Package};
+use content::package::{Item, Kind, MapScope, Maps, Package, Refusal};
 use content::{Sha256, canonicalize};
 use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, TagId};
 use serde_json::json;
 use tags::repo::TagKey;
 
+use crate::assets::Assets;
 use crate::builders::{self, BUILDERS_VERSION};
 use crate::hash::tag_hash;
 use crate::unpin::MapUnpin;
@@ -131,10 +140,15 @@ impl fmt::Display for BuildError {
 }
 impl std::error::Error for BuildError {}
 
+/// The `path` of an [`Override`] that takes a whole asset: a package's
+/// `replaces` over fields an earlier package set.
+pub const WHOLE: &str = "*";
+
 /// A field two packages set: the later one's value is in the map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Override {
     pub tag: TagKey,
+    /// The field, or [`WHOLE`] when a later package took the asset whole.
     pub path: String,
     pub earlier: String,
     pub later: String,
@@ -160,6 +174,22 @@ pub struct Report {
     /// Tags of the base the items changed.
     pub changed: BTreeSet<TagKey>,
     pub overrides: Vec<Override>,
+    /// Packages off for this map, in the order they were refused and then
+    /// by what requires them. Empty for [`build`], which stops instead.
+    pub refused: Vec<Refusal>,
+    /// Assets a package overrides whole, in order, and the asset's hash as
+    /// that package leaves it: what a later patch's `was` names.
+    pub replaced: Vec<Replaced>,
+}
+
+/// An asset a package overrides whole, and its hash as that package leaves
+/// it: the asset hash when the build has the base's assets ([`Assets`]),
+/// else the tag's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replaced {
+    pub key: TagKey,
+    pub by: String,
+    pub hash: Sha256,
 }
 
 /// Everything an item sees.
@@ -169,6 +199,11 @@ pub struct Cx<'a> {
     pub package: &'a str,
     /// The item's place in its manifest.
     pub item: usize,
+    /// What the package `requires`.
+    pub(crate) requires: &'a [String],
+    /// The base's asset hashes, what a `was` or `replaces` names
+    /// ([`crate::assets`]); `None`, and a tag's own hash stands for them.
+    pub(crate) assets: Option<&'a mut dyn Assets>,
     pub(crate) state: &'a mut State,
     unpin: Option<&'a dyn Unpin>,
     shading: Option<&'a Result<Shading, String>>,
@@ -180,8 +215,18 @@ pub(crate) struct State {
     added: BTreeMap<TagKey, String>,
     /// The hash of each tag the first time an item touched it.
     touched: BTreeMap<TagId, Sha256>,
+    /// The bytes of each tag an item kept as the build first found it, for
+    /// a later `from` line ([`Cx::keep_base`]).
+    first: BTreeMap<TagId, Result<Block, String>>,
     /// The package that last set a field.
     fields: BTreeMap<(TagKey, String), String>,
+    /// Assets a package overrides whole, with who and the asset's hash after
+    /// it: a later patch of one must name that hash and require that package.
+    overridden: BTreeMap<TagKey, (String, Sha256)>,
+    /// Each asset hash asked of [`Cx::assets`], by key.
+    asset_hashes: BTreeMap<TagKey, Sha256>,
+    /// Set just before an item fails in a way that is a refusal.
+    refusal: Option<()>,
     report: Report,
     // After a builder pins a snapshot of the current map, later items
     // relocate against that snapshot instead of the original map.
@@ -218,9 +263,11 @@ impl Cx<'_> {
     }
 
     /// Refuse a tag path that is taken: by an earlier item, or by the base.
-    pub fn check_free(&self, key: &TagKey) -> Result<(), String> {
-        if let Some(by) = self.state.added.get(key) {
-            return Err(format!("tag {key} is already added by {by}"));
+    /// The first is a refusal (the later package is off, naming both); the
+    /// second stops the build.
+    pub fn check_free(&mut self, key: &TagKey) -> Result<(), String> {
+        if let Some(by) = self.state.added.get(key).cloned() {
+            return Err(self.refuse(format!("tag {key} is already added by {by}")));
         }
         if self.find(key).is_some() {
             return Err(format!("tag {key} is already in the map"));
@@ -332,6 +379,190 @@ impl Cx<'_> {
         }
         self.state.fields.insert(slot, self.package.to_owned());
     }
+
+    /// Mark the error that follows as a **refusal** (module docs): the item
+    /// is for other content, or clashes with an earlier package. The build
+    /// leaves the package off for the map whole
+    /// ([`crate::build_map_settled`]) or stops as it does for any failure.
+    /// Returns `why` for the caller's error.
+    pub fn refuse(&mut self, why: impl Into<String>) -> String {
+        self.state.refusal = Some(());
+        why.into()
+    }
+
+    /// Keep `block` as the tag's first bytes, for a later item's `from`
+    /// lines: when none are kept and the tag still hashes as the build
+    /// first found it.
+    pub(crate) fn keep_base(&mut self, id: TagId, block: &Block) {
+        if self.state.first.contains_key(&id) {
+            return;
+        }
+        let Some(first) = self.state.touched.get(&id) else {
+            return;
+        };
+        if tag_hash(self.set, id) == Some(*first) {
+            self.state.first.insert(id, Ok(block.clone()));
+        }
+    }
+
+    /// The tag as a `from` line checks it: the bytes the build first found,
+    /// when an item kept them ([`Self::keep_base`]); else the tag as it is
+    /// now. Call before changing the tag.
+    pub fn base_block(&mut self, id: TagId) -> Result<Block, String> {
+        match self.state.first.get(&id) {
+            Some(kept) => kept.clone(),
+            None => self.read_block(id),
+        }
+    }
+
+    /// The asset hash of `key` (the tag `id`) as the base holds it: what a
+    /// `was` or `replaces` is checked against ([`crate::assets`]). Asked of
+    /// the base's assets once; a tag the base does not hold (one an item
+    /// added) has its own hash, as the build first found it. With no assets
+    /// given, every tag has its own hash. `Err` is a refusal when the base
+    /// cannot give the asset its form.
+    pub fn asset_hash(&mut self, key: &TagKey, id: TagId) -> Result<Sha256, String> {
+        if let Some(h) = self.state.asset_hashes.get(key) {
+            return Ok(*h);
+        }
+        let asked = self.assets.as_deref_mut().map(|assets| assets.hash(key));
+        let hash = match asked {
+            Some(Ok(Some(hash))) => hash,
+            Some(Err(why)) => {
+                return Err(self.refuse(format!("{key} cannot be given its normal form: {why}")));
+            }
+            Some(Ok(None)) | None => self
+                .state
+                .touched
+                .get(&id)
+                .copied()
+                .or_else(|| tag_hash(self.set, id))
+                .ok_or_else(|| self.refuse(format!("{key} is not in the map")))?,
+        };
+        self.state.asset_hashes.insert(key.clone(), hash);
+        Ok(hash)
+    }
+
+    /// The asset hash of `tag`, a loose form of what an item wrote, read
+    /// for the base ([`Assets::hash_of`]).
+    pub fn asset_hash_of(&mut self, tag: &tags::repo::LooseTag) -> Result<Sha256, String> {
+        self.assets
+            .as_deref_mut()
+            .ok_or("the build was given no asset hashes")?
+            .hash_of(tag)
+    }
+
+    /// A patch of the asset `key` (an `edits` entry or a `tag-delta` item)
+    /// whose base is the asset `was` names, when it names one
+    /// (docs/engine/asset-store.md, "Conflicts"). `Ok(true)` when the patch
+    /// is over an asset an earlier package overrides whole.
+    ///
+    /// - The tag is in the map, else the patch is off with the key.
+    /// - `was` is the hash the build first found the tag at, else the patch
+    ///   is for other content (a stale edit).
+    /// - Over an earlier package's whole override, `was` names the asset's
+    ///   hash after it and this package `requires` that one (or is it);
+    ///   else the patch is off, naming both.
+    pub fn check_base(
+        &mut self,
+        key: &TagKey,
+        id: TagId,
+        was: Option<&str>,
+    ) -> Result<bool, String> {
+        if let Some((by, hash)) = self.state.overridden.get(key).cloned() {
+            let ours = by == self.package || self.requires.contains(&by);
+            if ours && was.is_some_and(|w| w.parse::<Sha256>().is_ok_and(|h| h == hash)) {
+                return Ok(true);
+            }
+            let need = if ours {
+                String::new()
+            } else {
+                format!(" and the package must require {by:?}")
+            };
+            return Err(self.refuse(format!(
+                "it patches {key}, which package {by:?} overrides whole (the asset is {hash} now): its `was` must name that hash{need}"
+            )));
+        }
+        let Some(was) = was else {
+            return Ok(false);
+        };
+        let want: Sha256 = was.parse().map_err(|_| {
+            self.refuse(format!(
+                "was {was:?} is not a SHA-256 hex digest of the tag it was made on"
+            ))
+        })?;
+        let first = self.asset_hash(key, id)?;
+        if want != first {
+            return Err(self.refuse(format!(
+                "stale edit: it was made on tag {key} with hash {want}, but the asset is {first}"
+            )));
+        }
+        Ok(false)
+    }
+
+    /// The tag an item with `replaces = want` overrides whole at `key`. The
+    /// tag is in the map (else off with the key), hashes to `want` as the
+    /// build first found it (else the item is for other content), and no
+    /// earlier package overrides it whole (else off, naming both). Call
+    /// [`Self::note_replaced`] once the tag is written.
+    pub fn replace_target(&mut self, key: &TagKey, want: &str) -> Result<TagId, String> {
+        if let Some((by, hash)) = self.state.overridden.get(key).cloned() {
+            return Err(self.refuse(format!(
+                "it overrides {key} whole, which package {by:?} already overrides (the asset is {hash} now)"
+            )));
+        }
+        let id = self
+            .find(key)
+            .ok_or_else(|| self.refuse(format!("the map has no tag {key}")))?;
+        let want: Sha256 = want.parse().map_err(|_| {
+            self.refuse(format!(
+                "replaces {want:?} is not a SHA-256 hex digest of the asset it replaces"
+            ))
+        })?;
+        let first = self.asset_hash(key, id)?;
+        if want != first {
+            return Err(self.refuse(format!(
+                "it replaces the asset with hash {want}, but the map's {key} is {first}"
+            )));
+        }
+        Ok(id)
+    }
+
+    /// Note that this package overrode `key` whole and left the asset
+    /// hashing `hash` (its asset hash, [`Self::asset_hash_of`]; else its
+    /// own): a later patch of the asset names that hash, and the fields an
+    /// earlier package set on it are listed as overridden ([`WHOLE`]).
+    pub fn note_replaced(&mut self, key: &TagKey, hash: Sha256) {
+        let earlier: Vec<(String, String)> = self
+            .state
+            .fields
+            .iter()
+            .filter(|((k, _), _)| k == key)
+            .map(|((_, path), by)| (path.clone(), by.clone()))
+            .collect();
+        for (path, by) in earlier {
+            if by != self.package {
+                self.state.report.overrides.push(Override {
+                    tag: key.clone(),
+                    path: path.clone(),
+                    earlier: by,
+                    later: self.package.to_owned(),
+                });
+            }
+            self.state.fields.remove(&(key.clone(), path));
+        }
+        self.state
+            .fields
+            .insert((key.clone(), WHOLE.to_owned()), self.package.to_owned());
+        self.state
+            .overridden
+            .insert(key.clone(), (self.package.to_owned(), hash));
+        self.state.report.replaced.push(Replaced {
+            key: key.clone(),
+            by: self.package.to_owned(),
+            hash,
+        });
+    }
 }
 
 impl<'a> Cx<'a> {
@@ -383,10 +614,102 @@ pub fn build_with(
     unpin: Option<&dyn Unpin>,
     shading: Option<&Result<Shading, String>>,
 ) -> Result<Report, BuildError> {
+    run(set, packages, target, unpin, shading, None, None).map_err(|stopped| match stopped {
+        Stopped::Failed(e) => e,
+        // Only the refusing build starts again.
+        Stopped::Again { package, why } => unreachable!("{package}: {why}"),
+    })
+}
+
+/// Why a build of a map stopped: an item failed, or a package was refused
+/// after one of its items had run ([`build_refusing`]).
+pub(crate) enum Stopped {
+    Failed(BuildError),
+    Again { package: String, why: String },
+}
+
+/// [`build_with`] for the game ([`crate::build_map_settled`]): a refused
+/// package is off for the map unless it is in `strict`, and `off` grows by
+/// it and by what requires it. A package refused after one of its items ran
+/// cannot be taken back out of `set`, so the build stops with
+/// [`Stopped::Again`] and the caller starts it again without the package.
+pub(crate) fn build_refusing(
+    set: &mut TagSet,
+    packages: &[Loaded],
+    target: &Target<'_>,
+    unpin: Option<&dyn Unpin>,
+    shading: Option<&Result<Shading, String>>,
+    strict: &BTreeSet<String>,
+    off: &mut Vec<Refusal>,
+    assets: Option<&mut dyn Assets>,
+) -> Result<Report, Stopped> {
+    run(
+        set,
+        packages,
+        target,
+        unpin,
+        shading,
+        Some((strict, off)),
+        assets,
+    )
+}
+
+/// Put `package`, which is in `packages`, off for a map with `why`, then
+/// every package there that requires one already off (and so on), each
+/// naming what it requires.
+pub(crate) fn turn_off(off: &mut Vec<Refusal>, packages: &[Loaded], package: &str, why: String) {
+    fn is_off<'a>(off: &'a [Refusal], id: &str) -> Option<&'a Refusal> {
+        off.iter().find(|r| r.package == id)
+    }
+    off.push(Refusal {
+        package: package.to_owned(),
+        why,
+    });
+    loop {
+        let done: &[Refusal] = off;
+        let next = packages.iter().find_map(|p| {
+            let id = p.package.name();
+            if is_off(done, id).is_some() {
+                return None;
+            }
+            let needs = p
+                .package
+                .manifest
+                .package
+                .requires
+                .iter()
+                .find_map(|r| is_off(done, r))?;
+            Some((id.to_owned(), needs.package.clone(), needs.why.clone()))
+        });
+        let Some((id, needs, because)) = next else {
+            break;
+        };
+        off.push(Refusal {
+            package: id,
+            why: format!("it requires {needs:?}, which is off for this map: {because}"),
+        });
+    }
+}
+
+fn run(
+    set: &mut TagSet,
+    packages: &[Loaded],
+    target: &Target<'_>,
+    unpin: Option<&dyn Unpin>,
+    shading: Option<&Result<Shading, String>>,
+    mut off: Option<(&BTreeSet<String>, &mut Vec<Refusal>)>,
+    mut assets: Option<&mut dyn Assets>,
+) -> Result<Report, Stopped> {
     let mut state = State::default();
     for loaded in packages {
         let manifest = &loaded.package.manifest;
         let name = manifest.package.id.as_str();
+        if off
+            .as_ref()
+            .is_some_and(|(_, off)| off.iter().any(|r| r.package == name))
+        {
+            continue;
+        }
         let mut ran = 0;
         for (index, item) in manifest.items.iter().enumerate() {
             if !target.takes(&item.maps) {
@@ -401,13 +724,28 @@ pub fn build_with(
                 why,
             };
             let Some(builder) = builders::builder(item.kind) else {
-                return Err(fail(None, "no builder for this kind in this build".into()));
+                return Err(Stopped::Failed(fail(
+                    None,
+                    "no builder for this kind in this build".into(),
+                )));
             };
-            let source = source_of(loaded, item).map_err(|why| fail(None, why))?;
+            if let Some(want) = &item.replaces
+                && !builders::overrides_whole(item.kind)
+            {
+                return Err(Stopped::Failed(fail(
+                    None,
+                    format!(
+                        "`replaces` ({want}) is for a `tag` item: this builder writes its tags through the map and overrides nothing whole"
+                    ),
+                )));
+            }
+            let source = source_of(loaded, item).map_err(|why| Stopped::Failed(fail(None, why)))?;
             let mut cx = Cx {
                 set: &mut *set,
                 package: name,
+                requires: &manifest.package.requires,
                 item: index,
+                assets: assets.as_deref_mut(),
                 state: &mut state,
                 unpin,
                 shading,
@@ -417,8 +755,28 @@ pub fn build_with(
                 source,
                 files: &loaded.files,
             };
-            (builder.apply)(&mut cx, &job).map_err(|f| fail(f.line, f.why))?;
-            ran += 1;
+            state.refusal = None;
+            let failed = (builder.apply)(&mut cx, &job).err();
+            let Some(f) = failed else {
+                ran += 1;
+                continue;
+            };
+            // A refusal under the refusing build: the package is off for the
+            // map, whole. Anything else stops the build with the item's line.
+            let refused = state.refusal.take().is_some();
+            let off = match off.as_mut() {
+                Some((strict, off)) if refused && !strict.contains(name) => off,
+                _ => return Err(Stopped::Failed(fail(f.line, f.why))),
+            };
+            if ran > 0 {
+                return Err(Stopped::Again {
+                    package: name.to_owned(),
+                    why: f.why,
+                });
+            }
+            // None of its items ran: the rest are skipped, as if it were not here.
+            turn_off(off, packages, name, f.why);
+            break;
         }
         if ran > 0 {
             state.report.packages.push((name.to_owned(), ran));
