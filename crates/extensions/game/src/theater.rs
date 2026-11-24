@@ -379,9 +379,10 @@ impl Session {
             let guest_image = film::image::GuestImage::capture(
                 &stamp, recomp::host_triple(), &xbe_sha256,
             );
-            // A default recording keeps its actions in a film file; a host's
-            // or an explicit recording is one container.
-            let split = player_features && !host_recording;
+            // A default recording and a host's keep their actions in a film
+            // file, which a host sends to Live beside its stats stream; an
+            // explicit recording is one container.
+            let split = player_features || host_recording;
             let header = Header {
                 version: 3,
                 title_id,
@@ -971,6 +972,16 @@ impl Session {
                 },
             )?;
             out.finish()?.sync_all()?;
+            // A host's film file, sealed beside its stats stream once the
+            // container's mirror into it has closed.
+            if let Some(film) = rec.film.take() {
+                Arc::try_unwrap(film)
+                    .map_err(|_| anyhow::anyhow!("the film file is still shared"))?
+                    .into_inner()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .finish()?
+                    .sync_all()?;
+            }
             Ok(())
         })();
         if let Err(e) = done {

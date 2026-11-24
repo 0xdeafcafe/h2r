@@ -972,13 +972,32 @@ pub(crate) async fn create(HttpState(live): Shared, req: Request) -> Result<Resp
         .get(live_proto::matchmaking::MATCH_HEADER)
         .map(|value| value.to_str().map_err(|_| invalid("invalid matchmaking assignment id")))
         .transpose()?;
+    let bearer = crate::http::bearer(&headers);
     let item = live
-        .create_session_with_assignment(crate::http::bearer(&headers), new, observed, match_id)
+        .create_session_with_assignment(bearer, new, observed, match_id)
         .await?;
-    Ok(crate::http::json(
-        StatusCode::CREATED,
-        &json!({"session_id":item.session_id,"session":item,"position":live.position()}),
-    ))
+    let mut body = json!({"session_id":item.session_id,"session":item,"position":live.position()});
+    if let Some(identifiers) = live.session_identifiers(bearer) {
+        body["identifiers"] = json!(identifiers);
+    }
+    Ok(crate::http::json(StatusCode::CREATED, &body))
+}
+
+impl Live {
+    /// The seat and machine identifiers of the game a leased host's session
+    /// plays (docs/game/input-film.md, "On Live"), issued when the session
+    /// is made so the film's seed holds them from its first tick. They are
+    /// those of the lease's canonical game id, which `POST /v1/games`
+    /// returns again; a session of an account learns its game's there.
+    pub(crate) fn session_identifiers(
+        &self,
+        bearer: Option<&str>,
+    ) -> Option<live_proto::game::GameIdentifiers> {
+        let grant = self.host_claims(bearer, SESSIONS_PUBLISH).ok()?;
+        Some(live_proto::game::GameIdentifiers::for_game(
+            grant.canonical_film_id(),
+        ))
+    }
 }
 pub(crate) async fn append(
     HttpState(live): Shared,

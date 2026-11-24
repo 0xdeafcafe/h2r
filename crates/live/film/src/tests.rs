@@ -342,6 +342,24 @@ fn upload_posts_the_exact_bytes_then_advances_without_resending_them() {
 }
 
 #[test]
+fn a_film_file_beside_the_stats_stream_follows_it_as_its_own_object() {
+    let dir = Temp::new();
+    let path = dir.0.join("host.h2film");
+    let stats = encoded();
+    fs::write(&path, &stats).unwrap();
+    let film = b"H2FILM4! stands in for the film file".to_vec();
+    fs::write(crate::file::beside(&path), &film).unwrap();
+    run_upload(&path, move |listener| {
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film");
+        assert_eq!(body, stats);
+        film_reply(stream, "204 No Content");
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film?object=film");
+        assert_eq!(body, film);
+        film_reply(stream, "204 No Content");
+    });
+}
+
+#[test]
 fn multipart_upload_advances_each_part_before_uploading_the_next_and_waits_for_publication() {
     use live_proto::film::{PART_BYTES, SINGLE_UPLOAD_BYTES};
     use sha2::{Digest, Sha256};
