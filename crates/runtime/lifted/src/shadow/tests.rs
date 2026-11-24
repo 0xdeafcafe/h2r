@@ -286,3 +286,20 @@ fn the_original_starts_where_the_call_entered_whatever_eip_holds() {
     );
     assert_eq!(outcome, Outcome::Matched { steps: 4 });
 }
+
+#[test]
+fn guest_authority_covers_mismatches_and_unsampled_calls() {
+    let s = registry();
+    let g = live();
+    let cpu = entry();
+    let check = || s.check_before_original("test.inc", &cpu, &g, CODE, tick, &mut port(2, 1, 0));
+    assert!(!check());
+    s.enable(&["test.inc".into()], Some(2), None).unwrap();
+    assert!(check());
+    assert!(check());
+    assert_eq!(word(&g, OUT), 0);
+    let st = s.status();
+    assert_eq!((st.calls, st.checked, st.mismatched), (2, 1, 1));
+    s.disable(&[]).unwrap();
+    assert!(!check());
+}

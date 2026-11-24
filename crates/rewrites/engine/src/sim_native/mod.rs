@@ -247,7 +247,7 @@ fn ret(g: &impl Memory, c: &mut CpuAbi, cleanup: u32) -> Result {
     }))
 }
 
-pub(super) fn sub_flags(c: &mut CpuAbi, a: u32, b: u32, width: u32) {
+pub(crate) fn sub_flags(c: &mut CpuAbi, a: u32, b: u32, width: u32) {
     let mask = u32::MAX >> (32 - width);
     let (a, b) = (a & mask, b & mask);
     let r = a.wrapping_sub(b) & mask;

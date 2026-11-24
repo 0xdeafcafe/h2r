@@ -161,9 +161,9 @@ mod tests {
         let mut world = crate::world::keep_draws(world, &|_| false);
         let ranges = &world.light_parts[&(owner, 0)];
         let mut stream = LightStream { section: 9, part: 0, vertex_class: 0, first_index: 15, index_count: 6, topology: Topology::List };
-        let got = |stream| {
+        let got = |stream: &LightStream| -> Vec<u32> {
             let d = ranges.draw(stream, draw).unwrap();
-            &world.indices[d.first_index as usize..(d.first_index+d.index_count) as usize]
+            world.indices[d.first_index as usize..(d.first_index+d.index_count) as usize].to_vec()
         };
         assert_eq!(got(&stream), [5, 0, 1, 2, 3, 4]);
         stream.topology = Topology::Strip;

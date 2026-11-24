@@ -141,6 +141,15 @@ struct State {
     dropped: u64,
 }
 
+impl State {
+    /// None for a disabled port; Some(None) between samples.
+    fn sample(&mut self, name: &str) -> Option<Option<(u64, u32)>> {
+        let port = self.ports.get_mut(name).filter(|port| port.on)?;
+        port.calls += 1;
+        Some(((port.calls - 1) % self.every == 0).then_some((port.calls, port.base)))
+    }
+}
+
 /// The registry. One per process ([`SHADOW`]); tests make their own.
 pub struct Shadow {
     on: AtomicBool,
@@ -359,6 +368,34 @@ impl Shadow {
         }
     }
 
+    /// Check a candidate while the original is authoritative. A selected
+    /// port always returns true, including on unsampled calls and failed
+    /// comparisons: the caller must dispatch the original on the live state.
+    pub fn check_before_original(
+        &self,
+        name: &'static str,
+        cpu: &CpuAbi,
+        guest: &Guest,
+        pc: u32,
+        tick: TickFn,
+        port: &mut PortFn<'_>,
+    ) -> bool {
+        if !self.on.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut guard = self.lock();
+        let s = &mut *guard;
+        let Some(sample) = s.sample(name) else { return false };
+        if let Some((call, base)) = sample
+            && let Some(code) = s.code.as_deref_mut()
+        {
+            code.prime(base);
+            let (outcome, _) = check(code, &mut s.view, guest, cpu, pc, s.step_limit, port);
+            Self::record(s, name, pc, call, tick(guest), cpu, outcome);
+        }
+        true
+    }
+
     /// Run the port `name` at `pc` on the live Guest, checking it first
     /// when its checks are on and this call is sampled. The port's answer
     /// on the live Guest is returned either way.
@@ -377,17 +414,11 @@ impl Shadow {
         let entry = *cpu;
         let mut guard = self.lock();
         let s = &mut *guard;
-        let (every, limit) = (s.every, s.step_limit);
-        let Some(p) = s.ports.get_mut(name).filter(|p| p.on) else {
+        let limit = s.step_limit;
+        let Some(Some((call, base))) = s.sample(name) else {
             drop(guard);
             return port(cpu, guest);
         };
-        p.calls += 1;
-        let (call, base) = (p.calls, p.base);
-        if (call - 1) % every != 0 {
-            drop(guard);
-            return port(cpu, guest);
-        }
         let Some(code) = s.code.as_deref_mut() else {
             drop(guard);
             return port(cpu, guest);
