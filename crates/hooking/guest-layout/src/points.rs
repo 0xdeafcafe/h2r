@@ -910,6 +910,17 @@ points! { ALL;
     /// lists 1 and 2 and the first-person table. `RENDER_LIGHT_PASSES`
     /// calls it first, with EAX 0.
     SCENE_ITEMS @ 0x0004_0e90: [fn(mode: eax) ret 0]; "docs/graphics/native-light-gather.md";
+    /// `0x000404b0`: the first-person lights, from `0x0002c2b9` between
+    /// the two first-person draws. Per slot of the first-person table with
+    /// records: the light volume, the slot's lists
+    /// (`FIRST_PERSON_LIGHT_RECORDS`), the constants, the flags, layers
+    /// 11, 14, 12 and 13 on the light's list and the passes' tail. Stack
+    /// `(mode)`, `ret 4`.
+    FIRST_PERSON_LIGHTS @ 0x0004_04b0: [fn(mode: stack 0) ret 4]; "docs/graphics/native-light-gather.md";
+    /// `0x000402b0`: one first-person light's lists 1 and 2 from its
+    /// slot's records, copied after the main view's records. EDX the slot,
+    /// stack `(mode)`, `ret 4`; its only caller is `FIRST_PERSON_LIGHTS`.
+    FIRST_PERSON_LIGHT_RECORDS @ 0x0004_02b0: [fn(slot: edx, mode: stack 0) ret 4]; "docs/graphics/native-light-gather.md";
     /// `render_screen_effects`: the view's post passes, the last call of
     /// `render_scene_passes` (`0x0002c322`, after layer 17 and
     /// `0x00020770`): the colour pass over the view's target (`0x000214f0`,

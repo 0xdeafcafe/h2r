@@ -16,12 +16,15 @@
 //!   (`0x00040e90` in the light's kind, `0x00044ac0`).
 //! - [`passes`]: one light's passes (`0x00031170`), which calls the guest
 //!   for its lists, constants, projection and each layer's draws.
+//! - [`first_person`]: the first-person lights (`0x000404b0`) and each
+//!   slot's record replay (`0x000402b0`), with the same layer blocks.
 //!
 //! The leaves are functions of guest memory and typed arguments. They
 //! write nothing: each returns the guest's writes as [`Writes`], in the
 //! guest's order, for the caller to publish.
 
 pub mod extra_caster;
+pub mod first_person;
 pub mod frame;
 pub mod geometry;
 mod guest;

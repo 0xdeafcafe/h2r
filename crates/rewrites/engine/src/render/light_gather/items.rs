@@ -70,17 +70,17 @@ pub mod stack {
 /// The visibility struct the records were written for.
 const CURRENT_VIS: u32 = 0x004c_0b80;
 const VIS_KIND: u32 = 0x2a78;
-const COUNT: u32 = 0x004c_0b78;
-const MAIN_COUNT: u32 = 0x004c_0b7c;
-const RECORDS: u32 = 0x004b_a138;
-const RECORD: u32 = 0x20;
-const PIXEL_SIZES: u32 = 0x004c_0b84;
-const ATTACHMENT_BYTES: u32 = 0x004c_0ed6;
-const OVERRIDES: u32 = 0x004c_1228;
+pub(super) const COUNT: u32 = 0x004c_0b78;
+pub(super) const MAIN_COUNT: u32 = 0x004c_0b7c;
+pub(super) const RECORDS: u32 = 0x004b_a138;
+pub(super) const RECORD: u32 = 0x20;
+pub(super) const PIXEL_SIZES: u32 = 0x004c_0b84;
+pub(super) const ATTACHMENT_BYTES: u32 = 0x004c_0ed6;
+pub(super) const OVERRIDES: u32 = 0x004c_1228;
 /// The scene lists: list `n` at `+0x18 n` (capacity, count, layers,
 /// first, items at `+0x14`).
 pub const LISTS: u32 = 0x004c_1a48;
-const LIST: u32 = 0x18;
+pub(super) const LIST: u32 = 0x18;
 const ACTIVE_BSP: u32 = 0x004e_0348;
 const ACTIVE_BSP_INDEX: u32 = 0x0046_86c4;
 const MATERIAL_VIS: u32 = 0x004e_d280;
@@ -103,7 +103,7 @@ const SELECTOR: u32 = 0x1f;
 const SLOT_RECORDS: i16 = 32;
 
 /// The record at index `i` (`movsx`: the plan keeps `i` under `0x8000`).
-fn record_at(i: u32) -> u32 {
+pub(super) fn record_at(i: u32) -> u32 {
     RECORDS.wrapping_add(i.wrapping_mul(RECORD))
 }
 
@@ -393,7 +393,9 @@ pub fn first_person(m: &dyn GuestMemory, record: u32) -> Result<(Writes, FirstPe
 
 /// The record filters of `0x00044b72`..`0x00044baa`: one of the filter's
 /// bits, the selector in `+0xc`, flag bit 0 and a non-zero alpha.
-fn selected(m: &dyn GuestMemory, record: u32, filter: u32) -> Result<bool, MemFault> {
+/// The first-person lights' record loop (`0x00040380`..`0x000403bb`)
+/// makes the same tests on a slot's record.
+pub(super) fn selected(m: &dyn GuestMemory, record: u32, filter: u32) -> Result<bool, MemFault> {
     let flags = m.u32(record)?;
     Ok(flags & filter & 0x1f_ffff != 0
         && (m.u32(record + 0xc)? >> 4) & 0x1f == SELECTOR
@@ -406,6 +408,19 @@ fn selected(m: &dyn GuestMemory, record: u32, filter: u32) -> Result<bool, MemFa
 /// or why the guest's per-part calls make it. Reads only: the record's
 /// writes are published by the caller before the next record is planned.
 pub fn record_items(m: &dyn GuestMemory, i: u32, kind: u32) -> Result<Writes> {
+    record_items_with(m, i, kind, false)
+}
+
+/// [`record_items`] with the fifth argument `0x00041040` is handed: set
+/// (the first-person lights' record loop passes 1, `0x00040464`), a part
+/// whose level has no layer but bit 15 is still appended
+/// (`0x000412ad`).
+pub fn record_items_with(
+    m: &dyn GuestMemory,
+    i: u32,
+    kind: u32,
+    keep_empty: bool,
+) -> Result<Writes> {
     let record = record_at(i);
     let flags = m.u32(record)?;
     if m.u32(record + 4)? != NONE {
@@ -479,7 +494,7 @@ pub fn record_items(m: &dyn GuestMemory, i: u32, kind: u32) -> Result<Writes> {
         if layers & 0x8080 != 0 && layers & 0xa == 0 && lod.layers(m, 0)? & (1 << 21) != 0 {
             continue;
         }
-        if layers & 0xffff_7fff == 0 {
+        if layers & 0xffff_7fff == 0 && !keep_empty {
             continue;
         }
         let argument = ((u32::from(pixel) << 16 | i) << 8) | j;

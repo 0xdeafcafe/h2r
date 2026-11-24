@@ -40,6 +40,8 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::RENDER_DECAL_MODE,
         &points::RENDER_LIGHT_PASSES,
         &points::SCENE_ITEMS,
+        &points::FIRST_PERSON_LIGHTS,
+        &points::FIRST_PERSON_LIGHT_RECORDS,
         &points::LIGHT_GEOMETRY_DRAW,
         &points::LIGHT_RESTORE_TARGET,
         &points::LAYER_BUILD,
