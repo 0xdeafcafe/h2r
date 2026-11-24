@@ -1060,3 +1060,390 @@ mod passes_body {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// L6: the first-person lights (`engine::render::light_gather::first_person`).
+
+mod first_person_body {
+    use super::*;
+    use engine::render::light_gather::first_person::{
+        self, DIFFUSE, FirstPersonLights, RECEIVERS, SlotRecords, call, records_slot, site,
+    };
+    use engine::render::light_gather::items::Made;
+    use engine::render::light_gather::passes;
+
+    const E: u32 = 0x0010_0000;
+    const TABLE: u32 = frame::FIRST_PERSON_TABLE;
+    const LIGHT: u32 = 0x0001_0002;
+    const LIGHT_POOL: u32 = 0x0204_0000;
+    const LIGHT_DATA: u32 = 0x0205_0000;
+    const TAG_TABLE: u32 = 0x0206_0000;
+    const DATA: u32 = 0x0207_0000;
+    const DEFINITION: u32 = 0xa000_0003;
+    const DEVICE: u32 = 0x0208_0000;
+    const WEIGHT: u32 = 0x1111_1111;
+    const SCALE: u32 = 0x2222_2222;
+    const LIGHT_MASK: u32 = 0x004c_1a68;
+    const PASS_FLAGS: u32 = 0x004b_a014;
+    const PASSES: u32 = 0x004b_a018;
+    const VIEW_TARGET: u32 = 0x0048_58b8;
+    const MAIN_COUNT: u32 = 0x004c_0b7c;
+    const COUNT: u32 = 0x004c_0b78;
+    const SCENE_RECORDS: u32 = 0x004b_a138;
+    const PIXEL_BYTES: u32 = 0x004c_0b84;
+    const ATTACHMENT_BYTES: u32 = 0x004c_0ed6;
+    const OVERRIDES: u32 = 0x004c_1228;
+    const GEOMETRY: u32 = 0x0209_0000;
+
+    fn record(i: u32) -> u32 {
+        LIGHT_DATA + i * 0x110
+    }
+
+    /// One first-person light in slot 0 with `records` records, its
+    /// list's mask `receivers`, colour B bright, and a light pool whose
+    /// stride word is 0 so the volume's leaf refuses.
+    fn guest(receivers: u32) -> FakeGuest {
+        let mut g = FakeGuest::new();
+        g.map(E - 0x2000, 0x2020);
+        g.put_u32(E + 4, 2);
+        g.map(TABLE, 8 * frame::FIRST_PERSON_SLOT);
+        g.put_u32(frame::FIRST_PERSON_COUNT, 1);
+        g.put_u32(TABLE + 0x400, LIGHT).put_u16(TABLE + 0x404, 2);
+        g.put_u32(engine::render::light::ARRAY_POINTER, LIGHT_POOL);
+        g.put_u32(LIGHT_POOL + 0x44, LIGHT_DATA);
+        g.map(LIGHT_DATA, 0x400);
+        g.put_u32(record(2) + 4, DEFINITION);
+        g.put_u32(engine::tags::TAG_ENTRIES_GLOBAL, TAG_TABLE)
+            .put_u32(TAG_TABLE + (DEFINITION & 0xffff) * 16 + 8, DATA);
+        g.put_u32(0x0004_0566, WEIGHT).put_u32(0x0004_056d, SCALE);
+        g.put_f32(0x0048_5950, 0.5);
+        g.map(0x0048_5ad0, 0x20);
+        g.map(0x0048_58b4, 0x10);
+        g.put_u32(VIEW_TARGET, 0x0000_3407);
+        g.map(0x0046_7130, 0x10);
+        g.map(0x004b_843c, 4);
+        g.put_u32(PASS_FLAGS, 0x55).put_u8(PASSES, 0);
+        g.put_u32(LIGHT_MASK, receivers);
+        g.put_u32(0x0040_7488, DEVICE)
+            .put_u32(DEVICE, 0x100)
+            .put_u32(DEVICE + 4, 0x200);
+        g.map(DEVICE + 0x1c10, 12);
+        g.put_u32(0x0040_8648, 0x40);
+        g
+    }
+
+    struct Ran {
+        run: testing::Run,
+        lights: Option<FirstPersonLights>,
+        /// Each call's target and the return site its slot names.
+        sites: Vec<(u32, Option<u32>)>,
+        /// At each layer draw: the loop's index and slot pointer in its
+        /// frame, as `native_lights::first_person_entry` reads them.
+        frames: Vec<(u32, u32)>,
+    }
+
+    fn run_lights(g: FakeGuest) -> Ran {
+        let plan = first_person::plan(&g, E, FPU).expect("the plan");
+        let out = Arc::new(Mutex::new(None));
+        let kept = Arc::clone(&out);
+        let f = move |cx: Cx| -> EntryFuture {
+            let plan = plan.clone();
+            let kept = Arc::clone(&kept);
+            Box::pin(async move {
+                let (ret, lights) = first_person::run(&cx, plan).await?;
+                *kept.lock().unwrap() = Some(lights);
+                Ok::<_, engine::entry::EntryError>(ret)
+            })
+        };
+        let mut sites = Vec::new();
+        let mut frames = Vec::new();
+        let regs = Regs {
+            esp: E,
+            ..Regs::default()
+        };
+        let run = testing::run(&f, g, regs, |c: &GuestCall, m: &mut dyn GuestMemory| {
+            let esp = c.esp(E);
+            sites.push((c.target, passes::return_site(esp)));
+            if c.target == call::LAYER_DRAW {
+                frames.push((
+                    m.u32(esp + 4 + 0x14).unwrap(),
+                    m.u32(esp + 4 + 0x18).unwrap(),
+                ));
+            }
+            match c.target {
+                call::PUSH_STATE => Regs {
+                    eax: 0x1234_5600,
+                    ..Regs::default()
+                },
+                _ => Regs::default(),
+            }
+        });
+        let lights = out.lock().unwrap().take();
+        Ran {
+            run,
+            lights,
+            sites,
+            frames,
+        }
+    }
+
+    #[test]
+    fn the_first_person_lights_call_the_guest_in_its_order() {
+        let ran = run_lights(guest(1 << 11 | 1 << 12));
+        assert_eq!(
+            ran.run.result,
+            Ok(Ret::new(((TABLE + 0x400 + 0x408) & !0xff) | 1, 4))
+        );
+        let targets: Vec<u32> = ran.run.calls.iter().map(|c| c.target).collect();
+        assert_eq!(
+            targets,
+            [
+                // The volume's leaf refused; its guest function.
+                call::LIGHT_VOLUME,
+                call::RECORDS,
+                call::CONSTANTS,
+                // 11: in the list.
+                call::TARGET,
+                call::CLIP_MODE,
+                call::RECEIVER_BLEND,
+                call::STENCIL,
+                call::LAYER_DRAW,
+                call::LAYER_END,
+                // 14: not in the list.
+                call::STENCIL,
+                // 12.
+                call::TARGET,
+                call::CLIP_MODE,
+                call::STENCIL,
+                call::LAYER_DRAW,
+                call::LAYER_END,
+                // 13: a kind-0 volume and colour B, not in the list.
+                call::STENCIL,
+                // The tail; the push buffer has room.
+                call::STENCIL_ENABLE,
+                call::SCISSORS,
+                call::PUSH_STATE,
+                call::TARGET,
+            ]
+        );
+        for c in &ran.run.calls {
+            assert_eq!(c.reserve, first_person::FRAME, "{:#x}", c.target);
+        }
+        let named: Vec<Option<u32>> = ran.sites.iter().map(|s| s.1).collect();
+        assert!(named.iter().all(Option::is_some), "{named:x?}");
+        assert_eq!(named[1], Some(site::RECORDS));
+        assert_eq!(named[7], Some(RECEIVERS.draw));
+        assert_eq!(named[13], Some(DIFFUSE.draw));
+        assert_eq!(named[19], Some(site::VIEW_TARGET));
+        assert_eq!(passes::return_site(E - 0x9c), None, "cleared after");
+        // The layer-draw hook finds the slot in the loop's frame.
+        assert_eq!(ran.frames, [(0, TABLE + 0x400), (0, TABLE + 0x400)]);
+
+        let made = |i: usize| &ran.run.calls[i];
+        assert_eq!(
+            (made(0).eax, made(0).edx, made(0).args.as_slice()),
+            (Some(E - 0x7c), Some(LIGHT), &[1][..])
+        );
+        assert_eq!(
+            (made(1).ecx, made(1).edx, made(1).args.as_slice()),
+            (Some(2), Some(0), &[2][..]),
+            "the mode and the slot"
+        );
+        let constants = made(2);
+        assert_eq!(
+            (constants.eax, constants.ecx, constants.edx),
+            (Some(record(2) + 0x84), Some(E - 0x7c), Some(LIGHT))
+        );
+        assert_eq!(
+            constants.args,
+            [DATA, SCALE, 0, WEIGHT],
+            "shadow 0, weight one"
+        );
+        assert_eq!(
+            made(3).eax,
+            Some(0x0000_3401),
+            "AL 1 over the view's target"
+        );
+        assert_eq!(made(3).ebx, Some(DATA), "layer 11's begin keeps EBX");
+        assert_eq!(made(6).ebx, Some(0), "the stencil off");
+        assert_eq!(made(10).ebx, Some(0));
+        assert_eq!(made(18).esi, Some(DEVICE), "the push, ESI the device");
+        assert_eq!(made(19).eax, Some(0x1234_5601));
+        assert_eq!(made(19).args, [0x3407, 0]);
+
+        let lights = ran.lights.expect("what it did");
+        assert_eq!(lights.count, 1);
+        let light = lights.lights[0];
+        assert_eq!((light.index, light.light), (0, LIGHT));
+        assert_eq!(light.flags, 3, "a kind-0 volume and colour B");
+        assert_eq!(light.reached, 1 << 11 | 1 << 14 | 1 << 12 | 1 << 13);
+        assert_eq!(light.drawn, 1 << 11 | 1 << 12);
+        let g = &ran.run.guest;
+        assert_eq!(g.u32(PASS_FLAGS).unwrap(), 0, "zeroed by the tail");
+        assert_eq!(g.u8(PASSES).unwrap(), 0);
+        assert_eq!(g.u32(DEVICE).unwrap(), 0x1234_5600, "the put pointer");
+        assert_eq!(g.u32(DEVICE + 0x1c18).unwrap(), 2, "the depth range dirty");
+        assert_eq!(g.u32(E - 0x84).unwrap(), 1, "the loop's index");
+    }
+
+    #[test]
+    fn a_full_push_buffer_asks_for_room_first() {
+        let mut g = guest(0);
+        g.put_u32(DEVICE, 0x300);
+        let ran = run_lights(g);
+        let targets: Vec<u32> = ran.run.calls.iter().map(|c| c.target).collect();
+        let at = targets.iter().position(|&t| t == call::PUSH_SPACE).unwrap();
+        assert_eq!(targets[at + 1], call::PUSH_STATE);
+        let room = &ran.run.calls[at];
+        assert_eq!(
+            (room.eax, room.ecx, room.args.as_slice()),
+            (Some(0x40), Some(0x20), &[0x20][..])
+        );
+        assert_eq!(ran.sites[at].1, Some(site::PUSH_SPACE));
+    }
+
+    #[test]
+    fn no_slots_draw_nothing_and_more_than_eight_are_the_guests() {
+        let mut g = guest(0);
+        g.put_u32(frame::FIRST_PERSON_COUNT, 0);
+        let ran = run_lights(g);
+        assert!(ran.run.calls.is_empty());
+        assert_eq!(ran.run.result, Ok(Ret::new(1, 4)));
+        let mut g = guest(0);
+        g.put_u32(frame::FIRST_PERSON_COUNT, 9);
+        assert_eq!(
+            first_person::plan(&g, E, FPU).err(),
+            Some(Refusal::Unsupported)
+        );
+        let flush = Fpu {
+            mxcsr: 0x9f80,
+            ..FPU
+        };
+        assert_eq!(
+            first_person::plan(&guest(0), E, flush).err(),
+            Some(Refusal::Unsupported)
+        );
+    }
+
+    /// Slot 0 holds one object's record (its parts are the guest's): the
+    /// main view's records end at 5, where the replay copies it.
+    fn records_guest() -> FakeGuest {
+        let mut g = FakeGuest::new();
+        g.map(E - 0x2000, 0x2020);
+        g.put_u32(E + 4, 0);
+        g.map(TABLE, 8 * frame::FIRST_PERSON_SLOT);
+        g.put_u16(TABLE + 0x404, 1);
+        g.put_u32(TABLE, 0x0000_0003)
+            .put_u32(TABLE + 4, 0x0001_0007)
+            .put_u32(TABLE + 0xc, 0x1f0 | 0x5)
+            .put_u32(TABLE + 0x14, 0x0300_0000)
+            .put_u8(TABLE + 0x1a, 1);
+        g.map(0x004c_1a40, 0x60);
+        g.put_u32(MAIN_COUNT, 5).put_u32(COUNT, 5);
+        g.map(SCENE_RECORDS, 0x20 * 8);
+        // The bytes at the record's old and new index.
+        g.put_u8(PIXEL_BYTES, 0x77).put_u8(PIXEL_BYTES + 5, 0x33);
+        g.put_u8(ATTACHMENT_BYTES, 0xff)
+            .put_u8(ATTACHMENT_BYTES + 5, 2);
+        g.put_u32(OVERRIDES + 8, 0xe100_0009);
+        // What the frame's pixel dword holds above its byte.
+        g.put_u32(E - records_slot::PIXEL, 0xefcd_ab00);
+        g.put_u32(GEOMETRY, 1);
+        g
+    }
+
+    #[test]
+    fn a_replayed_record_reads_the_bytes_at_its_new_index() {
+        let g = records_guest();
+        let plan = first_person::plan_records(&g, E, 0xabcd_0000, 0, FPU).expect("the plan");
+        let out = Arc::new(Mutex::new(None));
+        let kept = Arc::clone(&out);
+        let f = move |cx: Cx| -> EntryFuture {
+            let plan = plan.clone();
+            let kept = Arc::clone(&kept);
+            Box::pin(async move {
+                let (ret, records) = first_person::run_records(&cx, plan).await?;
+                *kept.lock().unwrap() = Some(records);
+                Ok::<_, engine::entry::EntryError>(ret)
+            })
+        };
+        let regs = Regs {
+            esp: E,
+            ..Regs::default()
+        };
+        let run = testing::run(&f, g, regs, |c: &GuestCall, _m: &mut dyn GuestMemory| {
+            use engine::render::light_gather::items::call as part;
+            Regs {
+                eax: match c.target {
+                    part::RECORD_GEOMETRY => GEOMETRY,
+                    part::PART_MATERIAL | part::PART_VISIBLE => 1,
+                    _ => 0,
+                },
+                ..Regs::default()
+            }
+        });
+        assert_eq!(run.result, Ok(Ret::new(1, 4)), "one record walked");
+        let records: SlotRecords = out.lock().unwrap().take().unwrap();
+        assert_eq!(records.records, 5..6);
+        assert_eq!(records.made, [(5, Made::Guest(Refusal::Unsupported))]);
+        let g = &run.guest;
+        assert_eq!(g.u32(COUNT).unwrap(), 6, "the tail past the copy");
+        assert_eq!(
+            g.bytes(SCENE_RECORDS + 5 * 0x20, 0x20).unwrap(),
+            g.bytes(TABLE, 0x20).unwrap(),
+            "the record at its new index"
+        );
+        let items = run.calls.last().unwrap();
+        assert_eq!(
+            items.target,
+            engine::render::light_gather::items::call::PART_ITEMS
+        );
+        assert_eq!((items.ecx, items.edx), (Some(0), Some(5)));
+        assert_eq!(
+            items.args,
+            [
+                1,
+                // The pixel byte at index 5, over the frame's stale bytes.
+                0xefcd_ab33,
+                E - records_slot::SCRATCH,
+                // The override of the attachment byte at index 5.
+                0xe100_0009,
+                1,
+                u32::MAX,
+                0
+            ]
+        );
+        assert_eq!(run.calls[0].eax, Some(5), "the geometry of index 5");
+        assert_eq!(g.u32(E + 4).unwrap(), TABLE + 0x20, "the slot cursor");
+    }
+
+    #[test]
+    fn an_empty_slot_zeroes_the_lists_and_returns_its_count() {
+        let mut g = records_guest();
+        g.put_u16(TABLE + 0x404, 0);
+        g.put_u32(0x004c_1a64, 9);
+        let plan = first_person::plan_records(&g, E, 0xabcd_1234, 0, FPU).unwrap();
+        let f = move |cx: Cx| -> EntryFuture {
+            let plan = plan.clone();
+            Box::pin(async move {
+                Ok::<_, engine::entry::EntryError>(first_person::run_records(&cx, plan).await?.0)
+            })
+        };
+        let regs = Regs {
+            esp: E,
+            ..Regs::default()
+        };
+        let run = testing::run(&f, g, regs, |_: &GuestCall, _: &mut dyn GuestMemory| {
+            Regs::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(0xabcd_0000, 4)));
+        assert!(run.calls.is_empty());
+        assert_eq!(run.guest.u32(0x004c_1a64).unwrap(), 0);
+        assert_eq!(run.guest.u32(COUNT).unwrap(), 5, "no copy");
+        assert_eq!(
+            first_person::plan_records(&records_guest(), E, 0, 8, FPU).err(),
+            Some(Refusal::Unsupported),
+            "a slot past the table"
+        );
+    }
+}

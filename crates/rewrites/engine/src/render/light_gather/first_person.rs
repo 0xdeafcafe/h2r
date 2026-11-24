@@ -704,7 +704,7 @@ async fn guest_record(cx: &Cx, p: &RecordsPlan, record: u32, index: u32) -> Resu
     let e = p.entry_esp;
     let pixel_at = e.wrapping_sub(records_slot::PIXEL);
     let scratch = e.wrapping_sub(records_slot::SCRATCH);
-    let (flags, class, shader_override) = cx.write(|m| -> Result<_, MemFault> {
+    let (flags, class, shader_override, edx) = cx.write(|m| -> Result<_, MemFault> {
         let flags = m.u32(record)?;
         let class = m.u32(record.wrapping_add(0xc))? & 0xf;
         let pixel = m.u8(items::PIXEL_SIZES.wrapping_add(index))?;
@@ -715,15 +715,17 @@ async fn guest_record(cx: &Cx, p: &RecordsPlan, record: u32, index: u32) -> Resu
             0xff => NONE,
             a => m.u32(items::OVERRIDES + 4 * u32::from(a))?,
         };
-        Ok((flags, class, shader_override))
+        // 0x000403ff: EDX is 0x1f0 from the selector test with the pixel
+        // byte in its low byte, or the attachment byte when it names an
+        // override (0x000403e7); its low byte is then cleared.
+        let edx = if attachment == 0xff { 0x100 } else { 0 };
+        Ok((flags, class, shader_override, edx))
     })?;
     let placement = (flags >> 12) & 0xffff_ff01;
-    // 0x000403ff: EDX is 0x1f0 from the selector test, its low byte
-    // the pixel byte, then cleared.
     let request = GuestCall::new(items::call::RECORD_GEOMETRY)
         .eax(index)
         .ecx(placement)
-        .edx(0x100)
+        .edx(edx)
         .ebx(record)
         .esi(index)
         .edi(p.filter)
