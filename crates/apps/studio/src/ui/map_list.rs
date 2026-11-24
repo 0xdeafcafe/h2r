@@ -1,12 +1,10 @@
-//! The Maps list's rows, every group alike: a map with a card
-//! ([`crate::app::map_cards`], or a Map Pack record) has a thumbnail of
-//! its picture beside the game's name for it, and on hover the whole
-//! picture, the name, the description and a dim line saying where the file
-//! comes from. A map with none keeps its file name and icon, and its
-//! tooltip says what it is. The pictures share one GPU cache, keyed by
-//! row. The source maps are drawn here, the Map Pack in
-//! [`super::map_pack`], and packages in `Studio::library_lists`.
-use std::collections::{BTreeMap, HashMap};
+//! The map grid's cards, shown in the viewport while no map is open: a
+//! map with a card ([`crate::app::map_cards`]) has a thumbnail of its
+//! picture beside the game's name for it, and on hover the whole picture,
+//! the name, the description and a dim line saying where the file comes
+//! from. A map with none keeps its file name and icon, and its tooltip
+//! says what it is. The pictures share one GPU cache, keyed by row.
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dear_imgui_rs::{ChildFlags, StyleVar, TextureId, Ui};
@@ -33,33 +31,10 @@ struct Texture {
     from: Arc<Picture>,
 }
 
-/// The Maps list's groups.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Group {
-    /// The open Halo 2 source's maps.
-    Halo2,
-    MapPack,
-    Packages,
-    Halo1Sandbox,
-    Halo1,
-    SharedAndMenu,
-}
-
-/// What a group drew.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Shown {
-    /// The Map Pack's line on how to install it.
-    Hint,
-    /// A row a map: its label and whether its picture was shown.
-    Maps(Vec<(String, bool)>),
-}
-
-/// The list's UI-only state: the pictures on the GPU, by row key.
+/// The grid's UI-only state: the pictures on the GPU, by row key.
 #[derive(Default)]
 pub struct MapListUi {
     textures: HashMap<String, Texture>,
-    /// What the last frame drew, by group. For scripts and tests.
-    pub shown: BTreeMap<Group, Shown>,
 }
 
 /// One row of the list.
@@ -80,45 +55,7 @@ pub struct Row<'a> {
 }
 
 impl MapListUi {
-    /// What `group` drew in the last frame.
-    pub fn shown(&self, group: Group) -> Option<&Shown> {
-        self.shown.get(&group)
-    }
-
-    /// Forget what the last frame drew.
-    pub fn begin(&mut self) {
-        self.shown.clear();
-    }
-
-    /// `group` drew its hint and no maps.
-    pub fn hint(&mut self, group: Group) {
-        self.shown.insert(group, Shown::Hint);
-    }
-
-    fn record(&mut self, group: Group, label: &str, pictured: bool) {
-        let shown = self
-            .shown
-            .entry(group)
-            .or_insert_with(|| Shown::Maps(Vec::new()));
-        if let Shown::Maps(rows) = shown {
-            rows.push((label.to_owned(), pictured));
-        } else {
-            *shown = Shown::Maps(vec![(label.to_owned(), pictured)]);
-        }
-    }
-
-    /// Draws one row. True when it was clicked while not selected.
-    pub fn row(&mut self, ui: &Ui, gpu: &mut Gpu<'_>, group: Group, r: &Row<'_>) -> bool {
-        self.draw_row(ui, gpu, Some(group), r)
-    }
-
-    fn draw_row(
-        &mut self,
-        ui: &Ui,
-        gpu: &mut Gpu<'_>,
-        group: Option<Group>,
-        r: &Row<'_>,
-    ) -> bool {
+    fn draw_row(&mut self, ui: &Ui, gpu: &mut Gpu<'_>, r: &Row<'_>) -> bool {
         let thumb = r
             .picture
             .and_then(|p| self.texture(gpu, &r.key, p).map(|t| (t, p.width, p.height)));
@@ -130,9 +67,6 @@ impl MapListUi {
             }
             None => format!("{}  {}##{}", r.icon, r.label, r.key),
         };
-        if let Some(group) = group {
-            self.record(group, r.label, thumb.is_some());
-        }
         let clicked = ui.selectable_config(label).selected(r.selected).build() && !r.selected;
         if ui.is_item_hovered() {
             ui.tooltip(|| {
@@ -275,17 +209,6 @@ pub fn section(ui: &Ui, last: &mut Option<MapGroup>, group: MapGroup) {
     }
 }
 
-pub fn source_rows(
-    ui: &Ui,
-    app: &App,
-    st: &mut MapListUi,
-    gpu: &mut Gpu<'_>,
-    entries: &[MapEntry<'_>],
-    actions: &mut Vec<Action>,
-) {
-    draw_source_rows(ui, app, st, gpu, entries, false, actions);
-}
-
 pub(super) fn source_grid(
     ui: &Ui,
     app: &App,
@@ -298,7 +221,7 @@ pub(super) fn source_grid(
     entries.extend(app.halo1_map_entries());
     entries.retain(|e| e.group != MapGroup::SharedAndMenu);
     if entries.is_empty() {
-        theme::empty_card(ui, fonts, "Pick a map from the Maps tab", || {});
+        theme::empty_card(ui, fonts, "Pick a map in the Browser", || {});
         return;
     }
 
@@ -321,7 +244,7 @@ pub(super) fn source_grid(
                     theme::section(ui, name);
                 }
                 if let Some(_table) = ui.begin_table(format!("##map-grid-{i}"), columns as usize) {
-                    draw_source_rows(ui, app, st, gpu, group, true, actions);
+                    draw_source_rows(ui, app, st, gpu, group, actions);
                 }
             }
         },
@@ -334,7 +257,6 @@ fn draw_source_rows(
     st: &mut MapListUi,
     gpu: &mut Gpu<'_>,
     entries: &[MapEntry<'_>],
-    grid: bool,
     actions: &mut Vec<Action>,
 ) {
     let place_h2 = app.source().map(halo2_place).unwrap_or_default();
@@ -342,20 +264,15 @@ fn draw_source_rows(
     let loaded_h2 = app
         .loaded_map()
         .filter(|_| app.opened_package().is_none() && app.opened_pack_map().is_none());
-    let mut last = None;
     for entry in entries {
         let MapEntry {
             stem, label, group, card, halo1,
         } = *entry;
-        if grid {
-            ui.table_next_column();
+        ui.table_next_column();
+        let (prefix, place, loaded) = if halo1 {
+            ("h1", &place_h1, app.loaded_halo1())
         } else {
-            section(ui, &mut last, group);
-        }
-        let (prefix, place, loaded, source_group) = if halo1 {
-            ("h1", &place_h1, app.loaded_halo1(), Group::Halo1)
-        } else {
-            ("map", &place_h2, loaded_h2, Group::Halo2)
+            ("map", &place_h2, loaded_h2)
         };
         let from = format!("{stem}.map, {place}");
         let glyph = if halo1 && group != MapGroup::SharedAndMenu {
@@ -379,12 +296,7 @@ fn draw_source_rows(
             description,
             from: &from,
         };
-        let drawn = if group == MapGroup::SharedAndMenu {
-            Group::SharedAndMenu
-        } else {
-            source_group
-        };
-        if st.draw_row(ui, gpu, (!grid).then_some(drawn), &row) {
+        if st.draw_row(ui, gpu, &row) {
             actions.push(if halo1 {
                 Action::SelectHalo1Map(stem.to_owned())
             } else {

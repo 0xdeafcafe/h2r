@@ -3,6 +3,7 @@
 //! go back to [`App`] as [`Action`]s.
 
 mod bar;
+pub mod browser;
 mod doc_tabs;
 mod layout;
 mod toolbar;
@@ -10,7 +11,6 @@ pub(crate) mod inspector;
 mod layers;
 pub mod map_list;
 mod modeling;
-pub mod map_pack;
 mod outliner;
 mod palette;
 mod play;
@@ -37,10 +37,8 @@ use dear_imgui_rs::{
     WindowFlags, WindowHoveredFlags,
 };
 use editor_core::Status;
-use editor_core::map_groups::MapGroup;
 use scenario_edit::BlockKind;
 
-use crate::app::map_cards::MapEntry;
 use crate::app::commands::MenuCommand;
 use crate::app::{Action, Answer, App, NavAction, SaveTarget, ToolKind};
 use crate::theme::{self, Fonts, icon};
@@ -54,7 +52,7 @@ const OPEN_PACKAGE: &str = "Open package###open-package";
 /// A tab of the Map workspace's left dock node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapTab {
-    Maps,
+    Browser,
     Scene,
     Tags,
     Scripts,
@@ -101,7 +99,9 @@ pub struct Studio {
     pub tags: tags::TagsUi,
     /// The Scripts tab's searches.
     pub scripts: scripts::ScriptsUi,
-    /// The Maps list's pictures, and what each group drew.
+    /// The browser panel's state.
+    pub browser: browser::BrowserUi,
+    /// The map grid's pictures.
     pub map_list: map_list::MapListUi,
     /// The Sound window over the Tags tool's selected `snd!`.
     sound: sound::SoundUi,
@@ -144,6 +144,7 @@ impl Studio {
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
             scripts: scripts::ScriptsUi::default(),
+            browser: browser::BrowserUi::default(),
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::default(),
             anim: anim::AnimUi::default(),
@@ -180,7 +181,6 @@ impl Studio {
             self.want_tab = None;
         }
         self.hint = None;
-        self.map_list.begin();
         match app.tool {
             ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts => {
                 let changed = self.previous_tool != Some(app.tool);
@@ -194,12 +194,12 @@ impl Studio {
                     && (reset
                         || opened
                         || matches!(self.previous_tool, Some(ToolKind::Tags | ToolKind::Scripts)));
-                let focus_maps = !open
+                let focus_browser = !open
                     && !focus_tags
                     && !focus_scripts
                     && (reset || (changed && self.previous_tool.is_some()) || opened);
                 let asked = [
-                    (focus_maps, MapTab::Maps),
+                    (focus_browser, MapTab::Browser),
                     (focus_scene, MapTab::Scene),
                     (focus_tags, MapTab::Tags),
                     (focus_scripts, MapTab::Scripts),
@@ -219,13 +219,13 @@ impl Studio {
                 // even behind another tab, hidden, so "shows" is the window's
                 // own Hidden flag, not whether its contents ran.
                 let want = self.want_tab.map(|(tab, _)| tab);
-                self.maps_window(ui, app, gpu, want == Some(MapTab::Maps), &mut actions);
+                self.browser_window(ui, app, want == Some(MapTab::Browser), &mut actions);
                 self.outliner_window(ui, app, want == Some(MapTab::Scene), &mut actions);
                 self.tags_window(ui, app, want == Some(MapTab::Tags), &mut actions);
                 self.scripts_window(ui, app, want == Some(MapTab::Scripts), &mut actions);
                 if let Some((tab, tries)) = self.want_tab {
                     let key = match tab {
-                        MapTab::Maps => &self.keys.maps,
+                        MapTab::Browser => &self.keys.browser,
                         MapTab::Scene => &self.keys.outliner,
                         MapTab::Tags => &self.keys.tags,
                         MapTab::Scripts => &self.keys.scripts,
@@ -803,16 +803,12 @@ impl Studio {
         });
     }
 
-    fn maps_window(
-        &mut self,
-        ui: &Ui,
-        app: &App,
-        gpu: &mut Gpu<'_>,
-        focus: bool,
-        actions: &mut Vec<Action>,
-    ) {
-        let mut list = std::mem::take(&mut self.map_list);
-        ui.window(&self.keys.maps).focused(focus).build(|| {
+    /// The browser: every tag of the tree by path, the packages and Live
+    /// (`ui/browser.rs`), beside the Open and Folder buttons that choose
+    /// the source the tree's maps are read from.
+    fn browser_window(&mut self, ui: &Ui, app: &App, focus: bool, actions: &mut Vec<Action>) {
+        let mut st = std::mem::take(&mut self.browser);
+        ui.window(&self.keys.browser).focused(focus).build(|| {
             if ui.button(format!("{} Open...", icon::FOLDER_OPEN)) {
                 self.open_source_dialog(actions);
             }
@@ -828,52 +824,9 @@ impl Studio {
                 };
                 ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
-            let mut halo2 = app.halo2_map_entries();
-            let mut halo1 = app.halo1_map_entries();
-            let mut shared = MapEntry::take_shared(&mut halo2);
-            shared.extend(MapEntry::take_shared(&mut halo1));
-            MapEntry::sort(&mut shared);
-            map_list::source_rows(ui, app, &mut list, gpu, &halo2, actions);
-            map_pack::group(ui, app, &mut list, gpu, actions);
-            self.library_lists(ui, app, &mut list, gpu, &halo1, actions);
-            map_list::source_rows(ui, app, &mut list, gpu, &shared, actions);
+            browser::draw(ui, app, &mut st, actions);
         });
-        self.map_list = list;
-    }
-
-    /// The user packages, converted variants and read-only Halo 1 maps.
-    fn library_lists(
-        &self,
-        ui: &Ui,
-        app: &App,
-        st: &mut map_list::MapListUi,
-        gpu: &mut Gpu<'_>,
-        halo1: &[MapEntry<'_>],
-        actions: &mut Vec<Action>,
-    ) {
-        let opened = app.opened_package();
-        let mut last = None;
-        for e in app.packages() {
-            let group = e.map_group();
-            map_list::section(ui, &mut last, group);
-            let rows = match group {
-                MapGroup::Halo1Sandbox => map_list::Group::Halo1Sandbox,
-                _ => map_list::Group::Packages,
-            };
-            package_row(ui, app, st, gpu, rows, e, opened, actions);
-        }
-        if let Some(src) = app.halo1_source()
-            && !halo1.is_empty()
-        {
-            ui.spacing();
-            theme::section(ui, "Halo 1");
-            ui.text_disabled(format!(
-                "{} {} (read only)",
-                icon::DISC,
-                src.path().display()
-            ));
-            map_list::source_rows(ui, app, st, gpu, halo1, actions);
-        }
+        self.browser = st;
     }
 
     fn outliner_window(
@@ -1188,7 +1141,12 @@ impl Studio {
         {
             let what = match app.pending() {
                 Some(Action::Quit) => "quitting",
-                Some(Action::SelectMap(_) | Action::OpenMapPack(_) | Action::SelectHalo1Map(_)) => {
+                Some(
+                    Action::SelectMap(_)
+                    | Action::OpenMapPack(_)
+                    | Action::SelectHalo1Map(_)
+                    | Action::OpenAsset { .. },
+                ) => {
                     "opening another map"
                 }
                 Some(Action::OpenPackageEntry(_)) => "opening another package",
@@ -1448,49 +1406,6 @@ fn entry_menu(
     item(format!("{} Place {what} with the mouse", icon::PLUS), add).then_some((kind, index))
 }
 
-/// A package's row in the Maps list: its name, its `[package] image` and
-/// `description` when it has them, and what it is an edit of.
-fn package_row(
-    ui: &Ui,
-    app: &App,
-    st: &mut map_list::MapListUi,
-    gpu: &mut Gpu<'_>,
-    group: map_list::Group,
-    e: &editor_core::packages::PackageEntry,
-    opened: Option<&str>,
-    actions: &mut Vec<Action>,
-) {
-    let key = e.key();
-    let label = e.label();
-    let from = format!(
-        "{}\nin <data>/maps/{}{}",
-        if !e.derived && let Some(m) = app.pack_map_named(&e.map) {
-            format!("an edit of the Map Pack's {} ({})", m.name, e.map)
-        } else if e.derived {
-            format!("a new map, loaded as {}", e.map)
-        } else {
-            format!("an edit of {}", e.map)
-        },
-        e.dir,
-        match &e.halo1 {
-            Some(o) => format!("\nconverted from Halo 1's {}", o.map),
-            None => String::new(),
-        }
-    );
-    let row = map_list::Row {
-        key: format!("pkg-{key}"),
-        label: &label,
-        icon: icon::PACKAGE,
-        selected: opened == Some(key.as_str()),
-        picture: app.package_picture(&e.dir),
-        description: e.description.as_deref().unwrap_or(""),
-        from: &from,
-    };
-    if st.row(ui, gpu, group, &row) {
-        actions.push(Action::OpenPackageEntry(key.clone()));
-    }
-}
-
 /// The Volumes group's menu: add a trigger volume, or make a kill volume,
 /// at the camera focus.
 fn volume_menu(ui: &Ui, session: &scenario_edit::Session, actions: &mut Vec<Action>) {
@@ -1663,7 +1578,7 @@ impl Studio {
         );
         ui.text_wrapped(
             "Halo 1 maps are shown as they are on the disc. Edit a converted copy \
-             (Maps > Halo 1) instead.",
+             instead.",
         );
         convert_controls(ui, app, view, actions);
         for n in &view.notes {

@@ -18,6 +18,10 @@ use serde_json::{Value, json};
 use tags::defs::{fourcc_text, parse_fourcc};
 use tags::repo::{TagKey, TagRepo};
 
+use super::kinds::{self, Editor};
+use super::shell::Doc;
+use super::{App, tag_api};
+
 /// The kinds the Kind picker names, and the groups of each. A group in
 /// none of them is `Other`; any four-character group is also a kind.
 const KINDS: &[(&str, &[&str])] = &[
@@ -634,4 +638,76 @@ pub fn copy(
         "item": manifest.items.len() - 1,
         "dir": dir.display().to_string(),
     }))
+}
+
+impl App {
+    /// `asset.copy`, and the browser's **Copy into package**: the one call
+    /// both make.
+    pub fn asset_copy(
+        &mut self,
+        id: &AssetId,
+        package: &str,
+        to: Option<&str>,
+    ) -> Result<Value, CopyRefusal> {
+        let set = read_set(&self.data_root());
+        copy(&self.tags_root(), &set, id, package, to)
+    }
+
+    /// [`super::Action::CopyAsset`].
+    pub(super) fn copy_asset(&mut self, asset: &str, package: &str) {
+        let id = match AssetId::parse(asset) {
+            Ok(id) => id,
+            Err(e) => return self.error(e),
+        };
+        match self.asset_copy(&id, package, None) {
+            Ok(v) => self.info(format!(
+                "copied {asset} into {package} as {}",
+                v["tag"].as_str().unwrap_or("a new tag")
+            )),
+            Err(CopyRefusal::Params(m) | CopyRefusal::Refused(m) | CopyRefusal::Failed(m)) => {
+                self.error(m)
+            }
+        }
+    }
+
+    /// [`super::Action::OpenAsset`]: open the map that holds the tag (a
+    /// Halo 1 map shows read-only, with no document), then the tag in the
+    /// editor its group gets. A scenario tag is the map's own tab.
+    pub(super) fn open_asset(&mut self, asset: &str, map: Option<&str>) {
+        let key = match AssetId::parse(asset) {
+            Ok(AssetId::Tag(key)) => key,
+            Ok(_) => return self.error(format!("{asset} is not a tag: only a tag opens in an editor")),
+            Err(e) => return self.error(e),
+        };
+        if let Some(name) = map {
+            let in_list = |entries: Vec<super::map_cards::MapEntry<'_>>| {
+                entries.iter().any(|e| e.stem.eq_ignore_ascii_case(name))
+            };
+            let halo1 = in_list(self.halo1_map_entries()) && !in_list(self.halo2_map_entries());
+            if halo1 {
+                if self.loaded_halo1() != Some(name) {
+                    self.select_halo1_map(name);
+                }
+                return;
+            }
+            if self.loaded.as_deref() != Some(name)
+                || self.opened_package.is_some()
+                || self.browsing().is_some()
+            {
+                self.select_map(name);
+            }
+        }
+        if kinds::kind(key.group).editor == Editor::Scenario {
+            return self.open_doc(Doc::Map);
+        }
+        if self.browsing().is_some() {
+            return self.error("a browsed map's tags are read-only: open the map to open its tags");
+        }
+        self.sync_tags();
+        let text = format!("{}:{}", fourcc_text(key.group), key.path);
+        match tag_api::find_tag(&self.tags, &text) {
+            Some(id) => self.open_doc(Doc::Tag(id)),
+            None => self.error(format!("{text} is not in the open map")),
+        }
+    }
 }

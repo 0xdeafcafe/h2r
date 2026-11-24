@@ -60,8 +60,8 @@ or the repository's `disc/halo1.iso` (`editor_core::halo1::default_source`).
 whose XBE is Halo: Combat Evolved's, a Halo 1 `.map`, or a folder holding
 any), then Halo 2.
 
-The Halo 2 Map Pack opens beside the disc, as its own **Map Pack** group
-in the Maps list (`editor_core::mappack`): `--mappack`, else
+The Halo 2 Map Pack opens beside the disc, as its own source
+(`editor_core::mappack`): `--mappack`, else
 `$H2_MAPPACK_ISO` (`$H2_MAPPACK` is `h2 play`'s on/off switch, and `0`,
 `false`, `no` or `off` turns the lookups below off too), else
 `mappack.iso` beside the Halo 2 disc that was opened (any case, else the
@@ -106,7 +106,7 @@ Scene, viewport, inspector, Log and status bar.*
   the standalone file the editor last saved for this map. A base map
   opens **Save as package...** with its name filled in. **Save as...**
   (Shift+Cmd/Ctrl+S) asks for a standalone `.map` path.
-- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the Maps list,
+- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the maps,
   the open map's tags and placements, and available menu actions. Each
   word must match. Use Up or Down to move, Enter to open or run the
   selection, and Esc to close. The result list is as tall as its rows, up
@@ -225,7 +225,8 @@ opens it.
 
 ## Scenario
 
-Picking a map in **Maps** opens it, unless the open map has unsaved edits
+Opening a map's scenario in the **Browser** (or picking a map on the grid
+shown while no map is open) opens it, unless the open map has unsaved edits
 (the guard asks). **File > Save as...** asks for the path of a whole
 `.map` export. The base map stays untouched. **Save as
 package...** and **Open package...** save and open map packages in
@@ -233,11 +234,13 @@ package...** and **Open package...** save and open map packages in
 
 ### Packages and Halo 1 in the Maps list
 
-**Maps** starts with the Halo 2 source's **Multiplayer maps** and
-**Campaign levels**. The library sections below them hold the Map Pack,
-user packages, converted Halo 1 variants and the read-only Halo 1
-source's playable maps. **Shared and menu** is the final section for
-both sources. Source rows show each map's card when available.
+The Browser has no list of maps: a map is its scenario tag, and a tag
+opens on the map that holds it ([studio-redesign.md](studio-redesign.md),
+"The browser"). The map grid shown while no map is open still groups the
+source's maps and shows each map's card when available. The sections
+below describe what each kind of map is; the Browser's Packages root
+lists `<data>/packages/`, and the `<data>/maps` packages and the Map
+Pack have no list of their own until the package slices land.
 
 - **Map Pack**: the nine multiplayer maps, sorted by display name and
   pictured as in the game's Select Map ("The Map Pack", below). They
@@ -362,7 +365,7 @@ overlay when there is none.
 
 ### The Maps list's cards
 
-Every row of the Maps list is drawn the same way (`ui::map_list::Row`):
+Every card of the map grid is drawn the same way (`ui::map_list::Row`):
 a map with a card shows a thumbnail of its picture (18 pt tall) beside
 the game's name for it, and on hover the whole picture (shrunk to 260 pt
 wide when larger), the name, the description wrapped at 260 pt, and a
@@ -371,9 +374,8 @@ dim line with the file and where it comes from
 file name and icon, and its tooltip says what it is: `mainmenu`,
 `shared` and `single_player_shared` are not levels
 (`map_cards::halo2_note`, `halo1_note`). The pictures go to the GPU once
-each, in one cache for every group keyed by the row
-(`MapListUi::texture`: `map-<name>`, `pack-<map>`, `pkg-<key>`,
-`h1-<name>`), and are replaced when a card's picture changes.
+each, in one cache keyed by the row
+(`MapListUi::texture`: `map-<name>`, `h1-<name>`), and are replaced when a card's picture changes.
 
 `editor_core::map_groups::MapGroup` classifies source maps using the
 cache type and reserved file names. `MapSource::map_groups` and

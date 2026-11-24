@@ -58,8 +58,7 @@ fn thumb(app: &mut App, p: &P) -> Reply {
 fn copy(app: &mut App, p: &P) -> Reply {
     let id = asset(p)?;
     let package = p.str("package")?;
-    let set = assets::read_set(&app.data_root());
-    assets::copy(&app.tags_root(), &set, &id, package, p.opt_str("to")?).map_err(|e| match e {
+    app.asset_copy(&id, package, p.opt_str("to")?).map_err(|e| match e {
         CopyRefusal::Params(m) => err(code::INVALID_PARAMS, m),
         CopyRefusal::Refused(m) => err(code::REFUSED, m),
         CopyRefusal::Failed(m) => err(code::FAILED, m),

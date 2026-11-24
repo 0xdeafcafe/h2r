@@ -282,6 +282,13 @@ pub enum Action {
     Image(image_gen::ImageAction),
     /// Show another tool.
     SetTool(ToolKind),
+    /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
+    /// editor: on `map` (opened first when it is not the open one), else
+    /// on the open map (`app::assets`).
+    OpenAsset { asset: String, map: Option<String> },
+    /// Copy a browser row's tag into a local package, as `asset.copy`
+    /// does (`app::assets`).
+    CopyAsset { asset: String, package: String },
 
     // Document tabs (`shell`).
     /// Open a document as a tab and bring it to the front: a tag of the
@@ -448,6 +455,13 @@ impl Action {
                 dirty_map()
             }
             Action::SelectHalo1Map(_) => dirty_map(),
+            Action::OpenAsset { map: Some(name), .. }
+                if app.loaded.as_deref() != Some(name.as_str())
+                    || app.opened_package.is_some()
+                    || app.browsing().is_some() =>
+            {
+                dirty_map()
+            }
             Action::OpenVariant(o) if app.variant_origin() != Some(o) => dirty(ToolKind::Variants),
             Action::NewVariant(_)
             | Action::NewVariantFromScript(_)
@@ -1081,6 +1095,8 @@ impl App {
                 Some(doc) => self.undo_redo_doc(doc, false),
                 None => self.undo_redo(self.tool, false),
             },
+            Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
+            Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
             Action::OpenDoc(doc) => self.open_doc(doc),
             Action::FocusDoc(doc) => self.focus_doc(doc),
             Action::CloseDoc(doc) => self.close_doc(doc),

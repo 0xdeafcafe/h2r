@@ -154,7 +154,7 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     if !doc.is_open() {
         ui.text_wrapped(match &doc.error {
             Some(e) => format!("The map's tags could not be read: {e}"),
-            None => "Open a map from the Maps tab to edit its tags, or pick a map above to browse \
+            None => "Open a map from the Browser to edit its tags, or pick a map above to browse \
                      its tags."
                 .to_owned(),
         });
