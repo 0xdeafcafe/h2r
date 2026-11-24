@@ -22,6 +22,7 @@ const FLOAT: u64 = 5126;
 
 /// One imported clip: keys on the file's nodes, the nodes' rest
 /// transforms and what was left out.
+#[derive(Debug)]
 pub struct GltfClip {
     pub clip: AnimDoc,
     pub rest: Vec<NodeDefault>,
