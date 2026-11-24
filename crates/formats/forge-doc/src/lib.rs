@@ -23,7 +23,10 @@ mod wire;
 pub use area::{Area, MarkerArea};
 pub use content::{MapId, Sha256};
 pub use document::*;
-pub use entry::{EntryOp, PROPERTY_TEAMS, Print, Property, check_print, print, teams};
+pub use entry::{
+    EntryOp, OBJECT_BLOCKS, PROPERTY_TEAMS, Print, Property, check_print, for_game, object_games,
+    print, teams,
+};
 pub use ground::*;
 pub use groups::*;
 pub use labels::*;

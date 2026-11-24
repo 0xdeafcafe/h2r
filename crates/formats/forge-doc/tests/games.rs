@@ -112,3 +112,22 @@ fn a_set_reads_as_its_names() {
         "an unknown index is left out"
     );
 }
+
+#[test]
+fn a_set_is_written_as_its_engine_indices_in_ascending_order() {
+    let set = GameSet::of(&[ASSAULT, KOTH, CTF]);
+    assert_eq!(serde_json::to_string(&set).unwrap(), "[1,4,9]");
+    assert_eq!(serde_json::from_str::<GameSet>("[1,4,9]").unwrap(), set);
+    assert_eq!(
+        serde_json::to_string(&GameSet::ALL).unwrap(),
+        "[1,2,3,4,7,8,9]"
+    );
+    assert_eq!(serde_json::to_string(&GameSet::NONE).unwrap(), "[]");
+    // One spelling a set: out of order, repeated, or no engine's index.
+    for bad in ["[4,1]", "[2,2]", "[5]", "[0]", "[-1]", "[1,2,3,4,7,8,9,10]"] {
+        assert!(
+            serde_json::from_str::<GameSet>(bad).is_err(),
+            "{bad} was read"
+        );
+    }
+}

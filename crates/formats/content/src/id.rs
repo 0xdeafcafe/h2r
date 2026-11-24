@@ -25,8 +25,12 @@ use crate::{
 /// manifest order. Two manifests have the same `MapId` exactly when they
 /// start from the same base and apply the same layers in the same order.
 ///
-/// Format 2 hashes `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
-/// See docs/game/forge-design.md for the document hash and expectations.
+/// Format 2 hashes `{"base":"<base hash>","forge":["<document hash>"],"format":2}`,
+/// with `"game":<engine index>` after `format` for a document whose objects
+/// have game types: the map is built for that engine
+/// (docs/game/forge-map-variants.md, "Game types"). Every other document
+/// keeps the id it has without the member. See docs/game/forge-design.md
+/// for the document hash and expectations.
 ///
 /// Displays, parses and serialises as 64 lowercase hex digits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -59,9 +63,16 @@ impl MapId {
         Self::of(&Manifest::retail(name, sha256))
     }
 
-    /// The format 2 identity of a materialised Forge document.
+    /// The format 2 identity of a materialised Forge document with no
+    /// object game types.
     pub fn forge(base: Sha256, document: Sha256) -> Self {
-        Self(Sha256::of(canonical_forge(base, document).as_bytes()).0)
+        Self::forge_game(base, document, None)
+    }
+
+    /// The format 2 identity of a materialised Forge document, built for
+    /// the engine `game` when its objects have game types.
+    pub fn forge_game(base: Sha256, document: Sha256, game: Option<u8>) -> Self {
+        Self(Sha256::of(canonical_forge(base, document, game).as_bytes()).0)
     }
 
     /// The canonical JSON that [`MapId::of`] hashes.
@@ -69,7 +80,7 @@ impl MapId {
         if manifest.package.format == FORGE_FORMAT
             && let (Some(base), [layer]) = (manifest.base.sha256, manifest.forge.as_slice())
         {
-            return canonical_forge(base, layer.document);
+            return canonical_forge(base, layer.document, layer.game);
         }
         let id = Identity {
             format: manifest.package.format,
@@ -86,8 +97,13 @@ impl MapId {
     }
 }
 
-fn canonical_forge(base: Sha256, document: Sha256) -> String {
-    format!(r#"{{"base":"{base}","forge":["{document}"],"format":2}}"#)
+fn canonical_forge(base: Sha256, document: Sha256, game: Option<u8>) -> String {
+    match game {
+        None => format!(r#"{{"base":"{base}","forge":["{document}"],"format":2}}"#),
+        Some(game) => {
+            format!(r#"{{"base":"{base}","forge":["{document}"],"format":2,"game":{game}}}"#)
+        }
+    }
 }
 
 impl FromStr for MapId {
@@ -197,8 +213,10 @@ mod tests {
             document_file: "document.h2forge".into(),
             file: "local.map".into(),
             sha256: h(0x33),
+            game: None,
         }];
         assert_eq!(Manifest::from_toml(&manifest.to_toml()).unwrap(), manifest);
+        assert!(!manifest.to_toml().contains("game"), "no game, no member");
         assert_eq!(
             MapId::canonical(&manifest),
             r#"{"base":"1111111111111111111111111111111111111111111111111111111111111111","forge":["2222222222222222222222222222222222222222222222222222222222222222"],"format":2}"#
@@ -234,6 +252,50 @@ mod tests {
         assert!(invalid.validate().is_err());
         invalid = manifest;
         invalid.forge[0].document_file = "../outside.h2forge".into();
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn forge_game_golden_vector() {
+        use crate::manifest::ForgeLayer;
+
+        // A document without object game types keeps its id: `None` is the
+        // format 2 vector above, byte for byte.
+        assert_eq!(
+            MapId::forge_game(h(0x11), h(0x22), None).to_string(),
+            "ff9e7c653b78c31eba63f40bd105efee54628c026cbcd89135dab606c8029774"
+        );
+
+        let mut manifest = Manifest::retail("fixture", h(0x11));
+        manifest.package.format = FORGE_FORMAT;
+        manifest.forge = vec![ForgeLayer {
+            document: h(0x22),
+            document_file: "document.h2forge".into(),
+            file: "local.map".into(),
+            sha256: h(0x33),
+            game: Some(2),
+        }];
+        manifest.validate().unwrap();
+        assert_eq!(Manifest::from_toml(&manifest.to_toml()).unwrap(), manifest);
+        assert_eq!(
+            MapId::canonical(&manifest),
+            r#"{"base":"1111111111111111111111111111111111111111111111111111111111111111","forge":["2222222222222222222222222222222222222222222222222222222222222222"],"format":2,"game":2}"#
+        );
+        let slayer = manifest.map_id();
+        assert_eq!(
+            slayer.to_string(),
+            "59e9ba39b690f918914eaae9d4671d8282307da42ff50d6dfa8658b20d8a8c14"
+        );
+        assert_eq!(slayer, MapId::forge_game(h(0x11), h(0x22), Some(2)));
+        assert_ne!(slayer, MapId::forge(h(0x11), h(0x22)));
+        assert_ne!(slayer, MapId::forge_game(h(0x11), h(0x22), Some(1)));
+        // The same document built for another engine is another map.
+        let mut ctf = manifest.clone();
+        ctf.forge[0].game = Some(1);
+        assert_ne!(ctf.map_id(), slayer);
+
+        let mut invalid = manifest;
+        invalid.forge[0].game = Some(crate::manifest::MAX_FORGE_GAME + 1);
         assert!(invalid.validate().is_err());
     }
 

@@ -188,7 +188,9 @@ and each named source hash. The later geometry and paint slices use
   `content::MapId` gains a `forge` list in its canonical form (manifest
   format 2). Format 2 hashes the base map's SHA-256 and the Forge
   document's identity. Its canonical JSON is
-  `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+  `{"base":"<base hash>","forge":["<document hash>"],"format":2}`, with
+  a `game` member for a document whose objects have game types
+  ([maps.md](maps.md), "Identity: `MapId`").
   Build and load compare `expect.map_id`, when present, with that
   computed ID and report `forge_expect_map_id` on a mismatch. The
   resolver verifies the packaged document, disc base and built map

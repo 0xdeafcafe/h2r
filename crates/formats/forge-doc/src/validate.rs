@@ -167,6 +167,14 @@ pub(crate) fn document(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
         }
         counts.push(item, limits)?;
     }
+    // Each game type builds its own map from a document with object game
+    // types, so no one map ID can be expected of it.
+    if doc.expect.is_some() && !crate::object_games(&doc.ops).is_empty() {
+        return Err(Refusal::invalid(
+            "expect",
+            "a document with object game types expects no map: each game type builds its own",
+        ));
+    }
     crate::links::check(&doc.ops, limits)
 }
 

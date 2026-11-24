@@ -67,7 +67,10 @@ replay parity on its invented cache.
   removes the entry and `Reset` drops the effect of every earlier entry
   op on a base entry, so it is in the map again as the disc has it.
   `Property` sets or clears a property with no retail field (an item
-  spawner's `team`, 0 to 7, `teams` reads it); it lowers to nothing.
+  spawner's `team`, 0 to 7, `teams` reads it; a scenery, crate or
+  machine placement's `games`, engine indices in ascending order,
+  `object_games` reads it and `for_game` gives the document a build for
+  one engine makes); it lowers to nothing.
   Game types are `games`: a set of engines and the item slots that name it.
   Links and labels are their own ops and a reset leaves them. A target
   is an endpoint, as for links and labels; a base target carries its

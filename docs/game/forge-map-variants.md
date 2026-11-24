@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M10, D2 to D4, V1 and V2 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); the variant store, `forge::files::variants` (V1), and the lobby's pick and the build before Start Game, `game::map_variant` (V2); everything else named here as new is not.
+Status: Design, slices M1 to M10, D2 to D4, V1, V2 and G1 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); the variant store, `forge::files::variants` (V1), and the lobby's pick and the build before Start Game, `game::map_variant` (V2); `Property::Games` on scenery, crates and machines, `forge_doc::{object_games, for_game}`, `forge_build::{build_for, map_id}` and `game` in the format 2 `MapId` (G1); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -297,7 +297,7 @@ scenario bytes (`forge_doc::Labels`).
 | `spare_clips` | item spawner of a weapon | a write to the new weapon's reserve after the spawner makes it. The spawner returns the object's ID and stores the entry's index on it (**E**, forge.md 1.2); the reserve's field on a weapon object is not decoded | not shown until slice D5 proves the write |
 | `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | `Session::{team, set_team}`; `forge_doc::labelled` reports it for a labelled spawner |
 | `weight` | starting point | an answer to the spawn chooser (`PLAYER_SPAWN_LOCATION`, whose free-spot test `spawn_areas` answers, [rules-engine.md](rules-engine.md)). How the routine weighs locations is not traced | not shown until slice D5 |
-| `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | slice G1 |
+| `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | `Property::Games`, `forge_doc::object_games`; no session call or tool row sets it |
 
 A property that reaches the game through a hook is host state in
 `ForgeExt` and follows [forge-design.md](forge-design.md), "Who owns
@@ -352,13 +352,26 @@ engines, or all of them.
   `disc_item_game_types_and_respawn_modes_census` prints how the retail
   maps use the slots).
 - **Objects.** A scenery, crate or machine placement has no game-type
-  field (**C**). With a `games` property the materialiser builds the
-  map for the session's engine and leaves out the placements whose set
-  lacks it (`forge_build`, slice G1). A document with such a property
-  has the engine in its package's identity: `MapId` format 2 gains a
-  `game` member, present only then, so every other document keeps its
-  id ([maps.md](maps.md), "Identity: `MapId`"). Each machine knows the
-  engine from the session's variant, so each builds the same file.
+  field (**C**). Its set is the `games` property
+  (`Property::Games(Option<GameSet>)`, `forge_doc::OBJECT_BLOCKS`),
+  written as engine indices in ascending order (`[1, 9]`); a clear is
+  every game type, and an empty set or one of every engine is refused.
+  `forge_build::build_for(doc, engine, ..)` builds the map for an engine:
+  `forge_doc::for_game` removes each object whose set lacks it with an
+  entry removal after the last op and leaves out the ops that set its
+  game types, so the built document never has more ops than the
+  authored one; the package holds the document as authored. A document
+  with such a property has the engine in its package's identity: the
+  `[[forge]]` layer's `game` and the format 2 `MapId`'s `game` member,
+  present only then, so every other document keeps its id
+  (`forge_build::map_id`; [maps.md](maps.md), "Identity: `MapId`").
+  `forge_build::build` names no engine and refuses such a document
+  (`forge_game`). An object with game types has no link and no label,
+  since a build may leave it out, and a document with one has no
+  `expect`: each engine builds its own map. Each machine knows the
+  engine from the session's variant, so each builds the same file. The
+  lobby's pick (`map_variant::pick`, `Maps::build`) does not pass an
+  engine yet, so a variant with object game types is refused there.
 - **The start gate.** A map variant that lacks what the game variant
   needs blocks the start by name: a script's labels through
   [rules-start-gate.md](rules-start-gate.md), and a retail engine's
@@ -637,7 +650,8 @@ Every machine builds the map from its own disc; no built byte travels
 ## Interfaces
 
 - **`forge-doc`**: `Endpoint::Base.print`, `print`, `check_print`, `Edit::Entry`,
-  `EntryOp`, `Property`, `teams`, `resolve`, `Resolved`, `Printed`,
+  `EntryOp`, `Property`, `teams`, `object_games`, `for_game`,
+  `OBJECT_BLOCKS`, `resolve`, `Resolved`, `Printed`,
   `Apply::prints`, `Refusal::Print`, `games::{GameSet,
   GamesError, ENGINES, encode, decode, flag_games}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
   `Refusal::Tier`, `play_form`, `session_form`, `KIT_RECIPE`,

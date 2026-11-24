@@ -255,7 +255,15 @@ pub struct ForgeLayer {
     /// The materialised .map within the package directory.
     pub file: String,
     pub sha256: Sha256,
+    /// The engine the map is built for, by its variant index, present only
+    /// for a document whose objects have game types
+    /// (docs/game/forge-map-variants.md, "Game types"). Part of the `MapId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<u8>,
 }
+
+/// The largest engine index a Forge layer's `game` names.
+pub const MAX_FORGE_GAME: u8 = 15;
 
 /// `[result]`: facts about the patched map.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -461,6 +469,9 @@ impl Manifest {
             || map.extension().and_then(|s| s.to_str()) != Some("map")
         {
             return Err(ManifestError::Forge("requires an .h2forge document and a .map file"));
+        }
+        if layer.game.is_some_and(|game| game > MAX_FORGE_GAME) {
+            return Err(ManifestError::Forge("game names no engine"));
         }
         Ok(())
     }
