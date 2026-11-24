@@ -32,9 +32,9 @@ pub(crate) fn take_local_drops() -> u64 {
 static QUEUED: [AtomicU64; STAGES] = [const { AtomicU64::new(0) }; STAGES];
 static DROPPED: [AtomicU64; STAGES] = [const { AtomicU64::new(0) }; STAGES];
 static DOWN: [AtomicBool; STAGES] = [const { AtomicBool::new(false) }; STAGES];
-/// Flare draws the backend committed to the frame's command stream, by copy
-/// (reference, display). Only the flares count: other stages cost nothing here.
+/// Committed ranges by copy (reference, display) for retained admissions.
 static FLARE_DRAWS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static SKY_DRAWS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static CAUSES: Mutex<Option<HashSet<(usize, &'static str)>>> = Mutex::new(None);
 
 fn index(stage: Stage) -> usize {
@@ -43,11 +43,14 @@ fn index(stage: Stage) -> usize {
 
 /// A recording of `stage` was committed to the frame's command stream with
 /// `ranges` draws (`display`: the displayed copy, else the reference copy).
-/// Only flare recordings contribute to these counters.
+/// Sky and flare recordings have submission counters.
 pub fn submitted(stage: Stage, display: bool, ranges: usize) {
-    if stage == Stage::Flares {
-        FLARE_DRAWS[usize::from(display)].fetch_add(ranges as u64, Ordering::Relaxed);
-    }
+    let draws = match stage {
+        Stage::Flares => &FLARE_DRAWS,
+        Stage::Sky => &SKY_DRAWS,
+        _ => return,
+    };
+    draws[usize::from(display)].fetch_add(ranges as u64, Ordering::Relaxed);
 }
 
 /// A stage queued to the render thread.
@@ -88,6 +91,8 @@ pub fn stood_down(stage: Stage) -> bool {
 /// `scene_submitted_flares_display_draws`.
 pub fn counters() -> Vec<(String, u64)> {
     let mut out = vec![
+        ("scene_submitted_sky_reference_draws".to_owned(), SKY_DRAWS[0].load(Ordering::Relaxed)),
+        ("scene_submitted_sky_display_draws".to_owned(), SKY_DRAWS[1].load(Ordering::Relaxed)),
         ("scene_submitted_flares_reference_draws".to_owned(), FLARE_DRAWS[0].load(Ordering::Relaxed)),
         ("scene_submitted_flares_display_draws".to_owned(), FLARE_DRAWS[1].load(Ordering::Relaxed)),
     ];

@@ -18,8 +18,24 @@ pub const DECAL_RENDER_END: Point = Point::new("DECAL_RENDER_END", 0x0004_41aa, 
 // The contiguous-range branch of the standard geometry emitter, after
 // state commit. EDI holds the index array, ESI its count, BL its topology.
 pub const GEOMETRY_RANGE_READY: Point = Point::new("SCENE_GEOMETRY_RANGE_READY", 0x0004_dad0, Sig::Site, RENDERER);
+/// Subpart branches of the geometry emitter, at DrawIndexedVertices
+/// after the texture flush and the three argument pushes. Each successful
+/// replacement continues immediately after its own call.
+pub const SUBPART_STRIP_DRAW: Point = Point::new("SUBPART_STRIP_DRAW", 0x0004_db40, Sig::Site, RENDERER);
+pub const SUBPART_LIST_DRAW: Point = Point::new("SUBPART_LIST_DRAW", 0x0004_dbdc, Sig::Site, RENDERER);
+pub const SUBPART_LIST_LAST: Point = Point::new("SUBPART_LIST_LAST", 0x0004_dc3a, Sig::Site, RENDERER);
+pub const SUBPART_DRAWS: [(&Point, u32); 3] = [
+    (&SUBPART_STRIP_DRAW, 0x0004_db45),
+    (&SUBPART_LIST_DRAW, 0x0004_dbe1),
+    (&SUBPART_LIST_LAST, 0x0004_dc3f),
+];
 // All exits from the sorted loop join here, before the guest view cleanup.
 pub const SCENE_TRANSPARENTS_END: Point = Point::new("SCENE_TRANSPARENTS_END", 0x0001_e406, Sig::Site, RENDERER);
+
+/// The shared indexed wrapper, just after its state commit. The water
+/// composite is identified by the wrapper's own return address.
+pub const WATER_INDEX_READY: Point = Point::new("WATER_INDEX_READY", 0x0001_c8a5, Sig::Site, RENDERER);
+pub const WATER_INDEX_END: u32 = 0x0001_c8b9;
 
 pub const HUD_QUAD_READY: Point = Point::new("HUD_QUAD_READY", 0x0022_a7f6, Sig::Site, RENDERER);
 
@@ -96,6 +112,8 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         DECAL_RENDER_END.base,
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
+        WATER_INDEX_READY.base,
+        WATER_INDEX_END,
         HUD_QUAD_READY.base,
         SCREEN_STRIP_READY.base,
         PARTICLE_EMIT_READY.base,
@@ -137,6 +155,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         MODEL_GEOMETRY_CALL.base,
     ]
     .into_iter()
+    .chain(SUBPART_DRAWS.into_iter().flat_map(|(point, resume)| [point.base, resume]))
     .chain(leaves.into_iter().flat_map(|l| [l.begin.base, l.end.base]))
 }
 

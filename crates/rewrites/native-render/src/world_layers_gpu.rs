@@ -87,13 +87,16 @@ enum SectionOwner {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-struct SectionKey {
-    owner: SectionOwner,
-    part: u8,
-    shader: u32,
-    variant: u8,
-    implementation: u8,
-    layer: u32,
+enum SectionKey {
+    Sky { model: u32, section: u32, part: u32, shader: u32, pass: u32 },
+    World {
+        owner: SectionOwner,
+        part: u8,
+        shader: u32,
+        variant: u8,
+        implementation: u8,
+        layer: u32,
+    },
 }
 
 impl SectionKey {
@@ -103,7 +106,7 @@ impl SectionKey {
             Owner::Placement(i) => SectionOwner::Placement(i),
             Owner::Object { model, section, .. } => SectionOwner::Model(model, section),
         };
-        Self { owner, part: geometry.part, shader: geometry.shader, variant: geometry.variant,
+        Self::World { owner, part: geometry.part, shader: geometry.shader, variant: geometry.variant,
             implementation: geometry.implementation, layer }
     }
 }
@@ -292,9 +295,46 @@ impl DeviceCache {
     }
 }
 
-/// One unmodified indexed range from the standard geometry emitter.
+/// Section node matrices in hardware register order, scoped to one sky draw.
+#[derive(Clone)]
+struct SkyRows {
+    nodes: Arc<[frame_scene::Row]>,
+    decompression: [frame_scene::Row; 3],
+}
+
+impl SkyRows {
+    fn check(&self, constants: &[frame_scene::Row]) -> Result<(), &'static str> {
+        let start = crate::program::MODEL_ROWS;
+        let compression = crate::program::POSITION_DECOMPRESSION;
+        let same = |at: usize, rows: &[frame_scene::Row]| {
+            constants.get(at..at + rows.len()).is_some_and(|live|
+                live.iter().zip(rows).all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits)))
+        };
+        if self.nodes.is_empty() || self.nodes.len() % 3 != 0
+            || self.nodes.len() > compression - start || !same(start, &self.nodes)
+        {
+            return Err("transform");
+        }
+        if !same(compression, &self.decompression) {
+            return Err("material");
+        }
+        Ok(())
+    }
+
+    fn apply(&self, vertex: &mut VertexUniforms) {
+        let start = crate::program::MODEL_ROWS;
+        vertex.constants[start..start + self.nodes.len()].copy_from_slice(&self.nodes);
+        let compression = crate::program::POSITION_DECOMPRESSION;
+        vertex.constants[compression..compression + 3].copy_from_slice(&self.decompression);
+    }
+}
+
+/// One indexed range recorded at its original attachments.
 pub struct IndexedPass {
+    sky: Option<SkyRows>,
     draw: Arc<ResolvedDraw>,
+    /// The guest quad packet when the native pass expands its topology.
+    original_quad: Option<Arc<ResolvedDraw>>,
     cache: Arc<Cache>,
     frame: u64,
     // Eligibility is fixed at guest extraction even if the render FIFO
@@ -315,6 +355,62 @@ impl IndexedPass {
     ) -> Option<Self> {
         if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) { return None; }
         Self::candidate(draw, cache, frame, texaccum, None)
+    }
+
+    /// Expand the indexed water composite using the Xbox quad diagonal.
+    /// Preserve vertex order within each quad, including repeated indices.
+    pub fn water_quads(draw: &ResolvedDraw, geometry: &frame_scene::late::WaterComposite, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        if draw.primitive != PrimitiveType::QuadList {
+            return None;
+        }
+        let triangles = geometry.triangles(draw.indices.as_ref()?)?;
+        let mut native = draw.clone();
+        native.primitive = PrimitiveType::TriangleList;
+        native.indices = Some(triangles.into());
+        let mut pass = Self::new(&native, cache, frame, None)?;
+        pass.original_quad = Some(Arc::new(draw.clone()));
+        Some(pass)
+    }
+
+    /// Layer 15, one material pass of one section part. The live pass
+    /// supplies its selected program, evaluated constants and stage images.
+    /// The node palette is the sky model's for the current view.
+    pub fn for_sky(
+        draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, generation: u64,
+        item: scene_extract::layout::sky::SkyItem,
+    ) -> Result<Self, &'static str> {
+        if draw.primitive != PrimitiveType::TriangleStrip
+            || draw.indices.as_ref().is_none_or(|indices| indices.iter().any(|&i| i >= draw.vertex_count))
+        {
+            return Err("geometry");
+        }
+        let mark = crate::object_state::structure_stencil(crate::object_state::STENCIL_MARK_REFERENCE);
+        if draw.state.render.stencil != mark
+            || !draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)
+                .is_some_and(|format| format.has_stencil_aspect())
+        {
+            return Err("stencil");
+        }
+        if !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { .. })
+            || draw.state.render.cull_mode != gfx::state::CullMode::None
+            || draw.sampled_texture_stages().iter().enumerate().any(|(n, &reads)|
+                reads && (draw.textures[n].is_none() || draw.texture_info[n].is_none()))
+        {
+            return Err("material");
+        }
+        let sky = SkyRows { nodes: item.rows.into(), decompression: item.decompression };
+        sky.check(&draw.shader.constants[..])?;
+        if let Some((constants, _)) = &draw.retail_constants {
+            sky.check(&constants[..])?;
+        }
+        let key = SectionKey::Sky {
+            model: item.model, section: item.section, part: item.part,
+            shader: item.shader, pass: item.pass,
+        };
+        let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)))
+            .ok_or("geometry")?;
+        candidate.sky = Some(sky);
+        Ok(candidate)
     }
 
     /// Sorted slots, render records, object handles and swap counters are
@@ -343,7 +439,9 @@ impl IndexedPass {
             return None;
         }
         Some(Self {
+            sky: None,
             draw: Arc::new(draw.clone()),
+            original_quad: None,
             fetch: cache.fetch,
             cache,
             frame,
@@ -572,7 +670,8 @@ impl IndexedPass {
             .collect::<Option<_>>()?;
         let streams = section.streams.clone();
         let indices = section.indices.clone();
-        let (vertex, pixel) = program.uniforms(draw, scale);
+        let (mut vertex, pixel) = program.uniforms(draw, scale);
+        if let Some(rows) = &self.sky { rows.apply(&mut vertex); }
         let sizes = [VertexUniforms::SIZE, PixelUniforms::SIZE];
         let fill = |_: usize, v: &mut [u8], p: &mut [u8]| {
             vertex.write_bytes(v);
@@ -606,7 +705,10 @@ impl ExternalPass for IndexedPass {
         // An untextured standalone range owns its entire draw. prepare()
         // allocates its vertices and uniforms from each recording's arena.
         // Section caches and texture-stage bindings are outside this case.
-        self.section.is_none() && self.texaccum.is_none() && self.draw.texture_info.iter().all(Option::is_none)
+        // Sky material groups match the replay's actual stage views and
+        // formats. The immutable per-view palette is owned by this pass.
+        self.sky.is_some() || (self.section.is_none() && self.texaccum.is_none()
+            && self.draw.texture_info.iter().all(Option::is_none))
     }
 
     fn uses_validated_resources(&self) -> bool { true }
@@ -614,18 +716,31 @@ impl ExternalPass for IndexedPass {
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
     fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
-        Some(Arc::clone(&self.draw))
+        Some(Arc::clone(self.original_quad.as_ref().unwrap_or(&self.draw)))
     }
 
     fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
         // A display frame between ticks changes the constants only
         // (`d3d::scene_sink::Retarget`): the geometry and state the
         // candidate checks accepted stay.
-        if draw.streams.len() != self.draw.streams.len() {
+        if draw.streams.len() != self.draw.streams.len() || self.sky.as_ref().is_some_and(|rows|
+            rows.check(&draw.shader.constants[..]).is_err() || draw.retail_constants.as_ref()
+                .is_some_and(|(c, _)| rows.check(&c[..]).is_err())) {
             return None;
         }
+        // A retargeted original quad needs its expanded index stream too.
+        let (draw, original_quad) = if self.original_quad.is_some() {
+            let mut native = (*draw).clone();
+            native.primitive = self.draw.primitive;
+            native.indices = self.draw.indices.clone();
+            (Arc::new(native), Some(draw))
+        } else {
+            (draw, None)
+        };
         Some(Box::new(Self {
+            sky: self.sky.clone(),
             draw,
+            original_quad,
             cache: Arc::clone(&self.cache),
             frame: self.frame,
             extracted_frame: self.extracted_frame,
@@ -666,6 +781,32 @@ impl ExternalPass for IndexedPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn water_quads_keep_the_indexed_corners_and_diagonal() {
+        let water = frame_scene::late::WaterComposite { quads: vec![[17, 10, 14, 21], [12, 12, 11, 13]] };
+        assert_eq!(water.triangles(&[7, 0, 4, 11, 2, 2, 1, 3]).unwrap(),
+            [7, 0, 4, 7, 4, 11, 2, 2, 1, 2, 1, 3]);
+        assert_eq!(water.triangles(&[1, 3, 9]), None);
+    }
+
+    #[test]
+    fn sky_palettes_and_section_compression_preserve_other_material_constants() {
+        let mut v = VertexUniforms::default();
+        v.constants.fill([7.0; 4]);
+        let first = SkyRows { nodes: vec![[3.5; 4]; 6].into(), decompression: [[2.0; 4]; 3] };
+        let second = SkyRows { nodes: vec![[-1.25; 4]; 6].into(), decompression: [[8.5; 4]; 3] };
+        first.apply(&mut v);
+        assert_eq!(first.check(&v.constants), Ok(()));
+        assert_eq!(second.check(&v.constants), Err("transform"));
+        second.apply(&mut v);
+        assert_eq!(second.check(&v.constants), Ok(()));
+        let start = crate::program::MODEL_ROWS;
+        assert_eq!(v.constants[start - 1], [7.0; 4]);
+        assert_eq!(v.constants[start + 6], [7.0; 4]);
+        v.constants[crate::program::TEXCOORD_DECOMPRESSION] = [0.0; 4];
+        assert_eq!(second.check(&v.constants), Err("material"));
+    }
 
     #[test]
     fn converted_streams_require_the_same_snapshot_count_and_repack_plan() {

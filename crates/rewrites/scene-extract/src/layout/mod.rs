@@ -17,5 +17,6 @@ pub mod objects;
 pub mod post;
 pub mod prt;
 pub mod skip;
+pub mod sky;
 pub mod world_layers;
 pub mod world_ranges;

@@ -132,10 +132,10 @@ impl Entry {
 /// water (layer 6) calls in `render_scene_passes`, which the table does
 /// not place, the scene's.
 pub fn late_site(layer: u32, ret: u32) -> Site {
-    match (layer, ret) {
-        (16, native_render::fog::SCENE_FOG_RETURN) => Site::Scene,
-        (6, crate::native_water::SCENE_WATER_RETURN) => Site::Scene,
-        _ => layer_site(layer, ret),
+    if scene_extract::late::scene_layer_call(layer, ret) {
+        Site::Scene
+    } else {
+        layer_site(layer, ret)
     }
 }
 

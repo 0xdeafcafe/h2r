@@ -290,9 +290,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let read = ReadMemory(mem);
-        if !d.stencil_state(&read).is_some_and(|s| !s.enable)
-            || !palettes_hold(palettes, &|n| d.stage_palette(&read, n))
-        {
+        if !d.stencil_state(&read).is_some_and(|s| !s.enable) {
+            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_stencil_view", 1);
+            return None;
+        }
+        if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
+            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_palette_view", 1);
             return None;
         }
         // With a render thread that records scene stages, everything here
@@ -306,6 +309,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // its fog cannot be established.
         let device_words = device_fog_words(&d, mem);
         let Some(materials) = resolve_materials(&fog.words, &device_words) else {
+            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_fog_words_view", 1);
             if !FOG_UNREADABLE.swap(true, Ordering::Relaxed) {
                 eprintln!("native-fog: the device's fog state does not read; the D3D path draws the fog");
             }
@@ -316,7 +320,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // (`native_render::skip::MaskPreview`).
         let read = ReadMemory(mem);
         let mut preview = native_render::skip::MaskPreview::new(&read)?;
-        let (selected, cleared) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
+        let (selected, cleared, refused) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
             let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
             if !accepted {
                 Stage::Fog.count(Metric::Examined, 1);
@@ -324,6 +328,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             accepted
         })?;
+        count_late_refusals(FOG_LATE_LAYER.into(), refused);
         let masks = preview.finish()?;
         if selected.is_empty() {
             return None;
@@ -391,6 +396,20 @@ pub fn late_fogs(materials: &[LateMaterial]) -> HashMap<u16, (shaders::psh::fog:
 /// The scene's parts as the GPU world names them.
 pub fn late_selected(parts: &[LatePart]) -> Vec<(Owner, u8)> {
     parts.iter().map(|p| (p.owner, p.part)).collect()
+}
+
+pub(super) fn count_late_refusals(layer: u32, refused: native_render::fog::LateRefusals) {
+    for (cause, n) in [
+        ("refused_build", refused.build),
+        ("refused_handler", refused.handler),
+        ("refused_record", refused.record),
+        ("refused_object", refused.object),
+        ("refused_subparts", refused.subparts),
+        ("refused_material", refused.material),
+        ("refused_order", refused.order),
+    ] {
+        render_bridge::native_layers::count(layer, cause, n);
+    }
 }
 
 /// A late layer's pass reserved and committed (docs/graphics/framescene.md,

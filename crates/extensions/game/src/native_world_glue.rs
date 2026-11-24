@@ -1496,7 +1496,7 @@ fn load_ready(
         );
         let mut empty = water.part_set.is_empty();
         if !empty {
-            let set = crate::native_water_glue::upload_water(&water, &device, &queue,
+            let set = crate::native_water_glue::upload_water(&water, &device, &queue, &stage_world,
                 &mut |s| stage_bitmap(&stage_images, s), &mut |k| lightmaps.get(&k).cloned());
             water.part_set.retain(|&(owner, part), _| set.draws_part(owner, part));
             empty = water.part_set.is_empty();

@@ -24,6 +24,7 @@ struct Walk<B: d3d::Backend> {
 
 struct IndexedRange<'a> {
     stage: Stage,
+    water: Option<&'a frame_scene::late::WaterComposite>,
     frame: u64,
     view: u32,
     cache: &'a Arc<IndexedCache>,
@@ -31,7 +32,11 @@ struct IndexedRange<'a> {
 
 impl d3d::DrawAdmission for IndexedRange<'_> {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        let pass = IndexedPass::new(snapshot.draw, Arc::clone(self.cache), self.frame, None)?;
+        let pass = if let Some(geometry) = self.water {
+            IndexedPass::water_quads(snapshot.draw, geometry, Arc::clone(self.cache), self.frame)?
+        } else {
+            IndexedPass::new(snapshot.draw, Arc::clone(self.cache), self.frame, None)?
+        };
         Some((d3d::ExternalPlan {
             stage: self.stage,
             view: self.view,
@@ -44,8 +49,12 @@ impl d3d::DrawAdmission for IndexedRange<'_> {
 impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B> {
     fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, stage: Stage, range: native_transparents::IndexRange) -> bool {
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let candidate = IndexedRange { stage, view, frame: crate::d3d_diag::presents() + 1, cache: &self.cache };
-        let primitive = if range.strip { PrimitiveType::TriangleStrip } else { PrimitiveType::TriangleList };
+        let (primitive, water) = match &range.topology {
+            native_transparents::IndexTopology::List => (PrimitiveType::TriangleList, None),
+            native_transparents::IndexTopology::Strip => (PrimitiveType::TriangleStrip, None),
+            native_transparents::IndexTopology::Water(geometry) => (PrimitiveType::QuadList, Some(geometry)),
+        };
+        let candidate = IndexedRange { stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &self.cache };
         self.device.lock().is_ok_and(|mut device| {
             device.try_native_indexed_draw(
                 &mut crate::native_lights_glue::DeviceMemory(mem), primitive, range.count, range.indices, &candidate,

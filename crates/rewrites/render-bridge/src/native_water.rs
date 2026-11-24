@@ -39,10 +39,10 @@ pub fn on(switches: &hooks::Switches) -> bool {
 /// water setup and layer 6 does not draw (the lifted port's `0x0002c0ee`).
 pub const WATER_GATE: u32 = 0x004b_9fe0;
 /// The late passes' layer-6 call: the layer draw's return address
-/// (`[esp]` at its entry, the lifted port's `0x0002c117` call). Other
+/// (`[esp]` at its entry, the lifted port's `0x0002c11b` call). Other
 /// callers of the layer draw with layer 6 current are not the scene's
 /// water and stay on the D3D path.
-pub const SCENE_WATER_RETURN: u32 = 0x0002_c120;
+pub use scene_extract::late::SCENE_WATER_RETURN;
 /// The layer the skip draws.
 pub const WATER_LAYER: u32 = 6;
 

@@ -2095,14 +2095,29 @@ h2 agent render.parity '{"arm": true}'
   and `scene_dropped_<stage>`, those it could not record after the guest
   skipped their items, for `world` and `objects` (framescene.md, slice
   2) and `fog` and `water` (slice 5). The counters
+  `layer_plan_{6,16}_refused_<cause>` count fog and water batch refusals.
+  Item causes are `build`, `handler`, `record`, `object`, `subparts`, `material` and
+  `order`. View causes include `stencil_view`, `palette_view`,
+  `fog_words_view` and the water stage's `target_view`.
+  The water loader counts refused placement parts by `placement_rows_load`,
+  `rigid_program_load` and `placement_streams_load`.
+  Sorted range admission reports `native_{fog,water}_walk_examined`,
+  `walk_suppressed`, `walk_refused_inputs` and `walk_refused_reservation`
+  under each stage. The counters
   `scene_submitted_flares_reference_draws` and
   `scene_submitted_flares_display_draws` accumulate flare ranges as
   `GfxBackend::commit_external` appends them to each copy's command
   stream. Private replays also contribute. These counters are available
-  with frame statistics and the residual census disabled.
+  with frame statistics and the residual census disabled. The corresponding
+  `scene_submitted_sky_{reference,display}_draws` count committed sky strips.
+  `sky_plan_admitted` counts strips offered to the device after extraction and
+  material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
+  material, transform, view, range, stencil or device. GPU reservation and
+  replay outcomes appear under `native_sky_*` in the frame counters.
   `post_effect_refused_<cause>` counts screen-effect preflight refusals.
   A call that needs the view but has no view strip increments `view_target`. A missing or empty
-  target 1 size increments `pass_target`. Unless
+  target 1 size increments `pass_target`.
+  Unless
   `frame-scene.layers=off` is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
@@ -2364,22 +2379,26 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   native_guest_binds, guest_bind_refused_destroy, copies, uploads, d3d_ms,
   guest_ms}`. Only with `frame-scene.census` in `H2_FEATURES`, which
   places an entry and an exit observer on each producer in
-  `residual_census::REGISTRY` (the views, the scene passes, the object
-  shadows, decals, the lights, the transparents, the post calls, the HUD,
-  the UI, the fade, the frame end and the loading screen) and on the layer
-  draw (`layer.<site>.<layer>`, as `render.scene`'s entry census names
-  them); without it `producers` is absent. Work goes to the innermost
+  `residual_census::REGISTRY` (the views, scene passes, sky, object shadows,
+  decals, lights, water teardown, clears, target selection, transparents,
+  screen effects, post calls, HUD, UI, fade, frame end and loading screen)
+  and on the layer draw (`layer.<site>.<layer>`, as `render.scene`'s entry
+  census names them). The census switch controls whether `producers` is
+  present. Work goes to the innermost
   open producer, so the rows sum to `totals`. Inside a render frame with
   none open it is `unknown` (status `unknown`); outside every render
   frame it is `outside_render`. At each boundary the device first decodes
   the push buffer, so an inline draw is charged to the producer open when
   its words were written. `status` is `native` or `d3d` from the
-  registry, and `partial` for the clear, target-selection and screen-effect producers or a layer draw a native stage draws some
-  items of from the scene, skipping their guest draws
-  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 7,
-  8, 17 and 20, the alternate view's 2 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is
-  what the stages left. `slot` is the carried slot the work lands in. `guest_ms` is
-  the producer's exclusive time less its D3D time, `null` without
+  registry. Sky, clear, target selection, screen effects and `water_teardown`
+  are `partial`. Water teardown can hand off its indexed composite and still
+  owns its guest state changes and alpha clear. A layer draw is `partial`
+  when a native stage draws some items from the scene and skips their guest
+  draws. `residual_census::PARTIAL_LAYERS` lists the scene's layers 1, 2, 3,
+  5, 6, 7, 8, 16, 17 and 20, the alternate view's 2 and the first person's
+  1, 2, 3, 7, 8 and 20. The `residual` is what the stages leave. `slot` is
+  the carried slot the work lands in. `guest_ms` is the producer's exclusive
+  time less its D3D time, `null` without
   `render-timing`; it ranks producers and is not a frame time.
   `unbalanced` counts producer exits with nothing to end and producers
   dropped unended.

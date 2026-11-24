@@ -216,6 +216,7 @@ impl SceneBuilder {
             decorator_remainder: 0,
             fog: None,
             water: None,
+            water_composite: None,
             post: None,
         });
         scene.cluster_gathers.push(None);
