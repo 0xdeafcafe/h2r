@@ -1013,7 +1013,14 @@ impl Editor {
     /// game's (`forge_screens::ui_up`). `game`: the session's game type, as
     /// the variant record's engine index, which decides the things the
     /// Objects tool aims at.
-    pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool, game: Option<i32>) {
+    pub fn tick(
+        &mut self,
+        tick: u32,
+        bsp: Option<usize>,
+        ui_up: bool,
+        game: Option<i32>,
+        memory: &dyn engine::GuestMemory,
+    ) {
         self.now = tick;
         self.bsp = bsp;
         self.ui_up = ui_up;
@@ -1082,7 +1089,7 @@ impl Editor {
             };
             self.poll(tick);
         }
-        self.publish();
+        self.publish(memory);
     }
 
     fn take_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) {
@@ -1116,7 +1123,7 @@ impl Editor {
     }
 
     /// The session's state for the input bridge and the screens.
-    fn publish(&self) {
+    fn publish(&self, memory: &dyn engine::GuestMemory) {
         controls::publish(controls::State {
             active: true,
             monitor: self.tool.monitor,
@@ -1142,6 +1149,7 @@ impl Editor {
             filename: self.filename.clone(),
             placed: self.placed(),
             folders: sheet::folder_rows(&self.session.groups()),
+            map_limits: screens::map_limits::Usage::read(memory, self.guard.scenario),
         });
     }
 

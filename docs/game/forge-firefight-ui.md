@@ -344,7 +344,7 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Controls | a row of Forge options | a list page made from the bindings table | U4 |
 | Coordinates | a row of Properties | a list page on the same host; A opens the keyboard | P1 |
 | Placed objects | a row of Forge options | `kit.picker.game` over the objects placed, each flying the monitor to it | built |
-| Map limits | a row of Forge options | a list page of facts | P4 |
+| Map limits | a row of Forge options | `forge.map-limits`, a read-only list page on the Controller Settings host | built (P4) |
 
 - **Object menu.** Each picker has its six rows, scroll arrows and
   description block. The groups come from a table
@@ -386,12 +386,12 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   tool settings.") and Controls ("Every Forge control, with its
   button."), `sheet::OPTIONS`, each with its help and each opening
   above it so B comes back; Monitor
-  look... joins when it is built, **Build AI ground**, **Test waves** and **Generate nav**
-  ([forge-map-variants.md](forge-map-variants.md), "AI ground";
-  [forge-nav.md](forge-nav.md); they act
-  and close the page), and the rows later slices bring:
-  Placed objects, Map limits (P4), Players (F5), Map settings and
-  Publish (F14). The object menu's last row is **AI and objectives**,
+  look... joins when it is built. **Map limits** opens the read-only
+  capacity page, and **Placed objects** opens the object picker.
+  **Build AI ground**, **Test waves** and **Generate nav** act and close
+  the page ([forge-map-variants.md](forge-map-variants.md), "AI ground";
+  [forge-nav.md](forge-nav.md)). Players (F5), Map settings and Publish
+  (F14) join the page in their slices. The object menu's last row is **AI and objectives**,
   the ground labels (`sheet::objects_with_ai`).
 - **Controls.** A row a control of the bindings table, its pad button
   as the value and its keys in the description; up and down, and undo

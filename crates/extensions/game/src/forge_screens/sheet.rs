@@ -33,6 +33,8 @@ pub enum Kind {
     Options,
     /// Every control, from the bindings table.
     Controls,
+    /// The live object pool and scenario block counts.
+    MapLimits,
     /// The game types of an item spawner, ticked a row each.
     Games,
     /// The map variants of the open map, a row each.
@@ -57,7 +59,7 @@ pub enum Look {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Objects,
         Kind::Properties,
         Kind::Coordinates,
@@ -70,6 +72,7 @@ impl Kind {
         Kind::Games,
         Kind::Variants,
         Kind::Variant,
+        Kind::MapLimits,
     ];
 
     /// The name `Open` rows, `h2 ui preview` and the loader know it by.
@@ -87,6 +90,7 @@ impl Kind {
             Kind::Games => "forge.games",
             Kind::Variants => "forge.variants",
             Kind::Variant => "forge.variant",
+            Kind::MapLimits => "forge.map-limits",
         }
     }
 
@@ -105,6 +109,7 @@ impl Kind {
             Kind::Games => "forge-games",
             Kind::Variants => "forge-variants",
             Kind::Variant => "forge-variant",
+            Kind::MapLimits => "forge-map-limits",
         }
     }
 
@@ -122,6 +127,7 @@ impl Kind {
             Kind::Games => const { ids::family("forge games") },
             Kind::Variants => const { ids::family("forge variants") },
             Kind::Variant => const { ids::family("forge variant") },
+            Kind::MapLimits => const { ids::family("forge map limits") },
         }
     }
 
@@ -134,6 +140,7 @@ impl Kind {
             | Kind::Coordinates
             | Kind::Settings
             | Kind::Options
+            | Kind::MapLimits
             | Kind::Controls => Look::List,
             Kind::Link | Kind::Question => Look::Question,
         }
@@ -1328,9 +1335,7 @@ pub struct OptionDef {
 }
 
 /// Forge options, in order (docs/game/forge-firefight-ui.md "The screens").
-/// Monitor look joins when it is built; Map limits in P4 (Placed objects is
-/// [`placed_row`], after these, then Build AI ground, Test waves and
-/// Generate nav), Players in F5, Map settings and Publish in F14.
+/// The placed objects browser and the actions follow these pages.
 pub const OPTIONS: &[OptionDef] = &[
     OptionDef {
         label: "Tool settings...",
@@ -1346,6 +1351,11 @@ pub const OPTIONS: &[OptionDef] = &[
         label: "Map variants...",
         description: "Load, rename, copy or delete this map's variants.",
         opens: Kind::Variants,
+    },
+    OptionDef {
+        label: "Map limits",
+        description: "See the object pool and scenario counts.",
+        opens: Kind::MapLimits,
     },
 ];
 
