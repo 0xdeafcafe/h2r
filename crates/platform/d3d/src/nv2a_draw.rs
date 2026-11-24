@@ -346,6 +346,34 @@ mod tests {
     }
 
     #[test]
+    fn hud_vertex_output_uses_glyph_colour_projected_uv_and_window_position() {
+        let mut draw = ui_draw();
+        let mut stream = Vec::new();
+        for x in [1.0f32, 2., 2., 1.] {
+            for value in [x, 3., 0., 1.] {
+                stream.extend_from_slice(&value.to_le_bytes());
+            }
+            stream.extend_from_slice(&[0, 51, 255, 102]);
+            for value in [4.0f32, 12.] {
+                stream.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        draw.streams.push(crate::backend::StreamBytes { data: stream.into(), stride: 28 });
+        draw.texture_info[0].as_mut().unwrap().format = D3DFormat::LinA8R8G8B8;
+        draw.state.stages[1].tex_coord_index = 0;
+        draw.texture_info[1] = draw.texture_info[0];
+        draw.texture_info[1].as_mut().unwrap().format = D3DFormat::A8R8G8B8;
+        let sampled = [true, true, false, false];
+        let corners = crate::nv2a::overlay_vertices(&draw, sampled).unwrap();
+        assert_eq!(corners[0], ([1.5, 3.5], [[0.25, 0.75], [4., 12.], [0.; 2], [0.; 2]], [1., 0.2, 0., 0.4]));
+        assert_eq!(corners[1].0, [2.5, 3.5]);
+        let mut varied = draw.streams[0].data.to_vec();
+        varied[28 + 12..28 + 16].copy_from_slice(&0.5f32.to_le_bytes());
+        draw.streams[0].data = varied.into();
+        assert!(crate::nv2a::overlay_vertices(&draw, sampled).is_none());
+    }
+
+    #[test]
     fn ui_program_carries_alpha_fog_stipple_flat_depth_and_stencil() {
         let mut draw = ui_draw();
         let caps = Capabilities::ALL;

@@ -193,6 +193,7 @@ pub struct PlanVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    pub extra_uv: [[f32; 2]; 3],
 }
 
 /// A scissor in the renderer's target pixels.
@@ -205,8 +206,15 @@ pub struct Scissor {
 }
 
 /// One draw: a run of consecutive items with one material and clip.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OverlayBatch {
+    pub shader_stages: [Option<frame_scene::OverlayTexture>; 4],
+    /// Stages that reconstruct magnified glyph coverage at this target size.
+    pub glyph_cache: u8,
+    pub alpha_test: Option<(u32, u8)>,
+    pub alpha_kill: u8,
+    pub color_write: u32,
+    pub shader_words: Option<Box<[u32]>>,
     pub material: OverlayMaterial,
     pub clip: ClipRect,
     pub scissor: Scissor,
@@ -230,7 +238,7 @@ pub struct OverlayStats {
     pub model_views: u32,
     /// Draws recorded (one per batch the GPU took).
     pub batches: u32,
-    /// Items whose material is a tag shader: not translated yet.
+    /// Items whose tag shader has no supported definition.
     pub refused_material: u32,
     /// Items whose clip does not reach the renderer's target.
     pub refused_clip: u32,
@@ -309,7 +317,9 @@ impl OverlayPlan {
                 plan.stats.refused_model_view += 1;
                 continue;
             }
-            if matches!(item.material.program, Program::Shader { .. }) {
+            if matches!(item.material.program, Program::Shader { .. })
+                && !item.shader_words.as_ref().is_some_and(|words| words.len() == 60)
+            {
                 plan.stats.refused_material += 1;
                 continue;
             }
@@ -335,10 +345,12 @@ impl OverlayPlan {
             match item.kind {
                 OverlayKind::Quad | OverlayKind::Fill => {
                     let corners = overlay.vertices_of(item);
-                    plan.vertices.extend(corners.iter().map(|v| PlanVertex {
-                        position: to_clip(v.position, guest),
-                        uv: v.uv,
-                        color: v.color,
+                    plan.vertices.extend(corners.iter().enumerate().map(|(n, v)| {
+                        let [uv, t1, t2, t3] = item.stage_uv.as_ref().map_or([v.uv; 4], |uv| uv[n]);
+                        PlanVertex {
+                            position: to_clip(v.position, guest), uv, color: v.color,
+                            extra_uv: [t1, t2, t3],
+                        }
                     }));
                     plan.indices.extend(QUAD_INDICES.map(|i| base + i));
                 }
@@ -362,6 +374,7 @@ impl OverlayPlan {
                             position: to_clip([x, y], guest),
                             uv: [u, v],
                             color: item.color,
+                            extra_uv: [[0.0; 2]; 3],
                         };
                         plan.vertices.extend([
                             corner(x0, y0, u0, v0),
@@ -376,8 +389,13 @@ impl OverlayPlan {
             }
             let count = plan.indices.len() as u32 - start;
             let after_blur = plan.blurs.last().is_some_and(|b| b.before as usize == plan.batches.len());
+            let magnified = target[0] > guest[0] || target[1] > guest[1];
+            let glyph_cache = if magnified { item.glyph_cache & 15 } else { 0 };
             let joins = !after_blur && plan.batches.last().is_some_and(|b| {
-                b.material == item.material && b.clip == item.clip && b.first_index + b.index_count == start
+                b.material == item.material && b.color_write == item.color_write && b.glyph_cache == glyph_cache
+                    && b.alpha_test == item.alpha_test && b.alpha_kill == item.alpha_kill
+                    && b.shader_stages == item.shader_stages
+                    && b.shader_words == item.shader_words && b.clip == item.clip && b.first_index + b.index_count == start
             });
             if let Some(b) = plan.batches.last_mut().filter(|_| joins) {
                 b.index_count += count;
@@ -385,6 +403,12 @@ impl OverlayPlan {
             } else {
                 plan.batches.push(OverlayBatch {
                     material: item.material,
+                    shader_stages: item.shader_stages,
+                    shader_words: item.shader_words.clone(),
+                    color_write: item.color_write,
+                    glyph_cache,
+                    alpha_test: item.alpha_test,
+                    alpha_kill: item.alpha_kill,
                     clip: item.clip,
                     scissor,
                     first_index: start,
@@ -449,6 +473,27 @@ mod tests {
         assert_eq!(p.vertices.len(), 16);
         assert_eq!(p.stats.batches, 0, "the GPU counts what it records");
         assert_eq!(p.stats.drawn(), 4);
+    }
+
+    #[test]
+    fn distinct_shader_constants_split_widget_batches() {
+        let mut overlay = Overlay::new([640, 480]);
+        let material = OverlayMaterial { program: Program::Shader { tag: 17 }, ..sprite(5) };
+        for (i, fill) in [0.2, 0.2, 0.7].into_iter().enumerate() {
+            let n = overlay.push_quad(material, all(), quad(i as f32)).unwrap();
+            let item = &mut overlay.items[n as usize];
+            item.hud_input[0] = fill;
+            item.glyph_cache = 2;
+            let mut words = [0; 60];
+            words[10] = (fill * 255.0) as u32;
+            item.shader_words = Some(words.into());
+        }
+        let plan = OverlayPlan::new(&overlay, [640, 480], &NoGlyphs);
+        assert_eq!(plan.batches.iter().map(|b| b.items).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(plan.stats.refused_material, 0);
+        assert_eq!(plan.batches[0].glyph_cache, 0);
+        let magnified = OverlayPlan::new(&overlay, [720, 480], &NoGlyphs);
+        assert_eq!(magnified.batches[0].glyph_cache, 2);
     }
 
     #[test]
