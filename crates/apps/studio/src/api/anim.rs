@@ -19,6 +19,8 @@ use tags::anim_keys::{Kind, Tolerance};
 mod edit;
 #[path = "anim/save.rs"]
 mod save;
+#[path = "anim/transfer.rs"]
+mod transfer;
 
 const LIST: MethodDef = def(
     m::ANIM_LIST,
@@ -322,6 +324,8 @@ impl Provider for Anim {
             edit::KEY,
             edit::CHECK,
             save::SAVE,
+            transfer::RETARGET,
+            transfer::IMPORT,
         ]
     }
 
@@ -336,6 +340,8 @@ impl Provider for Anim {
             m::ANIM_KEY => edit::key(app, &p),
             m::ANIM_CHECK => edit::check(app, &p),
             m::ANIM_SAVE => save::save(app, &p),
+            m::ANIM_RETARGET => transfer::retarget(app, &p),
+            m::ANIM_IMPORT => transfer::import(app, &p),
             _ => return None,
         })
     }
@@ -454,3 +460,7 @@ pub(super) mod tests;
 #[cfg(test)]
 #[path = "anim/read_tests.rs"]
 pub(super) mod read_tests;
+
+#[cfg(test)]
+#[path = "anim/transfer_tests.rs"]
+pub(super) mod transfer_tests;

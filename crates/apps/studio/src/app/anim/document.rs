@@ -7,6 +7,8 @@ use tags::anim_sample::{NodeTransform, Pose};
 
 #[path = "save.rs"]
 pub(super) mod save;
+#[path = "transfer.rs"]
+pub(super) mod transfer;
 
 use super::{
     Anim, AnimError, AnimRead, AnimSummary, App, GraphKey, Loaded, PoseAnswer, Raw, model_defaults,
