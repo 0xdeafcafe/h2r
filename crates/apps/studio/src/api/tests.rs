@@ -908,7 +908,7 @@ fn tag_find_matches_words_and_changed_follows_edits() {
     assert_eq!(paths(&find(&mut api, &mut app, Some("speed"), None, true)), ["speed"]);
     assert!(paths(&find(&mut api, &mut app, Some("flags"), None, true)).is_empty());
     // The panel shows the same hit list.
-    let view = call(&mut api, &mut app, m::TAG_VIEW, json!({"changed": true}));
+    let view = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "changed": true}));
     assert_eq!(view["changed"], true);
     let rows: Vec<&str> = view["rows"]
         .as_array()
