@@ -73,6 +73,41 @@ pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
     driver.lock().unwrap_or_else(|e| e.into_inner()).bodies.clone()
 }
 
+/// What this machine draws as a monitor: the renderer's declaration and
+/// the source maps its catalogue holds. A film's recorded looks are measured
+/// against it (`theater::forge_film`, `monitor_look_source`); without a
+/// running Forge driver the catalogue is empty and every model look is
+/// drawn as the marker.
+pub fn can_draw() -> forge::look::session::CanDraw {
+    let maps = current()
+        .map(|driver| -> Vec<String> {
+            let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+            driver.looks.catalogue().iter().map(|e| e.sha256.clone()).collect()
+        })
+        .unwrap_or_default();
+    forge::look::session::CanDraw::ours(forge::look::BODIES_DRAWN, maps)
+}
+
+/// The bodies a film's monitor records give at the film tick Theater plays
+/// (docs/game/forge-monitor-appearance.md, "Theater"): the seats' looks and
+/// poses drawn by the code the live session uses, from this machine's
+/// catalogue. Empty outside a film that recorded monitors.
+pub fn playback_bodies(m: &dyn engine::GuestMemory) -> Vec<forge::look::body::Draw> {
+    if !crate::theater::forge_film::active() {
+        return Vec::new();
+    }
+    let catalogue = current()
+        .map(|driver| {
+            let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+            driver.looks.catalogue().to_vec()
+        })
+        .unwrap_or_default();
+    let bodies = forge::look::body::Bodies::new(&catalogue);
+    crate::theater::forge_film::draws(&bodies, |index| {
+        crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3])
+    })
+}
+
 /// The monitor the game's Appearance page draws beside the Spartan in
 /// `widget` (docs/game/forge-monitor-appearance.md, ML4b): the saved look
 /// of the profile on local slot 0, as this machine's catalogue can draw
@@ -101,7 +136,9 @@ pub fn appearance_body(
 /// map holds: what the frame step's scene adds to each game view after
 /// the game's candidates (`render_bridge::scene_step::set_host_lights`).
 pub fn monitor_lights(m: &dyn engine::GuestMemory) -> Vec<frame_scene::Light> {
-    host_lights(&monitor_bodies(), |index| crate::pad_lightbar::palette_rgb(m, index))
+    let mut bodies = monitor_bodies();
+    bodies.extend(playback_bodies(m));
+    host_lights(&bodies, |index| crate::pad_lightbar::palette_rgb(m, index))
 }
 
 /// The host light each drawn body carries: at the body's origin, the

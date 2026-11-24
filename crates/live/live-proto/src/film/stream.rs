@@ -15,11 +15,16 @@ pub const CLOCK: u8 = 6;
 /// (docs/game/forge-design.md, "Films and determinism"). The first payload
 /// byte is [`FORGE_WELCOME`] (the session's welcome, at its start) or
 /// [`FORGE_ITEM`] (one item of the host's stream, at the tick every machine
-/// applies it); the rest are the message's bytes. A consumer that does not
+/// applies it), [`FORGE_LOOK`] (a seat's accepted monitor look) or
+/// [`FORGE_POSE`] (a seat's monitor pose); the rest are the message's
+/// bytes. The look and pose are presentation, outside the gameplay digest
+/// (docs/game/forge-monitor-appearance.md, "Theater"). A consumer that does not
 /// know the tag skips it, and the public view leaves it out.
 pub const FORGE: u8 = 7;
 pub const FORGE_WELCOME: u8 = 0;
 pub const FORGE_ITEM: u8 = 1;
+pub const FORGE_LOOK: u8 = 2;
+pub const FORGE_POSE: u8 = 3;
 /// The "Firefight entry" record (docs/game/firefight.md, "Theater"): one
 /// entry of the Firefight host log, its canonical JSON
 /// (`host_log::Entry::canonical_bytes`), at the tick the machine applied

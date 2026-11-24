@@ -821,6 +821,24 @@ fn a_forge_record_from_a_producer_is_written_and_read_back() {
 }
 
 #[test]
+fn monitor_look_and_pose_records_round_trip_in_record_order() {
+    let mut extra = vec![unified::TickRecords::default(); 2];
+    extra[0].during.push(RecordData::forge(stream::FORGE_LOOK, b"{}"));
+    extra[0].during.push(RecordData::forge(stream::FORGE_POSE, b"pose"));
+    extra[1].during.push(RecordData::forge(stream::FORGE_POSE, b"again"));
+    let raw = unified::encode(&[sample(1), sample(2)], &extra, true).unwrap();
+    let back = unified::decode(&raw, 1, 2).unwrap();
+    assert_eq!(
+        back[0].forge,
+        vec![
+            [&[stream::FORGE_LOOK][..], b"{}"].concat(),
+            [&[stream::FORGE_POSE][..], b"pose"].concat(),
+        ]
+    );
+    assert_eq!(back[1].forge, vec![[&[stream::FORGE_POSE][..], b"again"].concat()]);
+}
+
+#[test]
 fn a_forge_record_of_an_unknown_subtype_is_refused() {
     let mut chunk = stream::ChunkWriter::new(1, 1).unwrap();
     chunk.record(1, stream::FORGE, &[9, 1]).unwrap();

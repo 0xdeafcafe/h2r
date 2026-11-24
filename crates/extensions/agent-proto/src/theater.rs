@@ -410,6 +410,10 @@ pub struct State {
     pub camera_pose: Option<CameraPose>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_fallback: Option<CameraFallback>,
+    /// Monitor looks the film has recorded so far that this machine cannot
+    /// draw (`monitor_look_source`): the seat shows the marker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitor_looks: Vec<MonitorLookSource>,
     #[serde(default = "shown")]
     pub hud: bool,
     #[serde(default = "shown")]

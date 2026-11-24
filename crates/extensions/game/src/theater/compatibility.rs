@@ -99,9 +99,18 @@ impl Installation {
     }
 
     pub fn compatibility(&self, entry: &film::LibraryEntry) -> Compatibility {
-        self.check(entry, recomp::host_triple(), || {
+        let mut report = self.check(entry, recomp::host_triple(), || {
             entry.check_initial_files(&self.data)
-        })
+        });
+        // A film of a Forge session names the monitor looks this machine
+        // draws as markers; they are not reasons the film is unavailable.
+        if entry.version >= 2 {
+            note_monitor_looks(
+                &mut report,
+                &super::forge_film::unseen_in(&entry.path, &crate::forge_glue::can_draw()),
+            );
+        }
+        report
     }
 
     fn check(
@@ -199,14 +208,21 @@ impl Installation {
 /// (`monitor_look_source`). They do not make the film unavailable: the
 /// simulation is whole and the seat draws the marker in the look's colours.
 pub fn note_monitor_looks(report: &mut Compatibility, unseen: &[forge::look::film::Unseen]) {
-    report.monitor_looks = unseen
+    report.monitor_looks = monitor_look_sources(unseen);
+}
+
+/// The looks a machine cannot draw as the agent API names them.
+pub(super) fn monitor_look_sources(
+    unseen: &[forge::look::film::Unseen],
+) -> Vec<MonitorLookSource> {
+    unseen
         .iter()
         .map(|u| MonitorLookSource {
             seat: u.seat,
             map: u.map.clone(),
             reason: u.reason.clone(),
         })
-        .collect();
+        .collect()
 }
 
 fn location(loc: Loc) -> [u8; 2] {

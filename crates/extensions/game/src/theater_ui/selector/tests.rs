@@ -21,6 +21,37 @@ fn ids(rows: &[Entry]) -> Vec<&str> {
 }
 
 #[test]
+fn the_detail_page_says_monitor_looks_drawn_as_markers_and_the_film_stays_playable() {
+    use agent_proto::theater::{Compatibility, CompatibilityState, FilmContract, MonitorLookSource};
+    let mut row = film("forge", "lockout", Some("Slayer"), 1);
+    assert!(!row.browse_description(None).contains("monitor look"));
+    let look = |seat| MonitorLookSource {
+        seat,
+        map: "invented_map".into(),
+        reason: "monitor_look_source".into(),
+    };
+    let report = |looks| Compatibility {
+        state: CompatibilityState::Playable,
+        reasons: vec![],
+        film: FilmContract {
+            xbe: "x".into(),
+            contract: None,
+            hooks: None,
+            abi: "a".into(),
+        },
+        installed: vec![],
+        monitor_looks: looks,
+    };
+    row.film.apply_compatibility(report(vec![look(2)]));
+    assert!(row.browse_description(None).contains("1 monitor look drawn as marker"));
+    assert!(row.film.watch_unavailable().is_none());
+    row.film.apply_compatibility(report(vec![look(2), look(3)]));
+    assert!(row.browse_description(None).contains("2 monitor looks drawn as markers"));
+    row.film.apply_compatibility(report(vec![]));
+    assert!(!row.browse_description(None).contains("monitor look"));
+}
+
+#[test]
 fn sort_groups_by_map_or_game_type_with_newest_first_inside_groups() {
     let mut rows = vec![
         film("unknown", "", None, 300),

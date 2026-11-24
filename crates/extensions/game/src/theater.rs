@@ -8,6 +8,7 @@ mod media;
 pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
 pub use media::Media;
 mod compatibility;
+pub mod forge_film;
 #[cfg(feature = "gpu")]
 mod host_view;
 #[cfg(feature = "gpu")]
