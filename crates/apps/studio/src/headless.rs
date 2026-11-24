@@ -997,7 +997,13 @@ mod tests {
         let Some((_turn, mut h)) = headless() else {
             return;
         };
+        // A tag tree under a data root of its own: with none, the first
+        // start's floating page covers the middle of the window, and the
+        // picture below it is never hovered.
+        let t = crate::app::map_cards_tests::Temp::new("ui-screens-tool");
         let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        tags::repo::TagRepo::create(&app.tags_root()).unwrap();
         app.dispatch(Action::SetTool(ToolKind::UiScreens));
         h.frames(&mut app, 3).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);

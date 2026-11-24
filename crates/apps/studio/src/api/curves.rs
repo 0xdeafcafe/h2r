@@ -24,18 +24,20 @@ use crate::fields::curve;
 #[derive(Default)]
 pub struct Curves;
 
+/// The shape of `function.read`'s result, which `function.set` also gives.
+const READ_RESULT: &str = r#"{"type":"string","ranged":"boolean","sub_types":"[integer, integer]","range":"[number, number]","length":"integer","sets":"[{shape?, from, to}|{wave?, frequency, phase, minimum, maximum}|{slope, intercept}|{base, keys:[{value, position, inverse_span}]}|{points, coefficients}|{minimum, maximum, power}|{words}|{}]|null","editable":"boolean","read_only":"string|null"}"#;
 const READ: MethodDef = def(
     m::FUNCTION_READ,
     "The function blob a `view=function` data field points at: the type word, whether it is ranged, the two sub-type bytes (set 0's and set 1's wave or shape), the output range, the blob's length, its two sets' typed values (per type, the words the engine's evaluator reads, named as the editor's handles; a constant's, type 6's and type 8's words are given as `words`; null for a type with no layout), whether it may be edited, and why not when it may not (a type the engine does not evaluate, or the tag's own reason)",
     r#"{"tag":"string|integer","path":"string (a tag.set path)"}"#,
-    r#"{"type":"string","ranged":"boolean","sub_types":"[integer, integer]","range":"[number, number]","length":"integer","sets":"[{shape?, from, to}|{wave?, frequency, phase, minimum, maximum}|{slope, intercept}|{base, keys:[{value, position, inverse_span}]}|{points, coefficients}|{minimum, maximum, power}|{words}|{}]|null","editable":"boolean","read_only":"string|null"}"#,
+    READ_RESULT,
     r#"{"tag":"weap","path":"curve"}"#,
 );
 const SET: MethodDef = def(
     m::FUNCTION_SET,
     "Edit a function curve, same length: `ranged` turns the second set on or off, `range` sets the output range, and `sets` holds one or two set objects whose keys present are written (the shape or wave byte rides in the set, as the dialog's picker rows write it). One undo step. Refused as the Curves section says: a type change (the length would change), a type the game evaluates as 0, a read-only tag, a data reference that is not a function blob",
     r#"{"tag":"string|integer","path":"string (a tag.set path)","type?":"string (the same type; a change is refused)","ranged?":"boolean","range?":"[number, number]","sets?":"[set objects]"}"#,
-    "the new function.read",
+    READ_RESULT,
     r#"{"tag":"weap","path":"curve","sets":[{"from":0.2,"to":0.8,"shape":2}],"ranged":true,"range":[0,1]}"#,
 );
 const SAMPLE: MethodDef = def(

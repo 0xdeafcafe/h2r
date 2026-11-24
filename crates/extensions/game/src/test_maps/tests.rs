@@ -294,7 +294,7 @@ fn maps_load_finds_a_package_written_while_the_game_runs() {
     assert!(installed_slot(&vfs, &root, &id, &|| {}).is_some());
 
     // The map reads through the VFS at the slot `maps.load` would queue.
-    let name = crate::map_slots::slot_file(&listed.path).expect("a content slot path");
+    let name = crate::map_slots::slot_file(&format!("{}.map", listed.path)).expect("a content slot path");
     let served = {
         let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
         let handle = v.open(&name, vfs::OpenOptions::default()).unwrap().handle;

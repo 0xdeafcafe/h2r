@@ -38,7 +38,7 @@ pub(crate) fn registry() -> &'static Registry {
     static R: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
     R.get_or_init(|| {
         let mut schema = String::from("group scnr 0x10 align 4\ngroup weap 0x70 align 4\n");
-        let mut defs = String::from("group weap 0x70\n  0x0 f32 speed\n");
+        let mut defs = String::from("group weap 0x70\n  0x0 f32 speed\n  0x4 unknown 0x4\n");
         for i in 0..FIELDS.len() + 1 {
             let at = 0x8 + i * 8;
             schema.push_str(&format!("  0x{at:x} block 0x1 align 1\n"));

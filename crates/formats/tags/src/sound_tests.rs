@@ -208,22 +208,22 @@ const LOCATORS_AT: usize = EXTRA_AT + 0x2c;
 fn mouth_gestalt(curves: &[&[u8]]) -> (Vec<u8>, Vec<u8>) {
     let resource = mouth_resource(curves);
     let mut b = vec![0u8; GESTALT_HEADER];
-    let put_block = |b: &mut Vec<u8>, idx: usize, body: &[u8]| {
+    let put_block = |b: &mut Vec<u8>, idx: usize, count: u32, body: &[u8]| {
         let addr = BASE + b.len() as u32;
-        b[idx * 8..idx * 8 + 4].copy_from_slice(&1u32.to_le_bytes());
+        b[idx * 8..idx * 8 + 4].copy_from_slice(&count.to_le_bytes());
         b[idx * 8 + 4..idx * 8 + 8].copy_from_slice(&addr.to_le_bytes());
         b.extend_from_slice(body);
     };
     let mut range = vec![0u8; 8];
     range.extend([0, 0, 2, 0]); // two permutations
-    put_block(&mut b, BLOCK_PITCH_RANGES, &range);
+    put_block(&mut b, BLOCK_PITCH_RANGES, 1, &range);
     let mut perms = Vec::new();
     for i in 0u8..2 {
         let mut e = [0u8; 16];
         e[5] = i; // the extra-info descriptor index
         perms.extend_from_slice(&e);
     }
-    put_block(&mut b, BLOCK_PERMUTATIONS, &perms);
+    put_block(&mut b, BLOCK_PERMUTATIONS, 2, &perms);
     // The extra-info element lands at 0x84, its locators after it.
     assert_eq!(b.len(), EXTRA_AT);
     let data_len: u32 = curves.iter().map(|c| c.len() as u32).sum();
