@@ -1173,9 +1173,17 @@ are kept.
 |---|---|---|
 | `weapon` | a `weap` tag's name or datum (required) | `sim.give` to `player` (default 0; `keep: true` adds it as a spare), `session.wait`, `world.object` for the held weapon, `pogo.state`, `render.scene`, the capture |
 | `object` | an object tag's name or datum (required; `vehi:<name>` names the group) | `world.object` for the player, `sim.spawn` at `pos`, else `distance` (default 3) world units in front of the player and facing them, `session.wait`, `world.query` near it, `render.scene`, the capture |
+| `animation` | an object tag with its group (required: `scen:<name>`, `vehi:`, `mach:`, `bloc:` or `crea:`), and `animation`, a name in the object's own graph (required) | `world.object` for the player, `sim.spawn` as for `object`, `world.object.animate`, `session.wait`, `world.query` near it, `render.scene`, the capture |
 | `ui` | the screen expected (optional) | `ui.audit`, `ui.stack` and `ui.screen` where listed, the capture |
 | `hud` | a `<name>.state` method to read with it (optional: `superbounce`, `pogo`) | `cheat.list`, `cheat.set hide_hud false` when it was on, `session.wait`, the state, `render.scene`, the capture, then `hide_hud` back on |
 | `sound` | a `snd!` tag's name or datum (required) | `audio.play` to `player`, `audio.voices` every 100 ms for `seconds` (0.1 to 30, default 2), `audio.loops` |
+
+An `animation` preview checks the game lists `world.object.animate`
+before it spawns anything, and fails the job when it does not. `ticks`
+is the wait between the animation's start and the one capture; the
+result's `applied` holds the `spawn` and `animate` answers, and `reads`
+the object's `world.query` row and the animation's start
+([`world.object.animate`](../runtime/agent-api.md#worldobjectanimate)).
 
 A `sound` preview has no picture. Beside the game's readings (`applied`,
 the answer of `audio.play`, and `audio`, as `pair.audio` gives it) the

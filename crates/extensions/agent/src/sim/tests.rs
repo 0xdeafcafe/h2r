@@ -639,6 +639,10 @@ const VEHI_TAG: u32 = 0xe200_0020;
 const SND_TAG: u32 = 0xe400_0040;
 
 impl super::calls::Tags for FakeTags {
+    fn string_id(&mut self, name: &str) -> Option<u32> {
+        (name == "idle").then_some(0x4d01)
+    }
+
     /// As a map names them: a weapon's name is also its model's (`hlmt`),
     /// a vehicle's its render model's (`mode`).
     fn find(&mut self, tag: &str, among: &[&str]) -> Result<super::calls::TagRef, String> {
@@ -2002,4 +2006,42 @@ fn audio_play_queues_the_sound_start_at_the_players_unit_and_refuses_what_is_no_
         let e = h.err(&mut game, method::AUDIO_PLAY, p.clone());
         assert_eq!(e["code"], want, "{p}: {e}");
     }
+}
+
+#[test]
+fn object_animate_queues_the_named_animation_on_the_object_and_refuses_what_it_cannot_name() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    h.deferred(
+        &mut game,
+        method::OBJECT_ANIMATE,
+        json!({"id": "scenery.12340000", "animation": "idle"}),
+    );
+    let calls = the_game_makes(&q, |c| {
+        assert!(matches!(c, super::calls::Call::Animate { name: 0x4d01, .. }), "{c:?}");
+        Ok(json!({"index": 3, "frames": 31, "frame": 0.0}))
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["result"]["object"], "scenery.12340000");
+    assert_eq!(r["result"]["index"], 3);
+    // A name the map has no string ID for, a bad id, a player's id, and a
+    // co-op session (the object's pose is simulation state) are refused.
+    for (p, want) in [
+        (json!({"id": "scenery.12340000", "animation": "nothing"}), code::INVALID_PARAMS),
+        (json!({"id": "bad", "animation": "idle"}), code::INVALID_PARAMS),
+        (json!({"id": "player.0", "animation": "idle"}), code::INVALID_PARAMS),
+    ] {
+        let e = h.err(&mut game, method::OBJECT_ANIMATE, p.clone());
+        assert_eq!(e["code"], want, "{p}: {e}");
+    }
+    *h.kind.lock().unwrap() = SessionKind::CoopHost;
+    let e = h.err(
+        &mut game,
+        method::OBJECT_ANIMATE,
+        json!({"id": "scenery.12340000", "animation": "idle"}),
+    );
+    assert_eq!(e["code"], code::INVALID_REQUEST, "{e}");
 }

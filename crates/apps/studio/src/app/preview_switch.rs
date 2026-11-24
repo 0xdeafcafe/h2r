@@ -112,6 +112,12 @@ pub fn plan_for_tag(group: FourCC, name: &str) -> Result<GamePreview, String> {
         b"lsnd" | b"ugh!" => {
             return Err("audio.play starts snd! tags: preview a snd! of it".into());
         }
+        b"jmad" => {
+            return Err(
+                "an animation plays on an object: pair.preview {what: animation, target: the object's tag, animation: its name}"
+                    .into(),
+            );
+        }
         b"proj" | b"hlmt" | b"mode" | b"coll" | b"phmo" => {
             return Err(format!(
                 "a {id} has no preview of its own in the game: preview the weapon, vehicle or scenery that uses it"
