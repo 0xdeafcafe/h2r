@@ -1,7 +1,7 @@
 # Studio, redesigned: one tag tree, packages, and the animation and sound editors
 
 Status: Design. Nothing on this page is built except what "What exists" names; the slices at the end are the order to build it in.
-Code: `crates/apps/studio/src` (the shell, `ui.rs`, `ui/layout.rs`, `app.rs`), `crates/apps/studio-proto/src` (the API's wire), `crates/formats/content/src/package/` (new: manifest, id, set), `crates/tools/workspace` (new: builders and the build), `crates/apps/boot/src/packages.rs` (new: the game's side). Tests: each slice names its own.
+Code: `crates/apps/studio/src` (the shell, `ui.rs`, `ui/layout.rs`, `app.rs`), `crates/apps/studio-proto/src` (the API's wire), `crates/formats/content/src/package/` (manifest, id, set), `crates/tools/workspace` (new: builders and the build), `crates/apps/boot/src/packages.rs` (new: the game's side). Tests: each slice names its own.
 Switch: none.
 
 Studio is one window over one tree: every tag of every map on the
@@ -38,6 +38,7 @@ before its slice starts.
 | Animation graphs read and sampled, every retail codec | built, no view | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)) |
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
+| Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, the load order, the content set | built, nothing reads it yet | `crates/formats/content/src/package/` |
 | Layers, projects, kits as build steps, edit files | design | [tag-workspace.md](tag-workspace.md) |
 
 Each piece of new content reaches the game by a path of its own
@@ -324,7 +325,7 @@ maps = "multiplayer"
 ```
 
 `maps` is `"multiplayer"`, `"campaign"`, `"mainmenu"`, `"shared"`,
-`"all"` or a list of map names. Unknown keys are refused
+`"all"` (when omitted) or a list of map names. Unknown keys are refused
 (`deny_unknown_fields`, as `content::Manifest`).
 
 ### Contents
@@ -766,7 +767,7 @@ cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
 |---|---|---|---|---|
 | SH1 | **Document tabs and editors by kind**: `ToolKind` goes; a document id per open tag; the editor from `app::kinds::KINDS`; panels that follow the front document; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close`; one layout | M | nothing | each kind's editor draws at 1000 by 420 with no stray child window (`every_panel_scrolls_as_a_whole_on_a_short_window`); two documents have two undo stacks; the Timeline shows for an invented sound and not for an invented weapon; the window's clicks and `shell.*` leave the same state |
 | W3 | **First start and the tree in Studio** (tag-workspace; it needs W1 only here) | M | nothing | as there |
-| PK1 | **Manifest and set**: `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
+| PK1 | **Manifest and set** (built): `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
 | PK2 | **Builders and the build**: `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
 | SH2 | **The browser**: the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
 | PK3 | **The game's side**: `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |

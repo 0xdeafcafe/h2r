@@ -15,6 +15,8 @@ guest, `variants` and the editors read packages, and `boot`, `cli`,
 
 - `src/manifest.rs`, `src/id.rs`, `src/canonical.rs`: the manifest and the
   identity of a map (SHA-256 of its canonical JSON).
+- `src/package/`: Studio's packages (`package.toml`, `package.lock`,
+  `PackageId`, the set and its load order; docs/editor/studio-redesign.md).
 - `src/patch/`, `src/patch_lvl.rs`: patch readers; offset patches become
   overlays laid over the base as it streams.
 - `src/forge.rs`: the format 2 document identity and load checks.
