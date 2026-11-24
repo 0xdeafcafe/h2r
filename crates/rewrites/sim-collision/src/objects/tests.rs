@@ -237,3 +237,21 @@ fn handles_past_the_mark_bound_decline_and_a_dead_handle_ends_a_list() {
     let v = run(&w, &VisitQuery { lists: 1, ..query() }).unwrap();
     assert_eq!(v.marks, [3, 5]);
 }
+
+#[test]
+fn a_dead_first_handle_ends_the_list_regardless_of_its_next_reference() {
+    let [mut a, b] = lists();
+    a.clusters[0][0].handle = u32::MAX;
+    let w = world([&a, &b]);
+    let v = run(&w, &VisitQuery { lists: 1, radius: 0, ..query() }).unwrap();
+    assert!(v.handles.is_empty());
+    assert!(v.marks.is_empty());
+}
+
+#[test]
+fn a_cycle_in_the_live_reference_list_declines() {
+    let [a, b] = lists();
+    let mut w = world([&a, &b]);
+    w.img.word(LISTS[0].2 + References::SIZE + layout::NEXT, 0);
+    assert_eq!(run(&w, &query()), Err(Bail::Data));
+}

@@ -136,13 +136,20 @@ impl<G: GuestRead> State<'_, G> {
         let data = self.u32(array.wrapping_add(layout::DATA))?;
         let record = |datum: u32| data.wrapping_add((datum & 0xffff).wrapping_mul(size));
         let mut at = record(head);
-        let mut fields = self.read(at.wrapping_add(layout::HANDLE), layout::READ)?;
+        let mut records = HashSet::new();
         loop {
+            if !records.insert(at) {
+                return Err(Bail::Data);
+            }
+            let fields = self.read(at.wrapping_add(layout::HANDLE), layout::READ)?;
             let w = |o: u32| {
                 let o = (o - layout::HANDLE) as usize;
                 u32::from_le_bytes(fields[o..o + 4].try_into().unwrap())
             };
             let (handle, next) = (w(layout::HANDLE), w(layout::NEXT));
+            if handle == u32::MAX {
+                return Ok(Walk::Done);
+            }
             let kind = fields[(layout::BOUNDS - layout::HANDLE) as usize];
             if self.types & 1u32.wrapping_shl(u32::from(kind)) != 0 {
                 let slot = handle as u16;
@@ -173,11 +180,6 @@ impl<G: GuestRead> State<'_, G> {
                 return Ok(Walk::Done);
             }
             at = record(next);
-            fields = self.read(at.wrapping_add(layout::HANDLE), layout::READ)?;
-            let handle = u32::from_le_bytes(fields[..4].try_into().unwrap());
-            if handle == u32::MAX {
-                return Ok(Walk::Done);
-            }
         }
     }
 
