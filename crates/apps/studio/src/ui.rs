@@ -164,6 +164,7 @@ impl Studio {
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
         app.poll_cards();
+        app.poll_voice_batch();
         app.poll_bot_nav();
         app.poll_ground();
         // The workspace's background extraction, before the status bar
@@ -268,7 +269,7 @@ impl Studio {
         sound::window(ui, app, gpu, &mut self.sound);
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
-        announcer::window(ui, app, &mut self.announcer);
+        announcer::window(ui, app, &mut self.announcer, self.dialogs);
         // The tag workspace's first-start page (a floating window; the
         // shell is another lane's).
         workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);

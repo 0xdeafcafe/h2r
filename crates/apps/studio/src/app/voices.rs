@@ -100,6 +100,8 @@ pub struct Voices {
     pub lines: Option<Box<dyn LineSource>>,
     jobs: Vec<Job>,
     next_job: u64,
+    /// The lines of the Voices window's batch ([`super::voice_batch`]).
+    pub batch: super::voice_batch::Batch,
 }
 
 impl Default for Voices {
@@ -127,6 +129,7 @@ impl Voices {
             lines: None,
             jobs: Vec::new(),
             next_job: 1,
+            batch: Default::default(),
         }
     }
 
@@ -137,6 +140,7 @@ impl Voices {
             lines: self.lines.take(),
             jobs: std::mem::take(&mut self.jobs),
             next_job: self.next_job,
+            batch: std::mem::take(&mut self.batch),
             ..Voices::with_launcher(launcher)
         };
         self.clone.backend = backend;

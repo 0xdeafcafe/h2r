@@ -183,6 +183,11 @@ pub mod method {
     pub const VOICE_DATASET_STATUS: &str = "voice.dataset.status";
     pub const VOICE_CLONE_TRAIN: &str = "voice.clone.train";
     pub const VOICE_CLONE_SAY: &str = "voice.clone.say";
+    // The Voices batch: many lines at once (api/voice_clone.rs).
+    pub const VOICE_SAY_BATCH: &str = "voice.say_batch";
+    pub const VOICE_BATCH_STATUS: &str = "voice.batch.status";
+    pub const VOICE_BATCH_RUN: &str = "voice.batch.run";
+    pub const VOICE_BATCH_SAVE: &str = "voice.batch.save";
 
     // Every content check in one list (api/checks.rs).
     pub const CHECK_RUN: &str = "check.run";

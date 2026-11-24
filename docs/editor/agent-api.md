@@ -1962,7 +1962,8 @@ needs `replace`. `clip`, `repo` and `replace` are refused with `tag`.
 ## Voices
 
 `voice.characters`, `voice.dataset.build`, `voice.dataset.status`,
-`voice.clone.train` and `voice.clone.say` (`api/voice_clone.rs`, over
+`voice.clone.train`, `voice.clone.say` and the batch (`voice.say_batch`,
+`voice.batch.status`, `voice.batch.run`, `voice.batch.save`) (`api/voice_clone.rs`, over
 `app/voices.rs` and `app/announcer.rs`) clone a game character's voice from
 the user's own disc and say new lines with it, all on this machine. The
 design, the dataset, the sidecar and the models are in
@@ -2017,6 +2018,37 @@ model is installed it starts the install and is `REFUSED` with
 `data.step` is `dataset`. A model failure is `FAILED` with the sidecar's
 message. To hear a committed clip in the game, `voice.commit` it and use
 `pair.audio` as for any announcer clip.
+
+**`voice.say_batch {character?, rows?, lines?, file?, append?, wait?,
+backend?}`** says many lines as the Voices window's **Say all** does, each
+row as `voice.clone.say` says a line (cached, levelled, saved under
+`<data root>/voices/<character>`, never played). `rows` is a list of
+`{text, character?, clip?, tag?}` (`character` defaults to the batch's;
+`clip` is the output name; `tag` a `snd!` path for the edit target
+package), `lines` one row per line of a text (a tab splits an output name
+from the text) and `file` a text file of at most 1 MB. The previous batch
+is replaced unless `append`; while rows are queued or running it is
+`REFUSED`. A bad param adds nothing. A row with a problem fails at once with
+`why`; the others are queued. With `wait` the call returns when every row
+has ended; without it the window's frames say one row each, so poll
+`voice.batch.status`. It answers `added`, `queued`, `counts` (`idle`,
+`queued`, `running`, `done`, `failed`), `active` and `rows`.
+
+**`voice.batch.status {ids?}`** answers the same without asking the model:
+each row's `id`, `text`, `character`, `clip`, `tag`, `state` (`idle`,
+`queued`, `running`, `done`, `failed` with `why`), and once said its `file`,
+`levels` (`lufs`, `peak_dbfs`, `duration_ms`), `verdict` and `cached`;
+`saved` or `save_failed` after a save.
+
+**`voice.batch.run {ids?, wait?, backend?}`** says the idle and failed rows
+again, or `ids` (a done row too, asking the model again, not the cache).
+
+**`voice.batch.save {ids?, repo?, package?, replace?}`** keeps the done
+rows in one step: a row with a `tag` becomes a `sound` item of `package`
+(default the edit target), one with a `clip` is copied to
+`art/announcer/<clip>.wav` of `repo`, replacing a clip only with `replace`;
+a row with neither fails with why. It answers `saved`, `failed` and each
+row's result, runs no git and edits no `CLIPS`.
 
 ## Extension points
 
