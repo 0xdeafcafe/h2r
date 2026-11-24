@@ -8,13 +8,14 @@ pub mod hud_overlay;
 mod model;
 mod outline;
 mod ui;
+pub mod ui_overlay;
 
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
 use runtime::abi::TransferAbi;
-use timeline::native::{Metric, Stage};
+use timeline::native::{Metric, Stage, Ui};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 
@@ -23,6 +24,7 @@ pub const ID: &str = "native-hud";
 pub use hud_overlay::HudTagQuad;
 pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
 pub use ui::UiScope;
+pub use ui_overlay::MenuRefusal;
 
 /// Whether the native UI and HUD are on.
 pub fn on(switches: &hooks::Switches) -> bool {
@@ -138,6 +140,21 @@ pub trait Host: Send + Sync {
         false
     }
 
+    /// A screen's sorted widget list is ready ([`ui_overlay`]): whether the
+    /// host may place overlay passes in it now. `None`: the host does not
+    /// draw menus. `Some(false)`: not now (counted as `Pass`); the game
+    /// draws the list.
+    fn ui_overlay(&self, _mem: &mut dyn GuestMemory) -> Option<bool> {
+        None
+    }
+
+    /// Draws `part`, the items of a run of a list's widgets, from the
+    /// overlay stage, placed at this point in the frame. True: placed, and
+    /// the run's widget draws are left out; false: the game draws them.
+    fn ui_pass(&self, _mem: &mut dyn GuestMemory, _part: &frame_scene::Overlay) -> bool {
+        false
+    }
+
     fn enter_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32, _eligible: bool) {}
 
     fn leave_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32) {}
@@ -153,6 +170,62 @@ pub fn set_host(host: Arc<dyn Host>) {
 fn host() -> Option<Arc<dyn Host>> {
     // HOST is only held to clone the host: never across its calls.
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A screen's sorted list at [`ui_overlay::LIST_READY`]: its claim, when
+/// the host draws menus, or why the game draws it.
+fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
+    let Some(list) = ui_overlay::at_list(&*mem, ebp, edi) else { return };
+    match host().and_then(|host| host.ui_overlay(mem)) {
+        Some(true) => {}
+        Some(false) => {
+            MenuRefusal::Pass.counter().count();
+            return;
+        }
+        None => return,
+    }
+    match ui_overlay::claim_list(&*mem, &list) {
+        Ok(claim) => {
+            Ui::OverlayMenuClaimed.count_n(u64::from(claim.claimed()));
+            // A list at this frame left open is closed (and checked) first.
+            ui_overlay::open(claim);
+        }
+        Err(why) => why.counter().count(),
+    }
+}
+
+/// The sorted widget call (`points::ui_render::ITEM_CALL`, the argument
+/// pushed, `stack` above it) of a claimed entry: the run's pass placed at
+/// its first, then the draw left out, resuming after the call as a
+/// host-drawn widget does.
+pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stack: u32) -> Option<TransferAbi> {
+    use engine::points::ui_render::ITEM_CONTINUATION;
+    use ui_overlay::Item;
+    let (frame, ordinal) = (c.cpu.ebp, c.cpu.ebx);
+    match ui_overlay::at_item(frame, ordinal) {
+        Item::Game => return None,
+        Item::Skip => {}
+        Item::Place(run) => {
+            let part = ui_overlay::run_part(frame, run)?;
+            // A run of containers has nothing to draw: it needs no pass.
+            let placed = part.is_empty() || host().is_some_and(|host| host.ui_pass(mem, &part));
+            ui_overlay::placed(frame, run, placed);
+            if !placed {
+                MenuRefusal::Pass.counter().count();
+                return None;
+            }
+            if !part.is_empty() {
+                Ui::OverlayMenuPasses.count();
+                if crate::scene_step::with_overlay(|o| o.append(&part).is_ok()) == Some(false) {
+                    eprintln!("ui overlay: the scene's overlay refused a menu run's items");
+                }
+            }
+        }
+    }
+    Ui::OverlayMenuSkipped.count();
+    Stage::Ui.count(Metric::BuildsSkipped, 1);
+    c.cpu.esp = stack;
+    Some(TransferAbi::resume(ITEM_CONTINUATION))
 }
 
 pub struct NativeHud;
@@ -171,6 +244,24 @@ impl Feature for NativeHud {
             return Ok(());
         }
         ui::place(b);
+        // The menus on the overlay (`ui_overlay`): a list's claim opens
+        // when it is sorted and closes, checked, when its draws are done.
+        // A claimed draw is left out by resuming after its call: without
+        // that, nothing is claimed.
+        b.raw().before(&ui_overlay::LIST_READY, "native_ui_overlay_list", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let continuation = engine::points::ui_render::ITEM_CONTINUATION;
+            if !rt.read_dispatch(|dispatch| dispatch.has_resume(continuation)) {
+                return Ok(Flow::Continue);
+            }
+            let mut mem = rt.memory();
+            menu_list(&mut *mem, c.cpu.ebp, c.cpu.edi);
+            Ok(Flow::Continue)
+        }).context_only().optional();
+        b.raw().before(&ui_overlay::LIST_DONE, "native_ui_overlay_list_done", |c| {
+            ui_overlay::close(c.cpu.ebp);
+            Ok(Flow::Continue)
+        }).context_only().optional();
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());
             if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {

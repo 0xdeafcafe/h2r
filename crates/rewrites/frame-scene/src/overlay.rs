@@ -192,8 +192,9 @@ pub enum OverlayKind {
 }
 
 /// The blur under a dialog (`0x00235756` running the Kawase blur
-/// `0x000211a0`; docs/formats/ui.md, "Draw order"): each step makes every
-/// pixel the mean of four bilinear taps at the corners of a square, tap
+/// `0x000211a0`; docs/formats/ui.md, "What a screen, pane and widget
+/// are"): each step makes every pixel the mean of four bilinear taps at
+/// the corners of a square, tap
 /// `k` moved by `spread * tap` guest pixels, positive for `k & 1` in x and
 /// `k & 2` in y, negative otherwise. The sampler clamps at the target's
 /// edges. Both values are the guest's, read by the producer.
