@@ -1,7 +1,7 @@
 //! Uniform scale, three basis columns and translation, as stored in a
 //! structure instance. Keep the accumulation order of the three guest
 //! routines: inverse (141590), local ray (1691a0), world plane (168b40).
-use crate::Bail;
+use crate::{Bail, GuestRead};
 use sim_core::det::{self, Fp};
 use std::cmp::Ordering;
 
@@ -15,6 +15,14 @@ pub struct PlacementMatrix {
 }
 
 impl PlacementMatrix {
+    pub fn read(g: &impl GuestRead, at: u32) -> Result<Self, Bail> {
+        let mut bytes = [0; 52];
+        g.read(at, &mut bytes)?;
+        Ok(Self::from_words(std::array::from_fn(|i| {
+            u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap())
+        })))
+    }
+
     pub fn from_words(words: [u32; 13]) -> Self {
         Self {
             scale: words[0],

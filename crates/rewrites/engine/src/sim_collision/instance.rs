@@ -1,8 +1,20 @@
 //! Instanced-geometry traces for one structure cluster (entry E).
-use super::{CollisionMemory, Outputs, Read, finish, layout};
+use super::{
+    CollisionMemory, Outputs, Read, consts, finish, layout, layout::mopp_ray as ray_layout,
+};
 use crate::sim_native::{Memory, sub_flags};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
+use sim_collision::instance::PlacementMatrix;
 use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};
+use sim_collision::{
+    Hit, Segment,
+    bsp::NONE,
+    mopp,
+    mopp::ray::{Constants, Event, Precision, Ray, RayWalk},
+    sphere::Sphere,
+};
+use sim_core::det::{self, Fp};
+use std::{cmp::Ordering, collections::BTreeSet};
 
 const CLUSTERS: u32 = 0xa0;
 const CLUSTER_SIZE: u32 = 0xb0;
@@ -51,18 +63,6 @@ pub fn empty_cluster(
     sub_flags(c, count, 0, 32);
     Ok(Some(finish(c, target, 12)))
 }
-
-use super::{consts, layout::mopp_ray as ray_layout};
-use sim_collision::instance::PlacementMatrix;
-use sim_collision::{
-    Hit, Segment,
-    bsp::NONE,
-    mopp,
-    mopp::ray::{Constants, Event, Precision, Ray, RayWalk},
-    sphere::Sphere,
-};
-use sim_core::det::{self, Fp};
-use std::{cmp::Ordering, collections::BTreeSet};
 
 pub const MARK_BASE: u32 = 0x004e_7c20;
 /// The next global bounds the instance mark array, independently of the placement block.
@@ -194,10 +194,7 @@ fn placement(
     if !offset.contains_start() && !offset.sweep(q.delta)?.hit() {
         return Ok(None);
     }
-    let bytes = m.bytes(at, 13 * 4)?;
-    let matrix = PlacementMatrix::from_words(std::array::from_fn(|i| {
-        u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap())
-    }));
+    let matrix = PlacementMatrix::read(&m, at)?;
     let (start, delta) = matrix.local_ray(one, q.start, q.delta)?;
     let index = m.u16(layout::BSP_INDEX)? as i16;
     let mask = m
