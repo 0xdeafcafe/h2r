@@ -294,6 +294,13 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
         "the recovered film ends elsewhere"
     );
     drop(playback);
+    // A tape whose actions are in a film file ends there at the same tick.
+    if boot.inputs_in_film
+        && let Err(error) = crate::file::recover_beside(path, end_tick)
+    {
+        let _ = fs::remove_file(&staging);
+        return Err(error.context("the recovered film's film file"));
+    }
     fs::rename(&staging, path)?;
     Ok(true)
 }

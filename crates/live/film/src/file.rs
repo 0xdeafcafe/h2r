@@ -26,8 +26,8 @@
 //! the low 16 bits of the gameplay digest, and a chunk ends with the last
 //! tick's whole digest.
 use crate::{
-    Entry, Header, Reader, Tag,
-    blam::{self, Event, MatchHeader, SeatInput, TrackReader},
+    Header, Tag,
+    blam::{MatchHeader, SeatInput},
     columns::{ACTION_BYTES, CHUNK_TICKS, ChunkDecoder, ChunkEncoder, FRAME_CAP, SEATS, WORDS},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -48,6 +48,7 @@ pub const FLAG_START_POINT: u16 = 4;
 const KIND_TICKS: u8 = 0;
 const KIND_MACHINE: u8 = 1;
 const KIND_START: u8 = 2;
+const KIND_TAIL: u8 = 3;
 const MAX_SEED: usize = 1 << 20;
 const MAX_START: u32 = 4 << 20;
 /// Seat record kinds the recorder writes: a seat joined (its seat number
@@ -211,6 +212,19 @@ impl<W: Write + Seek> FilmWriter<W> {
         payload.extend_from_slice(&tag);
         payload.extend_from_slice(frame);
         self.block(KIND_MACHINE, &payload)
+    }
+
+    /// Write the open chunk as it stands, as a block a reader of an
+    /// unsealed file takes as the file's last chunk until a whole chunk
+    /// replaces it. A recording that dies keeps its ticks to here.
+    pub fn checkpoint(&mut self) -> Result<()> {
+        if self.encoder.ticks() == 0 || self.closed {
+            return Ok(());
+        }
+        let frame = self.encoder.finish_copy(self.last_digest)?;
+        self.block(KIND_TAIL, &frame)?;
+        self.out.flush()?;
+        Ok(())
     }
 
     /// A start point: the state a film that begins mid-game starts from.
@@ -397,6 +411,7 @@ impl<R: Read + Seek> FilmReader<R> {
         let mut chunks = Vec::new();
         let mut machine = Vec::new();
         let mut start_points = Vec::new();
+        let mut tail = None;
         let mut at = seed_end;
         let mut prefix = [0u8; 5];
         while at + 5 <= end {
@@ -415,6 +430,14 @@ impl<R: Read + Seek> FilmReader<R> {
                         "film tick chunk is larger than a chunk can be"
                     );
                     chunks.push((body, stored));
+                    tail = None;
+                }
+                KIND_TAIL => {
+                    ensure!(
+                        stored as usize <= FRAME_CAP,
+                        "film tick chunk is larger than a chunk can be"
+                    );
+                    tail = Some((body, stored));
                 }
                 KIND_MACHINE => {
                     ensure!(
@@ -465,7 +488,24 @@ impl<R: Read + Seek> FilmReader<R> {
             );
             length
         } else {
-            (chunks.len() * CHUNK_TICKS) as u64
+            let whole = (chunks.len() * CHUNK_TICKS) as u64;
+            match tail {
+                Some((body, stored)) => {
+                    let mut frame = vec![0u8; stored as usize];
+                    read_exact_at(&mut input, body, &mut frame)?;
+                    let raw = zstd::bulk::decompress(&frame, 4 << 20)
+                        .context("film checkpoint does not inflate")?;
+                    ensure!(raw.len() >= 2, "film checkpoint is cut short");
+                    let n = u64::from(u16::from_le_bytes([raw[0], raw[1]]));
+                    ensure!(
+                        (1..=CHUNK_TICKS as u64).contains(&n),
+                        "film checkpoint holds a bad tick count"
+                    );
+                    chunks.push((body, stored));
+                    whole + n
+                }
+                None => whole,
+            }
         };
         Ok(Self {
             input,
@@ -529,8 +569,8 @@ impl<T: Read + Seek + Send> Source for T {}
 
 type Rows = ([[u32; WORDS]; SEATS], [[u32; WORDS]; SEATS]);
 
-/// A film file's actions by tick, for a [`TrackReader`] that takes its
-/// inputs from the film ([`TrackReader::attach_film`]). Ticks are asked for
+/// A film file's actions by tick, for a [`crate::blam::TrackReader`] that takes its
+/// inputs from the film ([`crate::blam::TrackReader::attach_film`]). Ticks are asked for
 /// in any order: a chunk is decoded from the nearest predictor state seen,
 /// and each chunk's closing state is kept as chunks are decoded.
 pub struct FilmActions {
@@ -641,157 +681,78 @@ impl FilmActions {
     }
 }
 
-fn seats_of(tick: &blam::Tick) -> [Option<[u8; ACTION_BYTES]>; SEATS] {
-    let mut seats = [None; SEATS];
-    for input in &tick.inputs {
-        if let Some(slot) = seats.get_mut(usize::from(input.seat)) {
-            *slot = input.action;
-        }
-    }
-    seats
-}
-
-/// What a conversion made.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Converted {
-    pub ticks: u64,
-    pub chunks: usize,
-    pub machine_blocks: usize,
-    /// Stored bytes of the container's tick blocks (inputs, poses and
-    /// events together), and of the film file.
-    pub container_tick_bytes: u64,
-    pub film_bytes: u64,
-}
-
-/// Write the film file of a sealed container: its seats' actions and
-/// digests as columns, its seed, and its machine part's envelopes copied
-/// as stored.
-pub fn from_container(container: &Path, film: &Path) -> Result<Converted> {
-    let reader = Reader::open(container)?;
-    let header = reader.header.clone();
-    let mut track = TrackReader::new(Reader::open(container)?)?;
-    let descriptor = track.descriptor.clone();
-    let tps = u8::try_from(descriptor.ticks_per_second.unwrap_or(30)).unwrap_or(30);
-    let seed = Seed { header, descriptor };
-    let mut w = FilmWriter::new(
-        File::create(film).with_context(|| film.display().to_string())?,
-        &seed,
-        tps,
-    )?;
-    while let Some(tick) = track.step()? {
-        let mut flags = 0;
-        if tick.post_hash.is_some() {
-            flags |= TICK_DIGEST;
-        }
-        if !tick.events.is_empty() {
-            flags |= TICK_EVENTS;
-        }
-        w.push_tick(flags, tick.post_hash.unwrap_or(0), &seats_of(&tick))?;
-        for event in &tick.events {
-            match event {
-                Event::Join { player } => {
-                    w.seat_record(player.seat, RECORD_JOIN, &[player.seat, player.kind as u8])?
-                }
-                Event::Leave { seat } | Event::Quit { seat } => {
-                    w.seat_record(*seat, RECORD_LEAVE, &[*seat])?
-                }
-                _ => {}
-            }
-        }
-    }
-    let ticks = w.ticks();
-    let mut source = File::open(container)?;
-    let mut machine_blocks = 0;
-    let entries: Vec<Entry> = reader
-        .machine_section()
-        .entries()
-        .filter(|e| carried(e.tag))
-        .cloned()
-        .collect();
-    for entry in entries {
-        let mut frame = vec![0u8; entry.size as usize];
-        read_exact_at(&mut source, entry.offset + 8, &mut frame)?;
-        w.machine(entry.tag, &frame)?;
-        machine_blocks += 1;
-    }
-    let mut file = w.finish()?;
-    file.sync_all()?;
-    let film_bytes = file.metadata()?.len();
-    let container_tick_bytes = reader
-        .entries
-        .iter()
-        .filter(|e| e.tag == blam::INPT || e.tag == blam::stream::TAG)
-        .map(|e| u64::from(e.size) + 8)
-        .sum();
-    Ok(Converted {
-        ticks,
-        chunks: ticks.div_ceil(CHUNK_TICKS as u64) as usize,
-        machine_blocks,
-        container_tick_bytes,
-        film_bytes,
-    })
-}
-
 /// The film file's path beside its container.
 pub fn beside(container: &Path) -> PathBuf {
     container.with_extension("h2f")
 }
 
-/// Write the film file beside a sealed container, and check it: every
-/// tick's seats and actions decode to the container's, byte for byte, and
-/// every digest's low 16 bits match.
-pub fn write_beside(container: &Path) -> Result<Converted> {
+/// Seal the unsealed film file beside `container`, ending at `end_tick`:
+/// a sealed copy of its machine part, its ticks up to `end_tick` and their
+/// seat records, renamed over it once it is whole. A hard-killed recording
+/// leaves its film file as the recorder last wrote it, with the open chunk
+/// as of the last [`FilmWriter::checkpoint`].
+pub fn recover_beside(container: &Path, end_tick: u64) -> Result<()> {
     let film = beside(container);
-    let converted = from_container(container, &film)?;
-    verify(container, &film)?;
-    Ok(converted)
-}
-
-/// Compare a film file with its container, tick by tick.
-pub fn verify(container: &Path, film: &Path) -> Result<u64> {
-    let mut reader = FilmReader::open(File::open(film)?)?;
-    let mut track = TrackReader::open(container)?;
-    let mut decoder = ChunkDecoder::new()?;
-    let mut buf = Vec::new();
-    let mut tick = 0u64;
-    let mut chunk = 0;
-    let mut seen = 0usize;
-    while let Some(expected) = track.step()? {
-        tick += 1;
-        if seen == 0 {
-            reader.read_chunk(chunk, &mut decoder, &mut buf)?;
-            chunk += 1;
-        }
-        let t = seen;
-        seen = (seen + 1) % CHUNK_TICKS;
+    let staging = film.with_extension("h2f.recover");
+    let sealed = (|| -> Result<File> {
+        let mut reader = FilmReader::open(File::open(&film)?)?;
         ensure!(
-            t < decoder.ticks(),
-            "film file has fewer ticks than its container (tick {tick})"
+            reader.length_ticks >= end_tick,
+            "film file ends at tick {}, before tick {end_tick}",
+            reader.length_ticks
         );
-        let seats = seats_of(&expected);
-        let mut out = [0u8; ACTION_BYTES];
-        for (s, action) in seats.iter().enumerate() {
-            let present = decoder.action(t, s, &mut out);
-            ensure!(
-                present == action.is_some(),
-                "tick {tick} seat {s}: presence differs"
-            );
-            if let Some(action) = action {
-                ensure!(&out == action, "tick {tick} seat {s}: action differs");
+        let mut out = FilmWriter::new(
+            File::create(&staging)?,
+            &reader.seed,
+            reader.ticks_per_second,
+        )?;
+        for block in reader.start_points.clone() {
+            let frame = reader.read_block(&block)?;
+            out.start_point(&frame)?;
+        }
+        for block in reader.machine.clone() {
+            let frame = reader.read_block(&block)?;
+            out.machine(block.tag, &frame)?;
+        }
+        let mut decoder = ChunkDecoder::new()?;
+        let mut buf = Vec::new();
+        'chunks: for chunk in 0..reader.chunk_count() {
+            reader.read_chunk(chunk, &mut decoder, &mut buf)?;
+            for t in 0..decoder.ticks() {
+                let tick = (chunk * CHUNK_TICKS + t) as u64 + 1;
+                if tick > end_tick {
+                    break 'chunks;
+                }
+                let mut seats = [None; SEATS];
+                for (seat, slot) in seats.iter_mut().enumerate() {
+                    let mut action = [0u8; ACTION_BYTES];
+                    if decoder.action(t, seat, &mut action) {
+                        *slot = Some(action);
+                    }
+                }
+                let digest = if t + 1 == decoder.ticks() {
+                    decoder.arena_hash()
+                } else {
+                    u64::from(decoder.digest(t))
+                };
+                out.push_tick(decoder.flags(t), digest, &seats)?;
+                for record in decoder.seat_records().filter(|r| usize::from(r.tick) == t) {
+                    out.seat_record(record.seat, record.kind, record.bytes)?;
+                }
             }
         }
-        if let Some(hash) = expected.post_hash {
-            ensure!(
-                decoder.digest(t) == hash as u16,
-                "tick {tick}: digest differs"
-            );
+        ensure!(out.ticks() == end_tick, "film file is short of tick {end_tick}");
+        let file = out.finish()?;
+        file.sync_all()?;
+        Ok(file)
+    })();
+    match sealed {
+        Ok(_) => Ok(std::fs::rename(&staging, &film)?),
+        Err(error) => {
+            let _ = std::fs::remove_file(&staging);
+            Err(error)
         }
     }
-    ensure!(
-        tick == reader.length_ticks && chunk == reader.chunk_count(),
-        "film file length differs from its container"
-    );
-    Ok(tick)
 }
 
 #[cfg(test)]

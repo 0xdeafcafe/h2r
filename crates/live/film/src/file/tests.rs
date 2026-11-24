@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    Writer,
-    blam::{MapIdentity, SeatInput, Tick, TrackWriter},
+    Reader, Writer,
+    blam::{self, Event, MapIdentity, SeatInput, Tick, TrackReader, TrackWriter},
     manifest::Manifest,
     tape::{Batch, Call},
     tests::header,
@@ -253,47 +253,25 @@ fn container(path: &Path, ticks: u64) {
     out.finish().unwrap();
 }
 
-#[test]
-fn a_container_converts_to_a_film_file_that_decodes_to_the_same_actions() {
-    let dir = Temp::new();
-    let path = dir.0.join("match.h2film");
-    container(&path, 700);
-    let converted = write_beside(&path).unwrap();
-    assert_eq!((converted.ticks, converted.chunks), (700, 3));
-    // DATA, the seven tape batches and the final mark; no keyframe and no header.
-    assert_eq!(converted.machine_blocks, 1 + 7 + 1);
-    let r = FilmReader::open(File::open(beside(&path)).unwrap()).unwrap();
-    assert!(
-        r.machine
-            .iter()
-            .all(|b| b.tag != crate::KEYF && b.tag != crate::HEAD)
-    );
-    assert_eq!(verify(&path, &beside(&path)).unwrap(), 700);
-    // Seat 3's join is a seat record on tick 301, in the chunk that holds it.
-    let mut r = FilmReader::open(File::open(beside(&path)).unwrap()).unwrap();
-    let (mut decoder, mut buf) = (ChunkDecoder::new().unwrap(), Vec::new());
-    r.read_chunk(0, &mut decoder, &mut buf).unwrap();
-    r.read_chunk(1, &mut decoder, &mut buf).unwrap();
-    let records: Vec<_> = decoder
-        .seat_records()
-        .map(|r| (r.tick, r.seat, r.kind))
-        .collect();
-    assert_eq!(records, [(44, 3, RECORD_JOIN)]);
-    // A film that differs from its container is refused: here one action
-    // on tick 400 is another's, the rest as recorded.
-    let other = dir.0.join("damaged.h2f");
-    let mut w = FilmWriter::new(File::create(&other).unwrap(), &seed(), 30).unwrap();
-    for tick in 1..=700u64 {
-        let mut row = seats(tick);
-        if tick == 400 {
-            row[0] = Some(action(tick, 9));
+/// The film file of a container, made from its own ticks.
+fn write_film(container: &Path) -> PathBuf {
+    let mut track = TrackReader::open(container).unwrap();
+    let seed = Seed {
+        header: Reader::open(container).unwrap().header.clone(),
+        descriptor: track.descriptor.clone(),
+    };
+    let film = beside(container);
+    let mut w = FilmWriter::new(File::create(&film).unwrap(), &seed, 30).unwrap();
+    while let Some(tick) = track.step().unwrap() {
+        let flags = if tick.post_hash.is_some() { TICK_DIGEST } else { 0 };
+        let mut seats = [None; SEATS];
+        for input in &tick.inputs {
+            seats[usize::from(input.seat)] = input.action;
         }
-        let digest = if tick % 30 == 0 { tick * 1_000_003 } else { 0 };
-        let flags = if tick % 30 == 0 { TICK_DIGEST } else { 0 };
-        w.push_tick(flags, digest, &row).unwrap();
+        w.push_tick(flags, tick.post_hash.unwrap_or(0), &seats).unwrap();
     }
     w.finish().unwrap();
-    assert!(verify(&path, &other).is_err());
+    film
 }
 
 fn decode_all(bytes: &[u8]) -> (FilmReader<Cursor<&[u8]>>, Vec<(u16, Vec<Option<[u8; ACTION_BYTES]>>)>) {
@@ -423,7 +401,7 @@ fn a_track_reader_takes_its_actions_from_the_film_file() {
     let dir = Temp::new();
     let path = dir.0.join("match.h2film");
     container(&path, 700);
-    write_beside(&path).unwrap();
+    write_film(&path);
     let plain = steps(&mut TrackReader::open(&path).unwrap());
     assert_eq!(plain.len(), 700);
 
@@ -481,4 +459,70 @@ fn a_film_file_that_disagrees_with_its_stats_stream_is_refused() {
             .attach_film(FilmActions::new(Box::new(Cursor::new(bytes))).unwrap())
             .is_err()
     );
+}
+
+#[test]
+fn a_checkpoint_keeps_the_open_chunk_for_a_reader_of_an_unsealed_file() {
+    let dir = Temp::new();
+    let path = dir.0.join("match.h2f");
+    let mut w = FilmWriter::new(File::create(&path).unwrap(), &seed(), 30).unwrap();
+    for tick in 1..=300u64 {
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+    }
+    w.checkpoint().unwrap();
+    let mut r = FilmReader::open(File::open(&path).unwrap()).unwrap();
+    assert!(!r.sealed);
+    assert_eq!((r.chunk_count(), r.length_ticks), (2, 300));
+    let (mut decoder, mut buf) = (ChunkDecoder::new().unwrap(), Vec::new());
+    r.read_chunk(0, &mut decoder, &mut buf).unwrap();
+    r.read_chunk(1, &mut decoder, &mut buf).unwrap();
+    assert_eq!(decoder.ticks(), 44);
+    assert_eq!(decoder.digest(43), (300u64 * 77) as u16);
+    // The file goes on; the sealed file's chunks are the whole ones.
+    for tick in 301..=600u64 {
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+    }
+    w.checkpoint().unwrap();
+    w.finish().unwrap();
+    let r = FilmReader::open(File::open(&path).unwrap()).unwrap();
+    assert!(r.sealed);
+    assert_eq!((r.chunk_count(), r.length_ticks), (3, 600));
+}
+
+#[test]
+fn a_killed_recordings_film_file_is_sealed_at_a_tick_its_checkpoint_covers() {
+    let dir = Temp::new();
+    let container = dir.0.join("tape.h2film");
+    let mut w = FilmWriter::new(File::create(beside(&container)).unwrap(), &seed(), 30).unwrap();
+    w.machine(*b"DATA", &zstd::bulk::compress(b"disk", 3).unwrap())
+        .unwrap();
+    for tick in 1..=700u64 {
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+        if tick == 301 {
+            w.seat_record(3, RECORD_JOIN, &[3, 0]).unwrap();
+        }
+        if tick == 650 {
+            w.checkpoint().unwrap();
+        }
+    }
+    // The recorder died here: no trailer, ticks 651 to 700 never reached the file.
+    drop(w);
+    assert!(recover_beside(&container, 660).is_err());
+    assert!(!beside(&container).with_extension("h2f.recover").exists());
+    recover_beside(&container, 640).unwrap();
+    let bytes = fs::read(beside(&container)).unwrap();
+    let (mut r, rows) = decode_all(&bytes);
+    assert!(r.sealed);
+    assert_eq!((r.length_ticks, rows.len()), (640, 640));
+    assert_eq!(r.machine.len(), 1);
+    for (i, (digest, row)) in rows.iter().enumerate() {
+        let tick = i as u64 + 1;
+        assert_eq!(*digest, (tick * 77) as u16);
+        assert_eq!(row.as_slice(), seats(tick).as_slice());
+    }
+    let (mut decoder, mut buf) = (ChunkDecoder::new().unwrap(), Vec::new());
+    r.read_chunk(0, &mut decoder, &mut buf).unwrap();
+    r.read_chunk(1, &mut decoder, &mut buf).unwrap();
+    let records: Vec<_> = decoder.seat_records().map(|r| (r.tick, r.seat, r.kind)).collect();
+    assert_eq!(records, [(44, 3, RECORD_JOIN)]);
 }
