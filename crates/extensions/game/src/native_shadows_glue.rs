@@ -425,7 +425,7 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
                     call: Some(d3d::SwallowCall {
                         entry: engine::points::OBJECT_SHADOW_FILTER.base,
                         esp,
-                        ret: 0x0003_29de,
+                        ret: engine::render::light_gather::object_shadows::caster::FILTER_RETURN,
                     }),
                     end_returns: Vec::new(),
                     headers,

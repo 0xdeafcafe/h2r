@@ -1,6 +1,6 @@
 //! `engine::render::light_gather` against the original, lifted and run on
 //! the IR interpreter from the same seeded 64 MB state
-//! (docs/graphics/native-light-gather.md, slices L1 to L6).
+//! (docs/graphics/native-light-gather.md, slices L1 to L7).
 //!
 //! **The leaves (L1).** Each root runs lifted with its whole tree (no
 //! stub) to its return; the port runs on a copy and its writes are
@@ -34,6 +34,10 @@
 //! **The first-person lights (L6).** See
 //! [`first_person_lights_match_the_lifted_original`] and
 //! [`first_person_records_match_the_lifted_original`].
+//!
+//! **Object shadows (L7).** See [`object_shadow_list_matches_the_lifted_original`]
+//! [`object_shadow_rows_match_the_lifted_original`] and
+//! [`object_shadow_caster_matches_the_lifted_original`].
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
@@ -2768,8 +2772,15 @@ fn port_stubbed(
     let cx = Cx::new(
         Arc::clone(&mem),
         Regs {
+            eax: cpu.gpr[0],
+            ecx: cpu.gpr[1],
+            edx: cpu.gpr[2],
+            ebx: cpu.gpr[3],
             esp,
-            ..Regs::default()
+            ebp: cpu.gpr[5],
+            esi: cpu.gpr[6],
+            edi: cpu.gpr[7],
+            xmm0: cpu.xmm[0],
         },
     );
     let mut fut = body(cx.clone());
@@ -3279,5 +3290,526 @@ fn first_person_records_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
         "receivers",
     ] {
         assert!(tally.get(need) > 0, "never {need}: {:#?}", tally.0);
+    }
+}
+
+// Object shadows (L7).
+
+use engine::render::light_gather::object_shadows::{self, rows};
+
+const SHADOW_LIST: u32 = 0x0003_35e0;
+const SHADOW_ROWS: u32 = 0x0003_3400;
+const SHADOW_CASTER: u32 = 0x0003_2350;
+const SHADOW_LIGHTMAP: u32 = 0x0002_26d0;
+const SHADOW_PERMISSION: u32 = 0x0003_35c0;
+const SHADOW_TARGET: u32 = 0x0001_ddd0;
+const SHADOW_ELIGIBLE: u32 = 0x0003_d7f0;
+const SHADOW_OWNER: u32 = 0x0003_e9c0;
+const SHADOW_MODE: u32 = 0x0048_5a46;
+const SHADOW_LIST_MODE: u32 = 0x0050_9413;
+const SHADOW_OBJECTS: u32 = 0x0054_7f9c;
+const SHADOW_LOG: u32 = 0x0348_0000;
+
+const SHADOW_LIST_STUBS: Stubs = &[
+    (SHADOW_LIGHTMAP, &[], 0, 0),
+    (SHADOW_PERMISSION, &[], 0, 0),
+    (SHADOW_TARGET, &[1, 3, 6, 7], 0, 0),
+    (SHADOW_ROWS, &[0, 1, 3, 6, 7], 2, 8),
+    (SHADOW_CASTER, &[0, 2, 3, 6, 7], 2, 8),
+];
+
+const SHADOW_ROW_STUBS: Stubs = &[
+    (SHADOW_ELIGIBLE, &[0, 1, 2, 3, 6, 7], 3, 12),
+    (SHADOW_OWNER, &[0, 1, 2, 3, 6, 7], 0, 0),
+];
+
+/// Run both bodies from the same image. `live` includes any scratch a
+/// callee can observe after the final call (the outer loop's row buffer).
+#[allow(clippy::too_many_arguments)]
+fn compare_shadow_body(
+    lifted: &mut Lifted<'_>,
+    mut m: FlatMemory,
+    mut c: Cpu,
+    entry: u32,
+    live: u32,
+    pop: u16,
+    stubs: Stubs,
+    body: impl FnOnce(engine::entry::Cx) -> engine::entry::EntryFuture,
+    effect: impl Fn(usize, &Callout, &mut FlatMemory) -> (u32, u32) + Copy,
+    label: &str,
+) -> Vec<Callout> {
+    let esp = c.gpr[4];
+    put(&mut m, esp, HARNESS_EXIT);
+    let (port_calls, result, port) =
+        port_stubbed(lifted, m.clone(), c.clone(), esp, body, &[], stubs, true, effect);
+    let (calls, eax, after) = original_stubbed(lifted, &mut m, &mut c, entry, esp, stubs, true, effect)
+        .unwrap_or_else(|e| panic!("{label}: {e}"));
+    assert_transcripts(label, &calls, &port_calls);
+    assert_eq!(after, esp + 4 + u32::from(pop), "{label}: ESP after return");
+    assert_eq!(result.map(|ret| (ret.eax, ret.pop)), Ok((eax, pop)), "{label}: return");
+    compare(label, &m, &port, live);
+    calls
+}
+
+#[test]
+fn object_shadow_list_matches_the_lifted_original() {
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            // Fail each gate separately; then run empty, one, several and full lists.
+            for (case, count) in [0, 0, 0, 1, 7, 32].into_iter().enumerate() {
+                let mut r = Rng(seed ^ ((case as u64) << 32));
+                let c = cpu(&mut r);
+                let esp = c.gpr[4];
+                let buf = esp - 0x280;
+                let mut m = image.clone();
+                put(&mut m, esp + 4, r.below(4));
+                put(&mut m, SHADOW_OBJECTS, list_header(0));
+                put8(&mut m, SHADOW_MODE, r.u32() as u8);
+                put8(&mut m, SHADOW_LIST_MODE, r.u32() as u8);
+                fill(&mut m, &mut r, buf, 0x280);
+                let plan = object_shadows::plan(&Ram(m.clone()), esp).unwrap();
+                let label = format!("shadow list seed {seed} case {case}");
+                let calls = compare_shadow_body(
+                    &mut lifted, m, c, SHADOW_LIST, buf, 4, SHADOW_LIST_STUBS,
+                    move |cx| Box::pin(async move { object_shadows::run(&cx, plan).await }),
+                    |k, call, m| {
+                        let mut r = Rng(seed ^ (k as u64) << 32 ^ u64::from(call.site));
+                        let log = SHADOW_LOG + 4 * k as u32;
+                        let mode = m.bytes[SHADOW_MODE as usize];
+                        let list_mode = m.bytes[SHADOW_LIST_MODE as usize];
+                        put8(m, log, mode);
+                        put8(m, log + 1, list_mode);
+                        let eax = match call.target {
+                            SHADOW_LIGHTMAP => (r.u32() & !0xff) | u32::from(case != 0),
+                            SHADOW_PERMISSION => (r.u32() & !0xff) | u32::from(case != 1),
+                            SHADOW_TARGET => {
+                                // The list pointer and mode are fetched after target sizing.
+                                put(m, SHADOW_OBJECTS, list_header(1));
+                                put(m, esp + 4, r.u32());
+                                r.u32()
+                            }
+                            SHADOW_ROWS => {
+                                fill(m, &mut r, call.args[0], count * 0x14);
+                                count
+                            }
+                            SHADOW_CASTER => {
+                                // The next caster and fade must be loaded on its iteration.
+                                if call.regs[4] > 1 {
+                                    let next = call.regs[3] + 0x14;
+                                    put(m, next, r.u32());
+                                    put(m, next + 4, r.u32());
+                                }
+                                r.u32()
+                            }
+                            _ => unreachable!(),
+                        };
+                        (eax, r.u32())
+                    },
+                    &label,
+                );
+                assert_eq!(calls.iter().filter(|c| c.target == SHADOW_CASTER).count(), count as usize);
+            }
+        }
+    }) {
+        eprintln!("SKIPPED object_shadow_list_matches_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+#[test]
+fn object_shadow_rows_match_the_lifted_original() {
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            for case in 0..20u32 {
+                let mut r = Rng(seed ^ (u64::from(case) << 32));
+                let mut w = World::new(image, &mut r, 4);
+                let mut c = cpu(&mut r);
+                let esp = c.gpr[4];
+                let list = list_header(0);
+                let mode = if case < 8 { 0 } else { case % 4 };
+                let count = if case < 8 { 40 } else { [0, 24, 33, 11][(case % 4) as usize] };
+                let handles: Vec<_> = (0..count).map(object_datum).collect();
+                seed_list(&mut w.mem, &mut r, list, 48, &handles);
+                let view = (word(&w.mem, VIEW_INDEX) as i32).clamp(0, 3) as u32;
+                let hist = history::OBJECT_SHADOWS + view * history::STRIDE;
+                let frame = word(&w.mem, FRAME);
+                let m = &mut w.mem;
+                fill(m, &mut r, hist, history::STRIDE);
+                let past = if case < 8 { 0 } else { r.below(33) };
+                put(m, hist + history::COUNT, past);
+                for i in 0..past {
+                    let a = hist + 0x24 * i;
+                    put(m, a, r.u32() & 0xff00_0001);
+                    put(m, a + 4, object_datum(r.below(OBJECT_SLOTS)));
+                    put(m, a + 8, object_datum(r.below(OBJECT_SLOTS)));
+                    for o in [0xc, 0x10, 0x14, 0x18] {
+                        putf(m, a + o, r.float(0.0, 1.0));
+                    }
+                    put(m, a + 0x1c, frame.wrapping_sub(r.below(2)));
+                    put(m, a + 0x20, frame.wrapping_sub(r.below(3)));
+                }
+                put(m, OVERRIDE, OVERRIDE_STRUCT);
+                put8(m, OVERRIDE_STRUCT + 5, (case % 5 == 0) as u8);
+                for i in 0..OBJECT_SLOTS {
+                    for o in [0x30, 0x34, 0x38] {
+                        putf(m, body(i) + o, r.float(-40.0, 40.0));
+                    }
+                    putf(m, body(i) + 0x3c, r.float(0.01, 12.0));
+                }
+                fill(m, &mut r, SCRATCH, 0x280);
+                for i in 0..32 {
+                    put8(m, SCRATCH + 0x14 * i + 3, (32 * case + i) as u8);
+                }
+                if case == 16 {
+                    put16(m, list + 4, 0xffff);
+                }
+                c.gpr[3] = list;
+                put(m, esp + 4, SCRATCH);
+                put(m, esp + 8, mode);
+                put(m, SHADOW_LOG, 0);
+                let label = format!("shadow rows seed {seed} case {case}, mode {mode}");
+                let plan = rows::plan(&Ram(m.clone()), esp, list, FPU)
+                    .unwrap_or_else(|why| panic!("{label}: {why:?}"));
+                let calls = compare_shadow_body(
+                    &mut lifted, w.mem, c, SHADOW_ROWS, esp, 8, SHADOW_ROW_STUBS,
+                    move |cx| Box::pin(async move { rows::run(&cx, plan).await.map(|(ret, _)| ret) }),
+                    |k, call, m| {
+                        let mut r = Rng(seed ^ ((k as u64) << 32) ^ u64::from(call.site));
+                        let eax = if call.target == SHADOW_ELIGIBLE {
+                            let i = call.args[0] & 0xffff;
+                            putf(m, call.args[1], r.float(0.05, 1.0));
+                            put8(m, call.args[2], r.u32() as u8);
+                            putf(m, body(i) + 0x30, r.float(-50.0, 50.0));
+                            if case == 4 && k == 0 {
+                                // A current, fading history row appears during the walk,
+                                // after preflight but before the guest enters the merge.
+                                put(m, hist + history::COUNT, 1);
+                                put(m, hist + 4, call.args[0]);
+                                putf(m, hist + 0x14, 0.02);
+                                putf(m, hist + 0x18, 0.03);
+                                put(m, hist + 0x1c, frame);
+                                put(m, hist + 0x20, frame.wrapping_sub(2));
+                            }
+                            if case >= 8 && k == 0 && count > 1 {
+                                let objects = word(m, list + 0xc);
+                                put(m, objects + 4, object_datum(OBJECT_SLOTS - 1));
+                            }
+                            (r.u32() & !0xff) | u32::from(case < 8 || !r.chance(4))
+                        } else {
+                            let n = word(m, SHADOW_LOG);
+                            let a = SCRATCH + 0x14 * n;
+                            // The owner's query sees the four scalar fields already published
+                            // and the four flag bytes as they were on entry to this row.
+                            m.bytes.copy_within(a as usize..(a + 0x14) as usize,
+                                (SHADOW_LOG + 4 + 0x14 * n) as usize);
+                            put(m, SHADOW_LOG, n + 1);
+                            if case >= 8 {
+                                put8(m, a + 3, r.u32() as u8);
+                            }
+                            (r.u32() & !0xff) | u32::from(r.chance(4))
+                        };
+                        (eax, r.u32())
+                    },
+                    &label,
+                );
+                if case < 8 {
+                    // Still checks eligibility after filling the 32nd row, without
+                    // asking about another owner or writing a 33rd candidate.
+                    assert_eq!(calls.iter().filter(|c| c.target == SHADOW_ELIGIBLE).count(), 40);
+                    assert_eq!(calls.iter().filter(|c| c.target == SHADOW_OWNER).count(), 32);
+                }
+            }
+        }
+    }) {
+        eprintln!("SKIPPED object_shadow_rows_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+/// The mask caster's callees, including the layer hooks that read the named
+/// return slot. The test supplies finite, synthetic coordinates to its basis
+/// and radius calculations; all scalar coefficients are the image's own.
+const SHADOW_CASTER_STUBS: Stubs = &[
+    (SHADOW_ELIGIBLE, &[], 3, 12),
+    (0x0003_d7c0, &[6, 7], 0, 0),    // chain visibility, also writes through EDI
+    (0x0003_2ac0, &[3, 6, 7], 0, 0), // switch from mask to creature
+    (0x0003_2ce0, &[0, 3, 6, 7], 1, 4), // draw creature, EAX object
+    (0x0003_dc90, &[], 1, 4),         // lighting sample
+    (0x0003_1f50, &[], 5, 20),        // extents
+    (0x0003_0bf0, &[0], 0, 0),        // vector to normalize
+    (0x000c_1930, &[0, 2], 0, 0),     // volume
+    (0x000c_1a80, &[1, 2], 1, 4),     // pose
+    (0x0003_20b0, &[6], 0, 0),        // transformed bounds
+    (0x000c_1d90, &[], 4, 16),        // frusta
+    (0x0013_20f0, &[0, 1, 2], 7, 28), // visibility
+    (0x0016_5a20, &[7], 3, 12),       // insert caster
+    (0x0002_cbc0, &[], 1, 4),         // records
+    (0x0004_4720, &[], 0, 0),         // part visibility
+    (0x0003_0ca0, &[0, 1], 0, 0),     // pass bit
+    (passes::call::CONSTANTS, &[0, 1, 2], 4, 16),
+    (passes::call::SHADOW_SETUP, &[1, 3], 1, 4),
+    (passes::call::ITEMS, &[0], 0, 0),
+    (passes::call::LAYER_BEGIN, &[7], 0, 0),
+    (passes::call::LAYER_DRAW, &[], 0, 0),
+    (passes::call::LAYER_END, &[], 0, 0),
+    (0x0002_22a0, &[], 0, 0),         // filter between layers 10 and 11
+    (passes::call::TARGET, &[0], 2, 8),
+    (passes::call::CLIP_MODE, &[0], 0, 0),
+    (passes::call::RECEIVER_BLEND, &[], 0, 0),
+    (passes::call::STENCIL, &[3], 0, 0),
+    (0x0004_a780, &[], 0, 0),         // restore
+];
+
+const SHADOW_LIGHTING: u32 = 0x0349_0000;
+const SHADOW_AXES: u32 = 0x034a_0000;
+
+fn shadow_caster_world(w: &mut World, r: &mut Rng, esp: u32, case: u32) {
+    let m = &mut w.mem;
+    fill(m, r, esp - 0xb50, 0xb50);
+    put(m, esp + 4, object_datum(0));
+    putf(m, esp + 8, r.float(0.75, 1.25));
+    put(m, body(0), definition_datum(0));
+    put16(m, definition(0) + 0x18, 2);
+    put(m, body(0) + 0x14, NONE);
+    put8(m, OBJECT_DATA + 2, 0);
+    put8(m, OBJECT_DATA + 3, 0);
+    put8(m, body(0) + 4, 0);
+    put8(m, body(0) + 6, 0);
+    put8(m, body(0) + 7, 1);
+    put8(m, body(0) + 0xaa, (case % 2) as u8);
+    put8(m, SHADOWS_ON, 1);
+    put8(m, SHADOW_LIST_MODE, 1);
+    put(m, 0x004d_e2f4, SHADOW_LIGHTING);
+    let sample = SHADOW_LIGHTING + 0x1c;
+    putf(m, sample + 0x1c, r.float(0.9, 1.5));
+    putf(m, body(0) + 0x3c, r.float(0.1, 2.0));
+    put16(m, body(0) + 0x2c, r.u32() as u16);
+    for i in 0..3 {
+        putf(m, body(0) + 0x30 + i * 4, r.float(-20.0, 20.0));
+        putf(m, sample + 0xc + i * 4, r.float(-1.0, 1.0));
+    }
+    put(m, 0x0046_87ac, SHADOW_AXES);
+    put(m, 0x0046_87b4, SHADOW_AXES + 12);
+    for i in 0..6 {
+        putf(m, SHADOW_AXES + 4 * i, r.float(-1.0, 1.0));
+    }
+    put(m, 0x0054_aa74, list_header(0));
+    put16(m, list_header(0) + 4, 1);
+    put(m, PASS_LIGHT_MASK, 0);
+    put(m, PASS_CASTER_MASK, 0);
+    put(m, PASS_VIEW_TARGET, r.u32());
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaskCase {
+    NoClusters,
+    NoCasters,
+    NoReceivers,
+    DeclineLayer,
+    BothLayers,
+    FilterClearsReceiver,
+    StencilSkipsDraw,
+    Ineligible,
+    AttachedDuringEligibility,
+    DisabledDuringEligibility,
+    Hidden,
+    NoSample,
+    ZeroStrength,
+    BelowThreshold,
+    AtThreshold,
+    AboveThreshold,
+    OutsideBounds,
+    EnterCreature,
+    DeclineCreature,
+    ContinueCreature,
+    InactiveCreature,
+}
+
+#[test]
+fn object_shadow_caster_matches_the_lifted_original() {
+    use MaskCase::*;
+    if !with_image(|image, mut lifted| {
+        for seed in seeds() {
+            for case in [
+                NoClusters, NoCasters, NoReceivers, DeclineLayer, BothLayers,
+                FilterClearsReceiver, StencilSkipsDraw, Ineligible, AttachedDuringEligibility,
+                DisabledDuringEligibility, Hidden, NoSample, ZeroStrength, BelowThreshold,
+                AtThreshold, AboveThreshold, OutsideBounds, EnterCreature, DeclineCreature,
+                ContinueCreature, InactiveCreature,
+            ] {
+                let mut r = Rng(seed ^ ((case as u64) << 32) ^ 0x2350);
+                let mut w = World::new(image, &mut r, 4);
+                let c = cpu(&mut r);
+                let esp = c.gpr[4];
+                shadow_caster_world(&mut w, &mut r, esp, case as u32);
+                let creature = matches!(case, EnterCreature | DeclineCreature | ContinueCreature | InactiveCreature);
+                if creature {
+                    let mask = matches!(case, EnterCreature | DeclineCreature);
+                    put8(&mut w.mem, SHADOW_LIST_MODE, u8::from(mask));
+                    put8(&mut w.mem, SHADOW_LIST_MODE + 1, if case == InactiveCreature { 0 } else { 0xb3 });
+                }
+                let threshold_case = matches!(case, BelowThreshold | AtThreshold | AboveThreshold);
+                if threshold_case {
+                    putf(&mut w.mem, esp + 8, 1.0);
+                }
+                let label = format!("shadow mask seed {seed} case {case:?}");
+                let plan = object_shadows::caster::plan(&Ram(w.mem.clone()), esp, FPU)
+                    .unwrap_or_else(|why| panic!("{label}: {why:?}"));
+                let calls = compare_shadow_body(
+                    &mut lifted, w.mem, c, SHADOW_CASTER, esp, 8, SHADOW_CASTER_STUBS,
+                    move |cx| Box::pin(async move { object_shadows::caster::run(&cx, plan).await }),
+                    |k, c, m| {
+                        let mut r = Rng(seed ^ ((k as u64) << 32) ^ u64::from(c.site));
+                        let mut eax = r.u32();
+                        match c.target {
+                            SHADOW_ELIGIBLE => {
+                                putf(m, c.args[1], if threshold_case { 1.0 } else { r.float(0.8, 1.1) });
+                                if case == AttachedDuringEligibility {
+                                    put(m, body(0) + 0x14, object_datum(1));
+                                } else if case == DisabledDuringEligibility {
+                                    put8(m, SHADOWS_ON, 0);
+                                }
+                                let kind = if creature { r.u32() as u8 | 1 } else { 0 };
+                                put8(m, c.args[2], kind);
+                                eax = (eax & !0xff) | u32::from(case != Ineligible);
+                            }
+                            0x0003_d7c0 => {
+                                put8(m, c.regs[1], r.u32() as u8);
+                                eax = (eax & !0xff) | u32::from(case != Hidden);
+                            }
+                            0x0003_2ac0 => {
+                                assert_eq!(m.bytes[SHADOW_LIST_MODE as usize], 1);
+                                eax = (eax & !0xff) | u32::from(case == EnterCreature);
+                            }
+                            0x0003_2ce0 => {
+                                let mode = SHADOW_LIST_MODE as usize;
+                                let active = if case == EnterCreature { 1 } else { 0xb3 };
+                                assert_eq!(&m.bytes[mode..mode + 2], &[0, active]);
+                                // The low byte of the final answer is reloaded after the draw.
+                                put8(m, esp - 0xb50 + 0x13, 0x91);
+                            }
+                            0x0003_dc90 => {
+                                eax = if case == NoSample { 0 } else { SHADOW_LIGHTING + 0x1c };
+                                if case == ZeroStrength {
+                                    putf(m, eax + 0x1c, 0.0);
+                                } else if threshold_case {
+                                    let threshold = word(m, 0x0045_df88);
+                                    let strength = match case {
+                                        BelowThreshold => threshold - 1,
+                                        AboveThreshold => threshold + 1,
+                                        _ => threshold,
+                                    };
+                                    put(m, eax + 0x1c, strength);
+                                }
+                            }
+                            0x0003_1f50 => {
+                                putf(m, c.args[3], r.float(1.0, 4.0));
+                                putf(m, c.args[4], r.float(0.5, 6.0));
+                            }
+                            0x0003_0bf0 => {
+                                let v = c.regs[0];
+                                let log = SHADOW_LOG + if c.site == 0x0003_24b6 { 0x40 } else { 0x4c };
+                                m.bytes.copy_within(v as usize..(v + 12) as usize, log as usize);
+                                for i in 0..3 {
+                                    putf(m, v + i * 4, r.float(-1.0, 1.0));
+                                }
+                            }
+                            0x000c_1930 => fill(m, &mut r, c.regs[1], 0x7c),
+                            0x000c_1a80 => {
+                                putf(m, c.regs[1] + 0x58, r.float(0.5, 2.0));
+                                putf(m, c.regs[1] + 0x5c, r.float(0.2, 3.0));
+                            }
+                            0x0003_20b0 => {
+                                // Capture the stack matrix and all three half extents.
+                                let bounds = c.regs[0] as usize;
+                                m.bytes.copy_within(bounds..bounds + 0x40, SHADOW_LOG as usize);
+                                eax = (eax & !0xff) | u32::from(case != OutsideBounds);
+                            }
+                            0x000c_1d90 => put16(m, c.args[3], 1 + r.below(5) as u16),
+                            0x0004_4720 => put16(m, list_header(0) + 4, u16::from(case != NoClusters)),
+                            passes::call::ITEMS => {
+                                put(m, PASS_CASTER_MASK, u32::from(case != NoCasters) << 10);
+                                put(m, PASS_LIGHT_MASK, u32::from(case != NoReceivers) << 11);
+                            }
+                            passes::call::LAYER_BEGIN => eax = (eax & !0xff) | u32::from(case != DeclineLayer),
+                            0x0002_22a0 if case == FilterClearsReceiver => put(m, PASS_LIGHT_MASK, 0),
+                            passes::call::STENCIL if case == StencilSkipsDraw => put8(m, esp - 0xb50 + 0x13, 0),
+                            _ => {}
+                        }
+                        (eax, r.u32())
+                    },
+                    &label,
+                );
+                if creature {
+                    let sites: &[u32] = match case {
+                        EnterCreature => &[0x0003_2394, 0x0003_23d5, 0x0003_2a3c, 0x0003_2a5a],
+                        DeclineCreature => &[0x0003_2394, 0x0003_23d5, 0x0003_2a3c],
+                        ContinueCreature => &[0x0003_2394, 0x0003_23d5, 0x0003_2a98],
+                        InactiveCreature => &[0x0003_2394, 0x0003_23d5],
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(calls.iter().map(|c| c.site).collect::<Vec<_>>(), sites, "{label}");
+                    continue;
+                }
+                // The original and the body must stop at the same predicate even
+                // when it changes a gate that was satisfied during preflight.
+                let stopped_at = match case {
+                    Ineligible | AttachedDuringEligibility | DisabledDuringEligibility => Some(SHADOW_ELIGIBLE),
+                    Hidden => Some(0x0003_d7c0),
+                    NoSample | ZeroStrength | BelowThreshold | AtThreshold => Some(0x0003_dc90),
+                    OutsideBounds => Some(0x0003_20b0),
+                    _ => None,
+                };
+                if let Some(last) = stopped_at {
+                    assert_eq!(calls.last().map(|c| c.target), Some(last), "{label}");
+                    continue;
+                }
+                let visits = |target| calls.iter().filter(|c| c.target == target).count();
+                assert_eq!(visits(passes::call::ITEMS), usize::from(case != NoClusters), "{label}");
+                let draws = match case {
+                    DeclineLayer | FilterClearsReceiver | StencilSkipsDraw => 1,
+                    BothLayers | AboveThreshold => 2,
+                    _ => 0,
+                };
+                assert_eq!(visits(0x0002_22a0), usize::from(draws != 0), "{label}");
+                assert_eq!(visits(passes::call::LAYER_DRAW), draws, "{label}");
+            }
+        }
+    }) {
+        eprintln!("SKIPPED object_shadow_caster_matches_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+/// Planning uses the same root, sample and view as the mask differential.
+/// A refusal returns control to the original with every byte intact,
+/// including the entry's scratch frame. These inputs need no retail image.
+#[test]
+fn object_shadow_caster_refuses_before_writing() {
+    use gather::Refusal::{Residency, Unsupported};
+    let image = FlatMemory::new(0, RAM);
+    for seed in seeds() {
+        let mut r = Rng(seed);
+        let mut w = World::new(&image, &mut r, 4);
+        let esp = cpu(&mut r).gpr[4];
+        shadow_caster_world(&mut w, &mut r, esp, 0);
+        assert!(object_shadows::caster::plan(&Ram(w.mem.clone()), esp, FPU).is_ok());
+        type Edit = fn(&mut FlatMemory, &mut Fpu);
+        let cases: &[(&str, gather::Refusal, Edit)] = &[
+            ("disabled", Unsupported, |m, _| put8(m, SHADOWS_ON, 0)),
+            ("attached", Unsupported, |m, _| put(m, body(0) + 0x14, object_datum(1))),
+            ("creature", Unsupported, |m, _| put8(m, body(0) + 0xaa, 12)),
+            ("missing cache entry", Residency, |m, _| {
+                put8(m, body(0) + 7, 0);
+                put(m, body(0) + 0xcc, NONE);
+            }),
+            ("x87 precision", Unsupported, |_, fpu| fpu.x87_control = 0x037f),
+            ("SSE rounding", Unsupported, |_, fpu| fpu.mxcsr |= 1 << 13),
+        ];
+        for &(case, why, edit) in cases {
+            let mut m = w.mem.clone();
+            let mut fpu = FPU;
+            edit(&mut m, &mut fpu);
+            let ram = Ram(m.clone());
+            assert_eq!(object_shadows::caster::plan(&ram, esp, fpu).err(), Some(why), "seed {seed}, {case}");
+            assert!(m.bytes == ram.0.bytes, "seed {seed}, {case}: refusal modified memory");
+        }
     }
 }

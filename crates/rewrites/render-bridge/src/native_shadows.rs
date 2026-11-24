@@ -3,6 +3,7 @@
 //! guest state, including on a malformed or partially readable list.
 
 use crate::native_world::Mem;
+use engine::render::light_gather::{object_shadows, passes};
 use engine::{memory::GuestMemory, points, shadow_constants};
 use hooks::{BuildError, Builder, Feature, Manifest};
 use native_render::{
@@ -184,10 +185,21 @@ fn filter_refused(why: &'static str) {
     FILTER_REFUSED[n].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The filter wrapper pushes ten words and calls the blur at
+/// `0x000222c2`. Its physical return site identifies that call even
+/// after the pipelined renderer hands a native caster back to the game
+/// thread. D3D scopes the swallow to the enclosing wrapper's after hook.
+fn filter_entry(mem: &dyn GuestMemory, blur_esp: u32) -> Option<u32> {
+    if mem.u32(blur_esp).ok()? != 0x0002_22c7 {
+        return None;
+    }
+    blur_esp.checked_add(4 + 10 * 4)
+}
+
 /// Replace the current object shadow's filter with its scene's native
 /// quads. Refusal leaves every guest quad in place.
 pub fn filter(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16) -> bool {
-    let Some(filter) = crate::scene_step::shadow_filter(mem, esp, mxcsr, x87_control) else {
+    let Some(filter) = crate::scene_step::shadow_filter(mem, mxcsr, x87_control) else {
         filter_refused("program");
         return false;
     };
@@ -358,7 +370,7 @@ impl Feature for NativeShadows {
                     let m = o.guest();
                     let esp = o.cpu.esp;
                     OBJECT_LIST.set(
-                        (m.u32(esp).ok() == Some(0x0003_3632))
+                        (passes::caller(&*m, esp) == Some(object_shadows::site::ROWS))
                             .then(|| m.u32(esp.wrapping_add(4)).ok())
                             .flatten(),
                     );
@@ -378,7 +390,7 @@ impl Feature for NativeShadows {
                     .get()
                     .and_then(|base| shadows::object_candidate(base, address, o.cpu.edi));
                 let matched = index.is_some()
-                    && m.u32(esp).ok() == Some(0x0003_364c)
+                    && passes::caller(&*m, esp) == Some(object_shadows::site::CASTER)
                     && m.u8(0x0050_9413).ok() == Some(1)
                     && m.u8(0x0048_5a46).ok() == Some(1)
                     && args.iter().all(Option::is_some)
@@ -391,10 +403,9 @@ impl Feature for NativeShadows {
             })
             .context_only();
         b.raw()
-            .observe_before(&points::OBJECT_SHADOW_FILTER, "object shadow filter", |o| {
-                let esp = o.cpu.esp;
+            .observe_before(&points::SCREEN_CONVOLUTION_BLUR, "object shadow filter", |o| {
                 let mut mem = o.guest();
-                if o.cpu.eax == 10 && mem.u32(esp).ok() == Some(0x0003_29de) {
+                if let Some(esp) = filter_entry(&*mem, o.cpu.esp) {
                     filter(&mut *mem, esp, o.cpu.mxcsr, o.cpu.x87.control);
                 }
             })
@@ -404,7 +415,8 @@ impl Feature for NativeShadows {
             "object shadow filter end",
             |o| {
                 let mut mem = o.guest();
-                finish_filter(&mut *mem, o.cpu.esp);
+                // The wrapper's bare RET pops its return slot.
+                finish_filter(&mut *mem, o.cpu.esp.wrapping_sub(4));
             },
         );
         b.raw()
@@ -439,7 +451,7 @@ impl Feature for NativeShadows {
                 let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else {
                     return;
                 };
-                let Some(site) = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
+                let Some(site) = passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret))
                 else {
                     return;
@@ -461,7 +473,7 @@ impl Feature for NativeShadows {
                     return;
                 };
                 // Both calls have a five-byte direct CALL instruction.
-                let Some(site) = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
+                let Some(site) = passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret.checked_sub(5)?))
                 else {
                     return;
@@ -483,6 +495,18 @@ impl Feature for NativeShadows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_wrappers_blur_scopes_a_filter_to_its_after_hook() {
+        let mut mem = engine::FlatMemory::new(0x1000, 0x100);
+        let wrapper = 0x1080;
+        let blur = wrapper - 44;
+        mem.set_u32(wrapper, 0xbd00_0100).unwrap(); // synthetic after-hook token
+        mem.set_u32(blur, 0x0002_22c7).unwrap();
+        assert_eq!(filter_entry(&mem, blur), Some(wrapper));
+        mem.set_u32(blur, 0x1004).unwrap();
+        assert_eq!(filter_entry(&mem, blur), None);
+    }
 
     struct Stub(Result<(), &'static str>);
     impl Host for Stub {

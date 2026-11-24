@@ -58,8 +58,20 @@ fn interp() -> Option<Value> {
 /// The frame-stats window's per-frame means of the render counters
 /// (`profile.counters` has the rest).
 fn counters() -> Option<Value> {
-    let line = timeline::phase::window_summary()?.short_line();
-    Some(json!({ "line": line }))
+    timeline::phase::window_summary().as_ref().map(render_counters)
+}
+
+fn render_counters(summary: &timeline::phase::Summary) -> Value {
+    let mut counters = serde_json::Map::new();
+    counters.insert("line".into(), json!(summary.short_line()));
+    for (index, label) in timeline::phase::counter_columns() {
+        let mean = summary.count_mean[index];
+        if label == "shadow_walk_layers" || (label.starts_with("native_scene_lists_")
+            && (mean != 0.0 || label.ends_with("_native") || label.ends_with("_fallback"))) {
+            counters.insert(label.into(), json!(mean));
+        }
+    }
+    Value::Object(counters)
 }
 
 pub fn sources() -> agent::render::RenderSources {
@@ -75,6 +87,27 @@ pub fn sources() -> agent::render::RenderSources {
 #[cfg(all(test, feature = "gpu"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_stats_exposes_shadow_stage_means_and_refusal_reasons() {
+        use timeline::phase::{FrameSample, Summary, counter_columns};
+        let mut first = FrameSample::default();
+        for (index, name) in counter_columns() {
+            first.counts[index] = match name {
+                "native_scene_lists_object_shadow_caster_native" => 4,
+                "native_scene_lists_object_shadow_caster_fallback" |
+                "native_scene_lists_object_shadow_caster_residency" => 1,
+                _ => 0,
+            };
+        }
+        let frames = [first, FrameSample::default()];
+        let counters = render_counters(&Summary::of(frames.iter()).unwrap());
+        assert_eq!(counters["native_scene_lists_object_shadow_caster_native"], 2.0);
+        assert_eq!(counters["native_scene_lists_object_shadow_caster_fallback"], 0.5);
+        assert_eq!(counters["native_scene_lists_object_shadow_caster_residency"], 0.5);
+        assert_eq!(counters["native_scene_lists_object_shadow_list_fallback"], 0.0);
+        assert_eq!(counters["shadow_walk_layers"], 0.0);
+    }
 
     #[test]
     fn registered_pieces_read_as_json() {

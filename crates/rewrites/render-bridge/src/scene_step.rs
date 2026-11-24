@@ -504,11 +504,10 @@ pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
 /// shadow is open.
 pub fn shadow_filter(
     mem: &dyn GuestMemory,
-    esp: u32,
     mxcsr: u32,
     x87_control: u16,
 ) -> Option<frame_scene::ShadowFilter> {
-    let filter = extract_shadow_filter(mem, esp, mxcsr, x87_control)?;
+    let filter = extract_shadow_filter(mem, mxcsr, x87_control)?;
     with_step(|step| {
         if !step.shadow_open {
             return None;

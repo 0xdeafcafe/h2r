@@ -351,28 +351,31 @@ pub fn shadow_pass(mem: &dyn GuestRead, layer: u8) -> Option<ShadowPass> {
     })
 }
 
-/// The object filter `0x000222a0`, from its call's stack and the weight
-/// the mask branch published. The native pass draws full-target quads, so
-/// no guest window argument is needed.
+/// The three float immediates the object filter pushes for its call to
+/// the blur at `0x000222c2`. The wrapper itself takes no arguments.
+const FILTER_STEPS: u32 = 0x0002_22b9;
+const FILTER_SCALE: u32 = 0x0002_22b4;
+const FILTER_GROWTH: u32 = 0x0002_22af;
+
+/// The object filter `0x000222a0` requests full-target quads and the
+/// plain blur combiner (the blur's ninth and tenth arguments are zero).
 pub fn shadow_filter(
     mem: &dyn engine::memory::GuestMemory,
-    esp: u32,
     mxcsr: u32,
     x87_control: u16,
 ) -> Option<ShadowFilter> {
     use engine::glow::{self, BlurArgs};
     let args = BlurArgs {
         source: 10,
-        steps: mem.u32(esp.checked_add(4)?).ok()?,
-        scale: mem.u32(esp.checked_add(8)?).ok()?,
-        growth: mem.u32(esp.checked_add(12)?).ok()?,
+        steps: mem.u32(FILTER_STEPS).ok()?,
+        scale: mem.u32(FILTER_SCALE).ok()?,
+        growth: mem.u32(FILTER_GROWTH).ok()?,
         dest: 11,
         other: u32::MAX,
         last: 10,
     };
     let blur = glow::blur(mem, &args, mxcsr).ok()?;
-    let strength = mem.u32(OBJECT_SHADOW_WEIGHT).ok()?;
-    let combiner = glow::blur_combiner(mem, strength, 0, mxcsr, x87_control)
+    let combiner = glow::blur_combiner(mem, 0, 0, mxcsr, x87_control)
         .ok()?
         .0;
     let target_size = |index: u32| {
@@ -852,26 +855,28 @@ mod tests {
             m.set_u32(TARGETS + target * TARGET_STRIDE + 0x84, 128)
                 .unwrap();
         }
-        let esp = 0x1000;
-        m.set_u32(esp + 4, 1.0f32.to_bits()).unwrap();
-        m.set_u32(esp + 8, 0.5f32.to_bits()).unwrap();
-        m.set_u32(esp + 12, 0).unwrap();
-        let filter = shadow_filter(&m, esp, 0x1f80, 0x37f).unwrap();
+        m.set_u32(FILTER_STEPS, 2.25f32.to_bits()).unwrap();
+        m.set_u32(FILTER_SCALE, 0.5f32.to_bits()).unwrap();
+        m.set_u32(FILTER_GROWTH, 0.5f32.to_bits()).unwrap();
+        let filter = shadow_filter(&m, 0x1f80, 0x37f).unwrap();
         assert_eq!(
             filter.draws,
-            [ShadowFilterDraw {
-                source: 10,
-                dest: 11,
-                spread: 0.5f32.to_bits()
-            }]
+            [
+                ShadowFilterDraw { source: 10, dest: 11, spread: 0.5f32.to_bits() },
+                ShadowFilterDraw { source: 11, dest: 10, spread: 0.75f32.to_bits() },
+                ShadowFilterDraw { source: 10, dest: 11, spread: 0.28125f32.to_bits() },
+            ]
         );
         assert_eq!(filter.copy, Some((11, 10)));
-        assert_eq!(filter.combiner.len(), 60);
+        assert_eq!(
+            filter.combiner,
+            engine::glow::blur_combiner(&m, 0, 0, 0x1f80, 0x37f).unwrap().0
+        );
         assert_eq!(filter.signs, [(-1.0f32).to_bits(), 1.0f32.to_bits()]);
         assert_eq!(filter.size, [128, 128]);
         m.set_u32(TARGETS + 11 * TARGET_STRIDE + 0x80, 64).unwrap();
         assert!(
-            shadow_filter(&m, esp, 0x1f80, 0x37f).is_none(),
+            shadow_filter(&m, 0x1f80, 0x37f).is_none(),
             "mismatched target sizes refuse"
         );
     }

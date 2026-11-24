@@ -225,12 +225,17 @@ cause. Step 3 makes that a device loss or a bug.
 
 ### The filter, native
 
-The blur is ported: `engine::glow::blur` gives the quads of
-`0x000211a0` from its stack words, and `engine::glow::blur_combiner`
-gives their combiner. `scene_extract::light_groups::shadow_filter` puts
+`engine::glow::blur` gives the quads of `0x000211a0` from the step
+count, scale and growth words in the filter wrapper's three pushes.
+The wrapper passes zero strength and zero `y` to
+`engine::glow::blur_combiner`. `scene_extract::light_groups::shadow_filter` puts
 the quads, final copy, signs and target size in the current
-`frame_scene::ObjectShadow` (`filter`). The observer at `0x000222a0`
-accepts only the object filter's return `0x000329de`. The native pass
+`frame_scene::ObjectShadow` (`filter`). The observer at the blur
+(`0x000211a0`) accepts the filter wrapper's return site `0x000222c7`.
+The wrapper pushes this address in guest code on either executor.
+Its ten stack arguments put the wrapper's own return slot at the
+blur's entry `ESP + 44`. The device uses this slot to track the
+swallow through the wrapper's return. The native pass
 uses a full-target rectangle, as `0x00034a90`'s tenth argument selects,
 and each source's own size for its taps.
 
@@ -353,8 +358,9 @@ coordinator's; lanes write code and tests.
   `Producer` and `SampledMap` per generation from slice 6.
 - **Guest points.** `LAYER_BUILD` (where a group is drawn alone),
   `LIGHT_GEOMETRY_DRAW` (`0x0004d0b0`, not run for a layer drawn
-  alone), `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW`, and
-  `OBJECT_SHADOW_FILTER` (`0x000222a0`, return `0x000329de`).
+  alone), `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW`,
+  `SCREEN_CONVOLUTION_BLUR` (the filter's call, return `0x000222c7`)
+  and `OBJECT_SHADOW_FILTER` (the wrapper returning to `0x00032966`).
 - **What the guest still writes** through slice 5: the target binds
   and clears, the raster state and its restore, the filter's device
   state. From slice 6: the tick-visible writes of framescene.md 5.2

@@ -18,6 +18,7 @@
 //!   for its lists, constants, projection and each layer's draws.
 //! - [`first_person`]: the first-person lights (`0x000404b0`) and each
 //!   slot's record replay (`0x000402b0`), with the same layer blocks.
+//! - [`object_shadows`]: the ranked object rows and their mask casters.
 //!
 //! The leaves are functions of guest memory and typed arguments. They
 //! write nothing: each returns the guest's writes as [`Writes`], in the
@@ -30,6 +31,7 @@ pub mod geometry;
 mod guest;
 pub mod history;
 pub mod items;
+pub mod object_shadows;
 pub mod passes;
 pub mod visible;
 pub mod volume;

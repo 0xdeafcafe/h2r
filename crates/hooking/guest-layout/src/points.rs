@@ -891,13 +891,13 @@ points! { ALL;
     /// after the last geometry, including on a light with no active layer.
     LIGHT_RESTORE_TARGET @ 0x0001_4bc0: [opaque]; "docs/graphics/native-renderer.md";
     /// The scene call that walks the object shadow list.
-    OBJECT_SHADOW_LIST @ 0x0003_35e0: [opaque]; "docs/graphics/native-shadows.md";
+    OBJECT_SHADOW_LIST @ 0x0003_35e0: [fn(mode: stack 0) ret 4]; "docs/graphics/native-shadows.md";
     /// Gathers the object shadow candidates.
-    GATHER_OBJECT_SHADOWS @ 0x0003_3400: [opaque]; "docs/graphics/native-shadows.md";
+    GATHER_OBJECT_SHADOWS @ 0x0003_3400: [fn(list: ebx, rows: stack 0, mode: stack 1) -> eax ret 8]; "docs/graphics/native-shadows.md";
     /// One object's shadow (caster and receiver layers).
-    OBJECT_SHADOW @ 0x0003_2350: [opaque]; "docs/graphics/native-shadows.md";
+    OBJECT_SHADOW @ 0x0003_2350: [fn(caster: stack 0, fade: stack 1) -> al ret 8]; "docs/graphics/native-shadows.md";
     /// The colour-mask filter between an object shadow's layers 10 and 11.
-    OBJECT_SHADOW_FILTER @ 0x0002_22a0: [opaque]; "docs/graphics/native-shadow-layers.md";
+    OBJECT_SHADOW_FILTER @ 0x0002_22a0: [fn() ret 0]; "docs/graphics/native-shadow-layers.md";
     /// One dynamic decal callback: `0x00163cd0` calls it in stored list order
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.

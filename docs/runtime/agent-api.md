@@ -1458,8 +1458,13 @@ No params. `interp` is `d3d::interp::InterpStats` with every field
 `mismatch_*`, `dropped`, and per draw `held_draws_*`: draws a made frame
 drew at their own matrices, `held_draws_palette` when their node
 registers are not their pair's), read from its `Debug` text so fields added there
-appear with no change here; `counters` is the frame-stats
-window's line. Each is `null` where that piece is not running.
+appear with no change here. `counters.line` is the frame-stats window's
+summary. `counters` also reports the per-frame means for `shadow_walk_layers`
+and each `native_scene_lists_*` stage. The `_native` and `_fallback` fields
+include zeroes. A refusal reason appears when its window count is positive.
+The object-shadow list, row gather and caster each count calls to their own
+entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
+Each source is `null` where that piece is not running.
 
 `display_frame` gives the identity, lighting and backend counter deltas
 when the worker's latest presentation used the native graph. An

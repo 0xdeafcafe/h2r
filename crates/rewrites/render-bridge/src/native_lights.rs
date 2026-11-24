@@ -19,6 +19,7 @@ mod first_person;
 mod frame;
 mod handoff;
 mod items;
+mod object_shadows;
 mod passes;
 pub mod walk;
 
@@ -760,6 +761,7 @@ impl Feature for NativeLights {
         items::install(b);
         passes::install(b);
         first_person::install(b);
+        object_shadows::install(b);
         b.raw()
             .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| {
                 if !Stage::Lights.standing_down() {

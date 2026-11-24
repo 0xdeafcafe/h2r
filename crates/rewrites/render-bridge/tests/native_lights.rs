@@ -56,7 +56,13 @@ fn its_chains_run_on_the_render_thread() {
         text.contains("implement native-lights:native_lights_first_person_records"),
         "{text}"
     );
+    for body in ["object_shadow_list", "object_shadow_rows", "object_shadow_caster"] {
+        assert!(text.contains(&format!("implement native-lights:native_lights_{body}")), "{text}");
+    }
     for point in [
+        "OBJECT_SHADOW_LIST",
+        "GATHER_OBJECT_SHADOWS",
+        "OBJECT_SHADOW",
         "FIRST_PERSON_LIGHTS",
         "FIRST_PERSON_LIGHT_RECORDS",
         "RENDER_LIGHT_PASSES",
