@@ -811,9 +811,14 @@ For live metadata edits, `hot_glue::tag_written` flushes the decoded
 clips whose keys belong to the graph's current animation block and
 any block it displaces. See [realtime-edits.md](realtime-edits.md),
 "Tag-write notices".
-`pair.preview {what: "animation", target, animation}` is AN6. It
-spawns the object, plays the animation and captures frames at chosen
-ticks. The guest entry used to start a named animation remains **E first**.
+`pair.preview {what: "animation", target, animation}` spawns the
+object (`sim.spawn`), plays the animation on it through the game's
+`world.object.animate` ([agent-api.md](../runtime/agent-api.md#worldobjectanimate))
+and captures the frame after `ticks`
+([agent-api.md](agent-api.md), "Previewing content in the paired game"). The game method
+points the object's first animation channel at the named animation of its
+own graph; whether the engine then plays it as an authored clip is
+checked on a running game.
 
 | Method | Does |
 |---|---|
@@ -1002,7 +1007,7 @@ Rows are in build order.
 | AN3 (built) | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document, a drag is one undo step, and a rotation survives the angle view unchanged. `api/anim/read_tests.rs`, `ui/anim/edit.rs` and `crates/tools/anim-edit/src/tests.rs` |
 | AN4 (built) | **Write back**: `anim.save`, the `animation` builder, replace and add in a `jmad`, the refusals, the live metadata flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced keeps its other records and streams, an added one is reachable by its action, and an inheriting graph is refused by name. `crates/tools/workspace/src/animation/tests.rs` |
 | AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |
-| AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
+| AN6 | **Animation in the game** (built: `world.object.animate`, `pair.preview {what: "animation"}`; the channel start is unconfirmed on a running game): the game's `world.object.animate`, `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
 | A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |
 | SN1 (built) | **The sound editor as a document** (built: `ui/sound.rs` draws the front sound tab, `App::sound_rows`, `App::front_tag_doc`): the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
 | SN2 | **Import and encode** (built): `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |

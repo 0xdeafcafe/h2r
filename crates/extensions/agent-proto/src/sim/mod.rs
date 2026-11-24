@@ -88,6 +88,10 @@ pub mod method {
     pub const MAP_RELOAD: &str = "map.reload";
     /// One transaction on a scenario placement block ([`super::PlacementEditParams`]).
     pub const PLACEMENT_EDIT: &str = "world.placement.edit";
+    /// Play a named animation of an object's own graph from its first
+    /// frame ([`super::AnimateParams`]): host only, never in a co-op
+    /// session. Not in [`EDITS`]: it changes no placement.
+    pub const OBJECT_ANIMATE: &str = "world.object.animate";
 
     /// The edit methods above.
     pub const EDITS: &[&str] =
@@ -114,6 +118,7 @@ pub mod method {
         OBJECT_RESPAWN,
         MAP_RELOAD,
         PLACEMENT_EDIT,
+        OBJECT_ANIMATE,
     ];
 }
 
@@ -536,6 +541,18 @@ pub struct PlayParams {
     /// `player.0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player: Option<String>,
+}
+
+/// `world.object.animate`: an animation of an object's own graph, started
+/// on its first channel at frame 0.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnimateParams {
+    /// The object, as `world.object` spells it (`scenery.12340000`).
+    pub id: String,
+    /// The animation's name in the object's graph (`idle`), one the graph
+    /// itself holds: an inherited one is refused.
+    pub animation: String,
 }
 
 /// `sim.spawn`: an object made from its tag at a position.

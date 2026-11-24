@@ -224,6 +224,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::GIVE, Access::Act, Sim::give);
     add(method::SPAWN, Access::Act, Sim::spawn);
     add(method::AUDIO_PLAY, Access::Act, Sim::audio_play);
+    add(method::OBJECT_ANIMATE, Access::Act, Sim::object_animate);
     add(method::OBJECTS, Access::Read, Sim::objects_method);
     add(method::EVENTS, Access::Read, Sim::events_method);
     add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
@@ -697,6 +698,37 @@ impl Sim {
                         "sound": tag.json(),
                         "instance": made["instance"],
                     })
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `world.object.animate`: queue the start of a named animation of an
+    /// object's own graph. Host only: the object's pose is simulation
+    /// state.
+    fn object_animate(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::AnimateParams = params(v)?;
+        let id = edits::object_id(&p.id)?;
+        let session = self.host_write(ctx)?;
+        let q = self.calls()?;
+        let name = self
+            .tags
+            .as_mut()
+            .and_then(|tags| tags.string_id(&p.animation))
+            .ok_or_else(|| {
+                invalid(format!("loaded map has no unique string ID for {:?}", p.animation))
+            })?;
+        let ticket = calls::submit(&q, Call::Animate { id, name }).map_err(unavailable)?;
+        let session = serde_json::to_value(session).expect("serialises");
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|mut made| {
+                    made["object"] = json!(id.to_string());
+                    made["session"] = session;
+                    made
                 }))
             }),
         );

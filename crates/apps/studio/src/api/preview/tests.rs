@@ -86,6 +86,11 @@ impl Game {
 
     /// The invented game; `audio_play` lists the sound-start method.
     fn start_with(tag: &str, audio_play: bool) -> Game {
+        Self::start_listing(tag, audio_play, true)
+    }
+
+    /// The invented game; `animate` lists `world.object.animate`.
+    fn start_listing(tag: &str, audio_play: bool, animate: bool) -> Game {
         let dir = std::env::temp_dir().join(format!("h2e-preview-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -115,6 +120,13 @@ impl Game {
             w.spawned = Some(pos);
             Ok(json!({"object": SPAWNED, "pos": pos, "tag": {"tag": "0xe4560007", "group": "scen"}}))
         });
+        if animate {
+            host("world.object.animate", Access::Act, |w, p, _| {
+                assert!(w.spawned.is_some(), "animated before it was spawned");
+                assert_eq!(p["id"], format!("scenery.{SPAWNED}"));
+                Ok(json!({"object": p["id"], "index": 3, "frames": 31, "frame": 0.0}))
+            });
+        }
         host("render.capture", Access::Read, |w, _, dir| {
             let path = dir.join(format!("frame-{}.png", w.calls.len()));
             write_png(&path, if w.black { 0 } else { 128 });
@@ -295,6 +307,67 @@ fn an_object_preview_spawns_it_in_front_of_the_player_facing_them() {
     assert_eq!(r["reads"]["object"]["id"], format!("scenery.{SPAWNED}"));
     assert_eq!(r["capture"]["black"], false);
     assert!(!warned(&r, "black"));
+}
+
+#[test]
+fn an_animation_preview_spawns_animates_waits_and_captures_in_that_order() {
+    let game = Game::start("animation");
+    let mut app = game.app();
+    let mut api = Api::new();
+    let id = api
+        .call(&mut app, m::PAIR_PREVIEW, json!({
+            "what": "animation", "target": "scen:crate", "animation": "idle", "ticks": 2,
+        }))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let r = finish(&mut api, &mut app, id);
+    assert_eq!(r["state"], "done", "{r}");
+    assert_eq!(r["what"], "animation");
+    assert_eq!(game.calls("world.object.animate"), [json!({"id": format!("scenery.{SPAWNED}"), "animation": "idle"})]);
+    let steps: Vec<&str> = r["steps"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    let at = |name: &str| steps.iter().position(|s| *s == name).unwrap_or_else(|| panic!("{name} in {steps:?}"));
+    assert!(at("sim.spawn") < at("world.object.animate"), "{steps:?}");
+    assert!(at("world.object.animate") < at("session.wait"), "{steps:?}");
+    assert!(at("session.wait") < at("render.capture"), "{steps:?}");
+    assert_eq!(r["applied"]["animate"]["index"], 3);
+    assert_eq!(r["reads"]["object"]["id"], format!("scenery.{SPAWNED}"));
+    assert_eq!(r["capture"]["black"], false);
+
+    for (p, want) in [
+        (json!({"what": "animation", "target": "scen:crate"}), code::INVALID_PARAMS),
+        (json!({"what": "animation", "animation": "idle"}), code::INVALID_PARAMS),
+        (json!({"what": "animation", "target": "scen:crate", "animation": ""}), code::INVALID_PARAMS),
+    ] {
+        assert_eq!(api.call(&mut app, m::PAIR_PREVIEW, p.clone()).unwrap_err().code, want, "{p}");
+    }
+    // An object tag with no group names no kind: nothing is spawned.
+    let before = game.calls("sim.spawn").len();
+    let id = api
+        .call(&mut app, m::PAIR_PREVIEW, json!({"what": "animation", "target": "crate", "animation": "idle"}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let r = finish(&mut api, &mut app, id);
+    assert_eq!(r["state"], "failed");
+    assert!(r["why"].as_str().unwrap().contains("with its group"), "{r}");
+    assert_eq!(game.calls("sim.spawn").len(), before);
+}
+
+#[test]
+fn an_animation_preview_needs_the_games_animate_before_it_spawns_anything() {
+    let game = Game::start_listing("animation-missing", true, false);
+    let mut app = game.app();
+    let mut api = Api::new();
+    let id = api
+        .call(&mut app, m::PAIR_PREVIEW, json!({"what": "animation", "target": "scen:crate", "animation": "idle"}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let r = finish(&mut api, &mut app, id);
+    assert_eq!(r["state"], "failed");
+    assert!(r["why"].as_str().unwrap().contains("does not list world.object.animate"), "{r}");
+    assert!(game.calls("sim.spawn").is_empty());
 }
 
 #[test]

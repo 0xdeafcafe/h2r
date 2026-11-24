@@ -63,13 +63,13 @@ enum State {
     Done(Value),
 }
 
-const RESULT_SHAPE: &str = r#"{"id":"integer","what":"weapon|object|ui|hud|sound|audio","target":"string|null","state":"sending|running|done|failed","why?":"string","elapsed_ms":"integer","steps":"[string]","edits":"{pending,sent,left}","applied?":"object","reads?":"object","capture?":"{path,method,tick,present,width,height,mean_luma,dark_share,black}|null","audio?":"object","editor?":"object","warnings?":"[string]"}"#;
+const RESULT_SHAPE: &str = r#"{"id":"integer","what":"weapon|object|animation|ui|hud|sound|audio","target":"string|null","state":"sending|running|done|failed","why?":"string","elapsed_ms":"integer","steps":"[string]","edits":"{pending,sent,left}","applied?":"object","reads?":"object","capture?":"{path,method,tick,present,width,height,mean_luma,dark_share,black}|null","audio?":"object","editor?":"object","warnings?":"[string]"}"#;
 
 const METHODS: &[MethodDef] = &[
     def(
         m::PAIR_PREVIEW,
-        "Put content into the paired game and read it back: give the player a weapon, spawn an object in front of them, check the menu screen shown, show the HUD, or play a sound at the player (audio.play) and sample the mixer; then wait, read the game state that matters and capture the frame. Pending edits are sent first. Answers with a job id at once; pair.result has the outcome",
-        r#"{"what":"weapon|object|ui|hud|sound","target?":"string","player?":"integer","seconds?":"number","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
+        "Put content into the paired game and read it back: give the player a weapon, spawn an object in front of them, spawn one and play a named animation of its graph on it (animation), check the menu screen shown, show the HUD, or play a sound at the player (audio.play) and sample the mixer; then wait, read the game state that matters and capture the frame. Pending edits are sent first. Answers with a job id at once; pair.result has the outcome",
+        r#"{"what":"weapon|object|animation|ui|hud|sound","target?":"string","animation?":"string","player?":"integer","seconds?":"number","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
         r#"{"id":"integer","state":"sending|running"}"#,
         r#"{"what":"weapon","target":"objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}"#,
     ),
@@ -241,6 +241,30 @@ impl Preview {
                     30,
                 )
             }
+            "animation" => {
+                let pos = p.opt_vec3("pos")?.map(|v| v.map(f64::from));
+                let distance = p.opt_f32("distance")?.unwrap_or(3.0);
+                if !(0.0..=100.0).contains(&distance) {
+                    return Err(err(code::INVALID_PARAMS, "distance is 0 to 100 world units"));
+                }
+                let animation = p.str("animation")?.to_owned();
+                if animation.is_empty() {
+                    return Err(err(
+                        code::INVALID_PARAMS,
+                        "animation is a name in the object's graph (anim.list lists them)",
+                    ));
+                }
+                (
+                    Task::Animation {
+                        tag: need_target("animation")?,
+                        animation,
+                        pos,
+                        distance: f64::from(distance),
+                    },
+                    "animation",
+                    30,
+                )
+            }
             "ui" => (Task::Ui { screen: target.clone() }, "ui", 0),
             "hud" => (Task::Hud { state: target.clone() }, "hud", 30),
             "sound" => {
@@ -266,7 +290,7 @@ impl Preview {
             _ => {
                 return Err(err(
                     code::INVALID_PARAMS,
-                    "what is weapon, object, ui, hud or sound",
+                    "what is weapon, object, animation, ui, hud or sound",
                 ));
             }
         };

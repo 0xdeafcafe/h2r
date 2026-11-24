@@ -281,6 +281,9 @@ pub enum Call {
         to: [f32; 3],
         shield: Option<f32>,
     },
+    /// Start the animation `name` (a string ID) of the object's own graph
+    /// on its first channel (`world.object.animate`).
+    Animate { id: ObjectId, name: u32 },
     /// Start the `snd!` tag `sound` at `unit`'s head marker
     /// (`audio.play`).
     Sound { unit: u32, sound: u32 },
@@ -1262,6 +1265,13 @@ async fn run_call(
     match *call {
         Call::Animation { unit, path, overlay } => {
             crate::probe::animation::lookup(cx, scratch, unit, path, overlay).await
+        }
+        Call::Animate { id, name } => {
+            let body = match cx.read(|m| placement::resolve(m, id)) {
+                Ok(body) => body,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(cx.write(|m| crate::probe::animation::start(m, body.addr, name)))
         }
         Call::Projectile { tag, target, node, from, to, shield } => {
             let line = cx.read(|m| crate::probe::line(m, target, node, from, to))?;

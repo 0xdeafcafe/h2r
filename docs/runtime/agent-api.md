@@ -34,6 +34,7 @@ connection to hold `session.claim`.
 | `host.quit` | act, without the controller check | [Close the window](#close-the-window) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
+| `world.object.animate` | act | [`world.object.animate`](#worldobjectanimate) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
 | `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
@@ -3037,6 +3038,43 @@ h2 agent audio.play '{"sound": "sound\\pogo\\spring"}'
   starts no instance for (a tag with no permutation, or a full sound
   table) is `UNAVAILABLE` with the game's reason. Audio time is logical,
   so a paused game answers when it runs.
+
+### `world.object.animate`
+
+Plays a named animation of an object's own graph, so an animation can be
+seen on the object without a gameplay reason to start it. A game method
+of the sim provider (`crates/extensions/agent/src/sim/mod.rs`,
+`Sim::object_animate`; the write in `crates/extensions/agent/src/probe/animation.rs`,
+`start`; types in `crates/extensions/agent-proto/src/sim/mod.rs`).
+
+```sh
+h2 agent world.object.animate '{"id": "scenery.12340000", "animation": "idle"}'
+```
+
+| Params | Result |
+|---|---|
+| `{id, animation}`: an object id as `world.object` spells it (not a player); the animation's name in the graph the object's manager holds | `{object, graph, animation, index, frames, frame, session}` |
+
+- **The call.** The name becomes a string ID of the loaded map; the
+  graph's animation block (`jmad` `+0x2c`) is searched for it, and the
+  object's first channel (the manager's own `+0x0`) is pointed at the
+  entry: the animation word at `+4` (graph -1, the channel's own, and the
+  index), the frame at `+0x1c` set to 0 and the rate at `+0x18` to 1.
+  It is made at the start of the next tick, like `sim.give`
+  ([`sim`](#sim-simulated-players-and-direct-state)). The animation is
+  the graph's own: an inherited one is not found.
+- **Host only.** An object's pose is simulation state, so a co-op
+  (synchronous) session refuses it as `sim.spawn` is refused.
+- **Errors.** A bad or player id, or a name the map has no string ID for,
+  is `INVALID_PARAMS`; an id that no longer names the object is `GONE`; a
+  graph with no such animation is `INVALID_PARAMS`; an object with no
+  animation manager or no loaded graph is `UNAVAILABLE`.
+- **Not yet confirmed in a running game.** The channel's fields are the
+  ones the engine's channel set and frame setter read and write
+  (`live-telemetry` `layout`), but a biped's own animation state restarts
+  its channel as its names change, so the method is for scenery, machines,
+  crates, creatures and vehicles; the answer's `frame` and a later
+  `anim`/`world.object` read are how a run checks it plays.
 
 ## HaloScript state
 

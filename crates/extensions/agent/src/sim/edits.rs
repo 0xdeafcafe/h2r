@@ -136,7 +136,7 @@ pub(super) fn refused(why: impl Into<String>) -> RpcError {
     err
 }
 
-fn object_id(s: &str) -> Result<ObjectId, RpcError> {
+pub(super) fn object_id(s: &str) -> Result<ObjectId, RpcError> {
     ObjectId::parse(s)
         .filter(|id| id.kind != Kind::Player)
         .ok_or_else(|| invalid("id must be <kind>.<8 hex digits> from world.object"))
