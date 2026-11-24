@@ -102,7 +102,10 @@ fn a_map_file_and_the_game_rows_of_it_give_one_census() {
         sounds: None,
     };
     let from_game = Census::of_game(&rows, Some(&doc)).unwrap();
-    assert_eq!(from_file, from_game);
+    // The file names its sounds (none here); the game has no tag paths.
+    assert_eq!(from_file.sounds, Some(Default::default()));
+    assert_eq!(from_game.sounds, None);
+    assert_eq!(Census { sounds: None, ..from_file }, from_game);
     let member = |class, number, team| Member { class, number, team };
     assert_eq!(
         from_game.labels,

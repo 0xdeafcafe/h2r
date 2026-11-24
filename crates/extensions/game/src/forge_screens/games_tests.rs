@@ -64,9 +64,11 @@ fn done_refuses_what_the_document_refuses_and_says_why() {
     assert_eq!(why, "Capture the Flag and Assault go together.");
     let last = s.rows.last().unwrap();
     assert_eq!(last.description.as_deref(), Some(why.as_str()));
-    // Five single engines.
+    // Five slots (the flag pair shares one); the five engines without the
+    // flags are the all-but-flags group and fit.
     let mut s = sheet(GameSet::of(&[2, 3, 4, 7]));
-    tick(&mut s, Tick::Engine(8));
+    tick(&mut s, Tick::Engine(1));
+    tick(&mut s, Tick::Engine(9));
     assert_eq!(
         done(&mut s).unwrap_err(),
         "An item can name four game types at most."
