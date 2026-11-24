@@ -1,7 +1,7 @@
 # Forge monitor appearance
 
-Status: Partly built (ML1 to ML5, ML7). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the kit's `Scene3d` preview widget exist; the look's page (ML6, a Forge screen of the game's), the film records (ML8), the lobby row (ML9) and a real body (ML10) do not.
-Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_hud.rs` (`Points`, the navpoints over other monitors), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/view.rs` (`Kind::Scene3d`). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_hud_tests.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
+Status: Partly built (ML1 to ML7). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the Appearance page's body (ML4b: its place beside the Spartan and `forge_glue::appearance_body` — pure, the model widget does not draw it yet), the host light (ML5: in each game view's light list and the E3 light choice, last; the light passes do not draw a light with no guest record yet), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the kit's `Scene3d` preview widget exist; the look's page (ML6, a Forge screen of the game's), the film records (ML8), the lobby row (ML9) and a real body (ML10) do not.
+Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `look/body.rs` and `look/appearance.rs` (the drawn body in the world and on the Appearance page), `crates/rewrites/frame-scene/src/light.rs` (`Light::host_light`), `crates/rewrites/render-bridge/src/scene_step.rs` (`set_host_lights`), `crates/rewrites/native-render/src/light_choice.rs`, `crates/extensions/game/src/forge_hud.rs` (`Points`, the navpoints over other monitors), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/view.rs` (`Kind::Scene3d`). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_hud_tests.rs` and `crates/extensions/agent/src/forge/tests.rs`; `look/appearance.rs` (ML4b); `forge_glue.rs`, `frame-scene/src/builder.rs` and `light_choice.rs` (ML5); each later slice names its own.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player looks like while they fly as a monitor in a Forge session:
@@ -162,13 +162,21 @@ the camera is inside it.
   where the change-colour map is empty and the colour where it is full,
   red primary and green secondary ([live-art.md](../live/live-art.md),
   "Vehicle colours"). Only primary and secondary are used.
-- The light is the renderer's, not the game's. It is a candidate added
-  to the scene's light list after extraction with no light datum and no
-  `ligh` tag (`frame_scene::LightCandidate` holds the position and
-  colours a candidate needs, **Code**). It lights the world and other
-  objects on machines that draw it and changes nothing in the sim. It
-  casts no shadow and is skipped first when a view is over its light
-  budget.
+- The light is the renderer's, not the game's. `frame_scene::Light::host_light`
+  makes it: no light datum and no `ligh` tag (`handle` and `definition`
+  are `NO_DATUM`, `host` the seat), a sphere at the body's origin of the
+  look's radius, both colours the palette colour, no guest steps, flag
+  bit 2 clear so no shadow map is made for it. `forge_glue::monitor_lights`
+  turns each drawn body (not a marker) into one, with the colour read from
+  the loaded map; a colour the map does not hold gives no light. The
+  frame step adds them to each game view after the game's candidates
+  (`render_bridge::scene_step::set_host_lights`, set by `frame_owner`).
+  The E3 light choice ranks them after every game light, so they are
+  skipped first when a view is over its light budget
+  ([e3-lighting.md](../graphics/e3-lighting.md), "Lights: which, and how
+  many"). It changes nothing in the sim. The light passes draw a light
+  from its guest record, which a host light has not, so it does not yet
+  light the world (Gaps, below).
 - In a team session the host may set **Monitor colours: team**. Primary
   is then the team's colour from the map's multiplayer globals (the
   block `pad_lightbar.rs` reads, **Code**) and the Primary row is
@@ -223,7 +231,15 @@ value picker"). Not built: the row joins the Forge menu with the page
   sentence in the dialog's description line and in the HUD strip.
 - **The game's Appearance page.** When the player's look is the Forge
   monitor, the page's own model preview draws the monitor beside the
-  Spartan (ML4b, decision 8).
+  Spartan (ML4b, decision 8). `forge::look::appearance::beside` places
+  it: the saved look of the profile on local slot 0, resolved against
+  the catalogue (`saved::resolve`), on the widget camera's right of the
+  biped, clear of its sphere by `GAP`, facing the camera, level, with
+  the look's colours, tint and light. No saved look, the marker, a model
+  or variant the catalogue lacks, or a camera with no right axis adds
+  nothing, so the page is retail's. `forge_glue::appearance_body` is the
+  call for the model widget; the widget's native path
+  (`render_bridge::native_hud::model`) does not draw it yet.
 - **Reset** (X) is the default look: the marker, the seat's colour, no
   tint, no light.
 
@@ -445,9 +461,10 @@ data.
 | **ML9** | The lobby row and team colours | S | F14, ML6 | the lobby opens the page; the team lock holds and names itself |
 | **ML10** | A real body's look: the Bodies heading, the `body` op's colours, locked rows | M | F10, ML6 | the op writes the unit's change colours over a fake game and folds through the log; two fake peers hash alike |
 
-ML1, ML2 and ML3 are built. ML4 is the first that needs the
-native renderer's object path; ML4b follows it. ML7 and ML8 wait for F5; ML9 for F14;
-ML10 for F10.
+ML1 to ML7 are built, ML4, ML4b and ML5 as the data the renderer is
+handed: the object pass, the model widget and the light passes do not
+draw them yet. ML8 waits for F5's film record; ML9 for F14; ML10 for
+F10.
 
 ## Decisions
 
@@ -519,7 +536,9 @@ Gaps, named:
 - The Enforcer is a vehicle, not a biped (live-art.md, "Pipeline"), so
   the species rule does not offer it.
 - A light candidate without a guest record has no path in the native
-  light walk today.
+  light passes: a host light is in the view's light list and the E3
+  choice, but nothing computes its constants or draws its layers 12
+  and 13.
 - The native object path names a model by tag datum and map epoch
   (framescene.md 4.2). A model from another map file needs the host
   model list.

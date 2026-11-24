@@ -465,10 +465,30 @@ pub fn first_person_light(mem: &dyn GuestMemory, light: SceneLight, steps: &[Lig
     })
 }
 
+/// The host's own lights for a view: lights with no datum and no `ligh`
+/// tag that the scene carries after the game's candidates
+/// (docs/game/forge-monitor-appearance.md, ML5, the Forge monitors'
+/// bodies). Called once a game view, outside the step's lock.
+pub type HostLights = fn(&dyn GuestMemory) -> Vec<frame_scene::Light>;
+
+static HOST_LIGHTS: Mutex<Option<HostLights>> = Mutex::new(None);
+
+/// Sets the source of [`HostLights`]; `None` adds none.
+pub fn set_host_lights(source: Option<HostLights>) {
+    *HOST_LIGHTS.lock().unwrap_or_else(|e| e.into_inner()) = source;
+}
+
+fn host_lights(mem: &dyn GuestMemory) -> Vec<frame_scene::Light> {
+    let source = *HOST_LIGHTS.lock().unwrap_or_else(|e| e.into_inner());
+    source.map(|f| f(mem)).unwrap_or_default()
+}
+
 /// The main view's light pass is over (at the decal mode that follows
 /// it). Fill the candidate data alongside the original draw steps, which
-/// already hold their final group indices.
+/// already hold their final group indices, then add the host's lights
+/// ([`set_host_lights`]) after them.
 fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
+    let host = host_lights(mem);
     with_step(|step| {
         let Some((scene, view)) = step.builder.open() else {
             return;
@@ -493,6 +513,9 @@ fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
             }
         } else {
             LIGHT_EXTRACT_UNREAD.fetch_add(1, Ordering::Relaxed);
+        }
+        if !host.is_empty() && step.builder.add_light_candidates(host).is_err() {
+            REFUSED.fetch_add(1, Ordering::Relaxed);
         }
         LIGHT_EXTRACT_VIEWS.fetch_add(1, Ordering::Relaxed);
         LIGHT_EXTRACT_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);

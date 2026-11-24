@@ -5,7 +5,10 @@
 //! disc, and nothing here is read by the tick. [`MonitorLook`] owns the
 //! value, its bounds and its canonical bytes; [`Refusal`] names every way a
 //! look is turned down; [`census`] lists the models a machine can draw;
-//! [`saved`] keeps a look in the profile's settings.
+//! [`saved`] keeps a look in the profile's settings; [`body`] and
+//! [`appearance`] place the drawn body in the world and on the game's
+//! Appearance page.
+pub mod appearance;
 pub mod body;
 pub mod census;
 pub mod monitors;

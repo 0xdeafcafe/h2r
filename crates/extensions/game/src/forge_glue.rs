@@ -73,6 +73,61 @@ pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
     driver.lock().unwrap_or_else(|e| e.into_inner()).bodies.clone()
 }
 
+/// The monitor the game's Appearance page draws beside the Spartan in
+/// `widget` (docs/game/forge-monitor-appearance.md, ML4b): the saved look
+/// of the profile on local slot 0, as this machine's catalogue can draw
+/// it. `None` leaves the page as retail draws it.
+pub fn appearance_body(
+    m: &dyn engine::GuestMemory,
+    widget: &forge::look::appearance::Widget,
+    seconds: f32,
+) -> Option<forge::look::body::Draw> {
+    let who = who_of(Some(m));
+    let driver = current()?;
+    let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = forge::look::saved::load(driver.store.as_deref()?, &who.profile, who.colour).saved;
+    forge::look::appearance::beside(
+        widget,
+        Some(&saved),
+        driver.looks.catalogue(),
+        0,
+        seconds,
+        |index| crate::pad_lightbar::palette_rgb(m, index).unwrap_or([0; 3]),
+    )
+}
+
+/// The host lights of the other seats' bodies (docs/game/
+/// forge-monitor-appearance.md, ML5), in the palette colours the loaded
+/// map holds: what the frame step's scene adds to each game view after
+/// the game's candidates (`render_bridge::scene_step::set_host_lights`).
+pub fn monitor_lights(m: &dyn engine::GuestMemory) -> Vec<frame_scene::Light> {
+    host_lights(&monitor_bodies(), |index| crate::pad_lightbar::palette_rgb(m, index))
+}
+
+/// The host light each drawn body carries: at the body's origin, the
+/// look's light colour from `rgb`, its radius, no shadow. A marker draws
+/// no light, and neither does a body whose colour the map does not hold.
+pub fn host_lights(
+    draws: &[forge::look::body::Draw],
+    rgb: impl Fn(u8) -> Option<[u8; 3]>,
+) -> Vec<frame_scene::Light> {
+    draws
+        .iter()
+        .filter(|d| d.model.is_some())
+        .filter_map(|d| {
+            let light = d.light?;
+            let [r, g, b] = rgb(light.colour)?;
+            let colour = [r, g, b].map(|c| f32::from(c) / 255.0);
+            Some(frame_scene::Light::host_light(
+                d.seat,
+                d.frame.position,
+                colour,
+                light.radius,
+            ))
+        })
+        .collect()
+}
+
 fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {
     GENERATION.load(Ordering::Acquire) == generation && forge_map::admitted_session(m)
 }
@@ -547,5 +602,51 @@ impl LocalApi for Backend {
             return Err(driver.reason.clone());
         };
         e.propose(tick, op, was)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use forge::look::body::{Draw, Light};
+
+    fn draw(seat: u8, model: Option<u32>, light: Option<Light>) -> Draw {
+        Draw {
+            seat,
+            model,
+            frame: forge::Frame {
+                position: [1.0, 2.0, 3.0 + f32::from(seat)],
+                rotation: [0.0; 3],
+            },
+            sphere: ([1.0, 2.0, 3.0], 1.0),
+            primary: 0,
+            secondary: 0,
+            highlight: [0; 4],
+            light,
+        }
+    }
+
+    /// ML5: a body with a light carries one host light at its origin, in
+    /// the palette colour, with no datum and no shadow; a marker, a body
+    /// without a light and a colour the map lacks carry none.
+    #[test]
+    fn a_drawn_body_with_a_light_carries_one_host_light_in_its_palette_colour() {
+        let lit = Light { colour: 4, radius: 4.0 };
+        let draws = [
+            draw(1, Some(0), Some(lit)),
+            draw(2, None, Some(lit)),
+            draw(3, Some(0), None),
+            draw(5, Some(1), Some(Light { colour: 17, radius: 2.0 })),
+        ];
+        let rgb = |index: u8| (index == 4).then_some([255, 0, 51]);
+        let lights = super::host_lights(&draws, rgb);
+        assert_eq!(lights.len(), 1);
+        let l = &lights[0];
+        let none = frame_scene::NO_DATUM;
+        assert_eq!((l.host, l.handle, l.definition), (Some(1), none, none));
+        assert!(!l.shadowed() && !l.guest_selected);
+        let c = l.candidate.as_ref().unwrap();
+        assert_eq!(c.position, [1.0, 2.0, 4.0]);
+        assert_eq!(c.colour_a, [1.0, 0.0, 0.2]);
+        assert_eq!(c.bounds.1, 4.0);
     }
 }
