@@ -10,6 +10,8 @@
 //! - [`store`]: writing packages and `active.toml` (the editor's side).
 //! - [`campaign_list`]: campaigns past Halo 2's own, as 1.0's campaign level
 //!   list records (docs/halo1/campaign-picker.md).
+//! - [`package`]: Studio's packages: manifest, lock, id and the load order
+//!   (docs/editor/studio-redesign.md).
 //! - [`map_pack`]: the Multiplayer Map Pack's maps, which packages can
 //!   take as their base.
 //! - [`patch_lvl`] and [`map_list`]: 1.0's multiplayer map list entries,
@@ -25,6 +27,7 @@ mod id;
 pub mod manifest;
 pub mod map_list;
 pub mod map_pack;
+pub mod package;
 pub mod patch;
 pub mod patch_lvl;
 mod resolve;
