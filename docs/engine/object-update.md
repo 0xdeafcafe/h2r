@@ -1226,8 +1226,8 @@ seven-entry table at `f069c` (read from the image), `f1cd0`
 `f4800` or `2056e0` (`VEHICLE_CONTACT_SOLVE`); above 6 none. These stay
 callouts, so the Halo 1 drive model's hooks on them run as before.
 
-**Callees**, every one a callout except the leaves, `bba20` and the unit
-animation state `111650` (slice 6c, fused), with the
+**Callees**, every one a callout except the leaves, `bba20`, the unit
+action update `e6830` and the unit animation state `111650` (slice 6c, fused), with the
 bytes `ret` pops: `320560` the probe; `1d2460`, `efc30`, `ef870`,
 `efb60`, `205510`, `1cfb90`, `ba3d0` (a tail jump into `b7360`),
 `f06c0`, `f6010`, `cc380`, `372d48`, `113e40`, `b9ef0` (0); `b9b90`,
@@ -1379,6 +1379,15 @@ instructions that carry them.
 
 ## Slice 7a bodies
 
+Bipeds and vehicles share the unit action update at `e6830`. The signed
+offset at unit `+346` locates the action record. Its bitmap starts at
+`+4`. The body visits set bits in ascending order and calls descriptor
+slot `+4` with the object and action index. On return at `e6890`,
+a zero result clears that action in the current word. The scan then
+reads the bitmap again so it sees changes the callback made to later
+actions. The high byte of saved ECX records whether any callback
+returned nonzero, and AL returns that result.
+
 **C** for the control flow and accesses: read at each entry with
 `h2 disasm`, and compared with the lifted original by
 `tests/sim_objects_differential.rs` (a root per body over the slice 11
@@ -1419,10 +1428,10 @@ the bodies make every stack store retail makes so they match.
 **Callees** that stay callouts, with the bytes `ret` pops: `e3700`,
 `e5930`, `1faf30`, `e6900`, `10f820`, `de080` (0); `e3380`, `e0ef0`,
 `bfa40` (4); `e01d0`, `dc5c0`, `e3c90`, `e40d0`, `e4450` (8); `e24f0`,
-`e4d90` (`c`); `10f430` (`1c`); and the shared `1e5af0`, `e6830` (4),
+`e4d90` (`c`); `10f430` (`1c`); and the shared `1e5af0` (4),
 `b58c0` (8), `b8d30` (`c`), `30bf0`, `113e40` (0). Fused bodies in the
 tree: `bba20`, `ba1d0` (slice 4), `cba50` (slice 6a), `111650` (slice
-6c).
+6c) and `e6830`.
 
 **A split block.** Function discovery takes `de336`, the look update's
 third clamp step, for a function start (`h2 analyze --explain de336`:

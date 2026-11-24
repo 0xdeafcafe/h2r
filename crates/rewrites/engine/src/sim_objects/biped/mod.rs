@@ -4,7 +4,8 @@
 //! is ported. The rest of the tree stays guest: the seat updates `e3380`
 //! and `e3700`, the movement and animation steps `e01d0`, `dc5c0`,
 //! `e24f0`, `e0ef0`, `e3c90`, `e40d0`, `e4450`, and the shared callees
-//! (`1e5af0`, `113e40`, `b58c0`, `e6830`, `111650`, `30bf0`).
+//! (`1e5af0`, `113e40`, `b58c0`, `30bf0`). The unit action callbacks
+//! (`e6830`) and unit animation state (`111650`) run as bodies.
 //!
 //! Every body is a segment over the retail frame, the retail code block by
 //! block, keyed by retail address: at each call and return the eight
@@ -53,12 +54,14 @@
 //! Instruction immediates the public source must not carry (string IDs)
 //! are read from the loaded image, as are the `.rdata` constants.
 
+mod actions;
 mod leaves;
 mod look;
 // Slice 7b: the biped post-physics update and its tree.
 mod post;
 mod state;
 
+pub(super) use actions::{ACTIONS_SITES, actions_update};
 pub(super) use leaves::{airborne_test, animation_kind, carrier, seconds_to_ticks};
 pub(super) use look::{LOOK_SITES, look_update};
 pub(super) use post::{
@@ -114,7 +117,7 @@ const E4450: u32 = 0x000e_4450;
 const NORMALIZE: u32 = 0x0003_0bf0;
 const X113E40: u32 = 0x0011_3e40;
 const B58C0: u32 = 0x000b_58c0;
-const E6830: u32 = 0x000e_6830;
+const E6830: u32 = points::UNIT_ACTIONS_UPDATE.base;
 const X111650: u32 = 0x0011_1650;
 /// The action `e68c0` is asked for when the seat's time has run out.
 const SEAT_ACTION: u32 = 0x1e;

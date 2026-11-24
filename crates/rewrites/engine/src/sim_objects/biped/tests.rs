@@ -215,10 +215,9 @@ fn an_unparented_update_calls_the_movement_steps_in_order() {
     g.set_u8(BODY + 0x399, 5).unwrap();
     g.set_u8(BODY + 0x39a, 6).unwrap();
 
-    // Slice 6c made the unit animation state `111650` a body; without it
-    // here, it stays the callout this test answers.
+    // This test supplies the answers for the action and animation updates.
     let table = crate::sim_objects::Table::new(
-        crate::sim_objects::BODIES.iter().filter(|b| b.point.base != points::UNIT_ANIMATION_STATE.base),
+        crate::sim_objects::BODIES.iter().filter(|b| b.point.base != points::UNIT_ANIMATION_STATE.base && b.point.base != E6830),
     )
     .unwrap();
     let s = STACK - FRAME - 16;
@@ -273,4 +272,42 @@ fn an_unparented_update_calls_the_movement_steps_in_order() {
     assert_eq!(cpu.eax & 0xff, 0x19);
     assert_eq!(cpu.esp, STACK + 8);
     assert_eq!((cpu.ebx, cpu.ebp, cpu.esi, cpu.edi), (0x1111, 0x2222, 0x3333, 0x4444));
+}
+
+#[test]
+fn action_callbacks_revisit_the_live_bitmap_and_restore_the_guest_frame() {
+    let (mut c, mut g) = world();
+    let record = BODY - 0x80;
+    let descriptor = DEF + 0x200;
+    let target = 0x3112;
+    g.set_u8(actions::ACTION_LIMIT, 36).unwrap();
+    g.set_u16(BODY + 0x346, (-0x80i16) as u16).unwrap();
+    g.set_u32(record + 4, (1 << 31) | 2).unwrap();
+    g.set_u32(record + 8, (1 << 4) | 1).unwrap(); // bit 36 lies beyond the bound
+    for i in [1, 6, 32] {
+        g.set_u32(actions::DESCRIPTORS + 4 * i, descriptor).unwrap();
+    }
+    g.set_u32(descriptor + 4, target).unwrap();
+    c.ecx = 0xaf12_3456;
+    let mut pc = points::UNIT_ACTIONS_UPDATE.base;
+    for (action, accepted) in [(1, false), (6, true), (32, false)] {
+        assert_eq!(run(actions_update, &mut c, &mut g, pc), Next::Call { target, site: ACTIONS_SITES[0] });
+        assert_eq!(g.u32(c.esp).unwrap(), BIPED);
+        assert_eq!(g.u32(c.esp + 4).unwrap(), action);
+        assert_eq!((c.ebx, c.ebp, c.esi, c.edi), (record, action, 4 * (action / 32), 1 << (action & 31)));
+        assert_eq!(c.ecx, BIPED);
+        if action == 1 {
+            // Retain bit 1 for the caller to clear. Remove bit 31 and add 6.
+            g.set_u32(record + 4, (1 << 6) | 2).unwrap();
+        }
+        c.esp += 8;
+        c.eax = 0xaced_0000 | u32::from(accepted);
+        c.edx = 0x3344;
+        pc = ACTIONS_SITES[0];
+    }
+    assert_eq!(run(actions_update, &mut c, &mut g, pc), Next::Ret { pop: 4 });
+    assert_eq!((g.u32(record + 4).unwrap(), g.u32(record + 8).unwrap()), (1 << 6, 1 << 4));
+    assert_eq!((c.eax, c.ecx, c.edx, c.esp), (1, 0x0112_3456, 0x3344, STACK));
+    assert_eq!((c.ebx, c.ebp, c.esi, c.edi), (0x1111, 0x2222, 0x3333, 0x4444));
+    assert_ne!(c.eflags & ZF, 0);
 }

@@ -211,6 +211,7 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_CARRIER, sites: &[], run: biped::carrier },
     Body { point: &points::BIPED_TIMER_UPDATE, sites: &biped::TIMER_SITES, run: biped::timer_update },
     Body { point: &points::GAME_SECONDS_TO_TICKS, sites: &[], run: biped::seconds_to_ticks },
+    Body { point: &points::UNIT_ACTIONS_UPDATE, sites: &biped::ACTIONS_SITES, run: biped::actions_update },
     Body { point: &points::BIPED_ACTION, sites: &biped::ACTION_SITES, run: biped::action },
     Body { point: &points::BIPED_ANIMATION_KIND, sites: &[], run: biped::animation_kind },
     Body { point: &points::BIPED_AIRBORNE_TEST, sites: &[], run: biped::airborne_test },
