@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1) and Scripts, read (H1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2) and Scripts, read (H1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `sound_tests.rs` and `api/sound/tests.rs` (A2), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -442,14 +442,20 @@ curves were made). A `udlg` tag shows its vocalisations as a list that
 opens each sound here.
 
 **The data.** `crates/formats/tags/src/sound.rs` (`SoundHeader`,
-`Gestalt::read`, `Sound`) reads pitch ranges, permutations and chunks.
+`Gestalt::read`, `Gestalt::mouth_curve`, `Sound`) reads pitch ranges,
+permutations, chunks and the extra-info mouth curves.
 Decoders: `audio::adpcm::decode`, and `crates/platform/wma` which needs
 codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
 
-- the extra-info index is named only in the Halo 1 converter
-  (`crates/tools/h1-assets/src/sounds/convert.rs`, `mouth.rs`), and
-  `defs/ugh_.txt` leaves the block unnamed: slice A2 names both in the
-  definitions and adds `sound::Gestalt::mouth_curve`;
+- the mouth curves, read (slice A2, built): the extra-info index is named
+  in `defs/snd_.txt`, the block, its descriptors and its locators in
+  `defs/ugh_.txt`, and `Gestalt::mouth_curve` reads a permutation's curve
+  out of the resource by its two locators — one aperture byte per 30 Hz
+  tick, `None` for an unvoiced permutation (no extra info, a negative
+  descriptor index, or a zero-length entry). The Sound window draws the
+  selected permutation's curve as a filled track under the waveform on
+  the same time axis, and `sound.mouth` reads it; both show it even when
+  the audio is not decoded;
 - audition (slice A1, built): `crates/apps/studio/src/app/audition.rs`
   decodes a permutation (`audio::adpcm`, or `wma` with tables from the
   source's executable: the disc's `default.xbe`, or the one beside a loose
@@ -459,8 +465,8 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
   **Sound** window (`ui/sound.rs`, floating until the tag view tabs of X1
   exist) lists the permutations, draws the waveform, plays, stops and
   plays from a click on the waveform. A permutation whose compression is
-  neither Xbox ADPCM nor a codec stream is refused by name. The mouth
-  track, the face preview and the curve's drawing are A2 to A4;
+  neither Xbox ADPCM nor a codec stream is refused by name. The face
+  preview and the curve's drawing are A3 and A4;
 - models draw in the rest pose only (`native_view` `rest_nodes`):
   slice M1 poses a model from `tags::anim_sample::AnimationClip::sample`;
 - a WMA sound without the executable is refused: `This sound needs the
@@ -600,10 +606,10 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `script.doc` | `{path}` | `{path, doc, log}`: names builtins from the listing at `path` (`null`: none) |
 | `script.external` | `{name?, editor?, launch?}` | `{path, context, line, editor, commands, launched, working}`: writes the working copy and opens it in `code`, `zed` or any editor (`auto`) at the definition |
 | `script.working` | `{}` | `{open, map, path, edited, changed, added, removed, problems, stale, summary}`: the working copy read and checked now; `{open: false}` with none |
-| `sound.read` | `{tag, range?, permutation?, bins?}` | the header, every pitch range's permutations `{encoded_bytes, chunks}`, for one permutation `{channels, rate, frames, duration_ms, peaks}` or its `refusal`, and `playback`; slice A2 adds `mouth` |
+| `sound.read` | `{tag, range?, permutation?, bins?}` | the header, every pitch range's permutations `{encoded_bytes, chunks}`, for one permutation `{channels, rate, frames, duration_ms, peaks}` or its `refusal`, its `mouth` `{ticks, curve}` either way, and `playback` |
 | `sound.play` | `{tag, range?, permutation?, from_ms?}` | `{playing, frames, rate, channels, duration_ms, from_ms, output}`; `output` is `headless` when `Audition::headless` is set (tests, the API's own examples), which plays to nothing in real time |
 | `sound.stop` | `{}` | `{stopped}` |
-| `sound.mouth` | `{tag, permutation}`, with `curve?` or `from_sound?: {gain, smoothing}` to write | `{ticks, curve}` (0 to 1 per tick) |
+| `sound.mouth` | `{tag, range?, permutation?}`; `curve?` or `from_sound?: {gain, smoothing}` to write are A4 | `{ticks, curve}` (0 to 1 per tick; `curve` null when unvoiced) |
 | `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame, overlay?: {name, weight}}` | names and frame counts; `{png}` of the posed model |
 | `recording.list` | none | `{recordings: [{name, ticks, control_version, played_by}]}` |
 | `recording.read` | `{name}` | `{initial, events: [{tick, kind, fields}]}` |
@@ -681,7 +687,7 @@ the first one whose needs are met.
 | S1 | **Shader tab**: slots with `Used by`, bitmap thumbnails in rows and in the picker, the preview on sphere, quad and object, refusals listed, `shader.read`, `shader.set`, `shader.preview` | L | C1, P15 | on an invented material: `shader.set` equals the `tag.set` it stands for; a changed colour changes `shader.preview` pixels; a refused pass is counted and absent |
 | S2 | **Shader animation**: animated properties as curves, the preview clock | S | S1, F1 | a periodic property changes the preview between two clock times; a refused animation kind is named |
 | S4 | **Shader code, read**: listings, WGSL and warnings per pass, `shader.code` | S | S1 | an invented pass lists both programs; a state program shows its refusal |
-| A2 | **Mouth curves, read**: the extra-info names in `defs`, `Gestalt::mouth_curve`, the track under the waveform, `sound.mouth` read | S | A1 | an invented gestalt with one voiced and one unvoiced permutation gives one curve and one null |
+| A2 (built) | **Mouth curves, read**: the extra-info names in `defs`, `Gestalt::mouth_curve`, the track under the waveform, `sound.mouth` read | S | A1 | an invented gestalt with one voiced and one unvoiced permutation gives one curve and one null |
 | A3 | **Face preview**: the `talk` overlay by the curve on a picked model, in step with play and scrub | S | A2, M1 | `anim.pose` with the overlay at weight 0 and 1 gives two pictures; the preview at a tick uses that tick's byte |
 | X2 | **Data that changes length**: `TagDoc::resize_data`, the grown-data entry in the save, the session's form for the scenario | M | nothing | a shorter and a longer invented payload save and read back; growth off refuses; the old bytes are unreferenced; undo restores the pair |
 | F2 | **Curve type changes** | S | F1, X2 | changing type saves at the new `blob_len` and reads back equal |

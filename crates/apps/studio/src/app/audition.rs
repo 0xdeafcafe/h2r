@@ -1,6 +1,7 @@
 //! Sound audition: decode a `snd!` tag's permutations, play them through
-//! the host's audio output, and show their waveform. docs/editor/
-//! rich-editors.md, "Sounds and facial animation" (slice A1).
+//! the host's audio output, show their waveform, and read their mouth
+//! curves. docs/editor/rich-editors.md, "Sounds and facial animation"
+//! (slices A1 and A2).
 //!
 //! **What plays.** A sound's permutation is the concatenation of its
 //! chunks' encoded bytes ([`tags::sound::Gestalt::read_encoded`], over the
@@ -26,8 +27,8 @@
 //! `TARGET_MS`) still plays out.
 //!
 //! The window ([`crate::ui`]'s Sound window) and the agent API
-//! (`sound.read`, `sound.play`, `sound.stop`) both go through the `App`
-//! methods here, so they are one path.
+//! (`sound.read`, `sound.play`, `sound.stop`, `sound.mouth`) both go
+//! through the `App` methods here, so they are one path.
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -536,6 +537,8 @@ struct Loaded {
     gestalt: Gestalt,
     sound: Sound,
     clips: HashMap<(usize, usize), Arc<Clip>>,
+    /// Mouth curves, one per permutation read (`None` is unvoiced).
+    mouths: HashMap<(usize, usize), Option<Arc<[u8]>>>,
 }
 
 /// The audition's state in the [`App`].
@@ -633,6 +636,7 @@ impl App {
             gestalt,
             sound,
             clips: HashMap::new(),
+            mouths: HashMap::new(),
         });
         Ok(())
     }
@@ -732,6 +736,50 @@ impl App {
             l.clips.insert((range, permutation), clip.clone());
         }
         Ok(clip)
+    }
+
+    /// The mouth curve of permutation `permutation` of pitch range `range`
+    /// of sound `id`: one jaw-aperture byte per 30 Hz tick
+    /// ([`tags::sound::MOUTH_HZ`]), read from the sound's extra-info
+    /// resource. `Ok(None)` when the permutation is unvoiced. Read once,
+    /// then kept; it needs no executable, so it is read even when the
+    /// audio is not decoded.
+    pub fn sound_mouth(
+        &mut self,
+        id: TagId,
+        range: usize,
+        permutation: usize,
+    ) -> Result<Option<Arc<[u8]>>, SoundError> {
+        self.ensure_sound(id)?;
+        let (header, p) = {
+            let l = self.audition.loaded.as_ref().expect("loaded");
+            if let Some(m) = l.mouths.get(&(range, permutation)) {
+                return Ok(m.clone());
+            }
+            let p = *l
+                .sound
+                .ranges
+                .get(range)
+                .ok_or_else(|| SoundError::Failed(format!("no pitch range {range}")))?
+                .permutations
+                .get(permutation)
+                .ok_or_else(|| {
+                    SoundError::Failed(format!("no permutation {permutation} in range {range}"))
+                })?;
+            (l.header.clone(), p)
+        };
+        let mut files = self.shown_raw_files()?;
+        let curve = {
+            let l = self.audition.loaded.as_ref().expect("loaded");
+            l.gestalt
+                .mouth_curve(&header, &p, &mut Raw(&mut files))
+                .map_err(|e| SoundError::Failed(e.to_string()))?
+                .map(|v| v.into())
+        };
+        if let Some(l) = self.audition.loaded.as_mut() {
+            l.mouths.insert((range, permutation), curve.clone());
+        }
+        Ok(curve)
     }
 
     /// Play a permutation from `from_ms` into it, replacing what plays.

@@ -34,7 +34,7 @@ before its slice starts.
 | The field panel and its row model | built | `fields.rs`, `fields/row.rs` |
 | Pairing, the live mirror, `pair.preview`, `pair.audio` | built | `play/`, `api/preview.rs`, `api/pair.rs` |
 | Map packages: a base plus patch layers, `MapId`, the resolver, Live sharing, mod packs | built | `crates/formats/content`, `crates/runtime/vfs/src/packages.rs`, [maps.md](../game/maps.md) |
-| Sound audition (A1), sound measurement | built | `app/audition.rs`, `ui/sound.rs`, `api/sound.rs`, `api/sound_measure.rs` |
+| Sound audition (A1), mouth curves read (A2), sound measurement | built | `app/audition.rs`, `ui/sound.rs`, `api/sound.rs`, `api/sound_measure.rs`, `tags::sound::Gestalt::mouth_curve` |
 | Announcer lines and voice cloning | built | [announcer.md](announcer.md), [voice-cloning.md](voice-cloning.md) |
 | Animation graphs read and sampled, every retail codec | built, no view | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)) |
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
@@ -753,8 +753,9 @@ lines `sound.measure` compares against.
 **Mouth curves (slices A2 to A4).** The track under the waveform is the
 permutation's mouth curve, one value per 30 Hz tick
 ([rich-editors.md](rich-editors.md), "Sounds and facial animation"). A2
-reads it, A3 drives a picked model's `talk` overlay with it (needs M1),
-A4 draws on it and fills it **From the sound**. For a package sound the
+reads it (built), A3 drives a picked model's `talk` overlay with it
+(needs M1), A4 draws on it and fills it **From the sound**. For a
+package sound the
 curve is part of the `.sound.yaml` and the build writes it with the
 gestalt's extra info; for a disc sound A4's in-place write stands.
 
@@ -787,7 +788,7 @@ its guest entry is **E first**.
 | Method | Does |
 |---|---|
 | `sound.read`, `sound.play`, `sound.stop`, `sound.measure` | built |
-| `sound.mouth {sound, permutation, set?}` | reads or writes a curve (A2, A4) |
+| `sound.mouth {sound, permutation, set?}` | reads a curve (A2, built); the write is A4 |
 | `sound.edit {doc, op, ...}`, `sound.render {doc, out}` | the edit list and its result as a WAV |
 | `sound.permutation {doc, add \| remove \| set}` | the list |
 | `import.sound {file, package, tag, class?}` | a new `sound` item |

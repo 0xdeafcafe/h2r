@@ -10,5 +10,6 @@ group snd! 0x14 align 4
   0x6 unknown 0x2 seen=many -- S only (sound.rs playback_index)
   0x8 u16 first_pitch_range -- V index into ugh! pitch ranges; chains sum exactly (sound.md)
   0xa u8 pitch_range_count -- V
-  0xb unknown 0x5 seen=many
+  0xb unknown 0x3 seen=many -- S only (sound.rs scale, promotion and custom playback indices), uninterpreted
+  0xe u16 extra_info default=65535 -- V ffff none, else an index into ugh! extra infos; E the engine requests the sound's extra-info resource for a speaking unit whose class enables lip sync (0x0018c630; sound.rs SoundHeader; docs/halo1/sounds.md "Dialogue mouth curves")
   0x10 u32 max_play_time -- V milliseconds, floor of the longest permutation's duration (sound.md)
