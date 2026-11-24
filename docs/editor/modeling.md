@@ -453,6 +453,16 @@ pages open read-only.
   than the edit) is the session's `bitmap_refusal`: the save fails by
   name before it writes. A map that cannot take a new raw block
   (`raw_append_refusal`) refuses a shared-cache copy or a reshape.
+- **Format choice** (`assets::write::suggest_format`). The format a picture
+  saves in is the one it has when that holds the painted alpha (DXT1 and
+  A1R5G5B5 hold opaque and cut-out pictures, the colour-only formats opaque
+  ones, the rest anything), else DXT1 for an opaque or cut-out picture and
+  DXT5 for a blended one, or X8R8G8B8 and A8R8G8B8 when a side is not a power
+  of two (no DXT, no mips). `A8`, `Y8`, `AY8` and `A8Y8` are masks and greys
+  on purpose and are kept. The answer is always a format the encoder writes
+  and `reshaped` takes at that size. Resize's **Auto** button and `"auto"` as
+  `bitmap.reshape`'s `format` ask for it (`App::suggest_bitmap_format`,
+  looking at the layers resampled to the size asked for).
 - **Adding images and sequences.** `bitmap.image.add` (the inspector's
   **Add image**) appends an image after the bitmap's last: its `0x74`
   record copied from an existing 2D image (`from`, default 0) at a size
@@ -740,7 +750,7 @@ more. Every acceptance test is on invented data; a disc test is
 | 3 | **Write, in place**: `MapEditor::patch_raw`; moved vertices for clusters, instance definitions and `mode` sections; compression box growth; part and cluster bounds; instance placements and markers; stale marks | M | 2 | the saved map differs from the source only in the moved vertices' bytes, the bounds and the checksum; it reads back to the edited positions within quantisation; a box growth rewrites every section at its own size; a count change is refused; package round trip (PPF3) |
 | 4 | **Loop tools**: `SelectLoop`, `SelectRing`, `LoopCut`, `TrisToQuads`, `Dissolve`; then `Bevel` and `Inset` | M | 1 | built in `crates/tools/mesh-edit` with synthetic fixtures: counts on a quad cylinder and open strip; loops stop at poles and three-face edges; cut attributes interpolate, including weights normalised to 255; joining and triangulating restores an untouched pair |
 | 5 | **Textures, paint and export**: `bitmap-edit` canvas, tools, PNG in and out, the Textures tool, live preview, `bitmap.*` without write | M | nothing | built in `crates/tools/bitmap-edit` and Studio on invented bitmaps: stamp, line, clone, fill, channel copy and turn pixel tests (`tests/stamp_fill.rs`); an undo snapshot shares untouched tiles and an edit that changed nothing is no step (`tests/history.rs`); import resample (`tests/import.rs`); `bitmap.pixels` after `bitmap.paint` with a line and a clone stroke, and the window's own line and clone drag (`api/tests/bitmaps_tests.rs`); export refused in a Git checkout |
-| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | the encode tests above; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
+| 6 | **Textures, write**: `assets::encode` (linear, swizzled, DXT1/3/5, mips, cube faces), same-size in place; then new size or format and shared-cache copies through `MapEditor::append_raw` | M | 5; 3 for `patch_raw` | built in `assets::{encode, write}` and Studio (`encode_tests.rs`, `api/tests/bitmaps_tests.rs`): the encode tests above, every colour format reshaped and read back at every level, the last mip the picture's mean, sizes a format refuses named, a cube reshaped, `suggest_format`; a painted corner changes only its blocks and their mips in the saved map; a resized image reads back through `assets::bitmap::decode_image` with every level |
 | 7 | **Write, grown raw**: `MapEditor::append_raw`; topology changes for clusters and `mode` sections; section counts, visibility MOPP and table, frames; LOD repointing; behind Allow unverified geometry writes | L | 3 | the saved map validates and reads back to the exported mesh; `check_visibility` passes on every written cluster; the old block is unreferenced; a bucket-lit section and a sky strip are refused; the metadata still ends the file and a scenario block can still grow; package round trip (BPS) with a changed geometry hash |
 | 8 | **Collision compiler and `coll`**: `collision-build`; `coll` BSPs as meshes; BSP physics slots; **From render** | L | 1 | `Bsp::validate`; centroid and reference-side walks; random segments against brute force on a box, a concave room, a ramp and a two-sided sheet; limits refused; a saved `coll` reads back and its slot code emits each surface once |
 | 9 | **`phmo` primitives** in place | S | 2 | a radius, a box and a hull vertex change only their bytes; a hull made concave is refused |

@@ -646,7 +646,8 @@ format and budget.
   picture from a prompt ([Generating an image](#generating-an-image)).
 - **Resize.** Type a width, height and format and press **Resize**: the
   image saves at that size and format, every layer resampled and every
-  mip written again. One undo step. The line under it says what the
+  mip written again. **Auto** fills the format in for the picture: the one
+  it has when that holds its alpha, else DXT1 or DXT5. One undo step. The line under it says what the
   image saves as against what is stored.
 - **Add image** appends an image after the bitmap's last, the size and
   format of the one shown, transparent until you paint, import or

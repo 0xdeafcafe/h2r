@@ -644,7 +644,10 @@ fn bitmap_channel_copy_and_turn_pixels() {
             m::BITMAP_CHANNEL_COPY,
             json!({"bitmap": "floor", "from": "y", "to": "a"}),
         ),
-        (m::BITMAP_CHANNEL_COPY, json!({"bitmap": "floor", "from": "a"})),
+        (
+            m::BITMAP_CHANNEL_COPY,
+            json!({"bitmap": "floor", "from": "a"}),
+        ),
         (
             m::BITMAP_CHANNEL_COPY,
             json!({"bitmap": "floor", "from": "a", "to": "q"}),
@@ -855,6 +858,46 @@ fn a_painted_corner_saves_as_its_texels_only_and_the_tool_is_clean_after() {
 }
 
 #[test]
+fn auto_format_keeps_what_holds_the_picture_and_leaves_dxt_for_odd_sizes() {
+    let t = Temp::new("bitmaps-auto-format");
+    let (mut api, mut app) = bitmaps(&t);
+    // The floor is opaque A8R8G8B8: that holds it, so auto keeps it.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_RESHAPE,
+        json!({"bitmap": "floor", "width": 8, "height": 8, "format": "auto"}),
+    );
+    assert_eq!(r["reshape"]["format"], "Argb8888");
+    assert_eq!(r["reshape"]["width"], 8);
+    // Asked to be DXT1 first, an odd size cannot stay DXT1: auto takes the
+    // opaque linear format.
+    call(
+        &mut api,
+        &mut app,
+        m::BITMAP_RESHAPE,
+        json!({"bitmap": "floor", "format": "dxt1"}),
+    );
+    let r = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_RESHAPE,
+        json!({"bitmap": "floor", "width": 7, "height": 7, "format": "AUTO"}),
+    );
+    assert_eq!(r["reshape"]["format"], "Xrgb8888");
+    assert_eq!(r["reshape"]["width"], 7);
+    // The same through the resize method: the format asked for now,
+    // X8R8G8B8, holds an opaque picture at a power of two size too.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_IMAGE_RESIZE,
+        json!({"bitmap": "floor", "size": [8, 8], "format": "auto"}),
+    );
+    assert_eq!(r["reshape"]["format"], "Xrgb8888");
+}
+
+#[test]
 fn a_reshaped_image_is_appended_and_reads_back_through_the_decoder() {
     let t = Temp::new("bitmaps-reshape");
     let mut app = app(&t);
@@ -1031,7 +1074,11 @@ fn an_added_image_saves_by_moving_the_tag_and_keeps_everything_else() {
         json!({"bitmap": "floor", "size": [8, 8]}),
     );
     assert_eq!(
-        (add["image"].clone(), add["width"].clone(), add["images"].clone()),
+        (
+            add["image"].clone(),
+            add["width"].clone(),
+            add["images"].clone()
+        ),
         (json!(1), json!(8), json!(2))
     );
     let read = call(
@@ -1108,7 +1155,8 @@ fn an_added_image_saves_by_moving_the_tag_and_keeps_everything_else() {
         json!({"bitmap": "floor", "size": [0, 8]}),
     ] {
         assert!(
-            api.call(&mut app, m::BITMAP_IMAGE_ADD, params.clone()).is_err(),
+            api.call(&mut app, m::BITMAP_IMAGE_ADD, params.clone())
+                .is_err(),
             "{params}"
         );
     }
@@ -1154,11 +1202,7 @@ fn a_resized_image_is_one_undo_step_and_saves_at_its_new_size() {
         old.tag(fixture::id(7)).unwrap().index_address
     );
     assert_eq!(
-        code_of(api.call(
-            &mut app,
-            m::BITMAP_IMAGE_RESIZE,
-            json!({"bitmap": "floor"})
-        )),
+        code_of(api.call(&mut app, m::BITMAP_IMAGE_RESIZE, json!({"bitmap": "floor"}))),
         code::INVALID_PARAMS
     );
 }
@@ -1246,28 +1290,55 @@ fn sprites_are_added_edited_removed_undone_and_saved() {
     );
     assert_eq!(set["sprites"][1]["left"], 0.5);
     assert_eq!(set["sprites"][1]["registration"], json!([0.25, 0.75]));
-    let list = call(&mut api, &mut app, m::BITMAP_SPRITES, json!({"bitmap": "floor"}));
+    let list = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITES,
+        json!({"bitmap": "floor"}),
+    );
     assert_eq!(list["sequences"][0]["label"], "icons");
     assert_eq!(list["sequences"][0]["sprites"].as_array().unwrap().len(), 2);
-    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    let read = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_READ,
+        json!({"bitmap": "floor"}),
+    );
     assert_eq!(read["sequences"][0]["sprites"], 2);
 
     // Refusals change nothing: an inverted pair, an image the bitmap
     // lacks, a sprite that is not there, a label too long.
     for (method, params) in [
-        (m::BITMAP_SPRITE_SET, json!({"sequence": 0, "sprite": 0, "bounds": [0.9, 0.1, 0.0, 1.0]})),
-        (m::BITMAP_SPRITE_SET, json!({"sequence": 0, "sprite": 0, "image": 5})),
-        (m::BITMAP_SPRITE_SET, json!({"sequence": 0, "sprite": 7, "image": 0})),
+        (
+            m::BITMAP_SPRITE_SET,
+            json!({"sequence": 0, "sprite": 0, "bounds": [0.9, 0.1, 0.0, 1.0]}),
+        ),
+        (
+            m::BITMAP_SPRITE_SET,
+            json!({"sequence": 0, "sprite": 0, "image": 5}),
+        ),
+        (
+            m::BITMAP_SPRITE_SET,
+            json!({"sequence": 0, "sprite": 7, "image": 0}),
+        ),
         (m::BITMAP_SPRITE_REMOVE, json!({"sequence": 0, "sprite": 7})),
         (m::BITMAP_SPRITE_ADD, json!({"sequence": 3})),
-        (m::BITMAP_SEQUENCE_SET, json!({"sequence": 0, "label": "x".repeat(32)})),
+        (
+            m::BITMAP_SEQUENCE_SET,
+            json!({"sequence": 0, "label": "x".repeat(32)}),
+        ),
         (m::BITMAP_SEQUENCE_SET, json!({"sequence": 0, "count": 9})),
     ] {
         let mut params = params;
         params["bitmap"] = json!("floor");
         assert!(api.call(&mut app, method, params).is_err(), "{method}");
     }
-    let list2 = call(&mut api, &mut app, m::BITMAP_SPRITES, json!({"bitmap": "floor"}));
+    let list2 = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_SPRITES,
+        json!({"bitmap": "floor"}),
+    );
     assert_eq!(list, list2);
 
     let s = call(
@@ -1296,8 +1367,12 @@ fn sprites_are_added_edited_removed_undone_and_saved() {
     // Undo walks back: the removal, the rename, the set, both adds.
     for want in [2, 2, 2, 1, 0] {
         call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
-        let n = call(&mut api, &mut app, m::BITMAP_SPRITES, json!({"bitmap": "floor"}))["sequences"][0]
-            ["sprites"]
+        let n = call(
+            &mut api,
+            &mut app,
+            m::BITMAP_SPRITES,
+            json!({"bitmap": "floor"}),
+        )["sequences"][0]["sprites"]
             .as_array()
             .unwrap()
             .len();
@@ -1334,7 +1409,12 @@ fn editing_a_stored_sequence_moves_the_tag_and_undo_restores_it() {
         m::SOURCE_OPEN,
         json!({"path": path.display().to_string()}),
     );
-    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    let read = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_READ,
+        json!({"bitmap": "floor"}),
+    );
     assert_eq!(read["grown"], false);
     assert_eq!(read["sequences"][0]["added"], false);
     call(
@@ -1343,13 +1423,23 @@ fn editing_a_stored_sequence_moves_the_tag_and_undo_restores_it() {
         m::BITMAP_SPRITE_SET,
         json!({"bitmap": "floor", "sequence": 0, "sprite": 0, "registration": [0.5, 0.5]}),
     );
-    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    let read = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_READ,
+        json!({"bitmap": "floor"}),
+    );
     assert_eq!(read["grown"], true);
     let out = save_as(&mut api, &mut app, &t, "edited.map");
     assert_ne!(out, first);
     assert_eq!(floor_of(&out).0.sequences[0].sprites.len(), 1);
     call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "bitmaps"}));
-    let read = call(&mut api, &mut app, m::BITMAP_READ, json!({"bitmap": "floor"}));
+    let read = call(
+        &mut api,
+        &mut app,
+        m::BITMAP_READ,
+        json!({"bitmap": "floor"}),
+    );
     assert_eq!(read["grown"], false);
     assert_eq!(save_as(&mut api, &mut app, &t, "undone.map"), first);
     assert_ne!(first, src);
@@ -1364,7 +1454,12 @@ fn editing_a_stored_sequence_moves_the_tag_and_undo_restores_it() {
 fn the_snapshot_follows_a_painted_base_map() {
     let t = Temp::new("bitmaps-viewport");
     let (mut api, mut app) = bitmaps(&t);
-    call(&mut api, &mut app, m::VIEW_LIGHTING, json!({"mode": "flat"}));
+    call(
+        &mut api,
+        &mut app,
+        m::VIEW_LIGHTING,
+        json!({"mode": "flat"}),
+    );
     let shot = |api: &mut Api, app: &mut App, name: &str| -> Option<Vec<u8>> {
         let out = t.path(name);
         let params = json!({

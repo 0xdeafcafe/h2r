@@ -294,7 +294,10 @@ pub fn canvas(
     }
     // The tools (B, E, S, G, I), the zoom and the undo.
     for t in PaintTool::ALL {
-        if ui.radio_button_bool(format!("{}##tex-tool-{t:?}", t.label()), app.textures.tool == t) {
+        if ui.radio_button_bool(
+            format!("{}##tex-tool-{t:?}", t.label()),
+            app.textures.tool == t,
+        ) {
             app.textures.tool = t;
         }
         ui.same_line();
@@ -418,7 +421,10 @@ pub fn canvas(
             }
             PaintTool::Brush | PaintTool::Eraser if editable => {
                 actions.push(Action::Bitmap(BitmapAction::StrokeBegin { tag, layer }));
-                actions.push(Action::Bitmap(BitmapAction::StrokeTo { x: px[0], y: px[1] }));
+                actions.push(Action::Bitmap(BitmapAction::StrokeTo {
+                    x: px[0],
+                    y: px[1],
+                }));
                 st.painting = true;
                 st.last = px;
             }
@@ -454,7 +460,10 @@ pub fn canvas(
     if st.painting {
         if ui.is_mouse_down(MouseButton::Left) {
             if px != st.last {
-                actions.push(Action::Bitmap(BitmapAction::StrokeTo { x: px[0], y: px[1] }));
+                actions.push(Action::Bitmap(BitmapAction::StrokeTo {
+                    x: px[0],
+                    y: px[1],
+                }));
                 st.last = px;
             }
         } else {
@@ -467,12 +476,15 @@ pub fn canvas(
     let clamp = |p: [f32; 2]| [p[0].clamp(0.0, w as f32), p[1].clamp(0.0, hgt as f32)];
     if let Some(mq) = st.marquee {
         let (a, b) = (clamp(mq.from), clamp(px));
-        dl.add_rect(at(a), at(b), theme::WIDGET_FOCUS).thickness(1.0).build();
+        dl.add_rect(at(a), at(b), theme::WIDGET_FOCUS)
+            .thickness(1.0)
+            .build();
         if !ui.is_mouse_down(MouseButton::Left) {
             st.marquee = None;
             let (x0, y0) = (a[0].min(b[0]).floor() as u32, a[1].min(b[1]).floor() as u32);
             let (x1, y1) = (a[0].max(b[0]).ceil() as u32, a[1].max(b[1]).ceil() as u32);
-            app.textures.selection = (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0));
+            app.textures.selection =
+                (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0));
         }
     } else if let Some(r) = app.textures.selection {
         dl.add_rect(
@@ -524,7 +536,9 @@ pub fn canvas(
         )
     {
         let r = app.textures.brush.size * 0.5 * zoom;
-        dl.add_circle(m, r.max(1.0), theme::WIDGET_FOCUS).thickness(1.0).build();
+        dl.add_circle(m, r.max(1.0), theme::WIDGET_FOCUS)
+            .thickness(1.0)
+            .build();
     }
     if hovered && inside {
         let c = app
@@ -547,7 +561,11 @@ fn write(gpu: &mut Gpu<'_>, texture: &wgpu::Texture, r: Rect, rgba: &[u8]) {
         wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
-            origin: wgpu::Origin3d { x: r.x, y: r.y, z: 0 },
+            origin: wgpu::Origin3d {
+                x: r.x,
+                y: r.y,
+                z: 0,
+            },
             aspect: wgpu::TextureAspect::All,
         },
         rgba,
@@ -817,13 +835,20 @@ pub fn inspector(
         }
         ui.same_line();
         if ui.button(format!("{} Generate...##tex-generate", icon::ZAP)) {
-            let name = app.textures.open.get(&tag).map(|o| o.name.clone()).unwrap_or_default();
+            let name = app
+                .textures
+                .open
+                .get(&tag)
+                .map(|o| o.name.clone())
+                .unwrap_or_default();
             actions.push(Action::Image(ImageAction::Open {
                 bitmap: name,
                 image: layer.image as usize,
             }));
         }
-        ui.set_item_tooltip("Make a new picture for this image from a prompt and references you pick");
+        ui.set_item_tooltip(
+            "Make a new picture for this image from a prompt and references you pick",
+        );
         d.end();
         ui.same_line();
         if ui.button(format!("{} Export...##tex-export", icon::SAVE)) {
@@ -921,6 +946,16 @@ fn image_shape(
         }
     }
     ui.same_line();
+    if ui.button("Auto##tex-resize-auto") {
+        let (w, h) = (size[0].clamp(1, 4096) as u32, size[1].clamp(1, 4096) as u32);
+        if let Ok(f) = app.suggest_bitmap_format(tag, image, Some((w, h))) {
+            *format = f;
+        }
+    }
+    ui.set_item_tooltip(
+        "Pick the format for this picture at this size: the one it has when that holds its alpha, else DXT1 for opaque and cut-out pictures, DXT5 for blended ones, and a linear format when a side is not a power of two",
+    );
+    ui.same_line();
     if ui.button("Resize##tex-resize") {
         let (w, h) = (size[0].clamp(1, 4096) as u32, size[1].clamp(1, 4096) as u32);
         actions.push(Action::Bitmap(BitmapAction::Reshape {
@@ -955,7 +990,10 @@ fn image_shape(
         "Add an image after the last, the size and format of this one, transparent until you paint, import or generate into it",
     );
     ui.same_line();
-    if ui.button(format!("{} New image, generated...##tex-add-generate", icon::ZAP)) {
+    if ui.button(format!(
+        "{} New image, generated...##tex-add-generate",
+        icon::ZAP
+    )) {
         actions.push(Action::Image(ImageAction::NewSlot {
             bitmap: name.clone(),
             like: image,
@@ -977,7 +1015,10 @@ fn image_shape(
             sequence_rows(ui, app, st, tag, s, images, movable.is_some(), actions);
         }
         let d = ui.begin_disabled_with_cond(movable.is_some() || image >= images);
-        if ui.button(format!("{} Add a sequence for image {image}##tex-add-seq", icon::PLUS)) {
+        if ui.button(format!(
+            "{} Add a sequence for image {image}##tex-add-seq",
+            icon::PLUS
+        )) {
             actions.push(Action::Bitmap(BitmapAction::AddSequence {
                 tag,
                 first: image,
@@ -1076,7 +1117,11 @@ fn sequence_rows(
     locked: bool,
     actions: &mut Vec<Action>,
 ) {
-    let label = if s.label.is_empty() { "(no label)" } else { &s.label };
+    let label = if s.label.is_empty() {
+        "(no label)"
+    } else {
+        &s.label
+    };
     let last = i32::from(s.first) + i32::from(s.count) - 1;
     let title = format!(
         "{}  {label}: images {} to {last}, {} sprites{}##tex-seq-{}",
@@ -1092,7 +1137,11 @@ fn sequence_rows(
     let d = ui.begin_disabled_with_cond(locked);
     let key = (tag, s.index);
     if st.seq_edit.as_ref().is_none_or(|(k, ..)| *k != key) {
-        st.seq_edit = Some((key, s.label.clone(), [i32::from(s.first), i32::from(s.count)]));
+        st.seq_edit = Some((
+            key,
+            s.label.clone(),
+            [i32::from(s.first), i32::from(s.count)],
+        ));
     }
     let (_, text, range) = st.seq_edit.as_mut().expect("just set");
     let mut done = false;
@@ -1183,7 +1232,11 @@ fn sequence_rows(
             sprite,
         }));
     }
-    if ui.button(format!("{} Add a sprite##tex-sp-add-{}", icon::PLUS, s.index)) {
+    if ui.button(format!(
+        "{} Add a sprite##tex-sp-add-{}",
+        icon::PLUS,
+        s.index
+    )) {
         actions.push(Action::Bitmap(BitmapAction::SetSprite {
             tag,
             sequence: s.index,
