@@ -6,7 +6,9 @@
 //! under a collapsed "Voice setup". Making a line is the app's
 //! ([`crate::app::announcer`], [`crate::app::voices`]); the agent API's
 //! `voice.say`, `voice.clone.say` and `voice.say_batch` make it the same
-//! way. View > Voices opens it.
+//! way. View > Voices opens it, as do Go to anything ("Open: Voices") and
+//! the sound editor's **New line in Voices**, which starts a row that
+//! replaces the sound in front (`App::voices_line_for`).
 //!
 //! A line the voice already said comes back at once from the cache. The
 //! batch says one row per frame, the row shown "running" while the model is
@@ -17,7 +19,7 @@ use dear_imgui_rs::{Condition, ItemHoveredFlags, TreeNodeFlags, Ui};
 use crate::app::App;
 use crate::app::announcer::{Playback, SayParams, Said};
 use crate::app::voice_batch::{Row, RowState};
-use crate::app::voices::{BuildParams, MIN_TRAIN_MINUTES};
+use crate::app::voices::{BuildParams, MIN_TRAIN_MINUTES, Show};
 use crate::theme::{self, icon};
 use crate::voice::dataset::{self, CHARACTERS};
 use crate::voice::sidecar::Backend;
@@ -66,6 +68,18 @@ fn clock(ms: u64) -> String {
 }
 
 pub fn window(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
+    // Asked for by Go to anything or by a sound's editor
+    // (`app::voices::Show`): open, in front, and on the batch when a line
+    // for a game sound was started.
+    let asked = app.voices.show.take();
+    if let Some(show) = asked {
+        st.open = true;
+        if show == Show::Lines {
+            st.engine = Engine::Clone;
+            // The target picker's list is the shown map's: read it again.
+            st.tags = None;
+        }
+    }
     if !st.open {
         return;
     }
@@ -78,6 +92,9 @@ pub fn window(ui: &Ui, app: &mut App, st: &mut AnnouncerUi, dialogs: bool) {
                 st.open = false;
             }
         });
+    if asked.is_some() {
+        ui.set_window_focus(Some("###announcer"));
+    }
 }
 
 /// What a backend is called in the picker.

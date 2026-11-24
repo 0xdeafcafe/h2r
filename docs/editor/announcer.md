@@ -8,7 +8,7 @@ Studio makes an announcer line from text: a voice says it, Studio trims
 it, brings it to the loudness of the retail announcer, saves it in the
 format of our announcer clips (`art/announcer/README.md`), plays it and
 says how it sits against the retail lines. The Voices window (View >
-Voices, the announcer engine) and the agent API (`voice.say`, `voice.list`,
+Voices, or `Open: Voices` in Go to anything; the announcer engine) and the agent API (`voice.say`, `voice.list`,
 `voice.commit`, in [agent-api.md](agent-api.md)) go through the same `App`
 methods. The same pipeline says a game character's lines with a local
 clone (`Engine::Clone`, `voice.clone.say`); that engine, its dataset and

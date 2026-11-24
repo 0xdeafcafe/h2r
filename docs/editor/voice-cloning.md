@@ -151,9 +151,13 @@ line nearest 7 s, else the longest line with text up to 12 s).
   ([agent-api.md](agent-api.md), "Voices").
 - Agent API: the batch, `voice.say_batch`, `voice.batch.status`,
   `voice.batch.run`, `voice.batch.save` (agent-api.md, "Voices").
-- The Voices window (View > Voices): the announcer's Fish Audio voice says
-  one line; a character's clone says a batch, in the flow below. The
-  dataset, the fine-tune and the model's jobs are under "Voice setup".
+- The Voices window (View > Voices; `Open: Voices` in Go to anything): the
+  announcer's Fish Audio voice says one line; a character's clone says a
+  batch, in the flow below. The dataset, the fine-tune and the model's
+  jobs are under "Voice setup". **New line in Voices** in a sound's
+  editor (`ui/sound.rs`) runs `App::voices_line_for`: one batch row whose
+  target is that sound, and the window in front on the batch
+  ([studio-flow.md](studio-flow.md), "Voices and the announcer").
 - `voice::sidecar::Launcher` and `Sidecar` are the seam the tests replace
   (`voice::fake::FakeLauncher`); `voice::dataset::LineSource` the one the
   dataset builder reads through (`voice::fake::FakeLines`).
