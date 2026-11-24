@@ -101,6 +101,7 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
                 },
             })
             .collect(),
+        source: None,
         positions: v.positions,
         uvs: v.texcoords,
         lightmap_uvs: v.lightmap_texcoords,
@@ -109,6 +110,12 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         tangents: v.tangents,
         lighting: lighting_vectors(s),
     })
+}
+
+fn map_section(s: &Section, section: u32) -> Option<SectionInput> {
+    let mut input = section_input(s)?;
+    input.source = Some(world::light_parts::SourceSection::from_section(u16::try_from(section).ok()?, s));
+    Some(input)
 }
 
 /// A section's signed lighting vectors (stream `30`, found by
@@ -177,7 +184,7 @@ pub fn load_world<R: Read + Seek>(
     let mut b = WorldBuilder::new();
     for (ci, c) in bsp.clusters.iter().enumerate() {
         match c.geometry.load(raw, materials) {
-            Ok(Some(s)) => match section_input(&s) {
+            Ok(Some(s)) => match map_section(&s, ci as u32) {
                 Some(input) => b.add_section(Owner::Cluster(ci as u32), &input, &Placement::IDENTITY, key(clusters.get(ci))),
                 None => failed += 1,
             },
@@ -188,8 +195,9 @@ pub fn load_world<R: Read + Seek>(
     let defs: Vec<Option<SectionInput>> = bsp
         .instance_definitions
         .iter()
-        .map(|d| match d.geometry.load(raw, materials) {
-            Ok(Some(s)) => section_input(&s).or_else(|| {
+        .enumerate()
+        .map(|(i, d)| match d.geometry.load(raw, materials) {
+            Ok(Some(s)) => map_section(&s, i as u32).or_else(|| {
                 failed += 1;
                 None
             }),
@@ -298,7 +306,8 @@ pub fn load_sections<R: Read + Seek>(
             }
         };
         let section = geometry.load(raw, materials)?.ok_or("the section has no geometry")?;
-        let input = section_input(&section).ok_or("the section's vertices do not decode")?;
+        let index = match owner { SectionOwner::Cluster(i) | SectionOwner::InstanceDefinition(i) => i };
+        let input = map_section(&section, index).ok_or("the section's vertices do not decode")?;
         out.extend(owners.into_iter().map(|o| (o, input.clone())));
     }
     Ok(out)

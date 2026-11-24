@@ -564,7 +564,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             None
         };
         let held = Held {
-            clusters: &world.clusters,
+            world,
             models: model_lights.as_deref().map(|m| &m.models),
         };
         native_render::shadow_scene::plan_entries(
@@ -578,12 +578,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let mut run: Vec<(usize, WorldDraw)> = Vec::new();
         for e in &group.entries {
             let imp = usize::from(e.binding.implementation);
-            if let Some(k) = structure_key(e) {
-                let (_, draw) = world
-                    .clusters
-                    .get(&k)
-                    .ok_or(Keep::Unsupported("scene shadow entry has no native stream"))?;
-                run.push((imp, *draw));
+            if structure_key(e).is_some() {
+                run.push((imp, world.structure_entry(e)?));
                 continue;
             }
             if !run.is_empty() {
@@ -722,23 +718,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 /// part's range there, for its own shader only; and the map's model parts
 /// ([`LightModels::part`]), a stream per model section.
 struct Held<'a> {
-    clusters: &'a ClusterParts,
+    world: &'a LightsWorld,
     models: Option<&'a LightModels>,
 }
 
 impl native_render::light_scene::Resident for Held<'_> {
     fn part(&self, e: &LightEntry) -> Option<native_render::light_scene::ResidentPart> {
-        let Some(key) = structure_key(e) else {
+        if structure_key(e).is_none() {
             let (_, part) = self.models?.part(e)?;
             return Some(native_render::light_scene::ResidentPart {
                 stream: LightModels::stream(e),
                 indices: part.indices.clone(),
             });
-        };
-        let (shader, d) = self.clusters.get(&key)?;
-        if shader.0 != e.binding.shader {
-            return None;
         }
+        let d = self.world.structure_entry(e).ok()?;
         Some(native_render::light_scene::ResidentPart {
             stream: 0,
             indices: d.first_index..d.first_index.checked_add(d.index_count)?,
@@ -1555,6 +1548,7 @@ pub struct LightsWorld {
     materials: HashMap<u16, LitMaterial>,
     clusters: ClusterParts,
     placements: HashMap<u32, ModelRows>,
+    structure_ranges: Arc<native_render::world::light_parts::Ranges>,
     /// Stage images by (stage, bitmap, image) since palettes are per stage.
     images: Arc<HashMap<(usize, TagId, u32), Image>>,
     palettized: HashSet<(usize, TagId, u32)>,
@@ -1566,6 +1560,22 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
+    fn structure_entry(&self, e: &LightEntry) -> Result<WorldDraw, Keep> {
+        let key = structure_key(e).ok_or(Keep::Unsupported("expected a gathered structure part"))?;
+        let (shader, draw) = self.clusters.get(&key)
+            .ok_or(Keep::Unsupported("structure part has no resident lit material or geometry"))?;
+        if shader.0 != e.binding.shader {
+            return Err(Keep::Unsupported("gathered shader datum differs from the structure material"));
+        }
+        if e.stream.vertex_class != residency::classification(draw.owner) {
+            return Err(Keep::Unsupported("gathered structure vertex class differs from the loaded geometry"));
+        }
+        self.structure_ranges.get(&key)
+            .ok_or(Keep::Unsupported("structure source index range unavailable"))?
+            .draw(&e.stream, *draw)
+            .map_err(Keep::Unsupported)
+    }
+
     fn placement(&self, owner: Owner) -> Result<Option<ModelRows>, Keep> {
         match owner {
             Owner::Cluster(_) => Ok(None),
@@ -2127,6 +2137,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         materials,
         clusters,
         placements: world.placements.iter().copied().collect(),
+        structure_ranges: world.light_parts.clone(),
         images: Arc::new(images),
         palettized,
         palettes: palettes.clone(),

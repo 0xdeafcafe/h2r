@@ -3,6 +3,8 @@
 //! that share a material and a lightmap page. Built once at map load;
 //! pure data, no GPU and no disc (`crate::load` fills it from a map).
 
+pub mod light_parts;
+
 use bytemuck::{Pod, Zeroable};
 
 /// One world vertex (76 bytes): what the lightmap pass reads. The first
@@ -192,6 +194,8 @@ pub struct SectionInput {
     /// The signed lighting vectors (stream `30`); empty without them.
     pub lighting: Vec<[f32; 3]>,
     pub parts: Vec<PartInput>,
+    /// Original map ranges and the alternative list interpretation of strips.
+    pub source: Option<light_parts::SourceSection>,
 }
 
 /// One part of a section: its material, whether it is transparent (kind
@@ -261,6 +265,8 @@ pub struct World {
     /// rows, [`World::rows`]).
     pub program_vertices: Vec<WorldVertex>,
     pub indices: Vec<u32>,
+    /// Original part ranges and the triangles each gathered topology draws.
+    pub light_parts: std::sync::Arc<light_parts::Ranges>,
     /// Sorted by batch.
     pub draws: Vec<WorldDraw>,
     pub batches: Vec<Batch>,
@@ -348,6 +354,17 @@ impl World {
             return Err(SectionRefusal::VertexCount);
         }
         let base = run.first_vertex;
+        let inputs = section_inputs(section, section.lightmap_uvs.len() == n);
+        for (&(_, part), ranges) in self.light_parts.range((owner, 0)..=(owner, u8::MAX)) {
+            // Placements keep per-instance lightmap coordinates and lighting.
+            let inputs = if matches!(owner, Owner::Instance(_)) {
+                let bucket = (1 << 5) | (1 << 6);
+                (inputs & !bucket) | (ranges.inputs() & bucket)
+            } else { inputs };
+            if !ranges.unchanged(part, section, &self.indices, base, inputs) {
+                return Err(SectionRefusal::Triangles);
+            }
+        }
         let ranges = self
             .draws
             .iter()
@@ -528,6 +545,7 @@ pub struct WorldBuilder {
     program_vertices: Vec<WorldVertex>,
     placements: Vec<(u32, ModelRows)>,
     indices: Vec<u32>,
+    light_parts: light_parts::Ranges,
     draws: Vec<WorldDraw>,
     transparents: Vec<TransparentDraw>,
     stats: BuildStats,
@@ -582,24 +600,26 @@ impl WorldBuilder {
             if index_count == 0 {
                 continue;
             }
+            let Ok(part_index) = u8::try_from(index) else { continue };
+            if let Some(source) = &section.source
+                && let Some(ranges) = source.append(part_index, &mut self.indices,
+                    first_index..first_index + index_count, n, base, part.material, inputs)
+            {
+                self.light_parts.insert((owner, part_index), ranges);
+            }
             if part.transparent {
-                // Past 255 parts the entry's byte cannot name it.
-                if let Ok(part_index) = u8::try_from(index) {
-                    self.transparents.push(TransparentDraw {
-                        owner,
-                        part: part_index,
-                        material: part.material,
-                        lightmap,
-                        first_index,
-                        index_count,
-                        bounds,
-                        inputs,
-                    });
-                }
+                self.transparents.push(TransparentDraw {
+                    owner,
+                    part: part_index,
+                    material: part.material,
+                    lightmap,
+                    first_index,
+                    index_count,
+                    bounds,
+                    inputs,
+                });
                 continue;
             }
-            // Past 255 parts an item's byte cannot name it.
-            let Ok(part_index) = u8::try_from(index) else { continue };
             self.draws.push(WorldDraw {
                 owner,
                 part: part_index,
@@ -650,6 +670,7 @@ impl WorldBuilder {
             program_vertices: self.program_vertices,
             placements: self.placements,
             indices: self.indices,
+            light_parts: std::sync::Arc::new(self.light_parts),
             draws: self.draws,
             batches,
             transparents: self.transparents,

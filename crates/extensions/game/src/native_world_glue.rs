@@ -1434,6 +1434,7 @@ fn load_ready(
     // The later shader walks use part descriptors and placement rows. Keep
     // those before filtering layer 3, without copying any vertex or index data.
     let stage_world = World {
+        light_parts: world.light_parts.clone(),
         draws: world.draws.clone(),
         batches: world.batches.clone(),
         transparents: world.transparents.clone(),
