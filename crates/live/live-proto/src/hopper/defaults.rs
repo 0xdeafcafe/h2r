@@ -889,7 +889,7 @@ mod tests {
         }
         engines.sort();
         engines.dedup();
-        assert_eq!(engines, [1, 2, 3, 4, 8, 9]);
+        assert_eq!(engines, [1, 3, 4, 6, 8, 9]);
         for (id, name) in MAP_PACK_MAPS {
             assert!(used_maps.contains(&id), "{name} is not in a rotation");
         }

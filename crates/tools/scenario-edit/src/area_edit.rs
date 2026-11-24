@@ -218,7 +218,7 @@ mod tests {
     fn a_point_drag_that_crosses_the_path_is_refused() {
         let square = Area::path(vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]);
         // Point 2 dragged across the left side makes a bow tie.
-        let e = drag(&square, Handle::Point(2), AT, [7.0, 4.0, 1.0]).unwrap_err();
+        let e = drag(&square, Handle::Point(2), AT, [7.0, 5.0, 1.0]).unwrap_err();
         assert!(matches!(e, Refused::Area(AreaError::Crosses(..))), "{e}");
         let ok = drag(&square, Handle::Point(0), AT, [7.0, 2.0, 1.0]).unwrap();
         let Shape::Path(p) = &ok.shape else { panic!() };

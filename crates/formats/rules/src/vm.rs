@@ -1934,6 +1934,7 @@ mod tests {
     fn state_refuses_unsorted_zones() {
         let mut e = ext();
         e.held.clear();
+        e.shown.clear();
         let bytes = e.encode();
         // Two zones, 12 before 5: rewrite the tail by hand.
         let mut bad = bytes[..bytes.len() - 1].to_vec();
@@ -1942,6 +1943,7 @@ mod tests {
             bad.extend_from_slice(&zone.to_le_bytes());
             bad.extend_from_slice(&[0; 4 * MAX_TEAMS]);
         }
+        bad.push(0);
         assert!(RulesExt::decode(&bad).is_err());
     }
 
@@ -1963,7 +1965,8 @@ mod tests {
         let bytes = ext().encode();
         // The spawn rules sit before the held counters: team 0's kind byte
         // is the first of them.
-        let held = 1 + 2 * (4 + 4 * MAX_TEAMS);
+        let shown = 1 + 2 * (4 + 1);
+        let held = shown + 1 + 2 * (4 + 4 * MAX_TEAMS);
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
@@ -2080,6 +2083,7 @@ mod tests {
             [(0x4001_0000, Some(0)), (0x4001_0002, Some(0)), (0x4001_0001, Some(0))]
         );
         vm.fire(&mut g, Input::RoundEnd);
+        g.after(&Input::RoundEnd);
         assert!(vm.shown_areas().is_empty());
         assert!(g.shown.is_empty());
     }

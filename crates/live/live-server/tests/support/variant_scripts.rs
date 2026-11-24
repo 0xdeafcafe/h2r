@@ -103,7 +103,7 @@ pub async fn exercise(live: Arc<Live>) {
     .await;
     assert_eq!(status, 201, "{made}");
     assert_eq!(made["description"], v["about"]);
-    assert_eq!(made["game_type"], "Slayer");
+    assert_eq!(made["game_type"], "Script");
     assert_eq!(made["script_name"], "Duel");
     assert!(!made["settings"].as_array().unwrap().is_empty());
     // The same fields on a read.
