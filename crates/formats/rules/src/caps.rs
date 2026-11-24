@@ -636,12 +636,14 @@ pub const ENTRIES: &[Entry] = &[
     // Physics reads (docs/game/rules-world-api.md, "Physics"), no
     // capability. A player's biped is off the ground, crouched, or primed
     // (its level pair is in the state a landing bounces from); a player
-    // who is gone, dead or in no biped reads false. The game side
-    // (`game::rules::world::physics`) is not built, so a host refuses a
-    // script that reads any of them by name.
-    read(id::AIRBORNE, "airborne", &[Player], Bool, NotBuilt),
+    // who is gone, dead or in no biped reads false. `airborne` and `primed`
+    // are the host's, from the superbounce medal chain's view of each
+    // biped (`game::rules::world::physics::Body`), kept while the
+    // superbounce mode steps it; `crouching` has no host half, so a host
+    // refuses a script that reads it by name.
+    read(id::AIRBORNE, "airborne", &[Player], Bool, Named),
     read(id::CROUCHING, "crouching", &[Player], Bool, NotBuilt),
-    read(id::PRIMED, "primed", &[Player], Bool, NotBuilt),
+    read(id::PRIMED, "primed", &[Player], Bool, Named),
     // `sees(a, b)`: nothing solid between two objects. A VM read of its
     // sight table (`vm::RulesExt::sight`): a pair asked for in one tick is
     // traced at the next tick boundary through `Game::trace_sight`, and
@@ -1156,12 +1158,12 @@ mod tests {
     }
 
     #[test]
-    fn physics_reads_need_no_capability_and_wait_on_the_game_side() {
+    fn physics_reads_need_no_capability_and_crouching_and_sees_wait_on_the_game_side() {
         for name in ["airborne", "crouching", "primed"] {
             let e = entry_named(name).unwrap();
             assert_eq!((e.kind, e.result, e.cap), (Kind::Read, Some(Bool), None), "{name}");
             assert_eq!(e.args, &[Player], "{name}");
-            assert!(!e.status.hostable(), "{name}");
+            assert_eq!(e.status.hostable(), name != "crouching", "{name}");
         }
         let sees = entry(id::SEES, API_VERSION).unwrap();
         assert_eq!((sees.kind, sees.result, sees.cap), (Kind::VmOnly, Some(Bool), None));

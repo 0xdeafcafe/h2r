@@ -641,6 +641,9 @@ pub struct GuestGame<'a> {
     pub zones: Option<&'a Zones>,
     /// The map's tag paths, for `tag_int` and `tag_fixed`; none reads 0.
     pub tags: Option<&'a TagIndex>,
+    /// The players' bodies at the last superbounce chain step, for
+    /// `airborne` and `primed` (`super::world::physics`); none reads false.
+    pub bodies: &'a [crate::superbounce_chain::Body],
 }
 
 impl<'a> GuestGame<'a> {
@@ -654,7 +657,14 @@ impl<'a> GuestGame<'a> {
             film: false,
             zones: None,
             tags: None,
+            bodies: &[],
         }
+    }
+
+    /// The same game whose players' bodies are `bodies`.
+    pub fn with_bodies(mut self, bodies: &'a [crate::superbounce_chain::Body]) -> Self {
+        self.bodies = bodies;
+        self
     }
 
     /// The same game whose tag paths are `tags`.
@@ -841,6 +851,9 @@ impl Game for GuestGame<'_> {
                 .unwrap_or(0),
                 _ => 0,
             },
+            id::AIRBORNE | id::PRIMED => {
+                p.is_some_and(|p| super::world::physics::read(self.bodies, call.entry.id, p)) as i32
+            }
             id::PLAYER_OF => match call.args.first() {
                 Some(Arg::Object(Some(o))) => zones::player_of(m, *o).map_or(::rules::ty::NONE, i32::from),
                 _ => ::rules::ty::NONE,
@@ -1114,6 +1127,9 @@ pub struct Runtime {
     /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
     /// machine that joins late has it (`super::world::show::walls`).
     wall_cue: Option<(Vec<(u32, Option<u8>)>, u32)>,
+    /// The players' bodies at the superbounce chain's last step: what
+    /// `airborne` and `primed` read (`super::world::physics`).
+    bodies: Vec<crate::superbounce_chain::Body>,
 }
 
 /// Whether the authority sends the walls cue now: the list changed since
@@ -1178,6 +1194,7 @@ impl Runtime {
             walled: false,
             hud_on: false,
             wall_cue: None,
+            bodies: Vec::new(),
         }
     }
 
@@ -1515,7 +1532,8 @@ impl Runtime {
                 .with_table(&table)
                 .with_zones(&zones)
                 .with_tags(&tags)
-                .with_film(self.film);
+                .with_film(self.film)
+                .with_bodies(&self.bodies);
             // The first round began inside `GAME_ACTIVATE` (its round
             // reset, `ENGINE_ROUND_RESET`, ran before this observer), so
             // its `on round_start` follows `on init` here; each later
@@ -1637,7 +1655,8 @@ impl Runtime {
                 .with_table(table)
                 .with_zones(zones)
                 .with_tags(tags)
-                .with_film(self.film);
+                .with_film(self.film)
+                .with_bodies(&self.bodies);
             vm.flush_queue(&mut g);
         }
         if let Err(why) = save(r, &mut *self.store) {
@@ -1722,7 +1741,8 @@ impl Runtime {
                 .with_table(table)
                 .with_zones(zones)
                 .with_tags(tags)
-                .with_film(self.film);
+                .with_film(self.film)
+                .with_bodies(&self.bodies);
             f(vm, &mut g);
             (g.start_line, g.error)
         };
@@ -1807,6 +1827,13 @@ impl Runtime {
         self.run(m, |vm, g| {
             vm.fire(g, Input::Bounced(player));
         });
+    }
+
+    /// The players' bodies at the medal chain's step, replacing the last
+    /// set: what a script's `p.airborne` and `p.primed` read until the next.
+    pub fn bodies(&mut self, bodies: &[crate::superbounce_chain::Body]) {
+        self.bodies.clear();
+        self.bodies.extend_from_slice(bodies);
     }
 
     /// What one tick's medal chain saw of the players' physics
