@@ -61,21 +61,50 @@ fn answer(app: &mut App, doc: Doc, log: Vec<String>) -> Reply {
     Ok(json!({ "tab": tab, "front": app.front_doc().map(|d| app.doc_id(d)), "log": log }))
 }
 
-/// `shell.open`: a tag of the open map (or of `map`, opened first), or a
-/// map alone.
+/// `shell.open`: a tag of the open map (or of `map`, opened first), a
+/// package item (`asset: "item:<package>:<n>"`), or a map alone.
 fn open(app: &mut App, p: &P) -> Reply {
     let discard = p.bool("discard")?;
     let mut log = Vec::new();
-    if let Some(map) = p.opt_str("map")? {
-        if app.loaded_map() != Some(map) || app.browsing().is_some() {
+    let map = p.opt_str("map")?;
+    if let Some(map) = &map {
+        if app.loaded_map().as_deref() != Some(map.as_str()) || app.browsing().is_some() {
             log.extend(run(app, Action::SelectMap(map.to_owned()), discard)?);
         }
-        if app.loaded_map() != Some(map) {
+        if app.loaded_map().as_deref() != Some(map.as_str()) {
             return Err(err(
                 code::INVALID_PARAMS,
                 format!("{map:?} did not open as the map (source.maps lists them)"),
             ));
         }
+    }
+    if let Some(asset) = p.opt_str("asset")? {
+        if p.has("tag") {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "shell.open takes one of asset or tag",
+            ));
+        }
+        // The way in the browser's double-click takes
+        // (`Action::OpenAsset`), so both leave the same tab in front.
+        log.extend(run(
+            app,
+            Action::OpenAsset {
+                asset,
+                map: map.clone(),
+            },
+            discard,
+        )?);
+        app.sync_tabs();
+        let front = app.front_doc();
+        let tab = front
+            .and_then(|d| app.tabs().iter().find(|t| t.doc == d))
+            .map(|t| app.tab_json(t));
+        return Ok(json!({
+            "tab": tab.unwrap_or(Value::Null),
+            "front": front.map(|d| app.doc_id(d)),
+            "log": log,
+        }));
     }
     let doc = if p.has("tag") {
         if app.browsing().is_some() {
@@ -90,7 +119,7 @@ fn open(app: &mut App, p: &P) -> Reply {
     } else {
         return Err(err(
             code::INVALID_PARAMS,
-            "shell.open takes a tag, a map, or both",
+            "shell.open takes an asset, a tag, or a map",
         ));
     };
     log.extend(run(app, Action::OpenDoc(doc), false)?);

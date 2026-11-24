@@ -506,21 +506,10 @@ impl Studio {
             }
         }
         if let Some(_m) = ui.begin_menu("View") {
-            // The editors that have no tab until a document is open in
-            // them: the window has no tool tabs.
-            if let Some(_e) = ui.begin_menu("Editors") {
-                for (surface, name) in Surface::EDITORS {
-                    let here = if surface == Surface::Scene {
-                        app.surface().is_map()
-                    } else {
-                        app.surface() == surface
-                    };
-                    if ui.menu_item_enabled_selected_no_shortcut(name, here, true) {
-                        actions.push(Action::Show(surface));
-                    }
-                }
-            }
-            ui.separator();
+            // No Editors submenu: an editor with no document open is
+            // reached from its asset, not from a menu
+            // (docs/editor/studio-flow.md, "One way in"). **View >
+            // Voices** goes when the voice document is built (slice FL5).
             menu_action(ui, app, MenuCommand::FrameAll, Some(icon::MAXIMIZE), false, actions);
             menu_action(ui, app, MenuCommand::FocusSelected, Some(icon::FOCUS), false, actions);
             ui.separator();

@@ -130,9 +130,10 @@ The window is made of panels that dock together:
   map, and each tag you open. There are no tool tabs: a document opens
   in the editor its kind gets. Click a tab to show it, or its **x** to
   close it; tabs that do not fit are under **More**. A `*` marks unsaved
-  changes. To start a document in an editor that has none open, choose
-  **View > Editors** (**Map**, **Game variants**, **Playlists**, **UI
-  screens**, **HUD** or **Textures**). The **game link** is at the right
+  changes. There is no editors menu: a document opens from its asset — a
+  double-click in the Browser, a row of Go to anything, a link or a
+  Problems row — and an editor with no document yet is a command in Go
+  to anything (`Open editor: Game variants`). The **game link** is at the right
   end: click the pill to pair, manage the link or choose a running game.
   Play, Stop, Pause, Step, Resume and the Edit switch appear beside it
   as available.
@@ -209,8 +210,8 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Cmd+Shift+Z or Cmd+Y | Redo |
 | Cmd+Q | Quit |
 
-Use **Edit > Go to anything...** to search maps, tags, placements and
-menu commands from one box. Every editor of **View > Editors** is a
+Use **Edit > Go to anything...** to search maps, tags, packages, items,
+placements and menu commands from one box. Every editor is a
 command there (`Open editor: HUD`), and so is the Voices window (`Open:
 Voices`). Type any words from the name or detail line.
 Use Up and Down to highlight a result, Enter to open or run it, and Esc
@@ -805,7 +806,9 @@ holds at most 65,536, so it can't be converted.`
 A game variant is a set of game settings: the game type (Slayer, CTF and
 so on), its name, and options like the score to win, the time limit and
 the weapons. The game ships with built-in variants, and you can save your
-own. Choose **View > Editors > Game variants**.
+own. Open the tool from Go to anything (`Open editor: Game variants`),
+or open a variant or script item of a package from the Browser's **Game
+types** kind.
 
 ![The Game variants tool with the built-in Swords variant open: the Variants list on the left, its settings in the middle, and its changes from the Slayer defaults on the right](../images/editor/variants-builtin.jpg)
 
@@ -1175,7 +1178,8 @@ from your computer: you publish it to your server.
 
 ### Open a file
 
-Choose **View > Editors > Playlists**, then **Open...** above the list and pick
+Open the tool from Go to anything (`Open editor: Playlists`), then
+**Open...** above the list and pick
 a `multiplayer_hopper.dat`. Both forms work: the raw file the console
 keeps, and the compressed download a Live server publishes. The editor
 saves it back in the same form. With no file at hand, click **New** for

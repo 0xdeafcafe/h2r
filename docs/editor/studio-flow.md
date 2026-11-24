@@ -1,7 +1,7 @@
 # Studio's flow: one way from any asset to its editors and to what it touches
 
-Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. The link table and `asset.links` (slice FL1) are built. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. One undo (slice FL8) is built: every editor's Undo and Redo buttons run `Action::UndoDoc` on their document, and the mouth curve, Modeling, Textures and Animation steps are steps of their tab. The rest is design.
-Code: `crates/apps/studio/src/app/links.rs` (`links`, `role_of`), `api/assets.rs` (`links`), `app/commands.rs` (`palette`, `palette_assets`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/palette.rs`, `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`), `api/ui_screens.rs` (`ui.palette`); `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit/src/lib.rs` (`AnimDoc::share_steps`). Tests: `api/tests/links_tests.rs`, `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`, `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`, `a_sound_starts_one_voices_row_that_replaces_it`); `app/shell_tests.rs` (`a_mouth_redraw_and_a_field_edit_undo_in_the_order_made`, `a_sound_and_the_map_keep_two_stacks`, `every_undo_button_runs_undo_doc`), `api/tests/bitmaps_tests.rs` (`a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own`), `api/anim/read_tests.rs` (`a_graphs_tab_undoes_its_documents_steps_in_the_order_made`), `app/script_edit_tests.rs` (`the_tools_compile_action_reports_in_the_tab_and_undoes`).
+Status: Partly built. The ways to Voices (slice FL0) are built: Go to anything lists every editor and the Voices window, and a sound's editor starts a Voices line that replaces it. The link table and `asset.links` (slice FL1) are built. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. Items open (slice FL4): a package item's row opens the editor of what it builds, the **Game types** and **Playlists** kinds are the Browser's, and scripts, variants and playlists open as tabs with `item:` ids; **View > Editors** is gone. One undo (slice FL8) is built: every editor's Undo and Redo buttons run `Action::UndoDoc` on their document, and the mouth curve, Modeling, Textures and Animation steps are steps of their tab. The rest is design.
+Code: `crates/apps/studio/src/app/links.rs` (`links`, `role_of`), `api/assets.rs` (`links`), `app/commands.rs` (`palette`, `palette_assets`), `app/voices.rs` (`Show`, `App::voices_line_for`), `ui/palette.rs`, `ui/sound.rs` (**New line in Voices**), `ui/announcer.rs` (`window`), `api/ui_screens.rs` (`ui.palette`); `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit/src/lib.rs` (`AnimDoc::share_steps`); `app/assets.rs` (`item_kind`, `open_item`, `open_tag`), `app/shell.rs` (`Tab::item`, `set_tab_item`, `tab_item`, `doc_id`, `find_doc`), `ui/browser.rs` (the item rows' open), `ui.rs` (no Editors menu), `api/shell.rs` (`shell.open` `asset`). Tests: `api/tests/links_tests.rs`, `app/tests.rs` (`go_to_anything_opens_the_voices_window_and_every_editor`, `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`, `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`, `a_sound_starts_one_voices_row_that_replaces_it`, `an_items_double_click_opens_the_editor_of_what_it_builds`, `a_variant_opened_another_way_answers_no_item`), `api/tests/shell_tests.rs` (`shell_open_of_an_item_leaves_the_windows_tabs`); `app/shell_tests.rs` (`a_mouth_redraw_and_a_field_edit_undo_in_the_order_made`, `a_sound_and_the_map_keep_two_stacks`, `every_undo_button_runs_undo_doc`), `api/tests/bitmaps_tests.rs` (`a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own`), `api/anim/read_tests.rs` (`a_graphs_tab_undoes_its_documents_steps_in_the_order_made`), `app/script_edit_tests.rs` (`the_tools_compile_action_reports_in_the_tab_and_undoes`).
 Switch: none.
 
 Studio's editors were built one at a time, and each brought its own way
@@ -36,7 +36,10 @@ row in the Browser and a document tab.
 
 A package item is the same document as the tag it builds. A `sound` item
 and the `snd!` it builds are one tab; the header says which package the
-tab writes to.
+tab writes to. A `rules`, `variant`, `sound` and `edits` item opens now
+(with the other tag-building items), as a tab of its `item:` id; a
+`playlist` item's fragment, and the screens' and HUDs' items, name why
+they do not open yet.
 
 ### One way in
 
@@ -44,20 +47,21 @@ There are four ways to an asset, and all four run `Action::OpenAsset`, so
 they leave the same tab in front:
 
 1. **The Browser** lists every asset. Its Kind picker
-   (`app::assets::KINDS`) has **Game types** (scripts and variants),
-   **Playlists** and **Voices** beside the tag kinds, and an item row of
-   the Packages root opens on a double-click as a tag row does.
+   (`app::assets::KINDS`) has **Game types** (scripts and variants) and
+   **Playlists** beside the tag kinds, and an item row of the Packages
+   root opens on a double-click as a tag row does: in the editor of what
+   the item builds (`app::assets::open_item`).
 2. **Go to anything** (Cmd/Ctrl+P, `app::commands::palette`) searches the
    same rows the Browser lists (`asset.list`), not only the open map, and
    every command the menus hold.
 3. **A link** on another asset ("Links").
 4. **A Problems row** (`App::open_problem`).
 
-**View > Editors** and **View > Voices** stay until slice FL4 and FL5
-give their documents Browser rows, and then go: a menu entry that opens
-an empty editor is a way in that only someone who already knows the
-editor uses. Until then Go to anything lists each of them
-(`Open editor: <name>`, `Open: Voices`).
+**View > Editors** is gone: an item row of the Packages root opens the
+editor of what it builds, so an empty editor is reached from its asset,
+not from a menu. Go to anything still lists each of them
+(`Open editor: <name>`). **View > Voices** stays until slice FL5 gives
+the voices their Browser rows, and then goes.
 
 The floating Sound, Animation, Voices and Generate windows become the
 centre of their document or a pane of it, as studio-redesign's "What goes
@@ -234,9 +238,12 @@ the variant and brings the Game panel forward; a save reloads it.
 - `asset.links {asset}` (built): the link table above, in
   `crates/apps/studio/src/api/assets.rs`; it also answers `problems`,
   the files it could not read.
-- `asset.list` gains the kinds `Game types`, `Playlists` and `Voices` and
-  rows for `voice:<character>`.
-- `shell.open {asset}` takes `item:` and `voice:` ids.
+- `asset.list` lists every item under the kind of what it builds, and the
+  kinds `Game types` and `Playlists` (built); `Voices` and rows for
+  `voice:<character>` come with FL5.
+- `shell.open {asset}` takes `item:` ids (built), and answers the same
+  tabs the window's double-click leaves; the voice document's ids come
+  with FL5.
 - `check.run` takes `asset` and answers only that asset's findings.
 - `ui.palette` lists every asset `asset.list` does, and every command.
 - `Action::ShowVoices` and `App::voices_line_for` (built) are the window's
@@ -258,7 +265,7 @@ nothing unbuilt and run together.
 | FL1 (built) | **The link table**: `app/links.rs`, `asset.links`; tag references by role, packages of a tag, variant and script, sound and voice, package and items | M | nothing | `app/links.rs` (new), `api/assets.rs`, `api/tests/links_tests.rs` (new) | on an invented map and package: a weapon lists its model under Model and its sound under Sounds; the model lists the weapon under Used by; a variant lists its script and the script the variant; a tag an edit line touches lists the package; a sound under an invented character's path lists that voice |
 | FL2 | **The document header**: the strip on every surface, with the trail, the origin, the edit target, **Links** and **Open with** drawn from FL1 | M | FL1 | `ui/doc_header.rs` (new), `ui.rs`, `ui/tags.rs`, `ui/variants.rs`, `ui/playlists.rs`, `ui/ui_screens.rs`, `ui/hud.rs`, `ui/textures.rs`, `headless.rs` | each kind's document draws the header at 1000 by 420 with no stray child window; the header's text for an invented weapon names its package and its roles; following a link and going Back returns the first tab with its selection |
 | FL3 (built) | **Go to anything over everything**: the rows of `asset.list` for every root, packages and items, and every menu command | S | nothing | `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs`, `app/tests.rs` | with no map open, a query finds a tag of an invented tree, a package, an item and a command, each under its kind; running each opens its document |
-| FL4 | **Items open**: item rows open the editor of what they build; the **Game types** and **Playlists** kinds; scripts, variants and playlists as tabs with `item:` ids; **View > Editors** removed | M | FL2 | `app/assets.rs`, `ui/browser.rs`, `app/shell.rs`, `app/rules_edit.rs`, `ui.rs`, `api/shell.rs` | a double-click on an invented package's `rules`, `variant`, `sound` and `edits` items opens the script editor, the variant's settings, the sound editor and the edited tag; `shell.open {asset: "item:..."}` leaves the same tabs |
+| FL4 (built) | **Items open**: item rows open the editor of what they build; the **Game types** and **Playlists** kinds; scripts, variants and playlists as tabs with `item:` ids; **View > Editors** removed | M | FL2 | `app/assets.rs`, `ui/browser.rs`, `app/shell.rs`, `app/rules_edit.rs`, `ui.rs`, `api/shell.rs` | a double-click on an invented package's `rules`, `variant`, `sound` and `edits` items opens the script editor, the variant's settings, the sound editor and the edited tag; `shell.open {asset: "item:..."}` leaves the same tabs |
 | FL5 | **Voices as documents**: `Doc::Voice`, the **Voices** kind, the voice document (Setup, Lines), the sound document's Lines pane with the two waveforms; the floating window and **View > Voices** removed | M | FL2, FL4 | `ui/announcer.rs` split into `ui/voices/{setup,lines}.rs`, `ui/sound.rs`, `app/shell.rs`, `app/assets.rs`, `app/voice_batch.rs`, `api/voice_clone.rs` | with the fake sidecar: the Voices kind lists every character with its dataset state; a line said from an invented sound's Lines pane is a row whose target is that sound and whose levels draw under the original's; a voice with no dataset opens on Setup |
 | FL6 | **One check**: `check.run {asset}`, **Check** in the header with the count, the editors' lists drawn from Problems | M | FL2 | `app/problems.rs`, `ui/problems.rs`, `api/checks.rs`, `ui/hud.rs`, `ui/ui_screens.rs`, `ui/game_script.rs` | a finding on an invented HUD shows once, in Problems and in the HUD document, with the same text; the header's count for an asset equals `problems.list` filtered to it; a script error is a Problems row that opens its line |
 | FL7 | **One save**: every document saves to the edit target; variants, scripts and playlists as items; voice lines as `sound` items only; the animation save picker removed | M | FL4 | `app/edit_target.rs`, `app/package_doc.rs`, `app/rules_edit.rs`, `app/voice_batch.rs`, `ui/anim/save.rs` (deleted), `ui/variants.rs`, `ui/playlists.rs` | with a target set, saving an invented variant, script, playlist, animation and voice line each adds or updates one item of the target and writes nothing outside `<data>/packages/`; with none, each asks through the one picker, and the API answers `NO_TARGET` |
@@ -295,9 +302,21 @@ nothing unbuilt and run together.
   `go_to_anything_opens_the_voices_window_and_every_editor`.
 - With no map open, one query finds a tag of an invented tree, a
   package, an item and a command, each under its kind; the tag's and the
-  command's entries open their documents (a package's and an item's
-  carry the `OpenAsset` that FL4 and FL10 teach to open theirs): **Test**
+  command's entries open their documents (a package's carries the
+  `OpenAsset` that FL10 teaches to open; the item's opens since FL4, and
+  this one is a `tag` item whose tag no map holds, so it refuses and
+  names the tag): **Test**
   `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`.
+- An item row's double-click opens the editor of what the item builds —
+  the script editor on the `rules` item, the variant's settings on the
+  `variant`, the sound editor on the `snd!` the `sound` item builds, the
+  edited tag on the `edits` item — each a tab of its `item:` id, and a
+  variant opened another way answers no item: **Test**
+  `an_items_double_click_opens_the_editor_of_what_it_builds`,
+  `a_variant_opened_another_way_answers_no_item`.
+- `shell.open {asset}` leaves the tabs the window's double-click leaves,
+  and the tab answers `shell.focus` by the item's id: **Test**
+  `shell_open_of_an_item_leaves_the_windows_tabs`.
 - A tag of the tree opens by opening the map that holds it first:
   **Test** `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`.
 - A sound's **New line in Voices** makes one row per sound and asks for

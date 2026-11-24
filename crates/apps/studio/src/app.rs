@@ -1772,6 +1772,22 @@ impl App {
     }
 
     fn run_variant(&mut self, action: Action) {
+        // The actions that replace the document: its tab loses the
+        // `item:` id it answered (`app::assets::open_item` sets it again
+        // when the item opened it).
+        if matches!(
+            action,
+            Action::OpenVariant(_)
+                | Action::NewVariant(_)
+                | Action::NewVariantFromScript(_)
+                | Action::CopyBuiltin(_)
+                | Action::ImportVariantFile(_)
+                | Action::ImportVariantText(_)
+                | Action::EditEntryVariant(..)
+                | Action::DeleteVariant
+        ) {
+            self.set_tab_item(Doc::Variant, None, None);
+        }
         self.ensure_variants();
         let e = self.variants.as_mut().expect("built");
         let r: Result<Option<String>, String> = match action {
@@ -1871,6 +1887,14 @@ impl App {
     }
 
     fn run_playlist(&mut self, action: Action) {
+        // A new file replaces the document: its tab loses the `item:` id
+        // it answered.
+        if matches!(
+            action,
+            Action::OpenHopper(_) | Action::NewHopper | Action::NewDefaultHopper
+        ) {
+            self.set_tab_item(Doc::Playlists, None, None);
+        }
         match action {
             Action::OpenHopper(path) => match self.hoppers.open_path(&path) {
                 Ok(format) => {

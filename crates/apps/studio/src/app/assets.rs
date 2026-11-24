@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use ::workspace::{GameSet, Loaded, added_tag, parse_edits, scope_of};
+use ::workspace::{GameSet, Loaded, added_tag, group_of_source, parse_edits, scope_of};
 use content::package::{
     Item, Kind as ItemKind, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, Maps,
 };
@@ -42,6 +42,11 @@ const KINDS: &[(&str, &[&str])] = &[
     ("Screens", &["wgit", "wgtz", "wigl"]),
     ("HUDs", &["nhdt", "grhi", "hudg", "hud#"]),
     ("Strings", &["unic", "ustr", "str#"]),
+    // No tag groups: the kinds a package item takes
+    // ([`item_kind`]). Voices joins when the voice document is built
+    // (docs/editor/studio-flow.md, "Voices and the announcer").
+    ("Game types", &[]),
+    ("Playlists", &[]),
 ];
 
 /// The kind a group belongs to.
@@ -58,6 +63,33 @@ pub fn kind_of(group: &str) -> &'static str {
 /// The Kind picker's choices.
 pub fn kind_names() -> Vec<&'static str> {
     KINDS.iter().map(|(k, _)| *k).chain(["Other"]).collect()
+}
+
+/// The kind a package item lists under: the kind of the tag it adds (a
+/// `tag`, `bitmap`, `model`, `animation` or `sound` item names its group
+/// in its source or `tag`), the kind of what it edits when it says one,
+/// and the item kinds' own (**Game types** for a `rules` or `variant`
+/// script, **Playlists** for a `playlist`). An item of no other kind is
+/// `Other`.
+pub fn item_kind(item: &Item) -> &'static str {
+    match item.kind {
+        ItemKind::Tag => item
+            .source
+            .as_deref()
+            .and_then(|s| group_of_source(s).ok())
+            .map(|g| kind_of(&fourcc_text(g)))
+            .unwrap_or("Other"),
+        ItemKind::Bitmap => "Bitmaps",
+        ItemKind::Model => "Models",
+        ItemKind::Animation => "Animations",
+        ItemKind::Sound => "Sounds",
+        ItemKind::Screens | ItemKind::ScreenEdits => "Screens",
+        ItemKind::Hud => "HUDs",
+        ItemKind::Strings => "Strings",
+        ItemKind::Rules | ItemKind::Variant => "Game types",
+        ItemKind::Playlist => "Playlists",
+        _ => "Other",
+    }
 }
 
 /// Which root a list reads.
@@ -325,15 +357,46 @@ fn package_row(l: &::workspace::Listed) -> Value {
     })
 }
 
-fn item_row(package: &str, n: usize, item: &Item) -> Value {
-    let kind = serde_json::to_value(item.kind)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default();
+/// The kind an `edits` item lists under: the kind of the first tag its
+/// file names. One parse per item of the listing, not per row.
+fn edited_kinds(entry: &Loaded) -> BTreeMap<usize, &'static str> {
+    let mut out = BTreeMap::new();
+    for (n, item) in entry.package.manifest.items.iter().enumerate() {
+        if item.kind != ItemKind::Edits {
+            continue;
+        }
+        let Some(source) = item.source.as_deref() else {
+            continue;
+        };
+        let Some(text) = entry
+            .files
+            .get(source)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+        else {
+            continue;
+        };
+        let Ok(edits) = parse_edits(&text) else {
+            continue;
+        };
+        for (edit, _) in edits {
+            if let Some(key) = group_ref(&edit.tag) {
+                out.insert(n, kind_of(&fourcc_text(key.group)));
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn item_row(package: &str, n: usize, item: &Item, kind: Option<&'static str>) -> Value {
+    let kind = kind
+        .map(str::to_owned)
+        .unwrap_or_else(|| item_kind(item).to_owned());
     json!({
         "asset": format!("item:{package}:{n}"),
         "root": "packages",
         "kind": kind,
+        "item_kind": serde_json::to_value(item.kind).unwrap_or(Value::Null),
         "name": item.source.clone().or_else(|| item.tag.clone()).unwrap_or_default(),
         "package": package,
         "source": item.source,
@@ -376,11 +439,20 @@ pub fn list(tags_root: &Path, set: &GameSet, q: &Query) -> Result<Value, String>
                     .iter()
                     .find(|e| e.loaded.package.name() == id)
                     .ok_or_else(|| format!("no package {id:?} is on (root packages lists them)"))?;
+                let edited = edited_kinds(&e.loaded);
+                let kind = q.kind.as_deref().map(str::to_lowercase);
                 for (n, item) in e.loaded.package.manifest.items.iter().enumerate() {
-                    let row = item_row(id, n, item);
+                    let kind = edited.get(&n).copied();
+                    let row = item_row(id, n, item, kind);
+                    if let Some(k) = &kind
+                        && row["kind"].as_str().unwrap_or("").to_lowercase() != *k
+                    {
+                        continue;
+                    }
                     let hay = format!(
-                        "{} {} {}",
+                        "{} {} {} {}",
                         row["kind"].as_str().unwrap_or(""),
+                        row["item_kind"].as_str().unwrap_or(""),
                         item.source.as_deref().unwrap_or(""),
                         item.tag.as_deref().unwrap_or("")
                     )
@@ -673,15 +745,30 @@ impl App {
         }
     }
 
-    /// [`super::Action::OpenAsset`]: open the map that holds the tag (a
-    /// Halo 1 map shows read-only, with no document), then the tag in the
-    /// editor its group gets. A scenario tag is the map's own tab.
+    /// [`super::Action::OpenAsset`]: the asset a browser row, a Go to
+    /// anything entry or `shell.open {asset}` names, so all four leave the
+    /// same tab in front (docs/editor/studio-flow.md, "One way in"). A
+    /// package item opens the editor of what it builds ([`Self::open_item`]);
+    /// the package document is slice FL10.
     pub(super) fn open_asset(&mut self, asset: &str, map: Option<&str>) {
         let key = match AssetId::parse(asset) {
             Ok(AssetId::Tag(key)) => key,
-            Ok(_) => return self.error(format!("{asset} is not a tag: only a tag opens in an editor")),
+            Ok(AssetId::Item(p, n)) => return self.open_item(asset, &p, n, map),
+            Ok(AssetId::Package(_)) => {
+                return self.error(format!(
+                    "{asset} opens in the package document, which is not built yet"
+                ));
+            }
             Err(e) => return self.error(e),
         };
+        self.open_tag(key, map)
+    }
+
+    /// The tag half of [`Self::open_asset`]: open the map that holds the
+    /// tag (a Halo 1 map shows read-only, with no document), then the tag
+    /// in the editor its group gets. A scenario tag is the map's own tab.
+    /// An item whose editor is a tag editor comes here too.
+    fn open_tag(&mut self, key: TagKey, map: Option<&str>) {
         if let Some(name) = map {
             let in_list = |entries: Vec<super::map_cards::MapEntry<'_>>| {
                 entries.iter().any(|e| e.stem.eq_ignore_ascii_case(name))
@@ -711,6 +798,150 @@ impl App {
         match tag_api::find_tag(&self.tags, &text) {
             Some(id) => self.open_doc(Doc::Tag(id)),
             None => self.error(format!("{text} is not in the open map")),
+        }
+    }
+
+    /// [`Self::open_asset`] for a package item (`item:<package>:<n>`): the
+    /// editor of what the item builds (docs/editor/studio-flow.md,
+    /// "Everything is an asset"). A `rules` item opens in the script
+    /// editor, a `variant` in the variant's settings, a `tag`, `bitmap`,
+    /// `model`, `animation` or `sound` item the tag it adds, an `edits`
+    /// item the first tag its file names. A `playlist` item's fragment has
+    /// no editor (the Playlists tool opens a `multiplayer_hopper.dat`) and
+    /// is refused by name. The tab the editor opens carries the item's id,
+    /// and `map` opens first for the items whose editor is a tag editor.
+    fn open_item(&mut self, asset: &str, package: &str, n: usize, map: Option<&str>) {
+        let set = read_set(&self.data_root());
+        let listed = set.listed.iter().find(|l| l.id == package && l.on);
+        let entry = set.on.iter().find(|e| e.loaded.package.name() == package);
+        let (Some(entry), Some(listed)) = (entry, listed) else {
+            return self.error(format!(
+                "no package {package:?} is on (the Packages root lists them)"
+            ));
+        };
+        let Some(item) = entry.loaded.package.manifest.items.get(n) else {
+            let len = entry.loaded.package.manifest.items.len();
+            return self.error(format!(
+                "{asset}: package {package:?} has {len} items, none is number {n}"
+            ));
+        };
+        let item_id = format!("item:{package}:{n}");
+        // The items whose editor is a tag editor need the map that holds
+        // their tag; with none asked for and none open, the refusal names
+        // the item.
+        if matches!(
+            item.kind,
+            ItemKind::Tag
+                | ItemKind::Bitmap
+                | ItemKind::Model
+                | ItemKind::Animation
+                | ItemKind::Sound
+                | ItemKind::Edits
+        ) && map.is_none()
+            && self.loaded_map().is_none()
+        {
+            return self.error(format!(
+                "{asset}: the tag it builds needs a map that holds it (open one first)"
+            ));
+        }
+        match item.kind {
+            ItemKind::Rules | ItemKind::Variant => {
+                let Some(dir) = &listed.dir else {
+                    return self.error(format!(
+                        "{asset}: package {package:?} is built in, so its scripts have no file to open"
+                    ));
+                };
+                let Some(source) = item.source.as_deref() else {
+                    return self.error(format!("{asset}: the item names no source file"));
+                };
+                if source.ends_with(".firefight.json") {
+                    return self.error(format!(
+                        "{asset}: a wave set builds into the map and has no editor"
+                    ));
+                }
+                let file = std::path::PathBuf::from(dir).join(source);
+                match item.kind {
+                    ItemKind::Rules => {
+                        if let Err(e) = self.rules.open_path(&file) {
+                            return self.error(format!("{asset}: {e}"));
+                        }
+                        // `focus_doc` syncs the tabs (the script's tab
+                        // opens, the Variants tool comes forward), then
+                        // the tab takes the item's id, which `doc_id`
+                        // answers.
+                        self.focus_doc(Doc::Rules);
+                        self.set_tab_item(
+                            Doc::Rules,
+                            Some(item_id),
+                            Some(file.display().to_string()),
+                        );
+                    }
+                    _ => {
+                        let text = entry
+                            .loaded
+                            .files
+                            .get(source)
+                            .map(|b| String::from_utf8_lossy(b).into_owned());
+                        let Some(text) = text else {
+                            return self.error(format!("{asset}: {source} is not in the package"));
+                        };
+                        if let Err(why) =
+                            self.run_variant(super::Action::NewVariantFromScript(text))
+                        {
+                            return self.error(format!("{asset}: {why}"));
+                        }
+                        self.focus_doc(Doc::Variant);
+                        self.set_tab_item(Doc::Variant, Some(item_id), None);
+                    }
+                }
+            }
+            ItemKind::Playlist => {
+                self.error(format!(
+                    "{asset}: a playlist item's fragment has no editor (the Playlists tool \
+                     opens a multiplayer_hopper.dat)"
+                ));
+            }
+            ItemKind::Edits => {
+                let Some(source) = item.source.as_deref() else {
+                    return self.error(format!("{asset}: the item names no source file"));
+                };
+                let text = entry
+                    .loaded
+                    .files
+                    .get(source)
+                    .map(|b| String::from_utf8_lossy(b).into_owned());
+                let Some(text) = text else {
+                    return self.error(format!("{asset}: {source} is not in the package"));
+                };
+                let edits = match parse_edits(&text) {
+                    Ok(edits) => edits,
+                    Err(f) => return self.error(format!("{asset}: {}", f.why)),
+                };
+                let mut first: Option<TagKey> = None;
+                for (edit, _) in &edits {
+                    if let Some(key) = group_ref(&edit.tag) {
+                        first = Some(key);
+                        break;
+                    }
+                }
+                match first {
+                    Some(key) => self.open_tag(key, map),
+                    None => self.error(format!(
+                        "{asset}: {} names no <group>:<path> tag",
+                        item.source.as_deref().unwrap_or("the file")
+                    )),
+                }
+            }
+            _ => match added_tag(item) {
+                Some(key) => self.open_tag(key, map),
+                None => {
+                    let kind = serde_json::to_value(item.kind)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| format!("{:?}", item.kind));
+                    self.error(format!("{asset}: a {kind} item has no editor yet"))
+                }
+            },
         }
     }
 }
