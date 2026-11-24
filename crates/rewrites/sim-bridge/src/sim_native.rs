@@ -174,6 +174,9 @@ impl Feature for SimNative {
         if crate::sim_objects::on(b.switches()) {
             crate::sim_objects::install(b);
         }
+        // Registers the effect ports with the shadow registry whatever
+        // the switch says; installs them when it is on.
+        crate::sim_effects::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.

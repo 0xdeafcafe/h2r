@@ -92,6 +92,8 @@ pub const TABLE: &[Switch] = &[
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.effects", Off, "sim", "2026-11-25",
+        "effects, particles, contrails and decals (engine::sim_effects): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.page-census", On, "sim", "2026-11-22",
