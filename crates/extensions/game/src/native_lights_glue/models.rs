@@ -1,6 +1,6 @@
 //! The light passes' model parts, loaded once per map on a worker
 //! (docs/graphics/native-lights.md, "Gathered groups in the scene"):
-//! every `mode` tag's drawn opaque parts through
+//! every `mode` tag's drawn parts through
 //! [`native_render::light_models::light_model`], with the vertex
 //! programs of the classifications their sections take and the stage
 //! images of their materials' lit, caster and receiver passes. A light or shadow
@@ -18,7 +18,7 @@ use native_render::light_look::{DIFFUSE_LAYER, SPECULAR_LAYER};
 use native_render::light_models::{LightModels, ModelSection, SectionPart, light_model};
 use native_render::look;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_streams::{StreamData, StreamFormats, classification};
+use native_render::object_streams::{StreamData, StreamFormats};
 use native_render::shadow_look::{CASTER_LAYER, OPACITY_LAYER, RECEIVER_LAYER};
 use render_bridge::native_map_work;
 use tags::material::{EngineInputs, ShaderLibrary, TextureSource};
@@ -153,7 +153,7 @@ impl Loader {
 }
 
 /// The vertex shaders and stage bitmaps of a material's lit and caster
-/// passes (layers 10, 12 and 13, first level of detail), resolved with
+/// passes at the levels of detail the light renderer supports, resolved with
 /// default inputs as the world's load reads them.
 fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize, TagId, u32)>) {
     let Ok(material) = lib.material(shader, None) else {
@@ -165,11 +165,8 @@ fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize
         .layers
         .iter()
         .filter(|l| {
-            l.lod == 0
-                && matches!(
-                    l.layer,
-                    CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER
-                )
+            matches!(l.layer, DIFFUSE_LAYER | SPECULAR_LAYER)
+                || (l.lod == 0 && matches!(l.layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER))
         })
         .flat_map(|l| &l.passes)
         .flat_map(|p| &p.implementations)
@@ -186,6 +183,29 @@ fn lit_passes(lib: &mut ShaderLibrary, shader: TagId) -> (Vec<TagId>, Vec<(usize
         }
     }
     (shaders, bitmaps)
+}
+
+/// An item carries its section part in one byte. Kind 4 uses the section's
+/// second influence byte when the light build chooses the vertex program.
+fn light_part(index: usize, part: &tags::geometry::Part, opaque: u8, transparent: u8) -> Option<(u8, u8)> {
+    if !part.is_drawn() {
+        return None;
+    }
+    let influences = if part.kind == native_render::load::PART_TRANSPARENT { transparent } else { opaque };
+    Some((u8::try_from(index).ok()?, influences))
+}
+
+/// The light builder's program choice (`native_lights::walk`): the
+/// weighted section's influence byte is sign extended before adding two.
+fn classification(geometry: u16, influences: u8, count: u32) -> Option<u32> {
+    match geometry {
+        0..=2 => Some(u32::from(geometry)),
+        3 => {
+            let class = (i32::from(influences as i8) + 2) as u32;
+            Some(if class < count { class } else { 0 })
+        }
+        _ => None,
+    }
 }
 
 fn load(
@@ -254,9 +274,11 @@ fn load(
             }
             let mut section_parts = Vec::new();
             for (k, p) in g.parts.iter().enumerate() {
-                if k >= 16 || !p.is_drawn() || p.kind == native_render::load::PART_TRANSPARENT {
+                let Some((part, influences)) =
+                    light_part(k, p, s.wire.unknown_014, s.wire.transparent_node_influences)
+                else {
                     continue;
-                }
+                };
                 let Some(shader) = geo
                     .materials
                     .get(usize::from(p.material))
@@ -296,7 +318,7 @@ fn load(
                     }
                 }
                 for &vs in &vertex_shaders {
-                    let key = (vs, s.wire.geometry_classification.0, s.wire.unknown_014);
+                    let key = (vs, s.wire.geometry_classification.0, influences);
                     if programs.contains_key(&key) {
                         continue;
                     }
@@ -321,7 +343,8 @@ fn load(
                     );
                 }
                 section_parts.push(SectionPart {
-                    part: k as u8,
+                    part,
+                    influences,
                     first_index: u32::from(p.first_index),
                     index_count: u32::from(p.index_count),
                     list: p.is_triangle_list(),
@@ -336,7 +359,6 @@ fn load(
             sections.push(ModelSection {
                 index: si as u16,
                 geometry: s.wire.geometry_classification.0,
-                influences: s.wire.unknown_014,
                 decompression: decompression_rows(&compression),
                 streams,
                 vertex_count: g.vertex_count(),
@@ -372,4 +394,39 @@ fn load(
     static MODELS: mem_watch::Counter = mem_watch::Counter::new("native.light_model_entries");
     out.model_entries = Some(MODELS.track(out.models.models.len() as u64));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classification, light_part};
+
+    #[test]
+    fn gathered_model_parts_use_the_whole_item_byte_and_their_own_influences() {
+        let part = |kind| tags::geometry::Part {
+            kind,
+            flags: 0,
+            material: 0,
+            first_index: 0,
+            index_count: 3,
+            first_subpart: 0,
+            subpart_count: 0,
+            raw: Vec::new(),
+        };
+        assert_eq!(light_part(0, &part(2), 1, 3), Some((0, 1)));
+        assert_eq!(light_part(23, &part(4), 1, 3), Some((23, 3)));
+        assert_eq!(light_part(255, &part(2), 1, 3), Some((255, 1)));
+        assert_eq!(light_part(256, &part(2), 1, 3), None);
+        assert_eq!(light_part(0, &part(5), 1, 3), None);
+        assert_eq!(light_part(0, &part(0), 1, 3), None);
+    }
+
+    #[test]
+    fn light_vertex_class_uses_the_signed_influence_and_available_programs() {
+        assert_eq!(classification(1, 7, 8), Some(1));
+        assert_eq!(classification(3, 2, 5), Some(4));
+        assert_eq!(classification(3, 2, 4), Some(0));
+        assert_eq!(classification(3, 0xff, 4), Some(1));
+        assert_eq!(classification(3, 0x80, 4), Some(0));
+        assert_eq!(classification(4, 0, 4), None);
+    }
 }

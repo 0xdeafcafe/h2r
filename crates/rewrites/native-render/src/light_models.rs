@@ -38,11 +38,8 @@ use crate::object_streams::{
 #[derive(Clone)]
 pub struct ModelSection<'a> {
     pub index: u16,
-    /// Its geometry classification (`+0x18`) and node influences
-    /// (`+0x14`), which pick a program's classification
-    /// ([`crate::object_streams::classification`]).
+    /// Its geometry classification at `+0x18`.
     pub geometry: u16,
-    pub influences: u8,
     pub decompression: [Row; 3],
     /// Its streams by descriptor slot: (stream type, bytes).
     pub streams: Vec<Option<(u8, StreamData<'a>)>>,
@@ -56,6 +53,8 @@ pub struct ModelSection<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SectionPart {
     pub part: u8,
+    /// The section influence byte selected by this part's kind.
+    pub influences: u8,
     pub first_index: u32,
     pub index_count: u32,
     pub list: bool,
@@ -138,6 +137,9 @@ impl LightBuffer {
 /// A part as the light passes hold it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LightPart {
+    /// For a host light without a sorted classification: the class shared
+    /// by the resident programs this part uses.
+    pub vertex_class: Option<u16>,
     pub first_index: u32,
     pub index_count: u32,
     pub topology: Topology,
@@ -194,13 +196,14 @@ pub fn light_model(
     for s in sections {
         let mut list: Vec<u32> = Vec::new();
         let mut parts = HashMap::new();
-        let mut shaders: Vec<TagId> = Vec::new();
+        let mut shaders = Vec::new();
         for p in &s.parts {
             let start = list.len() as u32;
             list.extend(p.triangles.iter().flatten().map(|&i| u32::from(i)));
             parts.insert(
                 p.part,
                 LightPart {
+                    vertex_class: None,
                     first_index: p.first_index,
                     index_count: p.index_count,
                     topology: if p.list {
@@ -211,9 +214,10 @@ pub fn light_model(
                     indices: start..list.len() as u32,
                 },
             );
-            for vs in &p.vertex_shaders {
-                if !shaders.contains(vs) {
-                    shaders.push(*vs);
+            for &vs in &p.vertex_shaders {
+                let key = (vs, p.influences);
+                if !shaders.contains(&key) {
+                    shaders.push(key);
                 }
             }
         }
@@ -235,14 +239,19 @@ pub fn light_model(
         let data: Vec<Option<StreamData<'_>>> =
             s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
         let mut buffers: Vec<LightBuffer> = Vec::new();
-        for vs in shaders {
-            let Some((classification, sem)) = semantics(vs, s.geometry, s.influences) else {
+        let mut classes = HashMap::new();
+        for (vs, influences) in shaders {
+            let Some((classification, sem)) = semantics(vs, s.geometry, influences) else {
                 why.push(format!(
                     "section {}: vertex shader {vs:?} has no program for its classification",
                     s.index
                 ));
                 continue;
             };
+            if buffers.iter().any(|b| b.vertex_shader == vs && b.classification == classification) {
+                classes.insert((vs, influences), classification);
+                continue;
+            }
             let decl = declaration(&sem, &streams);
             let vertices = match gather(&decl, &data, s.vertex_count) {
                 Ok(v) => v,
@@ -258,6 +267,7 @@ pub fn light_model(
                 stride: (SLOT * decl.len()) as u64,
                 attributes: attributes(&regs, &formats),
             };
+            classes.insert((vs, influences), classification);
             buffers.push(LightBuffer {
                 vertex_shader: vs,
                 classification,
@@ -269,6 +279,16 @@ pub fn light_model(
                     "native light model vertices",
                 ),
             });
+        }
+        for part in &s.parts {
+            let mut found = part.vertex_shaders.iter()
+                .filter_map(|&vs| classes.get(&(vs, part.influences)).copied());
+            if let Some(first) = found.next()
+                && found.all(|class| class == first)
+                && let Some(held) = parts.get_mut(&part.part)
+            {
+                held.vertex_class = u16::try_from(first).ok();
+            }
         }
         out.sections.insert(
             s.index,
@@ -337,13 +357,13 @@ mod tests {
         ModelSection {
             index: 2,
             geometry: 0,
-            influences: 0,
             decompression: [[1.0; 4], [0.0; 4], [1.0, 1.0, 0.0, 0.0]],
             streams: vec![Some((1, StreamData { bytes, stride: 20 }))],
             vertex_count: 4,
             parts: vec![
                 SectionPart {
                     part: 0,
+                    influences: 0,
                     first_index: 0,
                     index_count: 6,
                     list: true,
@@ -352,6 +372,7 @@ mod tests {
                 },
                 SectionPart {
                     part: 1,
+                    influences: 0,
                     first_index: 6,
                     index_count: 4,
                     list: false,
@@ -384,6 +405,45 @@ mod tests {
                 implementation: 0,
             },
         }
+    }
+
+    #[test]
+    fn weighted_parts_with_the_same_shader_can_select_different_vertex_buffers() {
+        let bytes = [0; 80];
+        let mut section = section(&bytes);
+        section.geometry = 3;
+        section.parts[0].influences = 1;
+        section.parts[1].influences = 3;
+        section.parts[1].part = 23;
+        let vs = section.parts[0].vertex_shaders[0];
+        section.parts[1].vertex_shaders = vec![vs];
+        let semantics = |_, geom, influences| {
+            assert_eq!(geom, 3);
+            let registers = if influences == 1 { vec![0] } else { vec![0, 3] };
+            Some((u32::from(influences) + 2, registers))
+        };
+        let (model, why) = light_model(&[section], &formats(), &semantics);
+        assert!(why.is_empty(), "{why:?}");
+        let section = &model.sections[&2];
+        assert_eq!(section.parts[&23].indices, 6..12);
+        assert_eq!(section.parts[&0].vertex_class, Some(3));
+        assert_eq!(section.parts[&23].vertex_class, Some(5));
+        assert_eq!(section.buffer(vs, 3).unwrap().provided(), 1);
+        assert_eq!(section.buffer(vs, 5).unwrap().provided(), 3);
+    }
+
+    #[test]
+    fn an_unsorted_part_needs_its_own_programs_to_agree_on_a_class() {
+        let bytes = [0; 80];
+        let section = section(&bytes);
+        let semantics = |vs: TagId, _, _| {
+            let class = if vs.0 == 0xe000_0010 { 0 } else { 3 };
+            Some((class, vec![0]))
+        };
+        let (model, why) = light_model(&[section], &formats(), &semantics);
+        assert!(why.is_empty(), "{why:?}");
+        assert_eq!(model.sections[&2].parts[&0].vertex_class, Some(0));
+        assert_eq!(model.sections[&2].parts[&1].vertex_class, None);
     }
 
     #[test]
