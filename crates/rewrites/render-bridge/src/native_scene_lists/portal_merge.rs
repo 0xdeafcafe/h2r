@@ -32,22 +32,17 @@ impl Window {
     }
 
     fn grow(&mut self, source: Self, factor: f32) -> bool {
-        let a = self.rect.map(f32::from_bits);
-        let b = source.rect.map(f32::from_bits);
-        // The scalar comparisons choose the destination's lower bound
-        // and the source's upper bound on equality (including +/- zero).
-        let union = [
-            if a[0] > b[0] { b[0] } else { a[0] },
-            if a[1] > b[1] { a[1] } else { b[1] },
-            if a[2] > b[2] { b[2] } else { a[2] },
-            if a[3] > b[3] { a[3] } else { b[3] },
-        ];
-        let area = |r: [f32; 4]| (r[3] - r[2]) * (r[1] - r[0]);
-        if (area(a) + area(b)) * factor > area(union) {
-            self.rect = union.map(f32::to_bits);
-            if f32::from_bits(source.depth) <= f32::from_bits(self.depth) {
-                self.depth = source.depth;
-            }
+        let args = |w: Self| {
+            (
+                flood::Rect(w.rect.map(f32::from_bits)),
+                f32::from_bits(w.depth),
+            )
+        };
+        if let Some((rect, depth)) =
+            scene_extract::visibility::portal_walk::merge_window(args(*self), args(source), factor)
+        {
+            self.rect = rect.0.map(f32::to_bits);
+            self.depth = depth.to_bits();
             return true;
         }
         false

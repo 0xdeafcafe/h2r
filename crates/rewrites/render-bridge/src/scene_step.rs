@@ -1178,7 +1178,7 @@ pub fn forget() {
 /// Rerun the portal flood with the display lens, keeping only geometry
 /// absent from both the retail projection and the actual guest lists.
 fn display_additions(
-    mem: &Ro<'_>, gather: &frame_scene::scene::ClusterGather, camera: Camera,
+    mem: &Ro<'_>, gather: &frame_scene::scene::ClusterGather,
     factor: f32, cache: &mut scene_extract::visibility::GraphCache,
     retail: &scene_extract::visibility::frusta::WindowFrusta,
     baseline: &scene_extract::visibility::VisibilitySets,
@@ -1186,11 +1186,10 @@ fn display_additions(
     if gather.mode != 0 {
         return None;
     }
-    let display = native_render::camera::display_camera(camera, factor);
-    let (mut visible, windows) = scene_extract::visibility::compute_with_windows(
-        mem, &display, cache, crate::native_map_work::generation(),
+    let (mut visible, windows) = scene_extract::visibility::portal_walk::scene_visibility(
+        mem, cache, crate::native_map_work::bsp_generation(), factor,
     ).ok()?;
-    let placements = windows.as_ref().and_then(|w| cache.display_placements(mem, retail, w)).unwrap_or_default();
+    let placements = cache.display_placements(mem, retail, &windows).unwrap_or_default();
     visible.retain_display_additions(baseline, gather);
     (!visible.clusters.is_empty() || !visible.objects.is_empty() || !placements.is_empty()).then_some(frame_scene::DisplayVisibility {
         clusters: visible.clusters, objects: visible.objects, placements,
@@ -1215,7 +1214,15 @@ fn visibility_arm(
 ) {
     use scene_extract::visibility::{self, Decline};
     let start = Instant::now();
-    let rust = visibility::compute_with_windows(m, camera, cache, crate::native_map_work::generation());
+    let epoch = crate::native_map_work::bsp_generation();
+    let rust = if gather.mode == 0 {
+        // The guest's single-copy Hor+ hook has already widened this
+        // frustum. Exact-mode display additions widen their own copy.
+        visibility::portal_walk::scene_visibility(m, cache, epoch, 1.)
+            .map(|(sets, windows)| (sets, Some(windows)))
+    } else {
+        visibility::compute_with_windows(m, camera, cache, epoch)
+    };
     VISIBILITY_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     let (rust, windows) = match rust {
         Ok(rust) => rust,
@@ -1227,7 +1234,7 @@ fn visibility_arm(
     };
     VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
     let extra = display_factor.and_then(|factor| {
-        display_additions(m, &gather, *camera, factor, cache, windows.as_ref()?, &rust)
+        display_additions(m, &gather, factor, cache, windows.as_ref()?, &rust)
     });
     let (gather, parity) = visibility::arm(gather, rust);
     if let Some(first) = parity.first {

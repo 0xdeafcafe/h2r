@@ -3,8 +3,8 @@
 //! disjoint windows. Nodes are appended in dequeue and BSP portal order.
 
 use super::flood::{
-    Facing, MAX_CORNERS, MAX_NODES, MAX_QUEUED, MAX_WINDOW_CORNERS, OpenPortals, Point, Projected,
-    Rect,
+    self, Facing, MAX_CORNERS, MAX_NODES, MAX_QUEUED, MAX_WINDOW_CORNERS, OpenPortals, Point,
+    Projected, Rect,
 };
 use super::graph::{Portal, PortalGraph, portal_flags};
 use super::portal_clip::Inputs;
@@ -26,6 +26,65 @@ pub struct Node {
 #[derive(Debug, PartialEq)]
 pub struct Walk {
     pub nodes: Vec<Node>,
+}
+
+/// The merge at 0x00172c70. Strict lower-bound comparisons retain the
+/// destination on ties. Equal upper bounds and depths retain the source.
+pub fn merge_window(
+    (to, depth): (Rect, f32),
+    (from, incoming): (Rect, f32),
+    factor: f32,
+) -> Option<(Rect, f32)> {
+    let (a, b) = (to.0, from.0);
+    let union = Rect([
+        if a[0] > b[0] { b[0] } else { a[0] },
+        if a[1] > b[1] { a[1] } else { b[1] },
+        if a[2] > b[2] { b[2] } else { a[2] },
+        if a[3] > b[3] { a[3] } else { b[3] },
+    ]);
+    ((to.area() + from.area()) * factor > union.area())
+        .then_some((union, if incoming > depth { depth } else { incoming }))
+}
+
+impl Walk {
+    /// In 0x001730a0 a cluster is published at its chain head (its
+    /// newest node). Its surviving windows follow that chain.
+    fn regions(mut self, factor: f32) -> Result<(Vec<u16>, Vec<(u16, Rect)>), Decline> {
+        let mut groups = std::collections::BTreeMap::<u16, Vec<usize>>::new();
+        for (i, node) in self.nodes.iter().enumerate() {
+            groups.entry(node.cluster).or_default().push(i);
+        }
+        if groups.len() > flood::MAX_REGIONS {
+            return Err(Decline::Overflow);
+        }
+        let mut groups: Vec<_> = groups.into_iter().collect();
+        groups.sort_unstable_by_key(|(_, chain)| chain.last().copied());
+        let mut regions = Vec::with_capacity(groups.len());
+        let mut windows = Vec::with_capacity(self.nodes.len());
+        for (cluster, mut chain) in groups {
+            regions.push(cluster);
+            chain.reverse();
+            for (i, &from) in chain.iter().enumerate() {
+                let source = (self.nodes[from].rect, self.nodes[from].depth);
+                let mut absorbed = false;
+                for &into in &chain[i + 1..] {
+                    let dest = &mut self.nodes[into];
+                    if let Some((rect, depth)) =
+                        merge_window((dest.rect, dest.depth), source, factor)
+                    {
+                        dest.rect = rect;
+                        dest.depth = depth;
+                        absorbed = true;
+                        break;
+                    }
+                }
+                if !absorbed {
+                    windows.push((cluster, source.0));
+                }
+            }
+        }
+        Ok((regions, windows))
+    }
 }
 
 /// The bounds leaf grows the runtime empty rectangle with strict
@@ -149,11 +208,25 @@ pub fn for_view(
     frustum: u32,
     start: u16,
 ) -> Result<Walk, Decline> {
+    walk_view(mem, cache, epoch, frustum, start, 1.).map(|(walk, _)| walk)
+}
+
+fn walk_view(
+    mem: &dyn GuestRead,
+    cache: &mut GraphCache,
+    epoch: u64,
+    frustum: u32,
+    start: u16,
+    factor: f32,
+) -> Result<(Walk, f32), Decline> {
     let structure = read::ptr_at(mem, guest::ACTIVE_STRUCTURE).ok_or(Decline::Unread)?;
     let graph = cache.graph(mem, epoch, structure)?;
     let open = guest::open_portals(mem, graph.portals.len())?;
     let tuning = guest::tuning(mem)?;
-    let projection = Projection::read(mem, frustum)?;
+    let mut projection = Projection::read(mem, frustum)?;
+    if factor != 1. {
+        projection.widen(factor)?;
+    }
     let clip = Inputs::read(mem)?;
     let root = Node {
         cluster: start,
@@ -164,14 +237,69 @@ pub fn for_view(
         depth: 0.,
         crossed: [0; 16],
     };
-    build(
+    let walk = build(
         graph,
         &open,
         root,
         projection.initial_rect,
         |p| projection.project(p, &tuning),
         |portal, parent| clip.clip(portal, parent),
-    )
+    )?;
+    Ok((walk, tuning.merge))
+}
+
+/// Main-view sets and clipping volumes from the input frustum used by
+/// the traversal. A display factor changes the root tangent polygon.
+pub fn scene_visibility(
+    mem: &dyn GuestRead,
+    cache: &mut GraphCache,
+    epoch: u64,
+    factor: f32,
+) -> Result<(super::VisibilitySets, super::frusta::WindowFrusta), Decline> {
+    use super::{frusta, objects, window_record::WindowInputs};
+    use engine::render_loop::occlusion::guest::MAIN_VIS;
+    let view = guest::view(mem)?;
+    if view.mode != 0 {
+        return Err(Decline::Mode);
+    }
+    if view.frusta != 1 {
+        return Err(Decline::Frusta);
+    }
+    let mut volumes = frusta::WindowFrusta::default();
+    let clusters = if view.start == u16::MAX {
+        vec![]
+    } else {
+        let regions = read::ptr_at(mem, MAIN_VIS).ok_or(Decline::Unread)?;
+        let frustum = read::at(regions, guest::view_frustum::FIRST).ok_or(Decline::Layout)?;
+        let (walk, merge) = walk_view(mem, cache, epoch, frustum, view.start, factor)?;
+        let (clusters, windows) = walk.regions(merge)?;
+        let window = WindowInputs::read(
+            mem,
+            frustum,
+            read::at(frustum, 0xa0).ok_or(Decline::Layout)?,
+            0,
+        )?;
+        for (cluster, rect) in windows {
+            if let Some(volume) = window.volume(rect)? {
+                volumes.0.push((cluster, volume));
+            }
+        }
+        clusters
+    };
+    let world = guest::object_world(mem, &view, &clusters)?;
+    let reached = flood::Reached {
+        clusters,
+        windows: Vec::new(),
+    };
+    let clip = objects::Clip::Frusta(volumes);
+    let handles = objects::object_set_with_clip(&world, &reached, &clip)?;
+    let objects::Clip::Frusta(volumes) = clip else {
+        unreachable!()
+    };
+    Ok((
+        super::VisibilitySets::new(reached.clusters, handles),
+        volumes,
+    ))
 }
 
 #[cfg(test)]
@@ -254,6 +382,24 @@ mod tests {
             ]
         );
         assert_eq!(walk.nodes[4].depth, 2.5);
+    }
+
+    #[test]
+    fn region_order_uses_the_newest_path_and_windows_use_the_cluster_chain() {
+        let mut walk = walk(Facing::Straddle, OpenPortals::all(2));
+        // Heads at nodes 2 (cluster 1) and 4 (cluster 0).
+        for (i, n) in walk.nodes.iter_mut().enumerate() {
+            n.rect = Rect([i as f32, i as f32 + 1., 0., 1.]);
+        }
+        let (clusters, windows) = walk.regions(0.).unwrap();
+        assert_eq!(clusters, [1, 0]);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|&(c, r)| (c, r.0[0] as i32))
+                .collect::<Vec<_>>(),
+            [(1, 2), (1, 1), (0, 4), (0, 3), (0, 0)]
+        );
     }
 
     #[test]
