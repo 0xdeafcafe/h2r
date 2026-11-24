@@ -148,7 +148,7 @@ impl PackageId {
                 Value::String(
                     text.parse::<Sha256>()
                         .map(|h| h.to_string())
-                        .unwrap_or_else(|_| text.clone()),
+                        .unwrap_or_else(|_| text.to_string()),
                 )
             };
             if let Some(replaces) = &item.replaces {

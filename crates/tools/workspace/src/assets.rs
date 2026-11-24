@@ -161,7 +161,7 @@ mod tests {
         tags::repo::extract::store_map(&mut repo, &mut source, "tiny", false).unwrap();
         let (c, _) = catalogue::build(&root, schema).unwrap();
         let listed = c.of_map("tiny");
-        assert!(listed.iter().any(|(k, _)| *k == key()), "{c:?}");
+        assert!(listed.iter().any(|(k, _)| **k == key()), "{c:?}");
 
         // Each side of the store: the catalogue, and the map's own bytes.
         let mut by_catalogue = OfMap::in_store(&root, "tiny", &bytes);
@@ -187,5 +187,14 @@ mod tests {
         assert_eq!(changed, by_catalogue.hash_of(&written).unwrap());
         assert_ne!(Some(changed), by_map.hash(&key()).unwrap());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Reborrow an optional asset table for one call: the trait object's
+/// lifetime is shortened to the reborrow's, so a loop can lend it again.
+pub(crate) fn lend<'r>(assets: &'r mut Option<&mut dyn Assets>) -> Option<&'r mut dyn Assets> {
+    match assets {
+        Some(a) => Some(&mut **a),
+        None => None,
     }
 }

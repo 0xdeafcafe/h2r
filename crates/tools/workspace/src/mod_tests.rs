@@ -12,6 +12,7 @@ use map::build::{RawBlob, TagPayload, TagSet};
 use tags::defs::{StructDef, Val, from_built};
 use vfs::store_map::Levels as _;
 
+use crate::assets::Assets as _;
 use crate::level::{StoreLevels, assemble, level_id};
 use crate::level_tests::{put_store, read_image, store, temp};
 use crate::tests::{A, ADD_C, ADD_C_FILE, C, adds_c, base, cc, edit_text, edits, pkg, target};
@@ -424,12 +425,12 @@ fn a_from_was_or_replaces_that_does_not_match_leaves_its_package_off_with_the_re
     // Under `h2 package build` each stops the build with its item.
     let said = |p: &[Loaded]| build_map(&bytes, p, &target()).unwrap_err();
     assert!(
-        said(&[from]).contains("edits.yaml, line 3"),
+        said(&[from.clone()]).contains("edits.yaml, line 3"),
         "{}",
         said(&[from.clone()])
     );
     assert!(
-        said(&[was]).contains("edits.yaml, line 4"),
+        said(&[was.clone()]).contains("edits.yaml, line 4"),
         "{}",
         said(&[was.clone()])
     );
@@ -1046,7 +1047,7 @@ fn a_refused_package_moves_neither_the_level_id_nor_the_image() {
     assert!(!again.built());
     assert_eq!(
         (again.id, again.image, again.refused),
-        (clean.id, clean.image, with_bad.refused)
+        (clean.id, clean.image, with_bad.refused.clone())
     );
 
     // Only the refused mod: the disc's bytes, and the reason.

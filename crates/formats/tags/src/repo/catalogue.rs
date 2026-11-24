@@ -28,7 +28,7 @@ use super::normal;
 use super::store::{
     Manifest, TagRepo, esc, extraction_order, group_ext, parse_key, unesc, write_atomic,
 };
-use super::{Error, Result, TagKey, hex, sha256};
+use super::{Error, Result, TagKey, TagSource, hex, sha256};
 use crate::schema::Schema;
 use map::FourCC;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

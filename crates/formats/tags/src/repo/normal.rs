@@ -93,9 +93,9 @@ pub struct Tables<'a> {
     pub schema: Option<&'a Schema>,
 }
 
-impl Tables<'_> {
+impl<'a> Tables<'a> {
     /// No tables: the form is then the tag with its resources as content.
-    pub fn none() -> Tables<'static> {
+    pub fn none() -> Tables<'a> {
         Tables {
             gestalt: None,
             low_detail: &[],

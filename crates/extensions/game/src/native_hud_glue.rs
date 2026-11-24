@@ -254,7 +254,10 @@ impl<B: d3d::Backend> Glue<B> {
         mem: &mut dyn GuestMemory,
         what: ScreenDraw,
         vertices: &[[(u8, [f32; 4]); N]; 4],
-    ) -> bool {
+    ) -> bool
+    where
+        B: Send + 'static,
+    {
         self.permits_draw()
             && crate::hud_overlay::draw_screen(&self.device, mem, what, |d, m, a| {
                 d.try_native_immediate_draw(m, PrimitiveType::TriangleFan, vertices, a)

@@ -23,7 +23,7 @@ use workspace::{
     read_lock, scope_of_bytes,
 };
 
-const USAGE: &str = "usage: h2 package check <dir>...
+const USAGE: &str = "usage: h2 package check [--store <data>/tags] <dir>...
        h2 package build <dir>... --base <map> -o <out.map> [--map <name>] [--scope multiplayer|campaign|mainmenu|shared] [--no-lock]
        h2 package prepare [--disc <halo2.iso>] [--data DIR] [--force] (runs in h2: the convert items)
 
@@ -31,7 +31,8 @@ A <dir> is a package folder (it holds package.toml), or a folder of them
 (content/). Packages load in the order of their requires and after lists.
 `build` applies them to --base, a cache map the user owns, for the map named
 --map (default: the file's name) and writes the result to -o; it also
-writes each package's package.lock unless --no-lock.";
+writes each package's package.lock unless --no-lock. `check --store` also
+refuses a file that is a raw resource or a tag file of that tag store.";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
@@ -54,6 +55,7 @@ struct Args {
     map: Option<String>,
     scope: Option<String>,
     no_lock: bool,
+    store: Option<PathBuf>,
 }
 
 fn parse(args: Vec<String>, building: bool) -> Result<Args> {
@@ -71,6 +73,7 @@ fn parse(args: Vec<String>, building: bool) -> Result<Args> {
             "--map" if building => out.map = Some(value("--map")?),
             "--scope" if building => out.scope = Some(value("--scope")?),
             "--no-lock" if building => out.no_lock = true,
+            "--store" if !building => out.store = Some(value("--store")?.into()),
             s if s.starts_with('-') => bail!("unexpected argument {s:?}\n{USAGE}"),
             _ => out.dirs.push(a.into()),
         }
@@ -112,7 +115,7 @@ struct Read {
 }
 
 /// Read the folders, order them, and collect what `check` reports.
-fn read(dirs: &[PathBuf]) -> Result<Read> {
+fn read(dirs: &[PathBuf], store: Option<&Path>) -> Result<Read> {
     let mut all = Vec::new();
     for d in dirs {
         all.extend(expand(d)?);
@@ -155,6 +158,9 @@ fn read(dirs: &[PathBuf]) -> Result<Read> {
             found.push(format!("{id}: {f}"));
         }
         found.extend(check_package(l).into_iter().map(|f| f.to_string()));
+        if let Some(store) = store {
+            found.extend(workspace::store_findings(store, l).into_iter().map(|f| f.to_string()));
+        }
     }
     let ordered: Vec<Loaded> = loaded.iter().map(|(_, l)| l.clone()).collect();
     found.extend(check_set(&ordered).into_iter().map(|f| f.to_string()));
@@ -165,7 +171,7 @@ fn read(dirs: &[PathBuf]) -> Result<Read> {
 }
 
 fn check(args: Args) -> Result<()> {
-    let r = read(&args.dirs)?;
+    let r = read(&args.dirs, args.store.as_deref())?;
     for f in &r.findings {
         println!("{f}");
     }
@@ -188,7 +194,7 @@ fn scope_of(word: &str) -> Result<MapScope> {
 }
 
 fn build_cmd(args: Args) -> Result<()> {
-    let r = read(&args.dirs)?;
+    let r = read(&args.dirs, args.store.as_deref())?;
     // A missing or stale lock is what this command writes; the rest stops it.
     let blocking: Vec<&String> = r
         .findings

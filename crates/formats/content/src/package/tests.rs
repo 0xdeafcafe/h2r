@@ -283,9 +283,9 @@ fn invention_lock() -> Lock {
 #[test]
 fn a_mod_names_its_assets_by_key_and_hash() {
     let m = invention();
-    let [tag, edits, delta] = (&m.items[0], &m.items[1], &m.items[2]);
+    let (tag, edits, delta) = (&m.items[0], &m.items[1], &m.items[2]);
     assert_eq!(tag.replaces.as_deref(), Some(PISTOL));
-    assert_eq!((edits.replaces, edits.was), (None, None));
+    assert_eq!((edits.replaces.as_deref(), edits.was.as_deref()), (None, None));
     assert_eq!(
         (delta.kind, delta.was.as_deref()),
         (Kind::TagDelta, Some(RIFLE))
@@ -328,8 +328,8 @@ fn replaces_and_was_move_the_id_as_the_hash_they_name() {
     });
     assert_eq!(upper, base);
     // Another asset does.
-    let other_replaces = id(&|i| i.replaces = i.replaces.map(|_| OTHER.into()));
-    let other_was = id(&|i| i.was = i.was.map(|_| OTHER.into()));
+    let other_replaces = id(&|i| i.replaces = i.replaces.take().map(|_| OTHER.into()));
+    let other_was = id(&|i| i.was = i.was.take().map(|_| OTHER.into()));
     assert_ne!(other_replaces, base);
     assert_ne!(other_was, base);
     assert_ne!(other_replaces, other_was);

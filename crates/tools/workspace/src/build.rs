@@ -745,7 +745,7 @@ fn run(
                 package: name,
                 requires: &manifest.package.requires,
                 item: index,
-                assets: assets.as_deref_mut(),
+                assets: crate::assets::lend(&mut assets),
                 state: &mut state,
                 unpin,
                 shading,
@@ -755,7 +755,7 @@ fn run(
                 source,
                 files: &loaded.files,
             };
-            state.refusal = None;
+            cx.state.refusal = None;
             let failed = (builder.apply)(&mut cx, &job).err();
             let Some(f) = failed else {
                 ran += 1;

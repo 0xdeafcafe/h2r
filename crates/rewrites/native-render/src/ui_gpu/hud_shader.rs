@@ -384,7 +384,7 @@ mod tests {
         words[9] = final_efg(0, 0, REG_C0 | CHAN_ALPHA, 0);
         words[43] = 0x83_37_42_a8;
         let colour = glyph_colour(&words).unwrap();
-        let want = [0x37, 0x42, 0xa8, 0x83].map(|c| f32::from(c) / 255.0);
+        let want = [0x37u8, 0x42, 0xa8, 0x83].map(|c| f32::from(c) / 255.0);
         for (got, want) in colour.iter().zip(want) {
             assert!((got - want).abs() < 1e-5, "{colour:?} != {want:?}");
         }

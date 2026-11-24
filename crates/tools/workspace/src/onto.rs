@@ -106,7 +106,7 @@ pub fn build_map_settled(
             &left,
             target,
             Some((strict, &mut refused)),
-            assets.as_deref_mut(),
+            crate::assets::lend(&mut assets),
         ) {
             Ok(mut built) => {
                 built.report.refused = refused;
@@ -167,7 +167,7 @@ fn attempt(
             shading.as_ref(),
             strict,
             off,
-            assets.as_deref_mut(),
+            crate::assets::lend(&mut assets),
         )
         .map_err(|s| match s {
             crate::build::Stopped::Failed(e) => stopped(e),

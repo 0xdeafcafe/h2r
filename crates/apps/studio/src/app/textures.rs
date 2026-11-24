@@ -1656,7 +1656,8 @@ impl App {
         let Some(i) = list.iter().rposition(|s| s.tag() == tag) else {
             return false;
         };
-        self.textures_take(list.remove(i), undo)
+        let step = list.remove(i);
+        self.textures_take(step, undo)
     }
 
     /// Move `step` to the other stack, taking the bitmap with it: a pixel
