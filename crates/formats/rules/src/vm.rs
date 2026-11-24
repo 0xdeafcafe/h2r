@@ -84,6 +84,13 @@ pub trait Game {
     fn players(&self) -> Vec<u8>;
     /// Indices of the teams in play. Order does not matter.
     fn teams(&self) -> Vec<u8>;
+    /// The roster slots seated on `team`, for a waypoint's audience
+    /// (`mark(wp, at, team)`), resolved from the roster every machine
+    /// holds, so all of them keep the same mask. A game that does not say
+    /// answers none, and the team's mark is drawn to nobody.
+    fn players_of_team(&self, _team: u8) -> Vec<u8> {
+        Vec::new()
+    }
     /// The objects with a Forge label. Order does not matter.
     fn labelled(&self, label: &str) -> Vec<Placed>;
     /// The objects of the objective registry (`E+0xc1c`). Order does not
@@ -1955,7 +1962,7 @@ impl<'a> Run<'a> {
                 match e.order {
                     Order::Now => {
                         self.mover(game, e.id, &raw)?;
-                        self.stand(e.id, &raw)?;
+                        self.stand(game, e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
                             // The holes' values follow the entry's own
@@ -2028,7 +2035,7 @@ impl<'a> Run<'a> {
     /// or `none` for the zone, lifts the team's rule, and `set_body` with
     /// `none` gives the team its own bodies. A `set_body` tag that is no
     /// body is a script error.
-    fn stand(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+    fn stand(&mut self, game: &dyn Game, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
         if entry == caps::id::ROLE_TRAITS {
             if (0..MAX_PLAYERS as i32).contains(&raw[0]) {
                 let bit = 1u16 << raw[0];
@@ -2078,15 +2085,38 @@ impl<'a> Run<'a> {
                 }
                 return Ok(());
             }
-            caps::id::MARK | caps::id::UNMARK => {
+            caps::id::MARK | caps::id::MARK_PLAYER | caps::id::MARK_TEAM | caps::id::UNMARK => {
                 let at = usize::try_from(raw[0])
                     .ok()
                     .filter(|&w| w < self.ir.waypoints.len())
                     .ok_or(ErrorKind::Hud)?;
+                // The audience: `mark` is every viewer; the player form is
+                // the slot's bit (a `none` player or one past the roster
+                // is an empty mask); the team form is the seated players'
+                // bits, from the roster every machine holds. An empty mask
+                // draws to nobody.
+                let audience = match entry {
+                    caps::id::MARK | caps::id::UNMARK => crate::show::EVERYONE,
+                    caps::id::MARK_PLAYER => raw
+                        .get(2)
+                        .and_then(|&p| u8::try_from(p).ok())
+                        .filter(|&p| (p as usize) < crate::ty::MAX_PLAYERS)
+                        .map(crate::show::player)
+                        .unwrap_or(0),
+                    _ => raw
+                        .get(2)
+                        .and_then(|&t| u8::try_from(t).ok())
+                        .map(|t| {
+                            game.players_of_team(t).iter().fold(0, |mask, &slot| {
+                                mask | crate::show::player(slot)
+                            })
+                        })
+                        .unwrap_or(0),
+                };
                 self.ext.show.waypoints[at] = match raw.get(1).and_then(|&o| object_id(o)) {
-                    Some(object) if entry == caps::id::MARK => Some(crate::show::Waypoint {
+                    Some(object) if entry != caps::id::UNMARK => Some(crate::show::Waypoint {
                         at: object,
-                        audience: crate::show::EVERYONE,
+                        audience,
                     }),
                     _ => None,
                 };

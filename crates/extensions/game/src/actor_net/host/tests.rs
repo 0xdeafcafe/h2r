@@ -337,6 +337,70 @@ fn a_mode_state_over_the_blob_limit_is_refused_and_changes_nothing() {
     assert!(host.set.state().is_empty());
 }
 
+fn shows(packet: &Packet) -> Vec<&Vec<u8>> {
+    packet
+        .records
+        .iter()
+        .filter_map(|r| match r {
+            Record::Show(bytes) => Some(bytes),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The show state rides the first packet whole (with the key), then only
+/// when it changes; the digest's hash is of the state the peer was last
+/// offered; and a stopped script retracts the state with an empty record.
+#[test]
+fn the_show_state_rides_the_key_changes_with_the_state_and_repairs() {
+    let mut host = Host::default();
+    host.tick = Some(30);
+    host.capture(&Pool::new().mem, 30, false, &[]).unwrap();
+
+    // No script: no record, and the digest at tick 30 hashes the empty
+    // state.
+    host.set_show(None);
+    let mut budget = Budget::default();
+    let first = packet(&host, &mut budget);
+    assert!(shows(&first).is_empty());
+    let Record::Digest { show_hash, .. } = digests(&first)[0] else {
+        unreachable!()
+    };
+    assert_eq!(*show_hash, ::actor_net::digest::state_hash(&[]));
+
+    // The script starts: the state rides the next packet.
+    host.tick = Some(31);
+    host.set_show(Some(vec![7, 8]));
+    let second = packet(&host, &mut budget);
+    assert_eq!(shows(&second), vec![&vec![7, 8]]);
+
+    // A change goes out; the same state twice sends once.
+    host.tick = Some(32);
+    host.set_show(Some(vec![9]));
+    host.set_show(Some(vec![9]));
+    let third = packet(&host, &mut budget);
+    assert_eq!(shows(&third), vec![&vec![9]]);
+    host.tick = Some(33);
+    if let Some(sent) = host.schedule(&mut budget, None, false).unwrap() {
+        assert!(shows(&sent).is_empty(), "unchanged, nothing to send");
+    }
+
+    // The digest at tick 60 hashes the last state offered.
+    host.tick = Some(60);
+    let sent = host.schedule(&mut budget, None, false).unwrap().unwrap();
+    let Record::Digest { show_hash, .. } = digests(&sent)[0] else {
+        unreachable!()
+    };
+    assert_eq!(*show_hash, ::actor_net::digest::state_hash(&[9]));
+
+    // The script stops: an empty record retracts the state.
+    host.tick = Some(61);
+    host.set_show(None);
+    let sent = host.schedule(&mut budget, None, false).unwrap().unwrap();
+    assert_eq!(shows(&sent), vec![&Vec::<u8>::new()]);
+    assert!(digests(&sent).is_empty());
+}
+
 fn digests(packet: &Packet) -> Vec<&Record> {
     packet
         .records
@@ -364,6 +428,7 @@ fn a_digest_rides_every_thirtieth_host_tick_with_the_log_head() {
             log_head: [5; 32],
             state_hash: ::actor_net::digest::state_hash(&[4, 2]),
             actor_count: 2,
+            show_hash: ::actor_net::digest::state_hash(&[]),
         }]
     );
     // No mode keeps a log: the head is all zeros.

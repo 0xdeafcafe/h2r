@@ -283,6 +283,7 @@ game answers it from its `enter` and `leave` events.
 | `hud_text` | widget, text | none | now | named (a literal; no holes) |
 | `hud_show` | widget, bool | none | now | named |
 | `mark`, `unmark` | waypoint (an `int`: a `waypoint` declaration's name), object; waypoint | none | now | named (a navpoint over the object, a carried one over its carrier, with the distance); needs `hud.waypoints` |
+| `mark(wp, at, to)` | as `mark` with `to` a player, a team or `all` (everyone), which names the waypoint's audience; `all` is the two-argument form | none | now | named (the player's slot's bit, or the team's seated players' bits from the roster) |
 | `side_of`, `slot_of` | player | int | now | named (the team's index in a game with teams, 16 and the slot in one without; the slot) |
 | `object_pos`, `object_vel` | object, int axis (0 x, 1 y, 2 z) | none | read, fixed | named (`o.position`, `o.velocity` and `o.speed` are three reads each and a `vec_length`) |
 | `vec_length` | fixed, fixed, fixed | none | VM, fixed | `length(v)`, `distance(a, b)`, `o.speed`; exact over any 16.16 vector |

@@ -197,6 +197,8 @@ pub const ACTIONS: &[u16] = &[
     id::HUD_TEXT,
     id::HUD_SHOW,
     id::MARK,
+    id::MARK_PLAYER,
+    id::MARK_TEAM,
     id::UNMARK,
     // Put at the boundary (`super::world::objects`); the VM keeps a mover
     // and tells the game each tick's step.
@@ -699,6 +701,16 @@ impl Game for GuestGame<'_> {
         teams
     }
 
+    /// The roster slots seated on `team`, for a waypoint's audience
+    /// (`mark(wp, at, team)`).
+    fn players_of_team(&self, team: u8) -> Vec<u8> {
+        self.roster()
+            .into_iter()
+            .filter(|&(_, _, t)| t == team)
+            .map(|(slot, _, _)| slot)
+            .collect()
+    }
+
     /// The map's things with this label ([`Table::labelled`]).
     fn labelled(&self, label: &str) -> Vec<Placed> {
         self.table.map_or_else(Vec::new, |t| t.labelled(label))
@@ -865,7 +877,8 @@ impl Game for GuestGame<'_> {
             id::SHOW_AREA | id::HIDE_AREA => None,
             // The VM keeps the show state; the HUDs are drawn from it
             // (`super::world::hud`).
-            id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW | id::MARK | id::UNMARK => None,
+            id::HUD_VALUE | id::HUD_FILL | id::HUD_STYLE | id::HUD_TEXT | id::HUD_SHOW
+            | id::MARK | id::MARK_PLAYER | id::MARK_TEAM | id::UNMARK => None,
             // The VM keeps the mover; each tick's step is `step_object`.
             id::MOVE_TO | id::STOP => None,
             id::TELEPORT => super::world::objects::plan(call).map(Call::Put),
@@ -1815,7 +1828,27 @@ impl Runtime {
         }
         self.publish_walls();
         self.publish_hud(Some(m));
+        self.send_show();
         self.send_walls(tick);
+    }
+
+    /// Offers the running script's show state to the actor channel's
+    /// `Show` record (`super::world::show::offer_state`), from the
+    /// authority that runs the script. A film's run offers none: it has
+    /// no channel. Anything else forgets what was offered, so the channel
+    /// retracts the last state from its peers.
+    fn send_show(&mut self) {
+        if matches!(
+            &self.status,
+            Status::Running(r) if r.authority == Some(true) && !self.film
+        ) {
+            let Status::Running(r) = &self.status else {
+                unreachable!("matched above")
+            };
+            super::world::show::offer_state(r.vm.show().encode());
+        } else {
+            super::world::show::forget_state();
+        }
     }
 
     /// Feeds the objective HUDs from the running script's show state, for

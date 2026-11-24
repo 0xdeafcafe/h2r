@@ -465,6 +465,44 @@ fn a_cue_split_across_three_packets_shows_once() {
 }
 
 #[test]
+fn a_show_state_is_queued_once_per_packet_and_a_digest_mismatch_asks_for_a_key() {
+    let mut client = Client::default();
+    assert!(
+        client
+            .apply(&packet(1, vec![Record::Show(vec![4, 5])]), 1)
+            .unwrap()
+    );
+    assert_eq!(client.pending_show, [vec![4, 5]]);
+    // An older packet's state is not applied again.
+    assert!(
+        !client
+            .apply(&packet(1, vec![Record::Show(vec![6])]), 2)
+            .unwrap()
+    );
+    assert_eq!(client.pending_show.len(), 1);
+    client.pending_show.clear();
+
+    // The digest's show hash beside the actor set's: the empty state the
+    // client holds agrees with the empty state the hash was made of, and
+    // a state the client never received asks for a key. A machine without
+    // the `rules` feature checks none of it.
+    #[cfg(feature = "rules")]
+    {
+        let empty = ::actor_net::digest::state_hash(&[]);
+        let digest = |show_hash| Record::Digest {
+            log_head: [0; 32],
+            state_hash: empty,
+            actor_count: 0,
+            show_hash,
+        };
+        assert!(client.receive(&packet(30, vec![digest(empty)]), 3));
+        assert!(!client.take_key_request());
+        assert!(client.receive(&packet(60, vec![digest(empty + 1)]), 4));
+        assert!(client.take_key_request());
+    }
+}
+
+#[test]
 fn the_mode_state_is_the_hosts_last_and_a_key_replaces_it() {
     let mut client = Client::default();
     assert!(client.mode_state().is_empty());
@@ -494,7 +532,7 @@ fn digest_of(actors: &[Actor], state: &[u8]) -> Record {
         state: state.to_vec(),
     })
     .unwrap();
-    set.digest([3; 32])
+    set.digest([3; 32], ::actor_net::digest::state_hash(&[]))
 }
 
 #[test]

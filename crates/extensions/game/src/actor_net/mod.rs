@@ -28,11 +28,28 @@ fn show_cues() -> Vec<Record> {
     }
 }
 
-/// Forgets the show cues waiting for the channel: a new match, a lost
-/// host tick or a snapshot restore starts it empty.
+/// The running rules script's show state, encoded
+/// (`crate::rules::world::show::take_state`); none without the `rules`
+/// feature or when no script runs.
+fn show_state() -> Option<Vec<u8>> {
+    #[cfg(feature = "rules")]
+    {
+        crate::rules::world::show::take_state()
+    }
+    #[cfg(not(feature = "rules"))]
+    {
+        None
+    }
+}
+
+/// Forgets the show cues and the state waiting for the channel, and the
+/// state a client holds: a new match, a lost host tick or a snapshot
+/// restore starts it all empty.
 fn clear_show_cues() {
     #[cfg(feature = "rules")]
     crate::rules::world::show::clear_cues();
+    #[cfg(feature = "rules")]
+    crate::rules::world::show::clear_held();
 }
 
 /// The host log head of the mode running on this machine, for the
@@ -163,6 +180,7 @@ impl Feature for Capture {
                     // The running rules script's show cues (`message`
                     // calls); empty when no script runs.
                     state.host.set_cues(show_cues());
+                    state.host.set_show(show_state());
                     state.host.set_log_head(log_head());
                     after_capture(&*memory, tick, &state.host)
                 }

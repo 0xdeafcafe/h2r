@@ -1665,6 +1665,9 @@ impl<'s> Cx<'s> {
         if name == "message" {
             return self.message(f, args, pos);
         }
+        if name == "mark" {
+            return self.mark(f, args, pos);
+        }
         let Some(entry) = caps::entry_named(name) else {
             return internal(pos, "an unknown function");
         };
@@ -1695,6 +1698,40 @@ impl<'s> Cx<'s> {
                 Ok(None)
             }
         }
+    }
+
+    /// `mark(wp, at)`: every viewer; `mark(wp, at, to)` with `to` a
+    /// player, a team or `all`, which picks the entry (`caps::spelled`);
+    /// `all` is the two-argument form.
+    fn mark(&mut self, f: &mut Fun, args: &'s [Expr], pos: Pos) -> R<Option<(Reg, Ty)>> {
+        let [wp, at, rest @ ..] = args else {
+            return internal(pos, "mark of no two arguments");
+        };
+        let mut regs = Vec::with_capacity(3);
+        regs.push(self.expr(f, wp)?.0);
+        regs.push(self.expr(f, at)?.0);
+        let entry = match rest {
+            [] => caps::id::MARK,
+            [to] => match &to.kind {
+                ExprKind::Name(n) if n == caps::EVERYONE => caps::id::MARK,
+                _ => {
+                    let (r, ty) = self.expr(f, to)?;
+                    regs.push(r);
+                    match ty {
+                        Ty::Player => caps::id::MARK_PLAYER,
+                        Ty::Team => caps::id::MARK_TEAM,
+                        _ => return internal(to.pos, "a mark for no player or team"),
+                    }
+                }
+            },
+            _ => return internal(pos, "mark of more than three arguments"),
+        };
+        f.emit(Op::Call {
+            entry,
+            args: regs,
+            dst: None,
+        });
+        Ok(None)
     }
 
     /// `message(to, text)`: `to` is a player, a team or `all` (everyone),
