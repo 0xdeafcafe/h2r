@@ -56,7 +56,7 @@ pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
 pub use scripts::{ScriptAction, ScriptsTool};
-pub use shell::{Doc, Tab};
+pub use shell::{Doc, Surface, Tab};
 pub use navigation::{NavAction, NavHistory, NavLocation};
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
@@ -303,6 +303,9 @@ pub enum Action {
     Image(image_gen::ImageAction),
     /// Show another tool.
     SetTool(ToolKind),
+    /// Show an editor's surface: the View menu's editors and a document
+    /// brought forward.
+    Show(Surface),
     /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
     /// editor: on `map` (opened first when it is not the open one), else
     /// on the open map (`app::assets`).
@@ -504,6 +507,8 @@ impl Action {
             }
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
+            // The script's text stays in the editor when its tab closes.
+            Action::CloseDoc(Doc::Rules) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -1301,6 +1306,11 @@ impl App {
             Action::Bitmap(a) => self.run_bitmap(a),
             Action::Image(a) => self.run_image(a),
             Action::SetTool(tool) => {
+                self.set_tool(tool);
+                self.follow_tool(tool);
+            }
+            Action::Show(surface) => {
+                let tool = surface.tool();
                 self.set_tool(tool);
                 self.follow_tool(tool);
             }

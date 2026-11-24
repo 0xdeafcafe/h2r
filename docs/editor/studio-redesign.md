@@ -27,7 +27,7 @@ before its slice starts.
 
 | Part | State | Where |
 |---|---|---|
-| The window: tool tabs (Map, Variants, Playlists, UI, HUD), a dock layout per tool, Go to anything, the game link bar | built | `ui/bar.rs`, `ui/layout.rs`, `ui/palette.rs`, `app::ToolKind` |
+| The window: the document bar, View > Editors, a dock layout per surface, Go to anything, the game link (SH5) | built | `ui/bar.rs`, `ui/layout.rs`, `ui/palette.rs`, `app::Surface` |
 | One command layer for the window and the API | built | `App::dispatch`, `App::perform` (`app.rs`), `api/mod.rs` |
 | Document tabs: a tab per open document, each with its own undo stack; a tag's editor from its group; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close` (SH1) | built | `app/shell.rs`, `ui/doc_tabs.rs`, `api/shell.rs`, `TagDoc::undo_tag` |
 | The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item), `asset.copy` (SH2) | built | `app/assets.rs`, `api/assets.rs` |
@@ -1027,7 +1027,7 @@ Rows are in build order.
 | SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
 | SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |
 | SN5 | **Sound in the game** (built: the game's `audio.play`, `pair.preview {what: "sound"}`): the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |
-| SH5 | **Old tools removed**: the tool tabs and floating windows; the script editor as the `.rules` document; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the tree and the editors | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from documents; no `ToolKind` match is left in `ui.rs` |
+| SH5 (built: no tool tabs; `ui.rs` and `ui/bar.rs` draw by `app::Surface`; `Doc::Rules`; the docs. `ToolKind` stands in `app` and the API; the screenshots list is not yet from documents) | **Old tools removed**: the tool tabs and floating windows; the script editor as the `.rules` document; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the tree and the editors | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from documents; no `ToolKind` match is left in `ui.rs` |
 
 SH1, W3, M1, PK2, GT0 and GT1 need nothing unbuilt and run together; SH2 follows SH1, PK1 and W3; PK3 follows PK2, and PK11,
 PK4 and PK5 follow it side by side. The other editors' slices keep their own pages' order and

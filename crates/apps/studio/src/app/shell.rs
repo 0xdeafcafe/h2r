@@ -2,7 +2,8 @@
 //! open document as a tab, the one in front, and each document's own undo
 //! stack. A tab's editor is picked from what it holds: a tag's from its
 //! group ([`kinds::kind`]), a map, a variant, a playlist file, a screen or
-//! a HUD from the tool that holds it.
+//! a HUD from the tool that holds it, the game type script from the script
+//! editor.
 //!
 //! The tools' documents (the map, the variant, the playlists, the screen,
 //! the HUD) are opened by their own commands; [`App::sync_tabs`] gives each
@@ -42,12 +43,89 @@ pub enum Doc {
     Ui,
     /// The map open in the HUD tool.
     Hud,
+    /// The game type script in the script editor (`app::rules_edit`).
+    Rules,
     /// A tag of the open map, in the editor its group gets.
     Tag(TagId),
 }
 
+/// What the window draws under the bar: the editor of the front document.
+/// The window has no tool tabs; this is read from the front tab and the
+/// panels it brings ([`App::surface`]), and the View menu's editor entries
+/// and a double-click in the browser ask for one ([`Action::Show`]).
+///
+/// [`Action::Show`]: super::Action::Show
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Surface {
+    /// The map's scene: the browser, the outliner, the viewport.
+    Scene,
+    /// The tag field panel and the editors of the tag kinds.
+    Tags,
+    /// The map's scripts, read only.
+    Scripts,
+    Variants,
+    Playlists,
+    UiScreens,
+    Hud,
+    Textures,
+}
+
+impl Surface {
+    /// The surfaces the View menu lists for opening an editor.
+    pub const EDITORS: [(Surface, &'static str); 6] = [
+        (Surface::Scene, "Map"),
+        (Surface::Variants, "Game variants"),
+        (Surface::Playlists, "Playlists"),
+        (Surface::UiScreens, "UI screens"),
+        (Surface::Hud, "HUD"),
+        (Surface::Textures, "Textures"),
+    ];
+
+    /// The surface shares the map's panels (browser, scene, tags,
+    /// scripts, viewport and inspector).
+    pub fn is_map(self) -> bool {
+        matches!(self, Surface::Scene | Surface::Tags | Surface::Scripts)
+    }
+
+    /// The holder of the document this surface shows.
+    pub fn tool(self) -> ToolKind {
+        match self {
+            Surface::Scene => ToolKind::Scenario,
+            Surface::Tags => ToolKind::Tags,
+            Surface::Scripts => ToolKind::Scripts,
+            Surface::Variants => ToolKind::Variants,
+            Surface::Playlists => ToolKind::Playlists,
+            Surface::UiScreens => ToolKind::UiScreens,
+            Surface::Hud => ToolKind::Hud,
+            Surface::Textures => ToolKind::Textures,
+        }
+    }
+}
+
+impl From<ToolKind> for Surface {
+    fn from(tool: ToolKind) -> Self {
+        match tool {
+            ToolKind::Scenario => Surface::Scene,
+            ToolKind::Tags => Surface::Tags,
+            ToolKind::Scripts => Surface::Scripts,
+            ToolKind::Variants => Surface::Variants,
+            ToolKind::Playlists => Surface::Playlists,
+            ToolKind::UiScreens => Surface::UiScreens,
+            ToolKind::Hud => Surface::Hud,
+            ToolKind::Textures => Surface::Textures,
+        }
+    }
+}
+
 /// The tools' documents, in the order their tabs are first given.
-pub const TOOL_DOCS: [Doc; 5] = [Doc::Map, Doc::Variant, Doc::Playlists, Doc::Ui, Doc::Hud];
+pub const TOOL_DOCS: [Doc; 6] = [
+    Doc::Map,
+    Doc::Variant,
+    Doc::Playlists,
+    Doc::Ui,
+    Doc::Hud,
+    Doc::Rules,
+];
 
 impl Doc {
     /// The tool that holds a tool's document (`None` for a tag).
@@ -58,6 +136,8 @@ impl Doc {
             Doc::Playlists => ToolKind::Playlists,
             Doc::Ui => ToolKind::UiScreens,
             Doc::Hud => ToolKind::Hud,
+            // The script editor docks beside the variant's settings.
+            Doc::Rules => ToolKind::Variants,
             Doc::Tag(_) => return None,
         })
     }
@@ -70,8 +150,22 @@ impl Doc {
             Doc::Playlists => "playlists",
             Doc::Ui => "ui",
             Doc::Hud => "hud",
+            Doc::Rules => "rules",
             Doc::Tag(_) => return None,
         })
+    }
+}
+
+impl App {
+    /// What the window draws: the surface of the tool the front document
+    /// brings forward.
+    pub fn surface(&self) -> Surface {
+        Surface::from(self.tool)
+    }
+
+    /// The surface the guard's pending action asks about.
+    pub fn pending_surface(&self) -> Option<Surface> {
+        self.pending_tool().map(Surface::from)
     }
 }
 
@@ -211,6 +305,7 @@ impl App {
                 .session
                 .as_ref()
                 .map_or_else(|| "HUD".to_owned(), |s| s.name.clone()),
+            Doc::Rules => self.rules.title.clone(),
             Doc::Tag(id) => match self.tags.tag(id) {
                 Some(t) => format!(
                     "{}.{}",
@@ -227,6 +322,7 @@ impl App {
     pub fn doc_dirty(&self, doc: Doc) -> bool {
         match doc {
             Doc::Tag(id) => self.tool_dirty(ToolKind::Scenario) && self.tags.is_changed(id),
+            Doc::Rules => self.rules.dirty(),
             Doc::Map => self.tool_dirty(ToolKind::Scenario) || self.tool_dirty(ToolKind::Textures),
             other => self.tool_dirty(other.holder().expect("a tool document")),
         }
@@ -241,6 +337,8 @@ impl App {
                 (g.can_undo(), g.can_redo())
             }
             Doc::Map => (self.session.can_undo(), self.session.can_redo()),
+            // The text widget keeps the script's own undo.
+            Doc::Rules => (false, false),
             Doc::Variant => self
                 .variants
                 .as_ref()
@@ -266,6 +364,7 @@ impl App {
             Doc::Playlists => self.hoppers.is_open(),
             Doc::Ui => self.ui_screens.pick.is_some(),
             Doc::Hud => self.hud.session.is_some(),
+            Doc::Rules => self.rules.opened,
             Doc::Tag(_) => false,
         }
     }
@@ -279,6 +378,9 @@ impl App {
             if open && !self.tabs.has(doc) {
                 self.tabs.add(Tab { doc, map: None });
                 self.tabs.front = Some(doc);
+                if doc == Doc::Rules {
+                    self.set_tool(ToolKind::Variants);
+                }
             } else if !open && self.tabs.has(doc) {
                 self.tabs.remove(doc);
             }
@@ -376,6 +478,10 @@ impl App {
         }
         let tool = self.doc_tool(doc);
         self.set_tool(tool);
+        if doc == Doc::Rules {
+            // Picks the script's tab among the variant's panels.
+            self.rules.show = true;
+        }
         if let Doc::Tag(id) = doc {
             if tool == ToolKind::Textures {
                 self.run(Action::Bitmap(BitmapAction::Select { tag: id, image: 0 }));
@@ -408,6 +514,8 @@ impl App {
                 self.close_tool(ToolKind::UiScreens);
                 self.ui_screens.pick = None;
             }
+            // The tab goes; the text stays in the editor for the next open.
+            Doc::Rules => self.rules.opened = false,
             other => self.close_tool(other.holder().expect("a tool document")),
         }
         self.tabs.remove(doc);
@@ -430,6 +538,9 @@ impl App {
     /// [`super::Action::UndoDoc`] and [`super::Action::RedoDoc`]: a step of
     /// the tab's own undo stack.
     pub(super) fn undo_redo_doc(&mut self, doc: Doc, undo: bool) {
+        if doc == Doc::Rules {
+            return self.info("the script editor keeps its own undo: use it in the text");
+        }
         let Doc::Tag(id) = doc else {
             return self.undo_redo(self.doc_tool(doc), undo);
         };

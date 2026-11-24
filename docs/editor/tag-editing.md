@@ -305,7 +305,7 @@ Two facts, kept apart everywhere:
 
 - **Saved** is about the map file. An edit changes the document and is an
   undo step ([editor.md](editor.md), "The document"). The file changes on
-  Save, Save as... or Save as package.... A changed field has a dot until
+  Save or Export map... A changed field has a dot until
   the map is saved; the header counts them (`3 unsaved changes`).
 - **Sent** is about a running game. It needs a game connected on the same
   map with Edit on ([live-mirror.md](live-mirror.md), "How an edit

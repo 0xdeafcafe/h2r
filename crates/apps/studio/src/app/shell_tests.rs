@@ -266,3 +266,44 @@ fn opening_an_asset_opens_its_tag_of_the_open_map() {
     assert!(app.log().len() > before);
     assert!(app.status().is_some_and(|s| s.text().contains("not in the open map")));
 }
+
+/// The script editor is a document: opening a script gives it a tab in
+/// front, showing the Variants panels with its tab picked; closing the tab
+/// keeps the text and does not touch the variant.
+#[test]
+fn the_script_is_a_document_tab() {
+    let t = Temp::new("rules-doc");
+    let mut app = app(&t.0);
+    assert!(!docs(&app).contains(&Doc::Rules));
+    app.rules.open_starter("slayer").unwrap();
+    app.sync_tabs();
+    assert_eq!(app.front_doc(), Some(Doc::Rules));
+    assert_eq!(app.surface(), Surface::Variants);
+    assert_eq!(app.doc_id(Doc::Rules), "rules");
+    assert_eq!(app.doc_title(Doc::Rules), app.rules.title);
+    assert!(app.doc_dirty(Doc::Rules), "a starter has no file yet");
+
+    let text = app.rules.text.clone();
+    app.dispatch(Action::CloseDoc(Doc::Rules));
+    assert!(!docs(&app).contains(&Doc::Rules));
+    assert_eq!(app.rules.text, text);
+
+    app.rules.open_starter("slayer").unwrap();
+    app.dispatch(Action::FocusDoc(Doc::Rules));
+    assert_eq!(app.front_doc(), Some(Doc::Rules));
+    assert!(app.rules.show, "the script's tab is picked among the panels");
+}
+
+/// The window has no tool tabs: a surface is asked for by an action and
+/// read back from the app.
+#[test]
+fn show_changes_the_surface() {
+    let t = Temp::new("surface");
+    let mut app = app(&t.0);
+    for (surface, _) in Surface::EDITORS {
+        app.dispatch(Action::Show(surface));
+        assert_eq!(app.surface(), surface);
+        assert_eq!(Surface::from(surface.tool()), surface);
+    }
+    assert!(Surface::Tags.is_map() && Surface::Scripts.is_map() && !Surface::Hud.is_map());
+}

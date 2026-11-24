@@ -186,6 +186,9 @@ impl App {
                 },
             }),
             Doc::Map => Err("a map previews in the Scene tab; Playtest runs it in the game".into()),
+            Doc::Rules => Err(
+                "a script has no preview in the game: Reload into game sends it".into(),
+            ),
             Doc::Variant | Doc::Playlists => Err(
                 "a variant or a playlist file has no preview in the game: Playtest runs it".into(),
             ),

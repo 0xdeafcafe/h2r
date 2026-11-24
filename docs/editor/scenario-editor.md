@@ -329,18 +329,17 @@ from `tags::object` (editor.md, "What the viewport shows").
 
 ## 5. How a patched map reaches the game
 
-### As a map package (the default)
+### In the edit target (the default)
 
-**Save as package...** writes a map package ([maps.md](../game/maps.md) §1, §8)
-into `<data>/maps/<dir>/`, where `<data>` is the runtime's data root
-(`h2-editor --data`, default `~/Library/Application Support/h2recomp/data`, as `h2 play`). The
-form asks for a name (required), author, description, an optional image
-(PNG or JPEG, at most 512 KB, checked before anything is written), the
-directory (default `<map>-edit`). The editor can still write its legacy
-`active.toml` selection. The current runtime allocates slots independently
-of that selection.
-
-The package contains
+Every change to a base map is an edit line in the edit target, a local
+package under `<data>/packages/` (`app::edit_target`,
+[studio-redesign.md](studio-redesign.md), "Editing a disc asset"), where
+`<data>` is the runtime's data root (`h2-editor --data`, default
+`~/Library/Application Support/h2recomp/data`, as `h2 play`). **Save**
+writes the package's files. The first edit asks which package takes it;
+there is no package form. A map package ([maps.md](../game/maps.md) §1,
+§8) that **Open package...** lists, and that
+`scenario_edit::package` writes, contains
 
 - `manifest.toml`: `[base]` the disc map's name and SHA-256; one
   `[[patch]]`; `[result] geometry` (maps.md, "The geometry hash");

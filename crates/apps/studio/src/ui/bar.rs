@@ -1,30 +1,16 @@
-//! The fixed bar under the main menu: tool tabs on the left, the open
-//! documents' tabs in the centre (`doc_tabs`) and the game link on the
-//! right.
+//! The fixed bar under the main menu: the open documents' tabs on the
+//! left (`doc_tabs`) and the game link on the right.
 
 use dear_imgui_rs::{Condition, StyleColor, StyleVar, Ui, WindowFlags};
 
 use super::play::{PlayUi, link_icon};
-use crate::app::{Action, App, ToolKind};
+use crate::app::{Action, App};
 use crate::play::LinkView;
 use crate::play::pair::Request;
 use crate::theme::{self, Fonts, TransportIcon};
 
-const TABS: [(ToolKind, &str); 6] = [
-    (ToolKind::Scenario, "Map"),
-    (ToolKind::Variants, "Variants"),
-    (ToolKind::Playlists, "Playlists"),
-    (ToolKind::UiScreens, "UI"),
-    (ToolKind::Hud, "HUD"),
-    (ToolKind::Textures, "Textures"),
-];
-
 /// The window's padding at its left and right edges.
 const EDGE: f32 = 10.0;
-
-pub(super) fn is_map(tool: ToolKind) -> bool {
-    matches!(tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts)
-}
 
 pub(super) fn draw(
     ui: &Ui,
@@ -58,22 +44,9 @@ pub(super) fn draw(
             // Every control sits on one row, centred in the bar's height.
             let row = (theme::BAR - ui.frame_height()) * 0.5;
             ui.set_cursor_pos([EDGE, row]);
-            for (index, (tool, name)) in TABS.into_iter().enumerate() {
-                if index > 0 {
-                    ui.same_line();
-                }
-                let active = app.tool == tool || (tool == ToolKind::Scenario && is_map(app.tool));
-                let dirty = app.tool_dirty(tool);
-                let label = format!("{name}{}###tool-{name}", if dirty { " *" } else { "" });
-                let _tone = active.then(|| ui.push_style_color(StyleColor::Button, theme::ACCENT));
-                if ui.button(label) && app.tool != tool {
-                    actions.push(Action::SetTool(tool));
-                }
-            }
-            let tabs_end = ui.item_rect_max()[0] - pos[0];
+            let tabs_end = EDGE;
 
-            // The link keeps the right edge. The document name takes what
-            // is left between the tabs and the link.
+            // The link keeps the right edge.
             let view = play.play.displayed_link(app);
             let issue_label = view.issue_summary().map(|summary| {
                 let headline = view.text
@@ -88,10 +61,9 @@ pub(super) fn draw(
             };
             let link_start = (width - EDGE - link_width(ui, &view, pill_width))
                 .max(tabs_end + theme::BAR_SPACING);
-            // The open documents' tabs take what is left between the tool
-            // tabs and the link.
+            // The open documents' tabs take what is left before the link.
             let document_end = link_start - 16.0;
-            let start = tabs_end + 16.0;
+            let start = tabs_end;
             if document_end > start + 24.0 {
                 ui.set_cursor_pos([start, row]);
                 super::doc_tabs::draw(ui, app, actions, document_end - start);

@@ -119,41 +119,39 @@ disc, every panel waiting behind it.*
 
 ## 3. The window
 
-![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 tool bar, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 document tabs and game link, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
 
-*The window's regions: (1) the menu bar, (2) the tool bar, (3) Scene, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
+*The window's regions: (1) the menu bar, (2) the bar of document tabs and the game link, (3) Scene, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
 
 The window is made of panels that dock together:
 
-- **Tool bar** (under the menu): click **Map**, **Variants**,
-  **Playlists**, **UI**, **HUD** or **Textures** to switch workspaces. The middle
-  holds a tab for each open document: the map, the variant, the playlist
-  file, the screen, the HUD map, and each tag you open. Click a tab to
-  show it in its editor, or its **x** to close it; tabs that do not fit
-  are under **More**. A `*` marks unsaved changes. The **game link** is at
-  the right end in every tool: click the pill to pair, manage the link or
-  choose a running game. Play, Stop, Pause, Step, Resume and the Edit
-  switch appear beside it as available.
-- **Left dock**: **Scene**, **Tags** and **Maps** share the Map tool's left
-  column. Each tab gets the full column when selected.
-  **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
-  folder of maps), the source path, and its **Multiplayer maps** and
-  **Campaign levels**. **Map Pack**, **Packages**, **Halo 1 sandbox
-  variants** and read-only **Halo 1** maps have their own sections. Rows
-  are sorted by display name within each section. A map shows the name
-  and picture from the game's menus when available. Hover for the full
-  picture, description and source file. **Shared and menu** is the
-  final section. It uses a layers icon and keeps the file names of
-  caches such as `mainmenu`, `shared`, `single_player_shared` and `ui`.
-- **Viewport** (middle) and **Inspector** (right) show the Map tool's
-  level and fields. Other tools use their own dockable windows.
+- **The bar** (under the menu) holds a tab for each open document: the
+  map, the variant, the playlist file, the script, the screen, the HUD
+  map, and each tag you open. There are no tool tabs: a document opens
+  in the editor its kind gets. Click a tab to show it, or its **x** to
+  close it; tabs that do not fit are under **More**. A `*` marks unsaved
+  changes. To start a document in an editor that has none open, choose
+  **View > Editors** (**Map**, **Game variants**, **Playlists**, **UI
+  screens**, **HUD** or **Textures**). The **game link** is at the right
+  end: click the pill to pair, manage the link or choose a running game.
+  Play, Stop, Pause, Step, Resume and the Edit switch appear beside it
+  as available.
+- **Left dock**: the **Browser** lists every tag by path, with the
+  packages and Live as their own roots, and **Scene** and **Tags** share
+  the column with it. **Open...** takes a disc image or `.map` and
+  **Folder...** a folder of maps; the source path shows under them.
+  Double-click a row to open it in its editor; a scenario row opens the
+  map. A badge marks a tag an edit line touches. **Problems** lists what
+  the checks found, and each row opens its asset.
+- **Viewport** (middle) and **Inspector** (right) show the map's level
+  and fields. The other editors use their own dockable windows.
 - **Game** (bottom dock) holds session and player details. **Log**
   beside it shows the editor's messages and errors. Map's **Data and
   bytes** tab lives beside them.
 - **Status bar** (bottom) shows the latest message, a hint for the
   control or viewport under the pointer, and the frame rate.
 
-The **File** menu holds **Save**, **Save as...**, open, packages and quit.
+The **File** menu holds **Save**, **Export map...**, open, packages and quit.
 **Edit** holds **Go to anything...**, **Undo**, **Redo**, **Duplicate**,
 **Delete**, **Allow growing full blocks** and **Allow unverified geometry
 writes**. **View** holds **Frame map**, **Focus selection**, the gizmo mode
@@ -169,9 +167,9 @@ target is in edit mode. The edits save with the map, but only with
 loaded a written section, the save is refused and says why
 ([modeling.md](modeling.md)).
 
-![The File menu open: Open disc or map..., Open maps folder..., Save map as..., Save as package... (highlighted), Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
+![The File menu open: Open disc or map..., Open maps folder..., Save, Export map..., Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
 
-***File**, in the Scenario tool. The Game variants and Playlists tools add their own items here.*
+***File**. The editor in front (variants, playlists, HUD, textures) adds its own items here.*
 
 ![The Edit menu open with Undo, Redo, Duplicate, Delete and Allow growing full blocks, and the tooltip under it: the block is full: growing it needs more tag memory](../images/editor/menu-edit.png)
 
@@ -204,7 +202,7 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Keys | Action |
 |---|---|
 | Cmd+O | Open a disc image or map |
-| Cmd+S | Save the map, variant, playlist file or HUD edits in the active tool |
+| Cmd+S | Save the map, variant, playlist file or HUD edits in the front editor |
 | Shift+Cmd+S | Choose a path for the map or playlist file |
 | Cmd+P | Open Go to anything |
 | Cmd+Z | Undo in the tool you're in |
@@ -424,7 +422,7 @@ went. **F** frames it.
    objects such as weapons and vehicles).
 5. Save it (below) and start the game.
 
-After an edit, **Map** and the map's tab show a `*` in the tool bar.
+After an edit, the map's tab shows a `*`.
 The window title has the same mark.
 
 ### Add and remove objects
@@ -470,51 +468,30 @@ the level's scripts may create it by name. Deleting it leaves that name
 pointing at nothing, which can break those scripts (mostly a campaign
 concern).
 
-### Save as a map package or as a map file
+### Save to the edit target, or export a map
 
-Choose **File > Save** (Cmd+S) to update the open package or the last
-standalone file the editor wrote for the map. When you work from a base
-map, **Save** opens **Save as package...** with a name filled in. Saving
-keeps the disc or loose source map intact.
-
-**As a map package (recommended).** Choose **File > Save as package...**
-to choose the package details.
-
-![The Save as package window: in data/maps, Name ascension edit, Author, Description, Image (PNG/JPEG) optional at most 512 KB, Directory ascension-edit, Make it the active package for this map, Save package and Cancel](../images/editor/package-form.png)
-
-***Save as package**, filled in for Ascension.*
-
-- **Name**: what the package is called (required).
-- **Author**, **Description**: optional.
-- **Image (PNG/JPEG)**: an optional picture: the path of a PNG or JPEG of
-  at most 512 KB.
-- **Directory**: the folder name for the package inside `<data>/maps`.
-  It defaults to `<map>-edit`.
-- **Make it the active package for this map** writes a legacy editor
-  selection. Current game builds list installed packages separately.
-
-Click **Save package**. The window shows where it goes (`in <data>/maps`),
-and the log then says `saved package ...` with the package's MapId, an
-identifier for this exact version of the map.
+Your edits are lines in the edit target, a local package. The first
+change to a disc map asks which package takes it: pick an existing one
+or **New package...**. After that every change, undo and redo updates the
+package's edit lines for the map (`edits/<map>.yaml`), and the document
+tab shows a `*` until **File > Save** (Cmd+S) writes the package's files.
+Saving keeps the disc or loose source map intact.
 
 A package is small: it holds only the difference from your disc's map,
-plus a description. The game finds the package at boot. Pick it from
+plus a description. The game finds it at boot. Pick it from
 **Change Map > Mods** when a slot is available.
 [Map selection](../game/map-select.md)
 
 To keep working on a package later, open the same map, choose **File >
-Open package...** and click **Open** next to it. Use **Save** to update
-the package. Use **Save as package...** when you want to set its display
-details or write to another package directory.
-
+Open package...** and click **Open** next to it.
 
 ![The Open package window listing one package, ascension edit in ascension-edit, with an Open button and Close](../images/editor/package-open.png)
 
 ***Open package** lists this map's packages.*
 
-**As a whole `.map` file.** Choose **File > Save as...** (Shift+Cmd+S)
-and pick the destination in your system's save window. The editor keeps
-that path as the open map's Save destination.
+**As a whole `.map` file.** Choose **File > Export map...**
+(Shift+Cmd+S) and pick the destination in your system's save window. The
+file is for use outside the game's package set.
 
 ### Playing your edited map
 
@@ -668,7 +645,8 @@ format and budget.
   **Add a sequence** for the selected image. Adding is one undo step
   each.
 - **Saving.** Edits stay in the editor until the map is saved (**File >
-  Save** or **Save as...**), which writes them into the map. A bitmap
+  Save**), which writes them into the edit target's package
+  (**Export map...** writes a whole `.map`). A bitmap
   that gained an image or a sequence no longer fits where it is stored,
   so the save writes its whole tag again at the end of the map's
   metadata: the other images keep their pixels and every other tag its
@@ -714,9 +692,9 @@ data is in a shared map.
 
 Saving never changes the Map Pack's files:
 
-- **File > Save as package...** saves a package in `<data>/maps` over
-  the Map Pack map, as for a disc map.
-- **File > Save as...** writes a whole `.map` wherever you choose,
+- **File > Save** writes the edit target's package over the Map Pack
+  map, as for a disc map.
+- **File > Export map...** writes a whole `.map` wherever you choose,
   except into the game's installed content, which the editor refuses.
 
 ### Halo 1 maps
@@ -727,9 +705,9 @@ The editor can show Halo 1 maps too.
 ([multiplayer.md](../halo1/multiplayer.md)), look under **Halo 1 sandbox
 variants**. Each map's H1 sandbox comes first, followed by its H2
 sandbox. Both show the picture and description from Halo 1's menu.
-Click a variant to edit it in the Scenario tool. Saving it with **File > Save as package...** makes a
-new package (its **Directory** starts as `<map>-edit`), listed under
-**Packages**; the imported map is left as it was.
+Click a variant to edit it in the map editor. Its edits go to the edit
+target, a package listed under **Packages**; the imported map is left as
+it was.
 
 ![Blood Gulch converted with the Halo 2 sandbox, open in the Scenario tool: the canyon drawn with Halo 2 stand-in textures, its spawn points and item spawns, a spawn point selected and Converted from Halo 1's bloodgulch, H2 sandbox in the inspector](../images/editor/halo1-converted.jpg)
 
@@ -816,7 +794,7 @@ holds at most 65,536, so it can't be converted.`
 A game variant is a set of game settings: the game type (Slayer, CTF and
 so on), its name, and options like the score to win, the time limit and
 the weapons. The game ships with built-in variants, and you can save your
-own. Click **Variants** in the tool bar.
+own. Choose **View > Editors > Game variants**.
 
 ![The Game variants tool with the built-in Swords variant open: the Variants list on the left, its settings in the middle, and its changes from the Slayer defaults on the right](../images/editor/variants-builtin.jpg)
 
@@ -990,14 +968,16 @@ it.
 
 A game type script is a `.rules` file in the
 [rules language](../game/rules-engine.md#the-language): the game type's
-own rules, run by the game on top of the engine it rides. The **Game
-type script** window is a tab beside the variant's settings
+own rules, run by the game on top of the engine it rides. An open
+script is a document tab in the bar, named for the file, with a `*` while
+it has unsaved edits; the editor shows beside the variant's settings
 (`crates/apps/studio/src/ui/game_script.rs`, over
-`crates/apps/studio/src/app/rules_edit.rs`).
+`crates/apps/studio/src/app/rules_edit.rs`). Closing the tab keeps the
+text for the next open.
 
 - **New** starts a blank script, or one of the built-in game types or
   examples to change. **Open**, **Save** and **Save as** read and write
-  `.rules` files. Opening a script picks the window's tab. **Format**
+  `.rules` files. Opening a script gives it a tab and brings it forward. **Format**
   (**Shift+Alt+F**) lays the script out the standard way; it refuses a
   script that does not parse.
 - The text is coloured as the language reads it (its semantic tokens),
@@ -1181,7 +1161,7 @@ from your computer: you publish it to your server.
 
 ### Open a file
 
-Click **Playlists** in the tool bar, then **Open...** above the list and pick
+Choose **View > Editors > Playlists**, then **Open...** above the list and pick
 a `multiplayer_hopper.dat`. Both forms work: the raw file the console
 keeps, and the compressed download a Live server publishes. The editor
 saves it back in the same form. With no file at hand, click **New** for
@@ -1537,7 +1517,7 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   is incomplete, the section says so and leaves the list empty.
   A `*` marks an edit. `[Pending]` marks edited tag metadata waiting
   to reach a paired game. Double-click a tag to open it as a tab in the
-  tool bar, in the editor its kind gets (a bitmap in **Textures**, the
+  bar, in the editor its kind gets (a bitmap in **Textures**, the
   scenario in **Map**, the rest here); each tag's tab has its own undo. Shared-cache marks show where the data lives,
   such as `[shared]` for resources and `[in shared]` for tag fields.
 - **The fields** (Inspector) are the selected tag's fields, top to bottom.
@@ -1614,9 +1594,8 @@ Some things are shown but cannot be changed, with the reason shown:
 counts and addresses (use Add/Remove to change a block) and scenario
 fields (use the Scenario tool for placements).
 
-Every change is an undo step (one drag is one step). **Save**,
-**Save as...** and **Save as package...** write your tag edits and
-placement edits together. The Scenario tool's
+Every change is an undo step (one drag is one step). **Save**
+and **Export map...** write your tag edits and placement edits together. The Scenario tool's
 `*` shows when the map has unsaved edits of either kind.
 
 ### Export and import a tag
@@ -1739,10 +1718,10 @@ Your disc image is only ever read.
 ## 12. Troubleshooting
 
 **"Unsaved changes" window.** Anything that would throw away a tool's
-unsaved changes asks first: opening another disc or map (Scenario),
+unsaved changes asks first: opening another disc or map,
 opening, starting or importing another variant (Game variants), opening
 or starting another playlist file (Playlists), and quitting. It names the
-tool, and offers **Save** (or **Save as...** when a file name is needed),
+editor, and offers **Save** (or **Save as...** when a file name is needed),
 **Discard** or **Cancel**. Quitting with changes in several tools asks
 about each in turn.
 
