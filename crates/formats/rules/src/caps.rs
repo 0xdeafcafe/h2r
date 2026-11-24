@@ -633,16 +633,10 @@ pub const ENTRIES: &[Entry] = &[
     // the Territories HUD's held count is. One widget at a time reads per
     // viewer; the show state keeps the table (`show::PerViewer`).
     act(id::HUD_VALUE_FOR, "hud_value_for", &[Int, Player, Int], Some("hud.widgets"), Now, Named),
-    // Physics reads (docs/game/rules-world-api.md, "Physics"), no
-    // capability. A player's biped is off the ground, crouched, or primed
-    // (its level pair is in the state a landing bounces from); a player
-    // who is gone, dead or in no biped reads false. `airborne` and `primed`
-    // are the host's, from the superbounce medal chain's view of each
-    // biped (`game::rules::world::physics::Body`), kept while the
-    // superbounce mode steps it; `crouching` has no host half, so a host
-    // refuses a script that reads it by name.
+    // The host answers these reads from the superbounce medal chain's
+    // biped snapshot (docs/game/rules-world-api.md, "Physics").
     read(id::AIRBORNE, "airborne", &[Player], Bool, Named),
-    read(id::CROUCHING, "crouching", &[Player], Bool, NotBuilt),
+    read(id::CROUCHING, "crouching", &[Player], Bool, Named),
     read(id::PRIMED, "primed", &[Player], Bool, Named),
     // `sees(a, b)`: nothing solid between two objects. A VM read of its
     // sight table (`vm::RulesExt::sight`): a pair asked for in one tick is
@@ -987,8 +981,8 @@ mod tests {
         }
     }
 
-    /// `hud.superbounce` gates no entry: a host turns its superbounce mode
-    /// on for a script that declares it, and every kind of game takes it.
+    /// A host uses `hud.superbounce` to turn its mode on. The capability
+    /// table allows it in every kind of game.
     #[test]
     fn hud_superbounce_is_a_declared_host_feature() {
         let c = capability("hud.superbounce", API_VERSION).unwrap();
@@ -1158,12 +1152,12 @@ mod tests {
     }
 
     #[test]
-    fn physics_reads_need_no_capability_and_only_crouching_waits_on_the_game_side() {
+    fn physics_reads_are_named_and_have_no_entry_capability() {
         for name in ["airborne", "crouching", "primed"] {
             let e = entry_named(name).unwrap();
             assert_eq!((e.kind, e.result, e.cap), (Kind::Read, Some(Bool), None), "{name}");
             assert_eq!(e.args, &[Player], "{name}");
-            assert_eq!(e.status.hostable(), name != "crouching", "{name}");
+            assert_eq!(e.status, Named, "{name}");
         }
         let sees = entry(id::SEES, API_VERSION).unwrap();
         assert_eq!((sees.kind, sees.result, sees.cap), (Kind::VmOnly, Some(Bool), None));

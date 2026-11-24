@@ -566,8 +566,7 @@ pub fn bounces(
 ) {
     if let Some(s) = SHARED.get() {
         let mut rt = s.lock();
-        // The reads `p.airborne` and `p.primed` are the chain's latest view
-        // of each biped, set on every step so none goes stale.
+        // Set the biped reads from every chain step, even without events.
         rt.bodies(bodies);
         if awards.is_empty() && physics.is_empty() {
             return;

@@ -75,6 +75,60 @@ fn global(s: &Arc<Shared>, name: &str) -> i32 {
     s.lock().running().unwrap().vm.global(name).unwrap()
 }
 
+#[test]
+fn crouching_reads_the_living_bipeds_crouch_request() {
+    use crate::superbounce_chain::{Medals, read_players};
+    use live_telemetry::layout::{UNIT_FLAG_CROUCH, UNIT_FLAGS};
+
+    let ir = ::rules::compile(r#"
+rules "Crouch" 1
+type slayer
+requires hud.superbounce
+global var crouched: int = 0
+on tick { crouched = count(players p where p.crouching) }
+"#).unwrap();
+    let (mut m, s, _) = world(&ir, &[], [[0.0; 3], [5.0, 0.0, 0.0]]);
+    let line = s.lock().start(&m, false);
+    assert!(s.lock().state().running, "{line}");
+
+    let mut medals = Medals::new();
+    let mut step = |m: &mut FakeGuest, n: u32| {
+        medals.step(TICK + n, &read_players(m), &[]);
+        s.lock().bodies(medals.bodies());
+        tick(&s, m, n);
+        global(&s, "crouched")
+    };
+    assert_eq!(step(&mut m, 1), 0);
+    m.put_u32(body_of(0).addr + UNIT_FLAGS, UNIT_FLAG_CROUCH);
+    assert_eq!(step(&mut m, 2), 1);
+    m.put_u32(body_of(0).addr + UNIT_FLAGS, 0);
+    assert_eq!(step(&mut m, 3), 0);
+    m.put_u32(body_of(0).addr + UNIT_FLAGS, UNIT_FLAG_CROUCH);
+    body_of(0).set_damage_flags(&mut m, DEPLETED).unwrap();
+    assert_eq!(step(&mut m, 4), 0);
+
+    let objects = Datums::<Header>::at(OBJECTS);
+    let vehicle = objects.get_absolute(&m, 1).unwrap().unwrap();
+    vehicle.set_kind(&mut m, engine::view::objects::VEHICLE).unwrap();
+    m.put_u32(body_of(1).addr + UNIT_FLAGS, UNIT_FLAG_CROUCH);
+    assert_eq!(step(&mut m, 5), 0);
+}
+
+#[test]
+fn a_biped_read_names_its_missing_superbounce_requirement_at_start() {
+    for name in ["airborne", "crouching", "primed"] {
+        let src = format!(
+            "rules \"Biped\" 1\ntype slayer\non tick {{ for each players p {{ if p.{name} {{ score(p, 1) }} }} }}\n"
+        );
+        let ir = ::rules::compile(&src).unwrap();
+        let (m, s, _) = world(&ir, &[], [[0.0; 3]; 2]);
+        let line = s.lock().start(&m, false);
+        assert!(line.contains(&format!("the script reads {name},")), "{line}");
+        assert!(line.contains("requires hud.superbounce"), "{line}");
+        assert!(s.lock().running().is_none());
+    }
+}
+
 const ZONES: &str = r#"
 rules "Zones" 1
 type slayer

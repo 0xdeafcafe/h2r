@@ -349,11 +349,9 @@ fn the_sight_table_is_state_and_ends_with_the_round() {
 }
 
 #[test]
-fn a_host_refuses_what_its_game_side_lacks_by_name() {
-    let (ir, _) = build("rules \"H\" 1\ntype slayer\non tick { for each players p { if p.crouching { score(p, 1) } } }\n").unwrap();
-    assert_eq!(unhostable(&ir).map(|e| e.name), Some("crouching"));
-    assert!(!caps::ENTRIES[id::CROUCHING as usize].status.hostable());
+fn physics_reads_have_named_host_entries() {
     for (src, e) in [
+        ("on tick { for each players p { if p.crouching { score(p, 1) } } }", id::CROUCHING),
         ("on tick { for each players p { if p.primed { score(p, 1) } } }", id::PRIMED),
         ("on tick { for each players p { if airborne(p) { score(p, 1) } } }", id::AIRBORNE),
         ("on tick { if sees(eye, target) { end_round(team 0) } }", id::SEES),

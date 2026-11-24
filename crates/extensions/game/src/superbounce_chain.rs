@@ -108,6 +108,8 @@ pub struct PlayerTick {
     pub velocity: Vec3,
     /// Biped flags bit 0.
     pub airborne: bool,
+    /// The unit crouch request on a living biped.
+    pub crouching: bool,
     /// The level pair's word; `None` without a pair.
     pub word: Option<u32>,
 }
@@ -205,12 +207,14 @@ pub enum Physics {
 }
 
 /// What a step read of a player's biped, for the rules script's reads
-/// `p.airborne` and `p.primed` (docs/game/rules-world-api.md, "Physics").
+/// `p.airborne`, `p.crouching` and `p.primed` (docs/game/rules-world-api.md, "Physics").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Body {
     pub slot: u8,
     /// Biped flags bit 0 ([`PlayerTick::airborne`]).
     pub airborne: bool,
+    /// The unit crouch request on a living biped.
+    pub crouching: bool,
     /// The level pair's word is the primed one ([`primed`]).
     pub primed: bool,
 }
@@ -566,6 +570,7 @@ impl Medals {
                 self.bodies.push(Body {
                     slot: slot as u8,
                     airborne: t.airborne,
+                    crouching: t.crouching,
                     primed: t.word.is_some_and(primed),
                 });
             }
@@ -651,7 +656,7 @@ impl Medals {
     }
 
     /// What the last [`Medals::step`] read of each player's biped that had
-    /// a unit, by slot: a rules script's `p.airborne` and `p.primed`.
+    /// a unit, by slot, for the rules script's biped reads.
     pub fn bodies(&self) -> &[Body] {
         &self.bodies
     }
@@ -753,11 +758,13 @@ pub fn medals_by_id() -> Vec<(&'static str, Medal)> {
 // ---- the guest ----
 
 /// Every listed player's slot, local user and unit reads, for
-/// [`Medals::step`]: position, velocity, airborne and the level pair's
+/// [`Medals::step`]: position, velocity, airborne, crouching and the level pair's
 /// word (one pair read each, sixteen at most).
 pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
     use engine::view::{objects, players};
-    use live_telemetry::layout::{BIPED_FLAGS, BODY_VELOCITY};
+    use live_telemetry::layout::{
+        BIPED_FLAGS, BODY_DEPLETED, BODY_VELOCITY, UNIT_FLAG_CROUCH, UNIT_FLAGS,
+    };
     let Ok(Some(array)) = players::array(m) else {
         return Vec::new();
     };
@@ -793,6 +800,10 @@ pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
             let airborne = kind == objects::BIPED
                 && m.u16(body.addr.wrapping_add(BIPED_FLAGS))
                     .is_ok_and(|flags| flags & 1 != 0);
+            let crouching = kind == objects::BIPED
+                && body.damage_flags(m).is_ok_and(|flags| flags & BODY_DEPLETED == 0)
+                && m.u32(body.addr.wrapping_add(UNIT_FLAGS))
+                    .is_ok_and(|flags| flags & UNIT_FLAG_CROUCH != 0);
             let word = live_telemetry::havok_agents::fixed_pair_word(m, unit.raw())
                 .ok()
                 .flatten();
@@ -801,6 +812,7 @@ pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
                 position,
                 velocity,
                 airborne,
+                crouching,
                 word,
             })
         })();
