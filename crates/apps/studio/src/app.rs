@@ -37,6 +37,7 @@ pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
 pub mod voices;
+pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
@@ -612,6 +613,9 @@ pub struct App {
     pub rules: rules_edit::RulesEditor,
     /// The document tabs and the one in front (`shell`).
     tabs: shell::Tabs,
+    /// The tag workspace: the tree's root, the plan, extraction and
+    /// prune (`app::workspace`, docs/editor/tag-workspace.md).
+    pub workspace: workspace::Workspace,
 }
 
 impl Default for App {
@@ -690,6 +694,7 @@ impl App {
             voices: Default::default(),
             rules: Default::default(),
             tabs: Default::default(),
+            workspace: Default::default(),
         }
     }
 

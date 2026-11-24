@@ -24,6 +24,8 @@ mod hud;
 mod image_gen;
 mod textures;
 mod variants;
+/// The tag workspace's start page and status-line bar.
+mod workspace;
 /// The game type script window (`app::rules_edit`).
 mod game_script;
 
@@ -104,6 +106,9 @@ pub struct Studio {
     sound: sound::SoundUi,
     /// The Voices window (View > Voices): the announcer and the clones.
     announcer: announcer::AnnouncerUi,
+    /// The tag workspace's start page and status-line bar
+    /// (`app::workspace`).
+    workspace: workspace::WorkspaceUi,
 }
 
 impl Studio {
@@ -139,6 +144,7 @@ impl Studio {
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::default(),
             announcer: announcer::AnnouncerUi::default(),
+            workspace: workspace::WorkspaceUi::default(),
         }
     }
 
@@ -147,6 +153,9 @@ impl Studio {
         app.poll_convert();
         app.poll_cards();
         app.poll_bot_nav();
+        // The workspace's background extraction, before the status bar
+        // reads its progress.
+        app.poll_workspace();
         // An outside editor's saves of the game type script, before the
         // game link sends the reload they queue.
         game_script::poll(app);
@@ -243,6 +252,9 @@ impl Studio {
         // (docs/editor/rich-editors.md, "One seam for every rich view").
         sound::window(ui, app, &mut self.sound);
         announcer::window(ui, app, &mut self.announcer);
+        // The tag workspace's first-start page (a floating window; the
+        // shell is another lane's).
+        workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);
         // Image generation: the Generate window over any tool, opened from
         // a bitmap's slot (app::image_gen).
         image_gen::window(ui, app, self.dialogs, &mut actions);
@@ -1129,7 +1141,19 @@ impl Studio {
                 };
                 theme::clipped_text(ui, &message, tone, message_end - 8.0);
                 let hint_start = message_end + 8.0;
-                if let Some(hint) = &self.hint
+                // The workspace's extraction bar takes the hint's slot
+                // while it runs; the hint waits.
+                let line = ui.text_line_height();
+                if app.workspace.progress().is_some() {
+                    workspace::status_progress(
+                        ui,
+                        app,
+                        x + hint_start,
+                        y,
+                        fps_start - hint_start - 8.0,
+                        line,
+                    );
+                } else if let Some(hint) = &self.hint
                     && fps_start - hint_start > 16.0
                 {
                     ui.set_cursor_screen_pos([x + hint_start, y]);

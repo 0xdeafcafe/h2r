@@ -313,9 +313,11 @@ fn main() -> Result<()> {
         app.set_data_root(d.clone());
     }
     app.scripts.doc_path = args.hs_doc.clone();
-    // The field panel's settings live in the layout's file (`shutdown`).
-    app.tag_fields =
-        studio::fields::Settings::from_ini(&std::fs::read_to_string(ini_path()).unwrap_or_default());
+    // The field panel's and the workspace's settings live in the layout's
+    // file (`shutdown`).
+    let ini = std::fs::read_to_string(ini_path()).unwrap_or_default();
+    app.tag_fields = studio::fields::Settings::from_ini(&ini);
+    app.workspace = studio::app::workspace::Workspace::from_ini(&ini);
     app.refresh_packages();
     let disc = editor_core::default_disc(args.source.clone()).filter(|_| !args.no_disc);
     // The Map Pack: --mappack, else $H2_MAPPACK_ISO, else mappack.iso beside
@@ -491,6 +493,11 @@ fn main() -> Result<()> {
         .socket
         .clone()
         .unwrap_or_else(studio_proto::default_socket);
+    // A later start's plan: with a tree and a disc, what is stale
+    // re-extracts in the background while the editor answers
+    // (docs/editor/tag-workspace.md, "First start"). With no tree the
+    // start page shows instead.
+    app.start_workspace();
     if args.serve {
         return serve(app, &socket);
     }
@@ -722,6 +729,7 @@ impl Win {
             ini.push('\n');
         }
         ini.push_str(&app.tag_fields.ini());
+        ini.push_str(&app.workspace.ini());
         if let Err(e) = std::fs::write(ini_path(), ini) {
             eprintln!("h2-editor: the layout was not saved: {e}");
         }

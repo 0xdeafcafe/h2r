@@ -65,6 +65,7 @@ mod variants;
 mod view;
 mod voice;
 mod voice_clone;
+mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -203,6 +204,27 @@ pub const METHODS: &[MethodDef] = &[
         "{}",
         r#"{"source":"string|null","maps":"[string]","map_entries":"[{map,label,group}]","halo1_maps":"[{map,label,group}]","map_pack":"[{map,label,group}]","loaded":"string|null","packages":"[{key,map,label,group}]"}"#,
         "null",
+    ),
+    def(
+        m::WORKSPACE_STATUS,
+        "The tag workspace: the tree (root, maps, lossy counts), the plan's stale parts, an extraction in progress, the last one's outcome, the sizes of everything it holds, and whether the start page shows",
+        "{}",
+        r#"{"root":"path","has_tree":"boolean","tree":"{maps,tags,lossy,refused,variants,extractor,format}|null","disc":"path|null","stale":"{reset,maps:[{map,why,groups}]}|null","extracting":"{disc,root,maps_total,maps_done,last}|null","last":"object|{error}|null","sizes":"{tree,layers,projects,outputs,total}","start_page":"boolean"}"#,
+        "null",
+    ),
+    def(
+        m::WORKSPACE_EXTRACT,
+        "Run the plan against the disc (an image, a .map or a folder of maps; the recorded one, H2_DISC or disc/halo2.iso when not given) and extract every map, or only `maps` of it; `root` sets the tree's root (refused inside a Git checkout). Progress in workspace.status",
+        r#"{"disc?":"string","maps?":"[string]","verify?":"boolean","root?":"string"}"#,
+        r#"{"disc":"path","root":"path","maps":"[string]","verify":"boolean"}"#,
+        r#"{"disc":"$DISC"}"#,
+    ),
+    def(
+        m::WORKSPACE_PRUNE,
+        "Remove what the workspace no longer needs: raw resources no tag file or manifest names, generated layers no project asks for and build caches unused for a week; `dry_run` reports without removing",
+        r#"{"dry_run?":"boolean"}"#,
+        r#"{"dry_run":"boolean","raw_removed":"integer","raw":"[hash]","generated_removed":"[string]","generated_kept":"[string]","caches_removed":"[{name,unused_days}]","outputs_removed":"[string]","bytes":"integer"}"#,
+        r#"{"dry_run": true}"#,
     ),
     def(
         m::DOC_LIST,
@@ -685,6 +707,12 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"biped":"string","region":"string","permutation":"string"}"#,
         "customisation (later)",
     ),
+    planned(
+        m::WORKSPACE_IMPORT,
+        "Store a map as an import layer, so only what differs from the tree is held",
+        r#"{"map?":"string (a .map file)","path?":"string (a folder of them)","name":"string"}"#,
+        "imports as layers (W9)",
+    ),
 ];
 
 /// The parsed shape: field name, required.
@@ -824,6 +852,7 @@ impl Api {
                 ui_kit::call(app, method, &p)
             }
             "ui" => ui_screens::call(app, method, &p),
+            "workspace" => workspace::call(app, method, &p),
             "view" => self.view(app, method, &p),
             _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
         }
@@ -900,6 +929,9 @@ impl Api {
         }
         play.update(app);
         app.poll_bot_nav();
+        // The workspace's background extraction, as the window polls it
+        // each frame.
+        app.poll_workspace();
         // Outside editors' saves, as the window polls them each frame.
         app.poll_external(std::time::Instant::now());
         true

@@ -82,6 +82,12 @@ pub mod method {
     pub const SHELL_OPEN: &str = "shell.open";
     pub const SHELL_FOCUS: &str = "shell.focus";
     pub const SHELL_CLOSE: &str = "shell.close";
+    // The tag workspace (docs/editor/tag-workspace.md, "Interfaces";
+    // api/workspace.rs).
+    pub const WORKSPACE_STATUS: &str = "workspace.status";
+    pub const WORKSPACE_EXTRACT: &str = "workspace.extract";
+    pub const WORKSPACE_IMPORT: &str = "workspace.import";
+    pub const WORKSPACE_PRUNE: &str = "workspace.prune";
 
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";

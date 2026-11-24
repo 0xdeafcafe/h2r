@@ -287,6 +287,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
+| `workspace` | `status`, `extract {disc?, maps?, verify?, root?}`, `prune {dry_run?}` ([The tag workspace](#the-tag-workspace)); `import {map \| path, name}` (planned) |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` (`undo`, `redo` and `close` also take a tag tab's id) |
 | `shell` | `tabs`, `open {tag?, map?, discard?}`, `focus {doc}`, `close {doc, discard?}`: the document tabs ([Document tabs](#document-tabs)) |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
@@ -1346,6 +1347,52 @@ h2 studio image.apply '{"id":3}'
 h2 studio doc.save '{"doc":"bitmaps"}'
 ```
 
+### The tag workspace
+
+The tags tree (docs/editor/tag-workspace.md): every tag of the disc as
+loose files under the data root, what every map is built from.
+`workspace.status` reports it: the root (the `tags_root` setting,
+`<data>/tags/` unless set, saved with the window layout), the maps
+extracted with their lossy and refused counts, the plan's stale parts,
+an extraction in progress and what the last one did, the sizes of
+everything the workspace holds (the tree, each layer under
+`<data>/workspace/`, each project's build cache, each package under
+`<data>/maps/`), and `start_page`, whether the first start's window is
+showing. `workspace.extract {disc}` runs the plan: `disc` is an image, a
+`.map` file or a folder of maps (the recorded disc, `H2_DISC` or
+`disc/halo2.iso` when not given), `maps` limits it to those, `verify`
+reads every stored file back, and `root` sets the tree's root — refused
+inside a Git checkout, for the tree is game data and never sits in a
+repository. It answers at once with the maps it will read; the progress
+is in `workspace.status` and the window's status line, and work
+continues while the tree fills. An unchanged disc is a no-op, and a
+later start of the editor runs the plan against the recorded disc in the
+background. `workspace.prune {dry_run}` removes raw resources no tag
+file or manifest names, generated layers no project asks for and build
+caches unused for a week — with `dry_run`, what would go; the outputs of
+deleted projects are the projects' and are not pruned. The tree itself
+is never pruned in part: it is deleted whole and extracted again.
+`workspace.import` (planned) stores a map as an import layer (W9).
+
+The window's first start — no tree, no source open other than a disc
+image — is one step: choose the disc (`H2_DISC` and `disc/halo2.iso`
+offered), see the size and the time, extract every map with the status
+line's progress bar. It makes the same calls.
+
+```sh
+h2 studio workspace
+h2 studio workspace.extract '{"disc":"/Volumes/halo2.iso"}'
+h2 studio workspace
+h2 studio workspace.prune '{"dry_run": true}'
+```
+
+The first start and the plan run headless on an invented map
+(`app::workspace::tests`: a root inside a Git checkout refused, the
+background plan extracting a changed disc, the sizes walked, prune
+keeping what a tag file or a manifest names); the API's tests
+(`api/tests.rs`) do the same through the dispatcher, and every method's
+example runs in `every_method_in_methods_has_a_test`.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`
@@ -1929,7 +1976,10 @@ actions and the API's make identical profiles.
   `api/checks.rs`: the content checks. `api/models.rs`: `model.*` (its
   renders through `scenario_edit::native_view::preview`).
   `api/playtest.rs`: the playtest checks (`app/playtest_static.rs`) and
-  the runner's methods (`app/playtest.rs`).
+  the runner's methods (`app/playtest.rs`). `api/workspace.rs` (with
+  `app/workspace.rs`: the tree's root, the plan, the extraction thread,
+  the sizes and prune; `ui/workspace.rs`: the first start's page and the
+  status line's bar): the tag workspace.
   host methods). `api/sound_measure.rs` (with `sound_measure/meter.rs`),
   `api/ui_check.rs` and `api/checks.rs`: the content checks. `api/voice.rs`
   (with `app/announcer.rs` and `src/voice*`): the Announcer.

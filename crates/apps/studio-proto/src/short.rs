@@ -62,6 +62,7 @@ pub const FORMS: &[(&str, &str)] = &[
     ("huds [map]", "hud.list: open a map in the HUD tool, list its HUDs"),
     ("hud [name]", "hud.read: a HUD's widgets and fields"),
     ("render-hud [out.png]", "hud.render"),
+    ("workspace", "workspace.status: the tags tree, the plan and the sizes"),
 ];
 
 /// Splits a script line into words; a JSON value (`{…}` or `[…]`) is one
@@ -303,6 +304,7 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
             },
         ),
         "render-stats" => (m::VIEW_STATS, Value::Null),
+        "workspace" => (m::WORKSPACE_STATUS, Value::Null),
         "snapshot" => (
             m::VIEW_SNAPSHOT,
             match a {
@@ -320,7 +322,7 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
     // Bare forms take nothing more than they use.
     let used = match name {
         "status" | "methods" | "maps" | "docs" | "blocks" | "variants" | "variant"
-        | "playlists" | "screens" | "widgets" | "render-stats" => 1,
+        | "playlists" | "screens" | "widgets" | "render-stats" | "workspace" => 1,
         "log" | "source" | "open" | "save" | "diff" | "undo" | "redo" | "tag" | "refs"
         | "objects" | "object" | "delete" | "duplicate" | "select" | "volumes" | "playlist"
         | "screen" | "press" | "render-ui" | "snapshot" | "huds" | "hud" | "render-hud" => 2,
