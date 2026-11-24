@@ -1585,7 +1585,7 @@ tag = "objects\\weapons\\map_kit"
 fn palette_app(t: &Temp) -> App {
     let folder = t.0.join("maps");
     std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("fixture.map"), fixture()).unwrap();
+    std::fs::write(folder.join("fixture.map"), fixture::fixture()).unwrap();
     let mut app = app_with(t);
     palette_tree(&app.tags_root());
     palette_package(&t.0.join("data/packages/map-kit"));

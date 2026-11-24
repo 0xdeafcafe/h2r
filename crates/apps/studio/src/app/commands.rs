@@ -272,14 +272,15 @@ pub(crate) fn palette_assets(app: &App, query: &str) -> Palette {
         text: query.to_owned(),
         limit: PALETTE_SCAN,
     };
-    let rows = |v: &serde_json::Value| -> &[serde_json::Value] {
+    fn rows(v: &serde_json::Value) -> &[serde_json::Value] {
         v["rows"].as_array().map(Vec::as_slice).unwrap_or(&[])
-    };
+    }
     // The map a tag opens on: the open map when it holds it, else the
     // first that does, as the browser opens a row.
     let on_map = |maps: &[String]| -> Option<String> {
         app.loaded_map()
             .filter(|open| maps.iter().any(|m| m.eq_ignore_ascii_case(open)))
+            .map(str::to_owned)
             .or_else(|| maps.first().cloned())
     };
     let maps_of = |row: &serde_json::Value| -> Vec<String> {
