@@ -1,7 +1,7 @@
 # Game type markers
 
-Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), and Forge draws them as world lines and answers `render.markers` (MK6); the area in the document, the zone read, the skin and the editing are design.
-Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`.
+Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), and the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2); the zone read, the skin and the editing are design.
+Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`. Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`.
 Switch: none.
 
 A game type's parts are rows of a scenario with no body: a player
@@ -151,25 +151,26 @@ pub struct Area { pub shape: Shape, pub below: f32, pub above: f32 }
 An area is document data with no scenario bytes, as a label and an item
 spawner's team are ([forge-map-variants.md](forge-map-variants.md),
 "Properties without a retail field"). `EntryOp::Area { target, area }`
-(new) sets or clears the area of a netgame flag; `area` is `null` or
-one of
+sets or clears the area of a netgame flag. Its `area` is `null` to
+clear the area, or one of
 
 ```json
 {"radius": {"radius": "40000000", "below": "3f000000", "above": "3fc00000"}}
 {"path": {"points": [["c0000000", "c0000000"], ["40000000", "c0000000"], ["40000000", "40000000"]], "below": "3f000000", "above": "3fc00000"}}
 ```
 
-with floats as the document writes every float (`forge_doc::F32`). It is
-an op of its own and not a `Property`, which is `Copy` and holds no
-list. The validator turns it into a `game_markers::Area`, runs
-`Area::validate` and refuses with its sentence; it refuses a target
-that is not a netgame flag, and a clear of a flag with no area. The
-document is format 3 as with any entry op, and stays a map variant
-(`Tier::Variant`): an area changes no byte of the map. `ForgeDoc::areas`
-(new) resolves the active areas to final flag indices as `labels` does,
-`LabelledThing::area` (new) carries a flag's area into the census, and
-an area follows its flag through appends and swap-removes. Removing a
-flag that has an area is refused, as for a labelled one.
+The wire format uses `forge_doc::F32` for each distance and offset. The
+validator decodes a `game_markers::Area` and reports the sentence from
+`Area::validate` on refusal. The target must be a netgame flag, and a
+clear requires an active area. An entry op gives the document format 3.
+The area stays in the map variant (`Tier::Variant`) and lowers to no
+scenario write.
+
+`ForgeDoc::areas` resolves active areas to final flag indices.
+`LabelledThing::area` carries a flag's area into the census. An area
+follows its flag through appends and swap-removes. Clear the area
+before removing its flag. `Session::set_area` writes one edit, which
+can be undone through the session's edit log.
 
 A Studio map stores the same op as an edit line on the scenario, beside
 its labels ([game-types-without-carriers.md](game-types-without-carriers.md),
@@ -180,7 +181,9 @@ one netgame flag of the hill's type (so its label is `hill_corner` and
 its number the hill's) with an area. A retail hill keeps its corner
 flags and has no area op. A map does not mix the two for one hill: an
 area on a flag whose label and number three or more flags share is
-refused by the validator (`a hill with corners takes no area`).
+refused by the validator (`a hill with corners takes no area`). The
+validator reads explicit labels and the base map's built-in flag types
+when the session or the materialiser supplies them.
 
 ### In a script
 
@@ -361,8 +364,8 @@ of a window ([agent API rules](../../AGENTS.md)).
 | `markers.area.set {id, area}` | Studio (MK5) | sets or clears a flag's area; answers the area as stored, or `Area::validate`'s sentence as the refusal |
 | `check.run` | Studio | gains the `markers` check: an area that does not validate; a hill with both corners and an area; a spawn or a marker under the floor or off the map; a hill, territory or site whose area holds no walkable floor; two areas of one label that overlap |
 | `view.layers`, `view.snapshot` | Studio | as they are: the layers now draw the markers |
-| `forge.things` | game | each goal gains `area` |
-| `forge.propose` | game | takes `{"entry":{"area":{target, area}}}`; refusals by name as for any entry op |
+| `forge.things` | game | each netgame flag reports `area` in the document spelling, or `null` |
+| `forge.propose` | game | accepts an op with `"edit":{"entry":{"area":{target, area}}}` and reports refusals by name |
 | `render.markers` | game | what the last capture drew: `{shown, hidden_by_budget, markers: [{thing, kind, team, anchor, lines, faded}]}`, `anchor` in world units, `kind` filtering the list ([agent-api.md](../runtime/agent-api.md), "`render.markers`"); the walls shown in play join it with MK8 |
 | `rules.zones` | game | each zone the host built: `{label, number, shape: "area" \| "corners" \| "default", area, at}`, so a test reads the hill a script scores |
 
@@ -394,7 +397,7 @@ lines with tests, M under 2,500.
 | # | Slice | Size | Needs | Accepted when |
 |---|---|---|---|---|
 | MK1 (built) | **The marker set and the area**: `game_markers`, every `Kind`'s mesh, `Palette`, `Area` with `validate`, `contains`, `outline`, `of_corners` | S | nothing | `every_kind_has_its_lines_faces_and_bounds` gives each kind's lines, triangles and box; a marker is its team's colour; a bow tie, a spike, points in a line and a radius out of range are refused by name; an L holds its inside and not its notch; a hill's corners give the hull the host makes |
-| MK2 | **The area in the document**: `EntryOp::Area`, its wire form, the validator's refusals, `ForgeDoc::areas`, `LabelledThing::area`, `Session::set_area`, `forge.propose` and `forge.things` | S | MK1 | an area op round-trips canonical JSON; a crossing path is refused with `AreaError`'s sentence; an area follows its flag through a swap-remove; a document with an area is format 3 and a map variant; a hill with corners refuses an area |
+| MK2 (built) | **The area in the document**: `EntryOp::Area`, its wire form, the validator's refusals, `ForgeDoc::areas`, `LabelledThing::area`, `Session::set_area`, `forge.propose` and `forge.things` | S | MK1 | an area op round-trips canonical JSON; a crossing path is refused with `AreaError`'s sentence; an area follows its flag through a swap-remove; a document with an area is format 3 and a map variant; a hill with corners refuses an area |
 | MK3 | **The zone read**: `zones::Shape::Area`, the three-step order, `FakeGame`'s areas, `bots::objective::zones`, `rules.zones` | S | MK2 | on the fake game `koth.rules` scores a player inside a path hill and not one in its notch; a retail hill's zone holds the same points before and after; a lone flag is the default cylinder |
 | MK4 (built) | **Studio draws them**: `scenario_edit::marker_view`, the layers' overlays in place of the glyphs, outlines and volume boxes, `markers.list`, `markers.render` | M | MK1 | on the invented cache each placement block gives its kind and team; a hill's corners give one `Hill`; `markers.render` writes the sheet with every kind of `Kind::samples`; `view.snapshot` of a spawn differs from the background where its mesh projects |
 | MK5 | **Studio edits areas**: the gizmo handles, the inspector rows, `markers.area.set`, **Convert to area**, the `markers` check | M | MK2, MK4 | a rim drag writes one area op; an edge handle adds a point; a refused drag leaves the document as it was; converting a hill's corners gives a zone that holds the same points; the check names an overlapping pair |

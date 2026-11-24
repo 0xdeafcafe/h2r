@@ -163,17 +163,30 @@ pub fn things_reply(session: &Session, params: &ThingsParams) -> Result<Value, R
             THING_KINDS.join(", ")
         )));
     }
+    let areas = session.areas().map_err(super::unavailable)?;
     let things: Vec<Value> = session
         .things()
-        .iter()
+        .into_iter()
+        .chain(session.added_flags())
         .filter(|t| {
             params
                 .kind
                 .as_deref()
                 .is_none_or(|k| thing_kind(t.kind) == k)
         })
-        .filter(|t| params.changed.is_none_or(|c| t.changed == c))
-        .map(thing_json)
+        .filter_map(|thing| {
+            let area = areas.get(&thing.id.identity());
+            let changed = thing.changed || area.is_some();
+            if params.changed.is_some_and(|wanted| changed != wanted) {
+                return None;
+            }
+            let mut row = thing_json(&thing);
+            if thing.block == BlockKind::NetgameFlags {
+                row["area"] = json!(area);
+                row["changed"] = json!(changed);
+            }
+            Some(row)
+        })
         .collect();
     Ok(json!({"things": things, "left_out": session.left_out()}))
 }

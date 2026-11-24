@@ -301,7 +301,7 @@ fn fold_document(
         result.ops = active.into_iter().map(|(op, _)| op.clone()).collect();
         result.expect = None;
         result.format = result.required_format();
-        crate::links::check(&result.ops, &limits.base_counts)?;
+        crate::links::check(&result.ops, limits)?;
     }
     wire::measure(&result, "document bytes", MAX_DOC_BYTES)?;
     Ok((result, chain.head))

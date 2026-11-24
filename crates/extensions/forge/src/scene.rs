@@ -23,9 +23,7 @@ impl From<&PlacedObject> for Object {
     }
 }
 
-/// A ground marker the document adds: a netgame flag with no object. It
-/// places nothing in the world, since the AI ground is built from the
-/// document (docs/game/forge-map-variants.md, "AI ground").
+/// A netgame flag the document adds. It has no live object in the session.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Marker {
     pub id: OpId,
@@ -33,14 +31,16 @@ pub(crate) struct Marker {
     pub index: u32,
     /// Position and facing (`rotation[0]`).
     pub frame: Frame,
-    pub team: u8,
+    pub kind: u16,
+    pub team: u16,
+    pub identifier: i16,
 }
 
 /// The added objects a document leaves, and where each is.
 pub(crate) struct Scene {
     /// By block, then by index in the block.
     pub objects: Vec<Object>,
-    /// The added ground markers.
+    /// The added netgame flags.
     pub markers: Vec<Marker>,
     /// Each added object's index in its block after every op: the running
     /// index a placement op by index names it at.
@@ -100,7 +100,9 @@ pub(crate) fn project(
                     id: op.id,
                     index: 0,
                     frame: Frame::default(),
+                    kind: 0,
                     team: 0,
+                    identifier: 0,
                 };
                 for field in fields {
                     update_marker(&mut marker, field)?;
@@ -229,17 +231,19 @@ fn update(frame: &mut Frame, write: &FieldWrite) -> Result<(), String> {
     Ok(())
 }
 
-/// A marker's field: its position, facing and team. Its type and channel
-/// are the netgame flag's own and have no meaning to a marker.
+/// One field of an added netgame flag.
 fn update_marker(marker: &mut Marker, write: &FieldWrite) -> Result<(), String> {
     match (write.field.as_str(), &write.value) {
         ("position", Value::Vec3(v)) => marker.frame.position = v.map(F32::get),
         ("facing", Value::Float(f)) => marker.frame.rotation[0] = f.get(),
-        ("team", Value::Int(t)) => {
-            marker.team = u8::try_from(*t)
-                .ok()
-                .filter(|t| *t < 2)
-                .ok_or("A marker's team is 0 (red) or 1 (blue).")?;
+        ("type", Value::Int(kind)) => {
+            marker.kind = u16::try_from(*kind).map_err(|_| "A flag's type is out of range.")?;
+        }
+        ("team", Value::Int(team)) => {
+            marker.team = u16::try_from(*team).map_err(|_| "A flag's team is out of range.")?;
+        }
+        ("identifier", Value::Int(id)) => {
+            marker.identifier = i16::try_from(*id).map_err(|_| "A flag's identifier is out of range.")?;
         }
         (name, _) => return Err(format!("A marker has no {name} to set here.")),
     }

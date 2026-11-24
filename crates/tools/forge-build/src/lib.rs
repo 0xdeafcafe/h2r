@@ -203,6 +203,17 @@ pub fn build(
         .iter()
         .map(|b| (b.kind, scenario.block(b.kind).len() as u32))
         .collect();
+    let flags = BlockKind::NetgameFlags;
+    limits.base_flag_types = (0..scenario.block(flags).len())
+        .map(|index| {
+            scenario
+                .get(flags, index, "type")?
+                .as_int()
+                .and_then(|kind| u16::try_from(kind).ok())
+                .ok_or(scenario_edit::Error::Invalid("netgame flag type is out of range"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into();
     limits.world = placement::world_bounds(&mut map)?;
 
     let mut apply = placement::Materialiser::new(&mut session, &mut map);

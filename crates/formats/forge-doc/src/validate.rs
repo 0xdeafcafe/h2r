@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use map::scenario_layout::{self as layout, BlockDef, FieldDef, FieldType, Role};
 
@@ -37,6 +38,8 @@ pub struct Limits {
     pub max_adds: usize,
     /// The base's initial count for each block the caller knows.
     pub base_counts: BTreeMap<BlockKind, u32>,
+    /// Netgame flag types in base index order, empty without map context.
+    pub base_flag_types: Arc<[u16]>,
     pub world: Option<WorldBounds>,
     pub builder: Option<BuilderVersions>,
 }
@@ -48,6 +51,7 @@ impl Default for Limits {
             max_log_entries: crate::MAX_LOG_ENTRIES,
             max_adds: MAX_OPS,
             base_counts: BTreeMap::new(),
+            base_flag_types: Arc::default(),
             world: None,
             builder: None,
         }
@@ -163,7 +167,7 @@ pub(crate) fn document(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
         }
         counts.push(item, limits)?;
     }
-    crate::links::check_with(&doc.ops, limits)
+    crate::links::check(&doc.ops, limits)
 }
 
 fn validate_recipe(
@@ -490,7 +494,7 @@ impl Counts {
             },
         };
         let back = match edit {
-            EntryOp::Set { .. } | EntryOp::Property { .. } => return,
+            EntryOp::Set { .. } | EntryOp::Property { .. } | EntryOp::Area { .. } => return,
             EntryOp::Remove { .. } if self.removed.insert(target) => false,
             EntryOp::Reset { .. } if self.removed.remove(&target) => true,
             _ => return,

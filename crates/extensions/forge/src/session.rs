@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use forge_doc::{
-    ActiveLink, Before, BlockKind, Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, Forge,
-    ForgeDoc, Limits, Link, Links, LogHead, Op, Placement, Proposal, Sha256, Value,
+    ActiveLink, Area, Before, BlockKind, Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, Forge,
+    ForgeDoc, Limits, Link, Links, LogHead, MarkerArea, Op, Placement, Proposal, Sha256, Value,
 };
 
 use crate::things::{self, Kept, Own, OwnMap};
@@ -111,6 +112,9 @@ impl Session {
     /// things and an edit naming one is refused.
     pub fn with_base(mut self, base: BaseRows) -> Self {
         self.base = Arc::new(Kept::new(base, &self.limits.base_counts));
+        if let Some(types) = self.base.flag_types() {
+            self.limits.base_flag_types = types;
+        }
         self
     }
 
@@ -136,11 +140,26 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// Document-added netgame flags, which have no live object to pick up.
+    pub fn added_flags(&self) -> Vec<Thing> {
+        scene::project(&self.doc, &self.limits, &self.palette, self.budget)
+            .map(|scene| scene.markers.iter().map(added_flag).collect())
+            .unwrap_or_default()
+    }
+
     /// The thing `id` names, by identity: an own entry with or without its
     /// print, or an added one.
     pub fn thing(&self, id: Endpoint) -> Option<Thing> {
         match id.identity() {
-            Endpoint::Added(op) => self.added().iter().find(|o| o.id == op).map(added_thing),
+            Endpoint::Added(op) => {
+                let scene = scene::project(&self.doc, &self.limits, &self.palette, self.budget).ok()?;
+                scene
+                    .objects
+                    .iter()
+                    .find(|o| o.id == op)
+                    .map(added_thing)
+                    .or_else(|| scene.markers.iter().find(|m| m.id == op).map(added_flag))
+            }
             Endpoint::Base { block, index, .. } => {
                 let row = self.base.row(block, index).ok()?;
                 things::own_thing(row, self.own.get(&(block, index)))
@@ -511,6 +530,29 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// Active areas keyed by the flag identity used in this session.
+    pub fn areas(&self) -> Result<BTreeMap<Endpoint, Area>, String> {
+        self.doc.area_targets(&self.limits.base_counts).map_err(reason)
+    }
+
+    /// Set or clear a flag's area in one edit and one undo step.
+    pub fn set_area(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        area: Option<MarkerArea>,
+    ) -> Result<(), String> {
+        let target = self.thing(id).ok_or(NO_THING)?.id;
+        let area = area
+            .as_ref()
+            .map(Area::try_from)
+            .transpose()
+            .map_err(reason)?;
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Area { target, area })])?;
+        self.edit(world, tick, ops, None)
+    }
+
     /// Remove a thing, own or added. A linked entry cannot be removed, so
     /// its links end in the same undo step. In the world an own entry's row
     /// is made inert, and an undo writes the kept row back.
@@ -541,7 +583,7 @@ impl Session {
             return Err("Only the map's own things can be restored.".into());
         };
         let row = self.base.row(block, index)?;
-        if !self.own.contains_key(&(block, index)) {
+        if !self.own.contains_key(&(block, index)) && !self.areas()?.contains_key(&id.identity()) {
             return Err("This is already as the map has it.".into());
         }
         let target = Endpoint::Base {
@@ -933,6 +975,25 @@ impl Session {
 }
 
 const NO_THING: &str = "Aim at a thing of the map.";
+
+fn added_flag(marker: &scene::Marker) -> Thing {
+    let float = |value| F32::new(value).expect("validated flag transform");
+    Thing {
+        id: Endpoint::Added(marker.id),
+        block: BlockKind::NetgameFlags,
+        kind: ThingKind::flag(marker.kind),
+        own: false,
+        frame: marker.frame,
+        fields: vec![
+            ("position", Value::Vec3(marker.frame.position.map(float))),
+            ("facing", Value::Float(float(marker.frame.rotation[0]))),
+            ("type", Value::Int(marker.kind.into())),
+            ("team", Value::Int(marker.team.into())),
+            ("identifier", Value::Int(marker.identifier.into())),
+        ],
+        changed: true,
+    }
+}
 
 /// An added object as a thing: its palette entry, position and rotation.
 fn added_thing(object: &scene::Object) -> Thing {

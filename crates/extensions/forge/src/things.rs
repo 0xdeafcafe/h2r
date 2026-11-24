@@ -57,12 +57,19 @@ impl ThingKind {
                     .iter()
                     .position(|f| f.name == "type")?;
                 match fields.get(at) {
-                    Some(Value::Int(7 | 8)) => Self::Teleporter,
+                    Some(Value::Int(kind)) => Self::flag(*kind as u16),
                     _ => Self::Goal,
                 }
             }
             BlockKind::SoundScenery | BlockKind::StartingEquipment => return None,
         })
+    }
+
+    pub(crate) fn flag(kind: u16) -> Self {
+        match kind {
+            forge_doc::TELEPORTER_SENDER | forge_doc::TELEPORTER_RECEIVER => Self::Teleporter,
+            _ => Self::Goal,
+        }
     }
 
     /// The kind as a player reads it.
@@ -151,6 +158,20 @@ impl Kept {
                 block.name().replace('_', " ")
             )
         })
+    }
+
+    pub(crate) fn flag_types(&self) -> Option<std::sync::Arc<[u16]>> {
+        let block = BlockKind::NetgameFlags;
+        let at = field_at(block, "type").ok()?;
+        self.rows
+            .get(&block)?
+            .iter()
+            .map(|row| match row.fields.get(at) {
+                Some(Value::Int(kind)) => u16::try_from(*kind).ok(),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(Into::into)
     }
 
     /// Every kept row, in the layout's block order and then index order.
@@ -254,7 +275,7 @@ pub(crate) fn desired(
                 own.fields[at] = write.value.clone();
             }
             EntryOp::Remove { .. } => own.removed = true,
-            EntryOp::Reset { .. } | EntryOp::Property { .. } => {}
+            EntryOp::Reset { .. } | EntryOp::Property { .. } | EntryOp::Area { .. } => {}
         }
     }
     for ((block, index), own) in &mut out {

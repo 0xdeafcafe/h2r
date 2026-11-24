@@ -16,7 +16,7 @@ use map::scenario_layout as layout;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::{
-    BlockKind, Edit, Endpoint, FieldWrite, Limits, MAX_DOC_BYTES, Op, OpId, Refusal, Result,
+    Area, BlockKind, Edit, Endpoint, FieldWrite, Limits, MAX_DOC_BYTES, Op, OpId, Refusal, Result,
     Sha256, Value, WorldBounds, validate, wire,
 };
 
@@ -136,6 +136,12 @@ pub enum EntryOp {
         target: Endpoint,
         property: Property,
     },
+    /// Set or clear the area of a netgame flag, with no scenario bytes.
+    Area {
+        target: Endpoint,
+        #[serde(deserialize_with = "Option::deserialize")]
+        area: Option<Area>,
+    },
 }
 
 /// A property of an entry the retail layout has no field for
@@ -158,7 +164,8 @@ impl EntryOp {
             Self::Set { target, .. }
             | Self::Remove { target }
             | Self::Reset { target }
-            | Self::Property { target, .. } => *target,
+            | Self::Property { target, .. }
+            | Self::Area { target, .. } => *target,
         }
     }
 
@@ -168,6 +175,7 @@ impl EntryOp {
             Self::Remove { .. } => "entry removal",
             Self::Reset { .. } => "entry reset",
             Self::Property { .. } => "entry property",
+            Self::Area { .. } => "entry area",
         }
     }
 }
@@ -178,6 +186,9 @@ impl EntryOp {
 /// field's type. An added target's field is checked with the document.
 pub(crate) fn check_op(edit: &EntryOp, limits: &Limits) -> Result<()> {
     let what = edit.what();
+    if let EntryOp::Area { area: Some(area), .. } = edit {
+        area.check()?;
+    }
     match edit.target() {
         Endpoint::Base {
             block,
@@ -199,6 +210,7 @@ pub(crate) fn check_op(edit: &EntryOp, limits: &Limits) -> Result<()> {
                 EntryOp::Remove { .. } => removable(block),
                 EntryOp::Reset { .. } => Ok(()),
                 EntryOp::Property { property, .. } => check_property(block, *property, what),
+                EntryOp::Area { .. } => crate::area::check_block(block),
             }
         }
         Endpoint::Added(OpId(0)) => Err(Refusal::invalid(what, "want the ID of an add op")),
@@ -220,6 +232,7 @@ pub(crate) fn check_added(
         EntryOp::Remove { .. } => removable(block),
         EntryOp::Reset { .. } => Err(Refusal::invalid(edit.what(), "a reset names a base entry")),
         EntryOp::Property { property, .. } => check_property(block, *property, edit.what()),
+        EntryOp::Area { .. } => crate::area::check_block(block),
     }
 }
 

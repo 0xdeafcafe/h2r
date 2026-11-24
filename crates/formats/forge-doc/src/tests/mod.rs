@@ -1,5 +1,6 @@
 use crate::*;
 
+mod area;
 mod bounds;
 mod entry;
 mod ground;

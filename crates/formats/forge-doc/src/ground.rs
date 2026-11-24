@@ -342,8 +342,10 @@ impl ForgeDoc {
                 }
                 _ => false,
             };
-            // A property is data with no scenario bytes: it moves nothing.
-            if matches!(&op.edit, Edit::Entry(EntryOp::Property { .. })) || !touches {
+            // Properties and areas are document data with no scenario bytes.
+            if matches!(&op.edit, Edit::Entry(EntryOp::Property { .. } | EntryOp::Area { .. }))
+                || !touches
+            {
                 continue;
             }
             let json = serde_json::to_vec(&op.edit)

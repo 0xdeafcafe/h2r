@@ -15,8 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveLabel, BlockKind, Edit, EntryOp, ForgeDoc, Label, Labels, Limits, Op, OpId, Placement,
-    Print, Refusal, Result, WorldBounds, entry, wire,
+    ActiveLabel, Area, BlockKind, Edit, EntryOp, FieldWrite, ForgeDoc, Label, Labels, Limits,
+    MarkerArea, Op, OpId, Placement, Print, Refusal, Result, Value, WorldBounds, builtin_label,
+    entry, wire,
 };
 
 /// The largest channel a teleporter link writes. The netgame flag's
@@ -28,6 +29,7 @@ pub const TELEPORTER_SENDER: u16 = 7;
 /// The netgame flag type the teleporter readers treat as a receiver.
 pub const TELEPORTER_RECEIVER: u16 = 8;
 
+const FLAGS: BlockKind = BlockKind::NetgameFlags;
 const MAX_ENTRY_INDEX: u32 = i16::MAX as u32;
 
 /// One scenario entry a link, a label or an entry op names.
@@ -172,14 +174,34 @@ impl ForgeDoc {
     /// Resolve the active links to final indices. The map's base count is
     /// needed for each block a link names.
     pub fn links(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Links> {
-        let pass = Pass::run(&self.ops, base_counts, None)?;
+        let pass = Pass::run(&self.ops, base_counts, None, None)?;
         pass.resolve()
     }
 
     /// Resolve the active labels to final indices. The map's base count is
     /// needed for each block a label names.
     pub fn labels(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Labels> {
-        Pass::run(&self.ops, base_counts, None)?.resolve_labels()
+        Pass::run(&self.ops, base_counts, None, None)?.resolve_labels()
+    }
+
+    /// Resolve active areas to final netgame flag indices.
+    pub fn areas(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<BTreeMap<u32, MarkerArea>> {
+        if !has_area_ops(&self.ops) {
+            return Ok(BTreeMap::new());
+        }
+        Pass::run(&self.ops, base_counts, None, None)?.resolve_areas()
+    }
+
+    /// Active areas by placement identity, for a live session whose base
+    /// things still use their original indices.
+    pub fn area_targets(
+        &self,
+        base_counts: &BTreeMap<BlockKind, u32>,
+    ) -> Result<BTreeMap<Endpoint, Area>> {
+        if !has_area_ops(&self.ops) {
+            return Ok(BTreeMap::new());
+        }
+        Ok(Pass::run(&self.ops, base_counts, None, None)?.areas)
     }
 }
 
@@ -244,13 +266,14 @@ pub(crate) fn op(edit: &Forge) -> Result<()> {
 /// a linked entry is not removed, each flag keeps one role and channel,
 /// each base entry has one print, and the entry ops' rules
 /// (`Pass::entry`).
-pub(crate) fn check(ops: &[Op], base_counts: &BTreeMap<BlockKind, u32>) -> Result<()> {
-    Pass::run(ops, base_counts, None).map(|_| ())
-}
-
-/// [`check`] with the limits' world bounds for an added entry's position.
-pub(crate) fn check_with(ops: &[Op], limits: &Limits) -> Result<()> {
-    Pass::run(ops, &limits.base_counts, limits.world).map(|_| ())
+pub(crate) fn check(ops: &[Op], limits: &Limits) -> Result<()> {
+    Pass::run(
+        ops,
+        &limits.base_counts,
+        limits.world,
+        Some(&limits.base_flag_types),
+    )?
+    .check_hills()
 }
 
 struct Role {
@@ -270,6 +293,9 @@ struct Pass<'a> {
     order: Vec<OpId>,
     roles: BTreeMap<Endpoint, Role>,
     labels: BTreeMap<Endpoint, (OpId, Label)>,
+    areas: BTreeMap<Endpoint, Area>,
+    /// Flag types by identity, tracked only when the document shapes an area.
+    flag_types: Option<BTreeMap<Endpoint, u16>>,
     /// The print each base entry is named with, by identity.
     prints: BTreeMap<Endpoint, Print>,
     /// Base entries an entry op has changed since the last reset.
@@ -284,7 +310,15 @@ impl<'a> Pass<'a> {
         ops: &[Op],
         base: &'a BTreeMap<BlockKind, u32>,
         world: Option<WorldBounds>,
+        base_flag_types: Option<&[u16]>,
     ) -> Result<Self> {
+        let flag_types = base_flag_types.filter(|_| has_area_ops(ops)).map(|kinds| {
+            kinds
+                .iter()
+                .enumerate()
+                .map(|(i, &kind)| (Endpoint::base(FLAGS, i as u32), kind))
+                .collect()
+        });
         let mut pass = Self {
             base,
             rows: BTreeMap::new(),
@@ -294,6 +328,8 @@ impl<'a> Pass<'a> {
             order: Vec::new(),
             roles: BTreeMap::new(),
             labels: BTreeMap::new(),
+            areas: BTreeMap::new(),
+            flag_types,
             prints: BTreeMap::new(),
             edited: BTreeSet::new(),
             covered: entry::covered(ops),
@@ -362,8 +398,8 @@ impl<'a> Pass<'a> {
     }
 
     /// An entry op: its target exists and is not removed, an added
-    /// target's write fits its block, a removal is of an unlinked and
-    /// unlabelled entry, and a reset follows an entry op on its entry.
+    /// target's write fits its block, and a reset follows an entry op on
+    /// its entry. A removal requires the links, label and area to be clear.
     fn entry(&mut self, id: OpId, edit: &EntryOp) -> Result<()> {
         let what = edit.what();
         let target = self.name(edit.target())?;
@@ -388,6 +424,7 @@ impl<'a> Pass<'a> {
                 return Err(invalid(what, "the entry has no edit to reset"));
             }
             self.gone.remove(&target);
+            self.areas.remove(&target);
             return Ok(());
         }
         if self.gone.contains(&target) {
@@ -396,12 +433,34 @@ impl<'a> Pass<'a> {
         if let Endpoint::Base { .. } = target {
             self.edited.insert(target);
         }
+        if let EntryOp::Area { area, .. } = edit {
+            match area {
+                Some(area) => {
+                    self.areas.insert(target, area.clone());
+                }
+                None if self.areas.remove(&target).is_none() => {
+                    return Err(invalid(what, "the flag has no area to clear"));
+                }
+                None => {}
+            }
+        }
+        if let EntryOp::Set { write, .. } = edit
+            && block == FLAGS
+            && !self.covered.contains(&id)
+            && let Some(types) = &mut self.flag_types
+            && let Some(kind) = flag_type(write)
+        {
+            types.insert(target, kind);
+        }
         if let EntryOp::Remove { .. } = edit {
             if self.linked(target) {
                 return Err(invalid(block.name(), "remove the entry's links first"));
             }
             if self.labels.contains_key(&target) {
                 return Err(invalid(block.name(), "clear the entry's label first"));
+            }
+            if self.areas.contains_key(&target) {
+                return Err(invalid(block.name(), "clear the flag's area first"));
             }
             self.gone.insert(target);
             // A removal a later reset covers is left out by the fold, so
@@ -419,8 +478,20 @@ impl<'a> Pass<'a> {
     fn placement(&mut self, id: OpId, placement: &Placement) -> Result<()> {
         let block = placement.block();
         match *placement {
-            Placement::Add { .. } => {
+            Placement::Add { like, ref fields, .. } => {
                 self.added.insert(id, block);
+                if block == FLAGS && self.flag_types.is_some() {
+                    let kind = fields.iter().find_map(flag_type).or_else(|| match like {
+                        Some(index) => {
+                            let source = *self.rows(FLAGS)?.get(index as usize)?;
+                            self.flag_types.as_ref()?.get(&source).copied()
+                        }
+                        None => Some(0),
+                    });
+                    if let (Some(types), Some(kind)) = (&mut self.flag_types, kind) {
+                        types.insert(Endpoint::Added(id), kind);
+                    }
+                }
                 if let Some(rows) = self.rows(block) {
                     rows.push(Endpoint::Added(id));
                 }
@@ -438,7 +509,23 @@ impl<'a> Pass<'a> {
                     if self.labels.contains_key(&end) {
                         return Err(invalid(block.name(), "clear the entry's label first"));
                     }
+                    if self.areas.contains_key(&end) {
+                        return Err(invalid(block.name(), "clear the flag's area first"));
+                    }
                     self.gone.insert(end);
+                }
+            }
+            Placement::Set { index, ref write, .. }
+                if block == FLAGS && self.flag_types.is_some() =>
+            {
+                let target = self
+                    .rows(FLAGS)
+                    .and_then(|rows| rows.get(index as usize))
+                    .copied();
+                if let (Some(types), Some(target), Some(kind)) =
+                    (&mut self.flag_types, target, flag_type(write))
+                {
+                    types.insert(target, kind);
                 }
             }
             Placement::Set { .. } => {}
@@ -550,6 +637,55 @@ impl<'a> Pass<'a> {
         Ok(())
     }
 
+    fn check_hills(&self) -> Result<()> {
+        let Some(types) = &self.flag_types else {
+            return Ok(());
+        };
+        if self.areas.is_empty() {
+            return Ok(());
+        }
+        let mut hills = BTreeMap::new();
+        let labelled = self.labels.keys().filter(|end| !types.contains_key(*end));
+        for end in types.keys().chain(labelled) {
+            let block = match *end {
+                Endpoint::Base { block, .. } => block,
+                Endpoint::Added(id) => self.added[&id],
+            };
+            if block != FLAGS || self.gone.contains(end) {
+                continue;
+            }
+            let label = self
+                .labels
+                .get(end)
+                .map(|(_, label)| label.clone())
+                .or_else(|| types.get(end).and_then(|&kind| builtin_label(kind)));
+            if let Some(label) = label
+                && label.text == "hill_corner"
+            {
+                let (count, shaped) = hills.entry(label.number).or_insert((0, false));
+                *count += 1;
+                *shaped |= self.areas.contains_key(end);
+            }
+        }
+        if hills.values().any(|&(count, shaped)| count >= 3 && shaped) {
+            return Err(Refusal::Area("a hill with corners takes no area".into()));
+        }
+        Ok(())
+    }
+
+    fn resolve_areas(mut self) -> Result<BTreeMap<u32, MarkerArea>> {
+        if self.areas.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        if self.rows(FLAGS).is_none() {
+            return Err(invalid("areas", "the map's netgame_flags count is needed"));
+        }
+        std::mem::take(&mut self.areas)
+            .into_iter()
+            .map(|(target, area)| Ok((self.index(FLAGS, target)?, area.marker_area())))
+            .collect()
+    }
+
     fn resolve_labels(mut self) -> Result<Labels> {
         let labels = std::mem::take(&mut self.labels);
         let mut active = Vec::with_capacity(labels.len());
@@ -626,6 +762,18 @@ impl<'a> Pass<'a> {
         links.teleporters = flags.into_values().collect();
         links.device_groups = machines.finish();
         Ok(links)
+    }
+}
+
+fn has_area_ops(ops: &[Op]) -> bool {
+    ops.iter()
+        .any(|op| matches!(&op.edit, Edit::Entry(EntryOp::Area { .. })))
+}
+
+fn flag_type(write: &FieldWrite) -> Option<u16> {
+    match (write.field.as_str(), &write.value) {
+        ("type", Value::Int(n)) => u16::try_from(*n).ok(),
+        _ => None,
     }
 }
 
