@@ -313,31 +313,18 @@ impl Editor {
             .collect()
     }
 
-    /// The markers of the seats drawn as markers: where a monitor is and
-    /// the colour of its ring, for the compositor. The local seat's own
-    /// marker is never drawn.
-    pub fn monitor_markers(&self, now: f32) -> Vec<(forge::Frame, [u8; 3])> {
+    /// Where the other seats' monitors are: the HUD kit's navpoints over
+    /// them. The local seat's own monitor is never one.
+    pub fn monitor_points(&self, now: f32) -> Vec<[f32; 3]> {
         let Some(net) = &self.net else {
             return Vec::new();
         };
         let local = net.node.seat().unwrap_or(HOST_SEAT);
-        let rgb = rgb_of(&net.palette);
-        net.monitors.seats
+        net.monitors
+            .seats
             .looks()
             .filter(|(seat, _)| *seat != local.0)
-            .filter_map(|(seat, look)| {
-                let (pose, _) = net.monitors.seats.body(seat, now)?;
-                // A look this machine draws no model for is the marker.
-                (look.is_marker() || net.bodies.find(look).is_none()).then(|| {
-                    (
-                        forge::Frame {
-                            position: pose.position,
-                            rotation: [pose.yaw, pose.pitch, 0.],
-                        },
-                        rgb(look.primary),
-                    )
-                })
-            })
+            .filter_map(|(seat, _)| Some(net.monitors.seats.body(seat, now)?.0.position))
             .collect()
     }
 

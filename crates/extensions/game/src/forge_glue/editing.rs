@@ -474,19 +474,20 @@ impl Editor {
         }
     }
 
-    /// The compositor's page: the reticle, with the gizmo and the markers
-    /// painted on it (slices U6 and U7 move them to the HUD kit). The rest of
-    /// the HUD is the kit's ([`Editor::monitor_hud`]) and the screens are
-    /// the game's, so the compositor draws none.
+    /// The compositor's page: the reticle alone (slice U7 removes it). The
+    /// rest of the HUD, the gizmo and the markers are the kit's
+    /// ([`Editor::monitor_hud`]) and the screens are the game's, so the
+    /// compositor draws none.
     pub fn page(&self) -> Option<ScreenSpec> {
         self.tool.monitor.then(crate::ui_kit::forge::reticle)
     }
 
     /// What the HUD kit's `forge` HUD shows this tick (docs/game/
     /// forge-firefight-ui.md, "The monitor HUD"): the tool and what its hand
-    /// has, the budget, the rebuilds pending and the notice. Nothing with
+    /// has, the budget, the rebuilds pending and the notice, and where its
+    /// navpoints and gizmo are in the world at `now` seconds. Nothing with
     /// the monitor off.
-    pub fn monitor_hud(&self) -> crate::forge_hud::Published {
+    pub fn monitor_hud(&self, now: f32) -> crate::forge_hud::Published {
         use hud_kit_core::views::forge::{Hand, Tool as KitTool, View};
         if !self.tool.monitor {
             return crate::forge_hud::Published::default();
@@ -542,6 +543,89 @@ impl Editor {
                 teach: None,
             },
             notice: self.notice.clone(),
+            points: self.monitor_points_of(now, self.overlays()),
+        }
+    }
+
+    /// The drawings over the world that are on.
+    fn overlays(&self) -> crate::forge_hud::Show {
+        crate::forge_hud::Show::default()
+    }
+
+    /// Where a link's end is: a teleporter flag's position, or a placed
+    /// machine's.
+    fn linkable_at(&self, thing: Linkable) -> Option<[f32; 3]> {
+        match thing {
+            Linkable::Teleporter(index) => self
+                .session
+                .teleporters()
+                .iter()
+                .find(|t| t.index == index)
+                .map(|t| t.position),
+            Linkable::Object(id) => self
+                .session
+                .objects()
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| o.frame.position),
+        }
+    }
+
+    /// The world points of the monitor's navpoints and gizmo, the drawings
+    /// `show` turns off left out. The held, aimed or placed thing and the
+    /// link's second end are the target; the link's first end and the other
+    /// seats' monitors have their own navpoints; the gizmo is at the held,
+    /// placed or aimed thing.
+    fn monitor_points_of(
+        &self,
+        now: f32,
+        show: crate::forge_hud::Show,
+    ) -> crate::forge_hud::Points {
+        let Some(camera) = self.tool.camera else {
+            return Default::default();
+        };
+        let links = self.tool.links;
+        let aimed_link = self
+            .tool
+            .aimed_link
+            .filter(|&t| Some(t) != self.tool.link_from);
+        let (target, from) = if links {
+            (
+                aimed_link.and_then(|t| self.linkable_at(t)),
+                self.tool.link_from.and_then(|t| self.linkable_at(t)),
+            )
+        } else {
+            // A thing being placed has no place until the ghost has one.
+            let at = if self.tool.placing.is_some() {
+                self.tool.ghost.map(|frame| frame.position)
+            } else {
+                self.target().map(|(_, _, frame)| frame.position)
+            };
+            (at, None)
+        };
+        let axes = (!links && show.gizmo)
+            .then(|| {
+                let frame = match self.ghost() {
+                    Some((frame, _)) => frame,
+                    None if self.ui_up => return None,
+                    None => {
+                        let id = self.tool.aimed_thing?;
+                        self.session.thing(id)?.frame
+                    }
+                };
+                super::gizmo::Axes::from_frame(frame, self.local_axes(), camera.position)
+            })
+            .flatten();
+        crate::forge_hud::Points {
+            eye: camera.position,
+            target: target.filter(|_| show.markers),
+            from: from.filter(|_| show.markers),
+            monitors: if show.rings {
+                self.monitor_points(now)
+            } else {
+                Vec::new()
+            },
+            axes,
         }
     }
 

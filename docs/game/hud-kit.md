@@ -770,7 +770,10 @@ does the rest:
      put back as the widget blocks are, and only while the loaded
      scenario is the one it changed). The kit's navpoints are the
      `Navpoint` elements of the registered HUDs, in registration order,
-     the first four (`hud_kit::navpoints_now`); an element keeps its
+     the first four (`hud_kit::navpoints_now`); a HUD starts after the
+     navpoints of the earlier HUDs it can show with, and starts again at
+     the first slot after those it never shows with
+     (`Describe::never_with`, `hud_kit::slot_bases`); an element keeps its
      place in that list whatever shows, so it keeps its point. Each tick
      each point is set to its element's navpoint and one slot of the
      first local player's navpoint list is kept on it: the slot already

@@ -14,7 +14,10 @@ fn view(tool: Tool, hand: Hand, target: &str) -> View {
 }
 
 fn published(view: View) -> Published {
-    Published { view, notice: None }
+    Published {
+        view,
+        ..Published::default()
+    }
 }
 
 /// The prompts name the controls the table binds: the preview's sample is
@@ -78,6 +81,10 @@ fn nothing_is_published_with_the_monitor_off() {
     let p = Published {
         view: View::default(),
         notice: Some(("Saved Courtyard.".into(), 5)),
+        points: Points {
+            target: Some([1.0, 0.0, 0.0]),
+            ..Points::default()
+        },
     };
     let (values, notice) = frame(&p, &mut teaching, &mut sent, &buttons());
     assert!(values.0.iter().all(|(_, v)| !v.shown));
@@ -184,4 +191,98 @@ fn the_hint_is_in_the_training_box() {
     let p = published(view(Tool::Links, Hand::Aimed, "Gate"));
     let (values, _) = frame(&p, &mut teaching, &mut sent, &b);
     assert!(!values.get(kit::TEACH).unwrap().shown);
+}
+
+fn axes(at: [f32; 3]) -> crate::forge_glue::gizmo::Axes {
+    crate::forge_glue::gizmo::Axes::from_frame(
+        forge::Frame {
+            position: at,
+            rotation: [0.0; 3],
+        },
+        false,
+        [0.0; 3],
+    )
+    .unwrap()
+}
+
+/// Held, aimed, linking and two monitors give the expected points and
+/// segments: a point's number is its distance in whole metres, the nearest
+/// two monitors are kept, nearest first, and the gizmo has three segments
+/// from the origin.
+#[test]
+fn the_points_resolve_to_numbers_and_segments() {
+    let held = [10.0, 0.0, 0.0];
+    let points = Points {
+        eye: [0.0; 3],
+        target: Some(held),
+        from: Some([0.0, 5.0, 0.0]),
+        monitors: vec![[0.0, 0.0, 100.0], [20.0, 0.0, 0.0], [30.0, 0.0, 0.0]],
+        axes: Some(axes(held)),
+    };
+    let r = points.resolved();
+    assert_eq!(r.target.unwrap().metres, 30, "10 units is 30.48 m");
+    assert_eq!(r.target.unwrap().at, held);
+    assert_eq!(r.from.unwrap().metres, 15);
+    assert_eq!(
+        r.monitors.map(|m| m.map(|p| p.metres)),
+        [Some(61), Some(91)],
+        "the two nearest monitors, nearest first"
+    );
+    let gizmo = r.gizmo.unwrap();
+    for (i, (origin, end)) in gizmo.iter().enumerate() {
+        assert_eq!(*origin, held);
+        assert_ne!(end, origin);
+        assert!(end[i] - origin[i] > 0.0, "arm {i} runs along its axis");
+    }
+    assert_eq!(
+        r.marks(),
+        Marks {
+            target: Some(30),
+            from: Some(15),
+            monitors: [Some(61), Some(91)],
+            gizmo: true
+        }
+    );
+    // Nothing aimed at: no marks. A number far away is the most a number
+    // shows, and a point that is not a number is left out.
+    assert_eq!(Points::default().resolved().marks(), Marks::default());
+    let far = Points {
+        target: Some([1e6, 0.0, 0.0]),
+        from: Some([f32::NAN, 0.0, 0.0]),
+        ..Points::default()
+    };
+    assert_eq!(far.resolved().target.unwrap().metres, 999);
+    assert_eq!(far.resolved().from, None);
+}
+
+/// The marks reach the values: the navpoints show their distance, the three
+/// gizmo segments are in the axis colours, and with the monitor off none
+/// show.
+#[test]
+fn the_marks_reach_the_values() {
+    let mut teaching = Teaching::default();
+    let mut sent = None;
+    let b = buttons();
+    let mut p = published(view(Tool::Objects, Hand::Holding, "Beacon"));
+    p.points = Points {
+        target: Some([1.0, 0.0, 0.0]),
+        axes: Some(axes([1.0, 0.0, 0.0])),
+        monitors: vec![[0.0, 2.0, 0.0]],
+        ..Points::default()
+    };
+    let (values, _) = frame(&p, &mut teaching, &mut sent, &b);
+    let shown = |id: &str| values.get(id).filter(|v| v.shown).map(|v| v.text.clone());
+    assert_eq!(shown(kit::NAV_TARGET).as_deref(), Some("3"));
+    assert_eq!(shown(kit::NAV_FROM), None);
+    assert_eq!(shown(kit::NAV_MONITORS[0]).as_deref(), Some("6"));
+    assert_eq!(shown(kit::NAV_MONITORS[1]), None);
+    for (axis, id) in kit::GIZMO.into_iter().enumerate() {
+        let v = values.get(id).unwrap();
+        assert!(v.shown, "{id}");
+        assert_eq!(v.style, hud_kit_core::model::Style::Axis(axis as u8));
+    }
+    assert_eq!(values.layout_problems(&kit::hud()), Vec::<String>::new());
+    p.view.monitor = false;
+    let (values, _) = frame(&p, &mut teaching, &mut sent, &b);
+    assert!(values.0.iter().all(|(_, v)| !v.shown));
 }

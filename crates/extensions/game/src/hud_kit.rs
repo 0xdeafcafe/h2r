@@ -700,29 +700,67 @@ pub fn banner_due(last: &mut Option<String>, now: Option<String>) -> Option<Stri
     due
 }
 
+/// The first slot of each HUD's navpoints, for HUDs in registration order
+/// with `counts` navpoints each, and `exclusive(a, b)` whether HUDs `a` and
+/// `b` never show together: a HUD starts after the navpoints of the
+/// earlier HUDs it can show with, so HUDs of different modes (a biped's,
+/// a monitor's) share the first slots instead of using them up.
+pub fn slot_bases(counts: &[usize], exclusive: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    let mut bases: Vec<usize> = Vec::with_capacity(counts.len());
+    for (i, _) in counts.iter().enumerate() {
+        let base = (0..i)
+            .filter(|&j| !exclusive(i, j))
+            .map(|j| bases[j] + counts[j])
+            .max()
+            .unwrap_or(0);
+        bases.push(base);
+    }
+    bases
+}
+
 /// The point of each of the kit's navpoints now: the navpoint elements
-/// of the registered HUDs in their order, the first [`KIT_POINTS`] of
-/// them, each `Some` while its value is shown and it has a point. An
-/// element keeps its place in the list whatever shows, so it keeps its
-/// scenario point and its slot.
+/// of the registered HUDs in their order, each HUD after the navpoints of
+/// the earlier ones it can show with ([`slot_bases`]), the first
+/// [`KIT_POINTS`] of them, each `Some` while its value is shown and it
+/// has a point. An element keeps its place in the list whatever shows, so
+/// it keeps its scenario point and its slot.
 pub fn navpoints_now() -> [Option<[f32; 3]>; KIT_POINTS as usize] {
     let r = read(&REGISTRY);
+    let counts: Vec<usize> = r
+        .iter()
+        .map(|x| {
+            x.hud
+                .elements
+                .iter()
+                .filter(|e| matches!(e.kind, Kind::Navpoint { .. }))
+                .count()
+        })
+        .collect();
+    let never = |a: usize, b: usize| {
+        r[a].describe.never_with().contains(&r[b].hud.name)
+            || r[b].describe.never_with().contains(&r[a].hud.name)
+    };
+    let bases = slot_bases(&counts, never);
     let mut out = [None; KIT_POINTS as usize];
-    let elements = r.iter().flat_map(|x| {
-        x.hud
+    for (x, base) in r.iter().zip(bases) {
+        let ids = x
+            .hud
             .elements
             .iter()
             .filter(|e| matches!(e.kind, Kind::Navpoint { .. }))
-            .map(move |e| (x, e.id))
-    });
-    for (slot, (x, id)) in out.iter_mut().zip(elements) {
-        let shown = x.values.get(id).is_some_and(|v| v.shown);
-        *slot = x
-            .navs
-            .iter()
-            .find(|(i, _)| *i == id)
-            .map(|(_, at)| *at)
-            .filter(|_| shown);
+            .map(|e| e.id);
+        for (id, k) in ids.zip(base..) {
+            let shown = x.values.get(id).is_some_and(|v| v.shown);
+            let at = x
+                .navs
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, at)| *at)
+                .filter(|_| shown);
+            if let Some(slot) = out.get_mut(k) {
+                *slot = slot.or(at);
+            }
+        }
     }
     out
 }

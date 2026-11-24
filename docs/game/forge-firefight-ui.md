@@ -1,7 +1,7 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
-Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit, without K1's gate), U4 (the Forge screens in the game and the bindings table) and U5 (the Firefight HUD) and K4 (the gizmo's segment in the HUD kit) are built; the rest is design, and the audit describes the compositor code that U6 and U7 replace.
-Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `crates/extensions/game/src/ui_kit/forge.rs` and `ui_kit/forge/` (the compositor's Forge strip and dialogs), `lobby_mode.rs` (Game Setup's Forge Map row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs`, `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` (the compositor painter). Tests: named per slice below.
+Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit, without K1's gate), U4 (the Forge screens in the game and the bindings table) and U5 (the Firefight HUD) K4 (the gizmo's segment in the HUD kit) and U6 (the markers and the gizmo on the HUD kit) are built; the rest is design, and the audit describes the compositor code that U7 replaces.
+Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `crates/extensions/game/src/ui_kit/forge.rs` and `ui_kit/forge/` (the compositor's Forge strip and dialogs), `lobby_mode.rs` (Game Setup's Forge Map row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` (the compositor painter). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
 Forge and Firefight are modes of the party lobby
@@ -51,8 +51,8 @@ Paths without a crate are under `crates/extensions/game/src/`.
 | Firefight Options | the shared settings dialog on Quick Options over Game Setup, drawn by the game | `firefight/options.rs`, `content/ui/screens/firefight.yaml` |
 | Forge HUD | the game's HUD: the HUD kit's `forge` HUD, fed from the session each tick ("The monitor HUD"); the reticle is the compositor's: the preview renderer paints a `ScreenSpec::hud` page into a 640 by 480 RGBA image with the disc's fonts, blended over the frame | `hud_kit_core::views::forge`, `forge_hud.rs`; `ui_kit/forge.rs` (`reticle`), `crates/apps/cli/src/play_cmd/forge.rs` |
 | Forge dialogs (palette, properties, link, menu, load) | the same compositor path; the spec is a kit dialog spec, but no game widget exists | `ui_kit/forge/dialogs.rs:232`, `forge_glue.rs:55` |
-| Gizmo | pixels the compositor writes into that image | `forge_glue/gizmo.rs:75` |
-| Monitor marker | the same, a ring in the seat's colour | `forge_glue/marker.rs` on the branch `forge-look` |
+| Gizmo | pixels the compositor wrote into that image; now the HUD kit's `forge.gizmo` world marks | `forge_glue/gizmo.rs` |
+| Monitor marker | a ring the compositor wrote into that image; now the HUD kit's navpoints | `forge_hud.rs` (`Points`) |
 | Firefight HUD | the game's HUD: the HUD kit's `firefight` HUD, fed from `hud::current` each tick ("The Firefight HUD") | `hud_kit_core::huds::firefight`, `firefight/hud.rs` (`Feed`) |
 
 ### Why each reads as fake
@@ -95,8 +95,8 @@ only in the desktop play window
 - The opener in every spec is the main menu
   (`ui_kit/forge/dialogs.rs:409`, `:438`), though they open in a game.
 
-**The gizmo and the marker.** Red, green and blue two-pixel lines
-(`forge_glue/gizmo.rs:87`) and a flat ring: a modelling tool's idiom,
+**The gizmo and the marker (as audited; U6 replaced them).** Red, green and blue two-pixel lines
+(the compositor's gizmo painter) and a flat ring: a modelling tool's idiom,
 aliased, drawn behind the strip's pixels and in front of everything in
 the world.
 
@@ -290,7 +290,10 @@ when the tool's state changes. One layout:
 | `forge.budget.meter` | Meter, `Art::StripMeter` | under the pill (`rects::below`) | used over limit; `Flash(Pulse::TimeWarning)` from 90% |
 | `forge.tool` | Text, `Font::Hud`, longest "VOLUMES" | top right, where a weapon's name line sits | the tool; capitals |
 | `forge.rebuild.pill`, `.pill.end`, `.count` | Icon and LCD Text | the grenade row's second place | pending Rebuild edits; hidden at 0 |
-| `forge.gizmo.x`, `.y`, `.z` (not built) | world mark, `Shape::Segment` in `Style::Axis(0..3)` (K4, built; the element is U6's) | from the held or aimed object's origin to its end along each axis, in world space | while an object is held or aimed at |
+| `forge.nav.target` | Navpoint | over the held, aimed or placed thing; in the Links tool, over the aimed end | while there is one; the number is the distance in metres |
+| `forge.nav.from` | Navpoint | over the link's first end | while a link is started |
+| `forge.nav.monitor.1`, `.2` | Navpoint | over the nearest two other monitors | while another seat's monitor is up |
+| `forge.gizmo.x`, `.y`, `.z` | world mark, `Shape::Segment` in `Style::Axis(0..3)` | from the held or aimed object's origin to its end along each axis, in world space | in the Objects tool while an object is held, placed or aimed at |
 
 - **The retail widgets are off in the monitor, but the motion tracker.**
   A monitor has no shield, weapon or grenades. The kit's gate hook
@@ -305,7 +308,7 @@ when the tool's state changes. One layout:
   a text at the screen's centre is inside the retail reticle's reserved
   rectangle and fails the `retail` check. `forge_glue::page` returns the
   compositor's page of the reticle's `+` alone (`ui_kit::forge::reticle`),
-  which the gizmo and the markers are painted on until slices U6 and U7.
+  until slice U7.
 - **Copy** is the game's form: sentence case, the button as the font's
   glyph, one line. The count is digits only, as the LCD font has no
   slash. A prompt's button is read from the bindings table
@@ -416,18 +419,31 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 
 ### Markers in the world
 
-- The held or aimed object carries the kit's navpoint: the game's arrow
-  and marker, with the distance as its number.
-- Each other monitor is a navpoint in its seat's colour, and a link's two
-  ends are navpoints while the Links tool is up (slice K3 gives a HUD
-  several points).
+- The held, placed or aimed object carries `forge.nav.target`, the game's
+  arrow and marker, with the distance in whole metres as its number.
+  In the Links tool the target is the aimed end, and a link's first end
+  carries `forge.nav.from` while it is started.
+- Each other seat's monitor is a navpoint (`forge.nav.monitor.1` and
+  `.2`, the nearest two, nearest first). The game draws a navpoint in one
+  colour, so a seat is told apart by where it is, not by its colour. The
+  game's list has four slots, which the four navpoints fill. A HUD that
+  never shows with another (`Describe::never_with`) starts its navpoints
+  at the first slot, so the monitor's four do not wait behind a biped's
+  (`hud_kit::slot_bases`).
 - **The axis gizmo** (decision 2) is three HUD kit world marks of
   `Shape::Segment`: a line between two world points (`Pose::at` and
   `Pose::to`), drawn by the window's world-line pass as every world mark
   is, in the three axis colours (`Style::Axis`, `world::AXIS_COLOURS`).
-  `forge_glue/gizmo.rs` (`Axes::from_frame`) gives the ends each
-  frame, in the world's or the object's basis as the Axes setting says.
-  It hides with the HUD. Until U6 the compositor draws it.
+  `forge_glue/gizmo.rs` (`Axes::from_frame`) gives the ends each tick, in
+  the world's or the object's basis as the Axes setting says, an arm a
+  seventh of the object's distance from the eye, between 0.05 and 0.5
+  world units. It hides with the HUD and while a Forge screen is up. The
+  bounding sphere's outline the compositor drew has no retail
+  counterpart and is not drawn.
+- `forge_hud::Points` holds the world points each tick; the editor
+  leaves out the markers, the rings (other monitors) and the gizmo that
+  `forge_hud::Show` turns off; the session turns them on all (the
+  Overlays setting of [forge-editing.md](forge-editing.md) sets them).
 
 ## The Firefight HUD
 
@@ -475,7 +491,7 @@ their first user. The editing slices P1 to P6 are in
 | **U5** (built) | Firefight HUD on the kit | M | K2; kit `Message` | `h2 hud preview firefight --state all --mode all` (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`); `the_hud_reads_only_the_mode_blob` unchanged; `every_stage_has_a_banner_or_none` table; the kit's checks replace `hud::check`; `the_feed_publishes_the_view_and_sends_the_notes_a_change_makes` |
 | **K3** | HUD kit: several navpoints for one HUD, the number drawn | S | the kit's navpoint number | `FlatMemory` test of n slots kept and released; preview with three points |
 | **K4** (built) | HUD kit: `Shape::Segment`, a line between two world points at any slope, and `Style::Axis(n)`, one of three axis colours | S | the HUD kit on `master` | `a_segment_runs_between_its_two_points_unlifted` (`world.rs`); `a_gizmo_axis_is_a_segment_in_its_colour` (`hud_kit_world.rs`); `the_preview_draws_a_gizmo_segment_in_its_axis_colour` (the colour per axis, the `world` check on a fourth axis and on an axis off a world mark) |
-| **U6** | Forge markers as navpoints; the gizmo as three segments in the Axes setting's basis; remove the marker and gizmo painters | S | K3, K4, U3 (built) | table test: held, aimed, linking and two monitors give the expected points and segments; `h2 hud preview forge --state holding` |
+| **U6** (built) | Forge markers as navpoints; the gizmo as three segments in the Axes setting's basis; remove the marker and gizmo painters | S | K3, K4, U3 (built) | table test: held, aimed, linking and two monitors give the expected points and segments; `h2 hud preview forge --state holding` |
 | **U7** | Remove the compositor path: `ScreenSpec::hud`, `Art::Solid`, the Forge painter in `play_cmd/forge.rs`, `forge.hud`, its reticle page and its sheet entries; update [ui-builder.md](ui-builder.md) "Screen kinds" | S | U3 (built), U4, U6 | `cargo check -p cli --no-default-features --features host`; the sheet has no `forge.hud`; `docs-check` |
 
 The GAME MODE picker that replaces U2's Mode row is slices T1 to T7 of

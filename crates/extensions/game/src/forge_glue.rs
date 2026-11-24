@@ -5,7 +5,6 @@ mod editing;
 pub mod gizmo;
 pub mod ground;
 mod link;
-pub mod marker;
 pub mod markers_world;
 pub mod net;
 
@@ -71,22 +70,6 @@ pub fn page() -> Option<ScreenSpec> {
     driver.editor.as_ref()?.page()
 }
 
-/// The rings the play window's overlay paints beside the gizmo, projected
-/// through the last frame's world view: the session's other monitors. A
-/// monitor's own marker is never drawn. The ground's marks and problems are
-/// game type markers ([`markers_world`]).
-pub fn markers() -> Vec<marker::Marker> {
-    let Some(driver) = current() else {
-        return Vec::new();
-    };
-    let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-    driver
-        .markers
-        .iter()
-        .filter_map(|(frame, colour)| marker::project(*frame, *colour))
-        .collect()
-}
-
 /// The other seats' drawn bodies, as the last tick left them: the
 /// presentation instances the native renderer's object pass draws. The
 /// local seat's own body is never drawn in its own view.
@@ -95,19 +78,6 @@ pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
         return Vec::new();
     };
     driver.lock().unwrap_or_else(|e| e.into_inner()).bodies.clone()
-}
-
-/// World-space axes and the held object's outline, projected through the
-/// render frame's camera.
-pub fn gizmo() -> Option<gizmo::Axes> {
-    let (frame, extent, local) = {
-        let driver = current()?;
-        let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-        let editor = driver.editor.as_ref()?;
-        let (frame, extent) = editor.ghost()?;
-        (frame, extent, editor.local_axes())
-    };
-    gizmo::project(frame, extent, local)
 }
 
 /// A click on a compositor dialog's row. The Forge screens are the game's
@@ -137,9 +107,6 @@ struct Driver {
     editor: Option<Editor>,
     /// The saved map the editor loads at its first tick.
     draft: Option<String>,
-    /// The other seats' markers as the last tick left them, for the play
-    /// window's overlay ([`markers`]).
-    markers: Vec<(forge::Frame, [u8; 3])>,
     /// The game type markers the last rebuild made, and the tick of it
     /// ([`markers_world`]).
     marks: Arc<Vec<markers_world::Entry>>,
@@ -158,7 +125,6 @@ impl Driver {
         self.looks.close();
         self.opening = None;
         self.loaded = None;
-        self.markers.clear();
         self.marks = Arc::default();
         self.marks_at = None;
         markers_world::clear();
@@ -298,8 +264,7 @@ impl Driver {
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
             let now = tick as f32 / 30.;
             crate::forge_readout::publish(e.readout_scene(game));
-            crate::forge_hud::publish(e.monitor_hud());
-            self.markers = e.monitor_markers(now);
+            crate::forge_hud::publish(e.monitor_hud(now));
             // The things are rebuilt a few times a second; the aimed and
             // held things move the selection every tick.
             if self
@@ -464,7 +429,6 @@ pub fn install(
         opening: None,
         editor: None,
         draft: None,
-        markers: Vec::new(),
         marks: Arc::default(),
         marks_at: None,
         bodies: Vec::new(),
