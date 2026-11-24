@@ -1,6 +1,5 @@
 //! Private-image oracle for the channel manager. Compare each segment before
 //! its callee can consume or overwrite registers, flags, or guest memory.
-#![cfg(feature = "differential")]
 
 use engine::sim_anim::manager;
 use ir::interp::{Cpu, FlatMemory, Flow};
@@ -11,27 +10,27 @@ use runtime::guest::Permissions;
 use runtime::{CpuAbi, Guest, TransferAbi, abi};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[path = "sim_manager_differential/low.rs"]
+#[path = "manager_differential/low.rs"]
 mod low;
-#[path = "sim_manager_differential/upper.rs"]
+#[path = "manager_differential/upper.rs"]
 mod upper;
-#[path = "sim_manager_differential/tracks.rs"]
+#[path = "manager_differential/tracks.rs"]
 mod tracks;
-#[path = "sim_manager_differential/queries.rs"]
+#[path = "manager_differential/queries.rs"]
 mod queries;
-#[path = "sim_manager_differential/actions.rs"]
+#[path = "manager_differential/actions.rs"]
 mod actions;
-#[path = "sim_manager_differential/channel_eval.rs"]
+#[path = "manager_differential/channel_eval.rs"]
 mod channel_eval;
-#[path = "sim_manager_differential/channel_select.rs"]
+#[path = "manager_differential/channel_select.rs"]
 mod channel_select;
-#[path = "sim_manager_differential/channel_blend.rs"]
+#[path = "manager_differential/channel_blend.rs"]
 mod channel_blend;
-#[path = "sim_manager_differential/advance.rs"]
+#[path = "manager_differential/advance.rs"]
 mod advance;
-#[path = "sim_manager_differential/final_channels.rs"]
+#[path = "manager_differential/final_channels.rs"]
 mod final_channels;
-#[path = "sim_manager_differential/graph.rs"]
+#[path = "manager_differential/graph.rs"]
 mod graph;
 
 const RAM: usize = 8 << 20;

@@ -29,6 +29,9 @@ struct Ram<'a> {
 #[path = "sim_native_differential/unit_pose_differential.rs"]
 mod full_pose;
 
+#[path = "sim_native_differential/manager_differential.rs"]
+mod manager_differential;
+
 impl<'a> Ram<'a> {
     fn new(image: &'a [u8]) -> Self {
         Self {

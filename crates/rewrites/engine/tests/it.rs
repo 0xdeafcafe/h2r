@@ -45,8 +45,6 @@ mod sim_anim_differential;
 mod sim_collision_differential;
 #[path = "sim_objects_differential.rs"]
 mod sim_objects_differential;
-#[path = "sim_manager_differential.rs"]
-mod sim_manager_differential;
 #[path = "sim_native_differential.rs"]
 mod sim_native_differential;
 #[path = "sim_physics_differential.rs"]
