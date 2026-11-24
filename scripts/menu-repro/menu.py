@@ -38,6 +38,8 @@ def view():
     for _ in range(16):
         audit = rpc("ui.audit")
         for pane in (audit.get("active") or {}).get("panes", []):
+            if not pane.get("active"):
+                continue
             for group in pane["lists"]:
                 focus = group.get("focused_row")
                 if focus is not None and group["rows"]:
