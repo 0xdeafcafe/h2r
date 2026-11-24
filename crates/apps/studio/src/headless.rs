@@ -1957,11 +1957,11 @@ mod tests {
         h.step(&mut app, &Step::Type("weapons rifle".into())).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(shown(&h), ["tag:weap:objects\\weapons\\rifle"]);
-        h.studio.browser.query.clear();
-
-        // The Packages root lists the set.
+        // The Packages root lists the set. The click takes the focus from
+        // the search box first, so the cleared query is not written back.
         h.step(&mut app, &Step::Click("##browser-root-1".into(), Button::Left))
             .unwrap();
+        h.studio.browser.query.clear();
         h.frames(&mut app, 2).unwrap();
         assert!(h.studio.browser.shown.contains(&"package:kit-test".to_owned()));
         h.step(&mut app, &Step::Click("##browser-root-0".into(), Button::Left))

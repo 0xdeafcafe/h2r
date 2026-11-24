@@ -654,7 +654,11 @@ fn the_rules_runtime_puts_in_the_script_index_engine_object_unless_turned_off() 
         at.sort_unstable();
         at
     };
-    let want = vec![("GAME_ACTIVATE", "before"), ("SPAWN_TYPE_MASK", "before")];
+    let want = vec![
+        ("GAME_ACTIVATE", "before"),
+        ("GAME_ACTIVATE", "observe_after"),
+        ("SPAWN_TYPE_MASK", "before"),
+    ];
     assert_eq!(hooks("rules"), want);
     assert_eq!(hooks(""), want);
     assert!(hooks("-rules").is_empty());

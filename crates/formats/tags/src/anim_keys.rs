@@ -128,6 +128,11 @@ impl Channel {
         }
         let after = keys.partition_point(|k| (k.frame as f32) <= frame);
         let (a, b) = (keys[after - 1], keys[after]);
+        // A frame that is a key gives the key itself, not an
+        // interpolation that may round it.
+        if frame == a.frame as f32 {
+            return a.value;
+        }
         let t = (frame - a.frame as f32) / (b.frame - a.frame) as f32;
         lerp(self.kind, a.value, b.value, t)
     }

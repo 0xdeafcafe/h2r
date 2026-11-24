@@ -31,6 +31,8 @@ pub fn source_of(area: &str) -> &'static str {
     match area {
         "ui" => "ui",
         "hud" => "hud",
+        "package" => "package",
+        "build" => "build",
         _ => "check",
     }
 }

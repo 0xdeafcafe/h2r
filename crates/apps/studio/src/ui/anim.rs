@@ -258,7 +258,7 @@ fn depth(read: &AnimRead, node: usize) -> usize {
 fn ruler_step(frames: usize, width: f32) -> usize {
     let per_frame = width / frames.saturating_sub(1).max(1) as f32;
     let mut step = 1;
-    for scale in [1, 10, 100, 1000] {
+    for scale in [1usize, 10, 100, 1000] {
         for m in [1, 2, 5] {
             step = m * scale;
             if step as f32 * per_frame >= 40.0 {

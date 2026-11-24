@@ -37,7 +37,7 @@ const READ: MethodDef = def(
     "One animation of a jmad tag read as the timeline shows it: a row per node with the rotation, translation and scale channels the clip drives, each as keys (frame and value; a rotation is a quaternion [x,y,z,w], a translation [x,y,z], a scale [s]) between which the value is linear (a rotation along the shorter arc). The keys are the dense decoded frames reduced within `tolerance` (the default is a tenth of a degree, a thousandth of a unit and of a scale), so baking them back stays within it at every frame: `reduction.max_error` is what was measured. A channel with one key does not change over the clip. Events are counted, not decoded; an aim grid (codec 8) lists its nodes without keys. Reads only",
     r#"{"tag":"string","animation":"string|integer (its name or index)","tolerance?":{"rotation_degrees?":"number (default 0.1)","translation?":"number (default 0.001)","scale?":"number (default 0.001)"},"keys?":"boolean (default true; false lists key counts only)"}"#,
     r#"{"tag":"string","animation":"{index,name,type,frames,codecs,aim_grid,error}","frame_rate":"number (30)","frames":"integer","duration":"number (seconds)","tolerance":"{rotation_degrees,translation,scale}","nodes":"[{index,name,parent,channels:[{kind,moves,key_count,keys?:[{frame,value:[number]}]}]}]","reduction":"{channels,dense_values,keys,max_error:{rotation_degrees,translation,scale}}","events":"{frame,sound,effect,decoded}","notes":"[string]"}"#,
-    r#"{"tag":"jmad:invented\stickman","animation":"combat:idle"}"#,
+    r#"{"tag":"jmad:invented\\stickman","animation":"combat:idle"}"#,
 );
 
 fn failed(e: AnimError) -> agent_proto::RpcError {
