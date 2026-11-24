@@ -8,7 +8,7 @@
 //! `SCENE_ITEMS`, and [`passes`] a light's passes at
 //! `RENDER_LIGHT_PASSES`. Under the body the scene's light is made from its
 //! hand-off and the item body's lists ([`handoff`]); the guest loop's
-//! lights are read at their passes' entry. The first-person lights
+//! lights are read at their constants call. The first-person lights
 //! (`0x000404b0`) and each slot's record replay run as bodies too
 //! ([`first_person`]); a first-person light goes into the first person's
 //! view at its first layer draw, its groups are of their own site
@@ -461,7 +461,7 @@ fn enter_light() -> u64 {
 
 /// The light whose passes run with the registers `entry`, read from
 /// guest memory ([`Source::observed`]): the guest loop's lights at their
-/// passes' entry, and a hand-off's whose lists the guest makes.
+/// constants call, and a hand-off's whose lists the guest makes.
 fn observe(mem: &dyn GuestMemory, entry: Entry, serial: u64) {
     let Some(source) = Source::observed(mem, &entry) else {
         refused("unreadable light arguments");
@@ -842,9 +842,9 @@ impl Feature for NativeLights {
                 let mem = o.guest();
                 let serial = enter_light();
                 // The frame body's light waits for its item lists
-                // (`handoff`); the guest loop's is read here.
+                // (`handoff`); the guest loop's waits for its constants call.
                 if !handoff::entered(&*mem, entry, serial) {
-                    observe(&*mem, entry, serial);
+                    handoff::defer(entry, serial);
                 }
             })
             .context_only();
