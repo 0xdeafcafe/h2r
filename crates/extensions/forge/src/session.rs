@@ -12,8 +12,10 @@ use crate::{
     World, files, links, props, scene,
 };
 
+mod ground;
 mod shared;
 
+pub use ground::{GroundBuilder, GroundProblem, GroundReport, GroundState, PlacedMarker};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
 
 #[derive(Clone, Debug)]
@@ -50,6 +52,8 @@ pub struct Session {
     /// Set in a synchronous network game ([`Session::share`]): edits queue
     /// for the host instead of applying here.
     shared: Option<shared::Shared>,
+    /// The AI ground's recipe and last build, beside the document.
+    ground: ground::Track,
 }
 
 impl Session {
@@ -94,6 +98,7 @@ impl Session {
             repair: None,
             own_repair: None,
             shared: None,
+            ground: ground::Track::default(),
         })
     }
 
@@ -872,11 +877,11 @@ impl Session {
 
     /// Allocate a new file without overwriting another session's save.
     pub fn save_new(&self, data_dir: &Path, base: &str) -> Result<String, String> {
-        files::save_new(data_dir, base, &self.doc)
+        self.write_ground_form_new(data_dir, base)
     }
 
     pub fn save(&self, data_dir: &Path, name: &str) -> Result<(), String> {
-        files::save(data_dir, name, &self.doc)
+        self.write_ground_form(data_dir, name)
     }
 
     /// Load the folded document as a fresh log checkpoint. Verify the whole
@@ -888,7 +893,8 @@ impl Session {
         data_dir: &Path,
         name: &str,
     ) -> Result<(), String> {
-        let doc = files::load(data_dir, name, &self.limits)?;
+        let loaded = files::load(data_dir, name, &self.limits)?;
+        let (doc, ground) = Self::take_ground(loaded.clone())?;
         if doc.base != self.doc.base
             || doc.builder != self.doc.builder
             || doc.recipes != self.doc.recipes
@@ -898,8 +904,11 @@ impl Session {
             return Err("The document requires another base map, builder or kit.".into());
         }
         let head = LogHead::genesis(&doc).map_err(reason)?;
-        if let Some(expect) = doc.expect {
-            let actual = forge_doc::MapId::forge(doc.base.sha256, head.hash);
+        // The expectation was made over the document as saved, with the
+        // ground recipe in it.
+        if let Some(expect) = loaded.expect {
+            let saved = LogHead::genesis(&loaded).map_err(reason)?;
+            let actual = forge_doc::MapId::forge(loaded.base.sha256, saved.hash);
             if actual != expect.map_id {
                 return Err(format!(
                     "forge_expect_map_id: document expects {}, computed {actual}",
@@ -912,6 +921,7 @@ impl Session {
         self.last_id = doc.ops.iter().map(|op| op.id.0).max().unwrap_or(0);
         self.doc = doc;
         self.head = head;
+        self.restart_ground(ground);
         self.log.clear();
         self.log_bytes = 0;
         self.undo.clear();

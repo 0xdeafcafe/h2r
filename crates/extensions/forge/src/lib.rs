@@ -16,8 +16,12 @@ pub mod tool;
 
 pub use files::{load_saved, saved_names};
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
+pub use forge_doc::{GroundLabel, GroundRecipe};
 pub use links::{Linkable, Teleporter};
-pub use session::{Outgoing, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit};
+pub use session::{
+    GroundBuilder, GroundProblem, GroundReport, GroundState, Outgoing, PlacedMarker,
+    SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit,
+};
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 
 /// Position in world units, and yaw, pitch and roll in radians, in scenario order.
@@ -108,6 +112,9 @@ mod tests;
 
 #[cfg(test)]
 mod base_tests;
+
+#[cfg(test)]
+mod ground_tests;
 
 #[cfg(test)]
 mod props_tests;

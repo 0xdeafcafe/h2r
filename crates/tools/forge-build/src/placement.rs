@@ -1,8 +1,8 @@
 use std::io::{Read, Seek};
 
 use forge_doc::{
-    Apply, BlockKind, F32, FieldWrite, Labels, Links, Placement, Printed, Refusal, TagKey, TagWrite,
-    Value, WorldBounds,
+    Apply, BlockKind, F32, FieldWrite, Labels, Links, Placement, Printed, Refusal, TagKey,
+    TagWrite, Value, WorldBounds,
 };
 use map::{FourCC, Map, Tag, TagQuery};
 use scenario_edit::{

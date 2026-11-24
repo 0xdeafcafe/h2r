@@ -241,13 +241,9 @@ pub fn build(
                 .ok_or(scenario_edit::Error::Invalid("scenario is not open"))?,
             &marks,
         )?;
-        let built = firefight_kit::ground::build(
-            &output,
-            &doc.base.map,
-            &labels,
-            &ground::recipe(recipe),
-        )
-        .map_err(|e| Error::Ground(format!("{e:#}")))?;
+        let built =
+            firefight_kit::ground::build(&output, &doc.base.map, &labels, &ground::recipe(recipe))
+                .map_err(|e| Error::Ground(format!("{e:#}")))?;
         report = Some(GroundReport {
             zones: built.zones,
             squads: built.squads,
