@@ -6,6 +6,7 @@ use engine::{points, sim_native as sim};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 use std::sync::Arc;
 
+mod manager_arm;
 mod manager_fusion;
 
 pub struct SimNative {
@@ -62,11 +63,6 @@ pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
         &points::SIM_UNIT_POSE,
         "sim.native_unit_pose",
         sim::unit::pose,
-    ),
-    (
-        &points::SIM_GRAPH_RESOLVE,
-        "sim.native_graph_resolve",
-        sim::graph::resolve,
     ),
     (
         &points::SIM_MARKER_TRANSFORMS,
@@ -242,6 +238,8 @@ const ANIM_INVALIDATE: [(&points::Point, &str); 3] = [
 enum AnimRun {
     Pose(fn(&mut CpuAbi, &mut Guest, u32) -> Result<Option<TransferAbi>, GuestFault>),
     Manager,
+    // Its segments always dispatch. Fusion only indexes Manager rows.
+    ManagerArm,
 }
 
 #[derive(Clone, Copy)]
@@ -275,7 +273,10 @@ static ANIM_BODIES: std::sync::LazyLock<Vec<AnimBody>> = std::sync::LazyLock::ne
     POSE_BODIES.into_iter().chain(manager::bodies().map(|body| AnimBody {
         point: points::by_base(body.entry).unwrap_or(&body.point),
         sites: body.sites,
-        run: AnimRun::Manager,
+        run: match body.entry {
+            0x1c66a0 | 0x1c6f60 | 0x1cd590 | 0x1daea0 | 0x1dd9d0 | 0x1ddb40 => AnimRun::ManagerArm,
+            _ => AnimRun::Manager,
+        },
     })).collect()
 });
 
@@ -294,6 +295,9 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
             .implement(body.point, ANIM, move |cpu, ctx, pc| {
                 let transfer = match body.run {
                     AnimRun::Pose(run) => run(cpu, &mut *ctx.memory(), pc)?,
+                    AnimRun::ManagerArm => {
+                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base);
+                    }
                     AnimRun::Manager => {
                         let available = run_fusion.available(ctx.runtime());
                         manager::drive(cpu, &mut ctx.memory(), pc, |next| available(next.entry))?
@@ -309,6 +313,8 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
         if matches!(body.run, AnimRun::Manager) {
             let guard_fusion = Arc::clone(&fusion);
             hook.optional().when_shared(move |entry| guard_fusion.guard(entry));
+        } else if matches!(body.run, AnimRun::ManagerArm) {
+            hook.optional();
         }
     }
     let point = &points::SIM_ANIMATION_STREAM;
@@ -591,7 +597,7 @@ mod tests {
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
 
         // The retired per-function switches are gone from the table.
-        for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
+        for key in ["sim.native_rotation_codec", "sim.native_animation_stream", "sim.native_graph_resolve"] {
             assert!(Switches::parse(&format!("impl.{key}")).is_err(), "{key}");
         }
     }
@@ -681,9 +687,7 @@ mod tests {
                 }
             }
             let rt = runtime::Runtime::new(Guest::new(), dispatch);
-            let switches = Switches::defaults()
-                .with("impl.sim.native.anim", true)
-                .with("impl.sim.native_graph_resolve", true);
+            let switches = Switches::defaults().with("impl.sim.native.anim", true);
             let mut registry = Registry::new(switches);
             registry.add(&SimNative::new(&rt)).unwrap();
             let plan = registry.build(&Base).unwrap();

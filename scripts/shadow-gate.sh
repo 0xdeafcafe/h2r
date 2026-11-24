@@ -46,7 +46,6 @@ sim_native=(
   sim.native_geometry_test
   sim.native_unit_pose
   sim.native_animation_stream
-  sim.native_graph_resolve
   sim.native_marker_transforms
   sim.native_bsp_segment
   sim.native_collision_query
