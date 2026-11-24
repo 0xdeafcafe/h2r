@@ -15,11 +15,16 @@
 //! runs the same VM and a machine that holds only the state's bytes make
 //! the same values; the tests below run all three.
 //!
-//! A waypoint marks a zone (a labelled flag's area): the navpoint is over
-//! the zone's middle and its text is the distance from the user's unit, in
-//! metres (world units of 3.048 metres: the unit is not verified). A thing
-//! that moves, a carried flag or a dropped ball, has no waypoint until the
-//! entity read of slice W3.
+//! A waypoint marks an object: the navpoint is over it and its text is the
+//! distance from the user's unit, in metres (a world unit is 3.048 metres,
+//! 10 feet: docs/game/film-format.md, "304.8 cm"). The place is a zone's
+//! middle (a labelled flag's area), else the unit of the player carrying the
+//! objective (a carried flag, bomb or ball), else the object's own origin
+//! (a dropped one): [`place`].
+//!
+//! A widget the script reads per viewer (`hud_value_for`: the Territories
+//! count of those the viewer's side holds) is made per viewer by
+//! `rules::show::view`.
 //!
 //! `Viewer`s, machines that run no VM, take the state over the actor
 //! channel's `Show` record (`rules::show::State::decode` on its bytes),
@@ -30,11 +35,13 @@ use std::sync::{Arc, OnceLock};
 use ::rules::ir::Ir;
 use ::rules::show::{State, View, Viewer, view};
 use engine::GuestMemory;
+use engine::handle::DatumHandle;
+use engine::view::objects;
 use hud_kit_core::model::{Describe, Values};
 use hud_kit_core::views::objective::{self, Fed, Widget};
 
 use super::show::roster;
-use super::zones::{self, Zones};
+use super::zones::{self, Body, Zones};
 use crate::hud_kit::{self, Handle, USERS};
 
 /// The objective HUDs a script feeds, by name.
@@ -46,8 +53,8 @@ pub const HUDS: [&str; 5] = [
     objective::territories::NAME,
 ];
 
-/// Metres in a world unit (`1 wu = 10 ft`). Not verified against the
-/// retail HUD's own distance.
+/// Metres in a world unit: 304.8 cm, 10 feet (docs/game/film-format.md, the
+/// guest's world unit; `superbounce_mode::METRES_PER_UNIT` is the same).
 const METRES_PER_UNIT: f32 = 3.048;
 
 /// The kit's handle of each objective HUD, registered once.
@@ -122,6 +129,36 @@ pub fn metres(from: [f32; 3], to: [f32; 3]) -> u16 {
         .clamp(0.0, f32::from(objective::MARK_MAX)) as u16
 }
 
+/// Where the object a waypoint marks is: the middle of its zone; else, for
+/// an objective a player carries, that player's unit (`carrier_at`); else
+/// the object's own origin (`origin`). `None` for an object that is none of
+/// these (a deleted one).
+pub fn place(
+    zones: &Zones,
+    object: u32,
+    carrier_at: &dyn Fn(u32) -> Option<[f32; 3]>,
+    origin: &dyn Fn(u32) -> Option<[f32; 3]>,
+) -> Option<[f32; 3]> {
+    match zones.get(object) {
+        Some(zone) => Some(zone.shape.middle()),
+        None => carrier_at(object).or_else(|| origin(object)),
+    }
+}
+
+/// The unit of the player carrying the objective `object`, from the
+/// objective registry and the living bodies.
+fn carried_at(m: &dyn GuestMemory, bodies: &[Body], object: u32) -> Option<[f32; 3]> {
+    let slot = crate::rules::objectives::carrier(m, object).ok()??;
+    bodies.iter().find(|b| b.slot == slot).map(|b| b.at)
+}
+
+/// The origin of the live object `object` (`Object::POSITION`), when it is
+/// a datum with a body and its position is a number.
+fn origin_of(m: &dyn GuestMemory, object: u32) -> Option<[f32; 3]> {
+    let (_, body) = objects::get(m, DatumHandle(object)).ok()??;
+    body.position(m).ok().filter(|p| p.iter().all(|c| c.is_finite()))
+}
+
 /// What `viewer` sees of the script's state, as the kit's objective HUDs
 /// read it: each widget at its element, a widget whose value is a side
 /// marked `mine` when the viewer is on it, the names of the players a
@@ -183,7 +220,15 @@ pub fn publish(m: &dyn GuestMemory, ir: &Ir, state: &State, zones: &Zones) -> bo
             };
             let shown = view(state, ir, viewer);
             let me = bodies.iter().find(|b| b.slot == p.slot).map(|b| b.at);
-            let distance = |object: u32| Some(metres(me?, zones.get(object)?.shape.middle()));
+            let at = |object: u32| {
+                place(
+                    zones,
+                    object,
+                    &|o| carried_at(m, &bodies, o),
+                    &|o| origin_of(m, o),
+                )
+            };
+            let distance = |object: u32| Some(metres(me?, at(object)?));
             let values = objective::feed(name, &fed(&shown, viewer, &names, &distance)).unwrap_or_default();
             if user == 0 {
                 handle.publish(values);
@@ -194,11 +239,7 @@ pub fn publish(m: &dyn GuestMemory, ir: &Ir, state: &State, zones: &Zones) -> bo
                     if slot.split('.').next() != Some(name) {
                         continue;
                     }
-                    let at = shown
-                        .waypoint_at(slot)
-                        .and_then(|w| zones.get(w.at))
-                        .map(|z| z.shape.middle());
-                    handle.navpoint_at(slot, at);
+                    handle.navpoint_at(slot, shown.waypoint_at(slot).and_then(|w| at(w.at)));
                 }
             } else {
                 handle.publish_for(user, Some(values));
@@ -315,6 +356,49 @@ mod tests {
         assert_eq!(metres([0.0; 3], [0.0; 3]), 0);
         assert_eq!(metres([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]), 30);
         assert_eq!(metres([0.0; 3], [1.0e6, 0.0, 0.0]), objective::MARK_MAX);
+    }
+
+    /// A zone is its middle; an objective somebody carries is that
+    /// player's unit; one on the ground is its own origin; a thing that is
+    /// none of those has no mark.
+    #[test]
+    fn a_waypoint_follows_a_carried_object_and_rests_on_a_dropped_one() {
+        let zones = Zones::default();
+        let carried = |o: u32| (o == 1).then_some([10.0, 0.0, 0.0]);
+        let ground = |o: u32| matches!(o, 1 | 2).then_some([99.0, 0.0, 0.0]);
+        assert_eq!(place(&zones, 1, &carried, &ground), Some([10.0, 0.0, 0.0]));
+        assert_eq!(place(&zones, 2, &carried, &ground), Some([99.0, 0.0, 0.0]));
+        assert_eq!(place(&zones, 3, &carried, &ground), None);
+    }
+
+    /// The Territories count is the viewer's own: one value for each seat,
+    /// the same on the host, a replica and a machine that holds the bytes.
+    #[test]
+    fn the_territories_count_is_each_viewers_own() {
+        const TERRITORIES: &str = "rules \"Count\" 1\ntype slayer\nrequires hud.widgets\n\
+            hud owned: text at ter.owned\n\
+            on round_start {\n\
+                hud_style(owned, 5)\n\
+                hud_show(owned, true)\n\
+                for each players p { hud_value_for(owned, p, 3 - 2 * slot_of(p)) }\n\
+            }\n";
+        let (ir, _) = ::rules::build(TERRITORIES).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = FakeGame::with_players(2);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(g.script_error, None);
+        let held = State::decode(&vm.show().encode()).unwrap();
+        let text = |state: &State, slot: u8| {
+            let viewer = Viewer { slot: Some(slot), team: None };
+            let shown = view(state, vm.ir(), viewer);
+            let values = objective::feed("territories", &fed(&shown, viewer, &[], &|_| None)).unwrap();
+            values.get("ter.owned").unwrap().text.clone()
+        };
+        for state in [vm.show(), &held] {
+            assert_eq!(text(state, 0), "Territories 3 of 5");
+            assert_eq!(text(state, 1), "Territories 1 of 5");
+        }
     }
 
     #[test]

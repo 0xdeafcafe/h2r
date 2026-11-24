@@ -13,8 +13,8 @@
 mod state;
 
 pub use state::{
-    MAX_BYTES as MAX_STATE_BYTES, MAX_WAYPOINTS, MAX_WIDGETS, State, StateError, View, Viewer, WaypointView,
-    Waypoint, Widget, WidgetView, fill_byte, view,
+    MAX_BYTES as MAX_STATE_BYTES, MAX_WAYPOINTS, MAX_WIDGETS, PerViewer, State, StateError, View, Viewer,
+    WaypointView, Waypoint, Widget, WidgetView, fill_byte, view,
 };
 
 use crate::caps;

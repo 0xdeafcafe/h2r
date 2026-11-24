@@ -27,18 +27,21 @@
 // tags from the globals tag's multiplayer block, this script names the
 // paths; touching is read from the pickup event.
 
-requires hud.widgets
+requires hud.widgets, hud.waypoints
 
 // The HUD (docs/game/game-types-without-carriers.md, "The display"): each
 // team's flag or bomb, where it is, and a banner for the moment it changes
-// hands. A viewer reads its own team's as its own. The things move, so
-// they have no mark.
+// hands. A viewer reads its own team's as its own. One mark follows the
+// first flag or bomb that is away from its spawn: over its carrier, or
+// where it lies.
 hud flag0_row: text at ctf.flag0
 hud flag1_row: text at ctf.flag1
 hud flag_banner: banner at ctf.banner
 hud bomb0_row: text at asl.bomb0
 hud bomb1_row: text at asl.bomb1
 hud bomb_banner: banner at asl.banner
+waypoint flag_mark at ctf.mark
+waypoint bomb_mark at asl.mark
 
 // What the map supplies: each placement's team is its owner's.
 label flag_spawn: zones at most 16 = "ctf_flag_spawn"
@@ -172,6 +175,12 @@ on tick {
             hud_show(flag_banner, false)
             hud_show(bomb_banner, false)
         }
+    }
+    if let away = first(objectives o where o.moved) {
+        if bomb { mark(bomb_mark, away) } else { mark(flag_mark, away) }
+    } else {
+        unmark(flag_mark)
+        unmark(bomb_mark)
     }
     for each objectives o {
         if o.team == team 0 {

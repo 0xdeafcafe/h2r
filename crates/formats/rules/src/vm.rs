@@ -1759,6 +1759,21 @@ impl<'a> Run<'a> {
                 }
                 return Ok(());
             }
+            caps::id::HUD_VALUE_FOR => {
+                // The player's own value of a widget: none or a seat past
+                // the roster sets nothing; a second widget that reads per
+                // viewer is a script error.
+                let w = usize::try_from(raw[0])
+                    .ok()
+                    .filter(|&w| w < self.ir.widgets.len())
+                    .ok_or(ErrorKind::Hud)?;
+                if let Some(slot) = usize::try_from(raw[1]).ok().filter(|&s| s < MAX_PLAYERS)
+                    && !self.ext.show.set_for(w, slot, raw[2])
+                {
+                    return Err(ErrorKind::Hud);
+                }
+                return Ok(());
+            }
             caps::id::MARK | caps::id::UNMARK => {
                 let at = usize::try_from(raw[0])
                     .ok()
@@ -2262,6 +2277,10 @@ mod tests {
                 }); crate::show::MAX_WIDGETS],
                 waypoints: [Some(crate::show::Waypoint { at: u32::MAX, audience: u16::MAX });
                     crate::show::MAX_WAYPOINTS],
+                per_viewer: Some(crate::show::PerViewer {
+                    widget: 15,
+                    values: [u8::MAX; MAX_PLAYERS],
+                }),
             },
         };
         let bytes = e.encode();

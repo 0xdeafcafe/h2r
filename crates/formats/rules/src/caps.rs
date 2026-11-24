@@ -311,6 +311,7 @@ pub mod id {
     pub const UNMARK: u16 = 85;
     pub const SIDE_OF: u16 = 86;
     pub const SLOT_OF: u16 = 87;
+    pub const HUD_VALUE_FOR: u16 = 88;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -501,6 +502,11 @@ pub const ENTRIES: &[Entry] = &[
     // that player's name. None (-1) for no player.
     read(id::SIDE_OF, "side_of", &[Player], Int, Named),
     read(id::SLOT_OF, "slot_of", &[Player], Int, Named),
+    // A widget's value for one player to read (`hud_value_for(w, p, n)`:
+    // `n` clamped to 0..255), for a count that is each player's own, as
+    // the Territories HUD's held count is. One widget at a time reads per
+    // viewer; the show state keeps the table (`show::PerViewer`).
+    act(id::HUD_VALUE_FOR, "hud_value_for", &[Int, Player, Int], Some("hud.widgets"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

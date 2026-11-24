@@ -177,8 +177,8 @@ A script whose options do not fit is refused.
   (CTF and Assault) declare widgets at each HUD's elements and set them,
   and the runtime draws them for each local user after every tick
   (`rules::world::hud`). A distributed client that runs no script has no
-  state to draw until the `Show` record is built, and the waypoint of a
-  thing that moves waits for the entity read. At each round start the VM tells the game the header's `points`
+  state to draw until the `Show` record is built. The navpoint of a flag, bomb or ball is over its carrier or where it lies,
+  and the Territories count is each viewer's own. At each round start the VM tells the game the header's `points`
   (`Game::points_label`, `FakeGame::scoreboard_label`); the retail
   scoreboard's own label is not traced ([the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "The HUD and the scoreboard").
 - **Post-game.** The statborg's scores, under the `points` label.

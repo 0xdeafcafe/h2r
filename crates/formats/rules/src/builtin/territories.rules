@@ -23,8 +23,8 @@ label territory: zones 1..most_territories
 
 // The HUD (docs/game/game-types-without-carriers.md, "The display"): the
 // territories held of those in play, a banner for a capture and a mark over
-// the first one nobody holds. The count is of every side's: the state
-// holds one value for every viewer.
+// the first one nobody holds. The count is each viewer's own: those its
+// side holds (hud_value_for).
 hud owned_row: text at ter.owned
 hud taken_row: banner at ter.banner
 waypoint open_mark at ter.mark
@@ -42,6 +42,9 @@ global var banner_left: int = 0
 
 // Someone of another team, or with no teams anyone else.
 fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team) or (not variant.team_play and a != b)
+
+// Whether a territory's owner, if it has one, is on the viewer's side.
+fn holds(who: player?, p: player) -> bool = who != none and not rival(who, p)
 
 on round_start {
     placed = 0
@@ -87,7 +90,9 @@ on tick {
             m.progress = 0t
         }
     }
-    hud_value(owned_row, count(territory m where m.live and m.owner != none))
+    for each players p {
+        hud_value_for(owned_row, p, count(territory m where m.live and holds(m.owner, p)))
+    }
     hud_style(owned_row, placed)
     hud_show(owned_row, placed > 0)
     if let open = first(territory m where m.live and m.owner == none) {
