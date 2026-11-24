@@ -262,6 +262,8 @@ game answers it from its `enter` and `leave` events.
 | `spawn_areas` | team, spawns label, int | `player.spawn` | now | named (labelled starting locations; a retail map has none) |
 | `spawn_near` | team, zone (may be `none`), int | `player.spawn` | now | named (the `n` starting locations nearest the zone; `none` or 0 lifts it) |
 | `set_body` | team, tag (may be `none`) | `player.disguise` | now | named (`objects/characters/masterchief/masterchief_mp` or `objects/characters/elite/elite_mp`; `none` gives the players their own) |
+| `show_area` | zone, team (may be `none`) | none | now | named (the zone's boundary drawn in play in the team's colour, neutral for `none`; at most eight at once, a ninth is a script error; the round's end clears them) |
+| `hide_area` | zone | none | now | named (takes the zone's boundary off) |
 | `message` | player, team or `all`; text | `hud.message` | now | untraced |
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |

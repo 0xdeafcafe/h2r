@@ -69,6 +69,10 @@ pub struct FakeGame {
     /// Each team's body, as `set_body` sets it: what its players spawn as.
     /// A team with none spawns in its players' own.
     pub bodies: BTreeMap<u8, crate::bodies::Body>,
+    /// The areas shown in play, as `show_area` and `hide_area` keep them:
+    /// a zone object and the team of its wall's colour, in the order first
+    /// shown (`vm::RulesExt::shown`).
+    pub shown: Vec<(u32, Option<u8>)>,
     pub script_error: Option<ScriptError>,
 }
 
@@ -380,6 +384,7 @@ impl FakeGame {
         if let Input::RoundEnd = *input {
             self.spawns.clear();
             self.bodies.clear();
+            self.shown.clear();
         }
         if let Input::Quit(p) = *input {
             self.players.remove(&p);
@@ -545,6 +550,23 @@ impl Game for FakeGame {
                 }
                 None => {
                     self.spawns.remove(team);
+                }
+            }
+            return;
+        }
+        if matches!(call.entry.id, id::SHOW_AREA | id::HIDE_AREA)
+            && let Some(Arg::Object(Some(zone))) = call.args.first()
+        {
+            if call.entry.id == id::HIDE_AREA {
+                self.shown.retain(|(z, _)| z != zone);
+            } else {
+                let team = match call.args.get(1) {
+                    Some(Arg::Team(Some(t))) => Some(*t),
+                    _ => None,
+                };
+                match self.shown.iter_mut().find(|(z, _)| z == zone) {
+                    Some(row) => row.1 = team,
+                    None => self.shown.push((*zone, team)),
                 }
             }
             return;

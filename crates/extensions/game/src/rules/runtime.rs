@@ -155,6 +155,10 @@ pub const ACTIONS: &[u16] = &[
     // Kept in the VM's state; the spawn's hooks read it
     // (`super::world::body`).
     id::SET_BODY,
+    // Kept in the VM's state; the walls are drawn from it every tick
+    // (`super::world::walls`), so no call is made at the boundary.
+    id::SHOW_AREA,
+    id::HIDE_AREA,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -736,6 +740,9 @@ impl Game for GuestGame<'_> {
             // The VM keeps the body in its state, which the spawn's hooks
             // read (`super::world::body`).
             id::SET_BODY => None,
+            // The VM keeps the shown areas in its state; the walls are
+            // drawn from it (`super::world::walls`).
+            id::SHOW_AREA | id::HIDE_AREA => None,
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {
                     Some(Arg::Tag(t)) => t.clone(),
@@ -901,6 +908,8 @@ pub struct Runtime {
     /// The next start is a Forge session's (`lobby_start::Mode::Forge`):
     /// a block refuses the script and does not end the game.
     forge: bool,
+    /// The last tick published walls: the next tick with none clears them.
+    walled: bool,
 }
 
 fn describe(e: &ScriptError) -> String {
@@ -948,6 +957,7 @@ impl Runtime {
             census: Box::new(census::things),
             film: false,
             forge: false,
+            walled: false,
         }
     }
 
@@ -1564,6 +1574,27 @@ impl Runtime {
         if let Status::Running(r) = &mut self.status {
             r.seen = seen;
         }
+        self.publish_walls();
+    }
+
+    /// The walls the running script shows in play (`show_area`), in the
+    /// order it showed them; none when no script runs
+    /// (`super::world::walls`).
+    pub fn walls(&self) -> Vec<crate::forge_glue::markers_world::Wall> {
+        match self.running() {
+            Some(r) => super::world::walls::of(r.vm.shown_areas(), &r.zones),
+            None => Vec::new(),
+        }
+    }
+
+    /// Hands the walls to the window's world-line source: after each
+    /// tick, and once more with none when the script's end took them off.
+    fn publish_walls(&mut self) {
+        let walls = self.walls();
+        if !walls.is_empty() || self.walled {
+            self.walled = !walls.is_empty();
+            crate::forge_glue::markers_world::publish_walls(walls);
+        }
     }
 
     /// The async body's outcome: what the authority check answered, and
@@ -1605,6 +1636,7 @@ impl Runtime {
         eprintln!("rules: {name} ended with the game");
         self.store.remove();
         self.status = Status::Idle("the game ended");
+        self.publish_walls();
     }
 
     /// Swaps the running script's program between ticks, keeping every

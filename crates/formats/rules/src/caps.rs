@@ -298,6 +298,8 @@ pub mod id {
     pub const FF_TEAM_FINISH: u16 = 74;
     pub const SPAWN_NEAR: u16 = 75;
     pub const SET_BODY: u16 = 76;
+    pub const SHOW_AREA: u16 = 77;
+    pub const HIDE_AREA: u16 = 78;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -463,6 +465,12 @@ pub const ENTRIES: &[Entry] = &[
     // `0x14f040` and unit handover `0x14cad0` read it
     // (`game::rules::world::body`).
     act(id::SET_BODY, "set_body", &[Team, Tag], Some("player.disguise"), Now, Named),
+    // An area's wall drawn in play, in a team's colour (`none`: neutral),
+    // and taken off: at most eight at once, kept in the VM's state
+    // (`vm::RulesExt::shown`) so every machine and a film draw the same
+    // (`game::rules::world::walls`). A display only, so no capability.
+    act(id::SHOW_AREA, "show_area", &[Object, Team], None, Now, Named),
+    act(id::HIDE_AREA, "hide_area", &[Object], None, Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

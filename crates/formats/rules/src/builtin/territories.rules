@@ -36,6 +36,7 @@ on round_start {
             register_objective(m, none)
             m.owner = none
             m.progress = 0t
+            show_area(m, none)
             placed = placed + 1
         }
     }
@@ -56,6 +57,7 @@ on tick {
                 if m.progress >= seconds(max(variant.territories_contest_time, 1)) {
                     m.owner = lead
                     m.progress = 0t
+                    show_area(m, lead.team)
                 }
             }
         } else {
@@ -73,5 +75,8 @@ on timer(pay) {
 
 // A stale owner holds nothing (0x2bfa3f checks the owner's salt).
 on quit(p) {
-    for each objectives m where m.owner == p { m.owner = none }
+    for each territory m where m.owner == p {
+        m.owner = none
+        show_area(m, none)
+    }
 }

@@ -1,7 +1,7 @@
 # Game type markers
 
-Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5) and Forge places and edits them in the monitor (MK7); the boundary in play, the skin and Studio's saved map are design.
-Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), and Studio edits them (MK5); the skin, Forge's editing and the saved map are design.
+Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), Forge draws them as world lines and answers `render.markers` (MK6), the Forge document stores areas, which `forge.things` and `forge.propose` carry (MK2), a script's zone reads them (MK3), Studio edits them (MK5), Forge places and edits them in the monitor (MK7) and a script shows an area's wall in play (MK8); the skin, Studio's saved map and the wall on a client that does not run the script are design.
+Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/apps/studio/src/api/markers_check.rs` (the `markers` check), `crates/tools/scenario-edit/src/area_edit.rs` (handles, drag), `crates/tools/scenario-edit/src/session/area.rs` (`set_area`, `convert_hill`), `crates/apps/studio/src/viewport/area.rs`, `crates/apps/studio/src/ui/inspector/area.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`), `crates/extensions/game/src/forge_glue/editing/area.rs` (Forge's draft area), `crates/formats/forge-doc/src/{area,entry,links}.rs`, `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/local.rs`, `crates/extensions/game/src/rules/world/zones.rs` (`Zones::new`), `crates/formats/rules/src/fake.rs` (`FakeGame::set_area`, `move_to`, `shown`), `crates/formats/rules/src/vm.rs` (`RulesExt::shown`), `crates/extensions/game/src/rules/world/walls.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (`Wall`, `draw_walls`), `crates/live/bots/src/objective/zones.rs` (`first_hill`), `crates/extensions/agent-proto/src/rules.rs` (`rules.zones`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/tools/scenario-edit/src/area_tests.rs`, `area_edit.rs`, `crates/apps/studio/src/viewport/area.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`, `crates/extensions/game/src/forge_glue/editing/tests/area.rs`, `crates/formats/forge-doc/src/tests/area.rs`, `crates/extensions/forge/src/base_tests.rs`, `crates/extensions/agent/src/forge/tests.rs`, `zones.rs`' `a_flags_area_is_its_zone_before_corners_and_the_default`, `crates/formats/rules/tests/area_zones.rs`, `crates/formats/rules/tests/modes.rs` (`siege_shows_each_site_in_its_holders_colour`), `crates/extensions/game/src/rules/runtime/tests/world.rs`, `crates/extensions/game/src/rules/world/walls.rs`, `crates/live/bots/src/objective/zones/tests.rs`, `crates/extensions/agent/src/rules/tests.rs`.
 Switch: none.
 
 A game type's parts are rows of a scenario with no body: a player
@@ -296,17 +296,25 @@ area.
 | A game | none, but for the boundary below |
 
 **The boundary in play.** A script asks for an area's wall to draw in
-play, as Halo 3 draws its hill (**C**): `show_area(zone, team)` (new,
-[rules-world-api.md](rules-world-api.md), "Zones") turns it on for a
+play, as Halo 3 draws its hill (**C**): `show_area(zone, team)`
+([rules-world-api.md](rules-world-api.md), "Zones") turns it on for a
 zone in a team's colour, `none` for neutral, and `hide_area(zone)` off.
 `koth.rules` shows the hill in play and hides the last one when the hill
-moves; `territories.rules` and `siege.rules` show each site in its
-holder's colour. The host keeps at most eight shown areas in `RulesExt`
-(a zone handle and a team, so a client and a film draw the same), and
-the same world-line source draws the wall alone, with no pip and no
-label. In-play walls default to on for the built-in King of the Hill,
-Territories and Siege scripts. A script that never calls `show_area`
-draws no walls.
+moves; `territories.rules` shows each registered territory, neutral until
+a player's team takes it; `siege.rules` shows its sites and the
+defenders' stand in the defenders' colour and a site it is taken in the
+attackers' (at most six sites are shown, so the sites and the stand fit
+the eight). The VM keeps at most eight shown areas in `RulesExt::shown`
+(a zone object and a team, in the order first shown; a ninth is a script
+error, and the round's end clears them). After each tick the runtime
+turns each into a `Wall` of the zone's shape (`world/walls.rs`) and
+publishes them; the same world-line source draws each wall alone
+(`Kind::wall`, `draw_walls`), in the team's colour with no pip and no
+label, fading over the area's range, and `render.markers` lists it as a
+`wall`. A game draws it with or without a Forge session. A machine that
+runs the VM draws it, and so does a film's re-run; a client that does not
+run the script gets no wall yet. It is on in the built-in scripts, and a
+script that never calls it draws nothing.
 
 ## Editing
 
@@ -373,7 +381,7 @@ of a window ([agent API rules](../../AGENTS.md)).
 | `view.layers`, `view.snapshot` | Studio | as they are: the layers now draw the markers |
 | `forge.things` | game | each netgame flag reports `area` in the document spelling, or `null` |
 | `forge.propose` | game | accepts an op with `"edit":{"entry":{"area":{target, area}}}` and reports refusals by name |
-| `render.markers` | game | what the last capture drew: `{shown, hidden_by_budget, markers: [{thing, kind, team, anchor, lines, faded}]}`, `anchor` in world units, `kind` filtering the list ([agent-api.md](../runtime/agent-api.md), "`render.markers`"); the walls shown in play join it with MK8 |
+| `render.markers` | game | what the last capture drew: `{shown, hidden_by_budget, markers: [{thing, kind, team, anchor, lines, faded}]}`, `anchor` in world units, `kind` filtering the list ([agent-api.md](../runtime/agent-api.md), "`render.markers`"); the walls shown in play are rows of kind `wall` |
 | `rules.zones` (built) | game | each zone the host built: `{label, number, shape: "area" \| "corners" \| "default", area, at}`, so a test reads the hill a script scores |
 
 `markers.render` is the content render of this page's shapes, as
@@ -410,7 +418,7 @@ lines with tests, M under 2,500.
 | MK5 (built) | **Studio edits areas**: the gizmo handles, the inspector rows, `markers.area.set`, **Convert to area**, the `markers` check | M | MK2, MK4 | a rim drag writes one area op; an edge handle adds a point; a refused drag leaves the document as it was; converting a hill's corners gives a zone that holds the same points; the check names an overlapping pair |
 | MK6 (built) | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |
 | MK7 (built) | **Forge edits areas**: **Edit area**, radius by stick and typed, the path's drop, drag, remove and close, the notices | M | MK2, MK6 | scripted pad input (`forge.input`) that drops four points and closes writes one op with those points; a crossing fifth point is refused with its sentence and the path is unchanged; B leaves the document as it was |
-| MK8 | **The boundary in play**: `show_area`, `hide_area`, the eight shown areas in `RulesExt`, the built-ins' calls, the wall from the same source | S | MK3, MK6 | on the fake game `koth.rules` shows the hill in play and one area at a time as the hill moves; the shown areas are equal on a host and a client after a tick; a script that never calls it shows none |
+| MK8 (built) | **The boundary in play**: `show_area`, `hide_area`, the eight shown areas in `RulesExt`, the built-ins' calls, the wall from the same source | S | MK3, MK6 | on the fake game `koth.rules` shows the hill in play and one area at a time as the hill moves; the shown areas are equal on a host and a client after a tick; a script that never calls it shows none |
 | MK9 | **The skin**: `native_render::markers`, the translucent faces with depth, the X-ray lines | M | MK6 | on the renderer's headless target a hill's wall changes pixels in front of a floor and none behind a nearer wall; with `impl.render.native=off` the lines draw alone |
 
 MK1 is first. MK2 and MK4 start together after it, and MK6 beside

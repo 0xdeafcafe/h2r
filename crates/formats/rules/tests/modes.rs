@@ -83,6 +83,33 @@ fn siege_attackers_take_the_sites_then_the_flag_stand() {
     assert_eq!(r.game.players[&1].score, 0);
 }
 
+/// Each site and the final stand show their boundary in the defenders'
+/// colour, and a site the attackers take turns to theirs
+/// (docs/game/gametype-markers.md, "The boundary in play").
+#[test]
+fn siege_shows_each_site_in_its_holders_colour() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let shown: Vec<(u32, Vec<Arg>)> = calls(&r, "show_area").into_iter().map(|(t, a)| (t, a.to_vec())).collect();
+    let show = |zone: u32, team: u8| vec![Arg::Object(Some(zone)), Arg::Team(Some(team))];
+    let args: Vec<Vec<Arg>> = shown.iter().map(|(_, a)| a.clone()).collect();
+    assert_eq!(
+        args,
+        [
+            show(10, 1),
+            show(11, 1),
+            // The defenders' flag stand.
+            show(21, 1),
+            // Each site as the attackers take it.
+            show(10, 0),
+            show(11, 0),
+        ]
+    );
+    assert_eq!(shown[0].0, 0, "at the round's start");
+}
+
 /// Each side spawns near its line, and the lines move with the phases:
 /// the attackers from their flag stand (20) to each site they take (10,
 /// then 11), the defenders from the site still to take (10, then 11) to

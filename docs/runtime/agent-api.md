@@ -1668,7 +1668,7 @@ h2 agent render.marks | jq '.presents[] | [.frame, .fraction, .shifted, .anchors
 `render.markers` reads the Forge game type markers the window's last
 capture drew ([gametype-markers.md](../game/gametype-markers.md), "The
 game"). Params are `{}` or `{"kind": "spawn"}`, a kind name of
-`game_markers::Kind::name` (`spawn`, `flag_stand`, `hill`, `ff_drop`, ...);
+`game_markers::Kind::name` (`spawn`, `flag_stand`, `hill`, `ff_drop`, ...) or `wall`;
 a name that is not one is refused with `invalid params` and the list of
 names, and so is any other field. The answer is
 
@@ -1678,6 +1678,10 @@ names, and so is any other field. The answer is
               "anchor": [1.0, 2.0, 0.85], "lines": 38, "faded": false}]}
 ```
 
+- The walls a running rules script shows in play (`show_area`) are rows
+  too: `kind` is `wall`, `thing` is `zone:<hex of the zone object>` and
+  `team` the colour of its wall; they count in `shown`, are not held to
+  the 256 and draw with no Forge session.
 - `shown` counts the markers the capture drew and `hidden_by_budget` the
   ones in range that the 256 a view left out, the nearest first. A marker
   past its distance fade is in neither. The counts cover every kind; `kind`
@@ -1689,8 +1693,8 @@ names, and so is any other field. The answer is
   units; `render.marks` gives window pixels for the groups the window
   visited. `lines` is the marker's line count. `faded` is a marker of
   another game type, drawn at a quarter.
-- With no Forge session, the monitor off, or no present since, `shown` is
-  0 and `markers` is empty. A headless host has no window and draws none.
+- With no Forge session (or the monitor off), no wall shown and no present
+  since, `shown` is 0 and `markers` is empty. A headless host has no window and draws none.
 
 The method is the host's (`crates/extensions/game/src/forge_glue/markers_world.rs`,
 `add_method`; the name is `agent_proto::method::RENDER_MARKERS`).

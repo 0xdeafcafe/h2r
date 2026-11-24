@@ -79,6 +79,10 @@ global var assault: bool = false
 global var wave0: timer
 global var wave1: timer
 object var taken: bool = false
+// Whether the site shows its boundary: at most six do, so the sites and
+// the final stand fit the eight areas a script may show.
+object var lit: bool = false
+global var lights: int = 0
 // The site taken this tick, if any, whose line the spawns move to.
 global var front: zone? = none
 
@@ -129,11 +133,22 @@ on round_start {
     // Spartans attack, Elites defend.
     set_body(team 0, "objects/characters/masterchief/masterchief_mp")
     set_body(team 1, "objects/characters/elite/elite_mp")
-    for each site s { s.taken = false }
+    lights = 0
+    for each site s {
+        s.taken = false
+        s.lit = false
+        // A site shows in its holder's colour: the defenders', until it is taken.
+        if lights < 6 {
+            s.lit = true
+            lights = lights + 1
+            show_area(s, team 1)
+        }
+    }
     needed = min(sites, count(site))
     last_stand = base[team 1]
     if let g = goal { last_stand = g }
     assault = last_stand != none
+    if let g = last_stand { show_area(g, team 1) }
     if needed > 0 or assault {
         begin(0)
         // The attackers start at their own flag stand, when the map has one.
@@ -159,6 +174,7 @@ on tick {
         for each site s where not s.taken {
             if phase < needed and ticks_held(s, team 0) >= capture_time {
                 s.taken = true
+                if s.lit { show_area(s, team 0) }
                 begin(phase + 1)
                 front = s
             }
