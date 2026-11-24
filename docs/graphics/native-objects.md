@@ -315,9 +315,7 @@ copy is prepared. `prepare_external_bound` validates every model and index
 range; only then does `ItemMasks::apply` select the planned items and
 `ready.commit` release the copies. A refused copy, changed generation or
 failed mask application restores the entire candidate list. Mixed record
-models under one owner are therefore independent draws. An incomplete or
-non-geometry list leaves the whole call on D3D, and a mode with a refused
-material or a texture-accumulation dependency stays there too. Loader
+models under one owner are therefore independent draws. Mixed lists request record models for the six first-person layers and retain the guest sort. A material or layer with a compiled pass can draw even if a sibling fails. Parts that require an unavailable texture accumulation target retain their guest draw. Loader
 publication is pinned to a map generation, including A → B → A transitions.
 The first-person lights are the lights stage's
 ([native-lights.md](native-lights.md)).

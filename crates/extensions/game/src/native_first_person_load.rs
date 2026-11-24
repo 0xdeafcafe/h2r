@@ -134,8 +134,7 @@ pub fn spawn_worker(
                 if let Some(texture) = cpu.normalization {
                     uploads.set_normalization(&device, &queue, &texture);
                 }
-                uploads.add_model(&device, &queue, definition, cpu.lit);
-                if !uploads.has(definition) {
+                if !uploads.add_model(&device, &queue, definition, cpu.lit) {
                     return Err("GPU refused the model's programs or textures".into());
                 }
                 queue.submit([]);
@@ -146,6 +145,7 @@ pub fn spawn_worker(
                     let part_count = parts.len();
                     let next = Arc::make_mut(&mut set);
                     next.definitions.insert(definition as u16, nodes);
+                    next.parts.retain(|&(model, _, _), _| model != definition as u16);
                     next.parts.extend(parts.into_iter().map(|((section, part), native)| {
                         ((definition as u16, section, part), native)
                     }));
@@ -354,8 +354,7 @@ const SHADER_VALUES: u32 = 0x44;
 
 /// Loads one complete record model. Every section is built: the record key,
 /// not the owner definition's default variant, selects the first-person
-/// permutation and LOD. Any refused material or absent program leaves the
-/// whole mode on D3D.
+/// permutation and LOD. Each part publishes only the passes it compiles.
 fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Error> {
     let mode = native_map::tag_of(&opened.map, definition).ok_or("no such mode tag")?;
     let geometry = RenderModelGeometry::read(&mut opened.map, mode, &mut opened.raw)?;
@@ -413,52 +412,31 @@ fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Er
     let mut materials = HashMap::new();
     for local in loaded.model.materials() {
         let Some(&shader) = loaded.shaders.get(usize::from(local)) else {
-            return Err(format!("material {local} has no shader").into());
+            continue;
         };
-        if let Some(why) = native_render::object_program::program_refusal(
-            &material(opened, shader).ok_or("the material does not resolve")?,
-        ) {
-            return Err(format!("shader {:#010x}: {why}", shader.0).into());
+        if let Ok(material) = lit_material(opened, shader) {
+            materials.insert(local, material);
         }
-        materials.insert(
-            local,
-            lit_material(opened, shader)
-                .map_err(|why| format!("shader {:#010x}: {why}", shader.0))?,
-        );
     }
-    let LitBuild {
-        input,
-        taken,
-        refused,
-        ..
-    } = lit_parts(opened, &loaded, &materials);
-    if !refused.is_empty() {
-        let reasons = refused
-            .into_iter()
-            .map(|(local, why)| format!("material {local}: {why}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(reasons.into());
-    }
-    if input.is_empty() || taken.len() != materials.len() {
-        return Err("not every opaque material has a native program".into());
-    }
-    if input.samples_texaccum() {
-        return Err(
-            "its programs sample the texture accumulation target, which this pass does not bind"
-                .into(),
-        );
-    }
-    let normalization = if input.is_empty() {
-        None
-    } else {
-        opened.normalization.clone().flatten()
-    };
+    let input = compiled_parts(lit_parts(opened, &loaded, &materials))?;
+    let normalization = opened.normalization.clone().flatten();
     Ok(CpuModel {
         nodes,
         lit: input,
         normalization,
     })
+}
+
+/// A layer-3 refusal names one material. Other layers of that material
+/// and compiled siblings have independent entries in the GPU input.
+fn compiled_parts(build: LitBuild) -> Result<LitModelInput, load::Error> {
+    if !build.input.is_empty() {
+        return Ok(build.input);
+    }
+    let why = build.refused.into_iter().next()
+        .map(|(local, why)| format!("material {local}: {why}"))
+        .unwrap_or_else(|| "no first-person part has a native pass".into());
+    Err(why.into())
 }
 
 fn lit_parts(
@@ -697,6 +675,29 @@ fn object_vertex_program(
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn a_layer_three_refusal_keeps_the_other_compiled_layers() {
+        use native_render::object_program_gpu::{LitLayerPart, LitLayerPass};
+        let mut build = LitBuild::default();
+        build.refused.push((4, "no layer-3 pass".into()));
+        build.input.layers.push(LitLayerPart {
+            layer: 8,
+            section: 2,
+            part: 3,
+            decompression: [[0.0; 4]; 3],
+            shader_tag: 7,
+            shader: ShaderValues::default(),
+            indices: 0..3,
+            subparts: None,
+            listed: None,
+            passes: vec![LitLayerPass { count: 1, empty: 1, ..Default::default() }],
+        });
+        let parts = compiled_parts(build).unwrap();
+        assert!(parts.parts.is_empty());
+        assert_eq!((parts.layers[0].layer, parts.layers[0].part), (8, 3));
+        assert!(compiled_parts(LitBuild::default()).is_err());
+    }
 
     #[test]
     fn the_previous_model_set_draws_until_the_next_swap() {

@@ -662,8 +662,8 @@ uses D3D for that call.
 
 | Effect | Native admission |
 |---|---|
-| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. The live quads and attachments must match. |
-| Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. |
+| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant and channel write mask. A colour-only draw accepts inherited depth and stencil settings when they have no effect. |
+| Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. Framebuffer stages may read stored alpha and X8 alpha in the same pass. A resolved side-target input needs no framebuffer copy. |
 | Kept convolution | It emits no draws. Its result names the pass's target. |
 | Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
 | Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
