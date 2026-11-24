@@ -2770,8 +2770,9 @@ several tags is `INVALID_PARAMS` with the candidates.
   polyhedra. Rotation takes three right-handed orthonormal rows. For a
   vertex, pass its zero-based `vertex` index and a position as `value`.
   The editor returns `REFUSED` for a shape under a MOPP or a vertex move
-  that breaks the convex faces. A change saves with the map and uses one
-  map undo step. The result's `warning` flags stale rigid-body bounds and
+  that breaks the convex faces. A change saves with the map. Use
+  `doc.undo` and `doc.redo` with `"doc": "tags"` to undo or redo it in
+  one step. The result's `warning` flags stale rigid-body bounds and
   mass properties on a change and is null if the value matches.
 - `model.render {tag, view?, variant?, character?, biped?, hands?,
   size?, camera?, out?}`: the model drawn offscreen through the

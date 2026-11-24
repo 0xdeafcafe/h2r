@@ -24,8 +24,8 @@ sends it to a paired game (realtime-edits.md, "The editor"). Rebuilding a
 level's collision, converted map overlays, lightmap relighting for
 mesh edits and markers are designs. The physics tool edits the local
 `phmo` tag in Modeling’s **Physics shapes** panel or through
-`model.physics.shapes` and `model.physics.set`. The map document holds
-each edit as a single undo step.
+`model.physics.shapes` and `model.physics.set`. Each edit is one step
+in the tag document's undo history and saves with the map.
 Code: `crates/tools/mesh-edit`, `crates/tools/geometry-edit`,
 `crates/tools/collision-build`,
 `crates/tools/collision-build/src/{merge,level}.rs`,

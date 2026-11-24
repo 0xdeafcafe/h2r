@@ -4413,9 +4413,9 @@ fn physics_shape_edit_undoes_and_saves_with_the_map() {
     assert_eq!(edited["spheres"][0]["radius"], 1.25);
     let repeat = call(&mut api, &mut app, m::MODEL_PHYSICS_SET, set_radius(1.25));
     assert!(repeat["warning"].is_null());
-    assert_eq!(call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "tags"}))["done"], true);
     assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone()), before);
-    assert_eq!(call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "tags"}))["done"], true);
     assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query), edited);
 
     let out = t.path("physics-edited.map");
