@@ -201,6 +201,7 @@ impl Key {
             addr,
             header,
             hash,
+            fingerprint: consts.fingerprint(hash),
             mapped_overhead,
             nodes: Column::mapped(&primary, nodes)?,
             planes: Column::mapped(&primary, planes)?,

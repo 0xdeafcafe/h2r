@@ -13,7 +13,9 @@ use crate::structure::{LeafTable, Structure, TableVersion};
 use crate::{BAILS, Bail, GuestRead};
 use sim_core::Epoch;
 use std::collections::{BTreeMap, HashMap};
+mod audit;
 mod slots;
+pub use audit::SourceFingerprint;
 use slots::Slots;
 #[cfg(test)]
 pub(crate) const INDEX_RECORD_BYTES: u64 = slots::RECORD_BYTES;

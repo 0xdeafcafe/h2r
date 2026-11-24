@@ -151,6 +151,16 @@ pub struct Consts {
     pub projection: [[i16; 3]; 6],
 }
 
+impl Consts {
+    pub(crate) fn fingerprint(&self, data_hash: u64) -> u64 {
+        let mut h = hash(data_hash, &self.zero.to_le_bytes());
+        for word in self.projection.iter().flatten() {
+            h = hash(h, &word.to_le_bytes());
+        }
+        h
+    }
+}
+
 pub struct Bsp {
     addr: u32,
     header: [u32; HEADER_WORDS],
@@ -172,6 +182,7 @@ pub struct Bsp {
     /// table names something else.
     pub projection: [[u8; 2]; 6],
     hash: u64,
+    pub(crate) fingerprint: u64,
 }
 
 impl std::fmt::Debug for Bsp {
@@ -196,13 +207,13 @@ fn half(b: &[u8], at: usize) -> u16 {
 }
 
 /// FNV-1a, 64-bit: the source hash the cache checks compare.
-fn hash(seed: u64, bytes: &[u8]) -> u64 {
+pub(crate) fn hash(seed: u64, bytes: &[u8]) -> u64 {
     bytes.iter().fold(seed, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
     })
 }
 
-const HASH_SEED: u64 = 0xcbf2_9ce4_8422_2325;
+pub(crate) const HASH_SEED: u64 = 0xcbf2_9ce4_8422_2325;
 
 fn abs(x: u32) -> f32 {
     f32::from_bits(x & 0x7fff_ffff)
@@ -573,6 +584,7 @@ impl Bsp {
             ring: RwLock::new(ring),
             projection,
             hash: h,
+            fingerprint: consts.fingerprint(h),
         };
         if let Some(key) = key
             && key.publish(&bsp, ring_bytes).is_ok()
