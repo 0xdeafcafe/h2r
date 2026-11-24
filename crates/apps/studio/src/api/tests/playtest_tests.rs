@@ -243,7 +243,7 @@ fn ask(
 }
 
 fn ok(p: &mut crate::api::playtest::Playtest, app: &mut App, method: &str, params: Value) -> Value {
-    ask(p, app, method, params).unwrap_or_else(|e| panic!("{method} {params}: {e}"))
+    ask(p, app, method, params.clone()).unwrap_or_else(|e| panic!("{method} {params}: {e}"))
 }
 
 /// The invented map with both starts on the bots' mesh, so Slayer is

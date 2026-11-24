@@ -855,7 +855,7 @@ fn firefight_entries_have_one_source_and_are_never_empty() {
 #[test]
 fn a_stats_stream_without_inputs_takes_them_from_the_film_file() {
     use crate::file::{FilmActions, FilmWriter, Seed, TICK_DIGEST};
-    let mut header = header(2);
+    let mut header = header(300);
     header.version = 3;
     header.inputs_in_film = true;
     let ticks: Vec<Tick> = (1..=300)
