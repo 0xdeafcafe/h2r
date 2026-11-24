@@ -125,6 +125,7 @@ fn actors_are_seen_as_targets() {
     let map = walled();
     let mask = crate::perceive::observe_for_brain(
         &mut p,
+        Skill::Legendary,
         &mut Sight::default(),
         &mut [],
         Some(&map),
@@ -183,6 +184,7 @@ fn teammates_are_never_targeted() {
     normalise(&mut p, &ctx);
     let mask = crate::perceive::observe_for_brain(
         &mut p,
+        Skill::Legendary,
         &mut Sight::default(),
         &mut [],
         Some(&map),

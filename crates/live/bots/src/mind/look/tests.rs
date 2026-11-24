@@ -919,3 +919,48 @@ fn a_twitchy_hand_flicks_faster_with_the_selected_skill_accuracy() {
         assert_eq!(t.aim(skill.base_aim()), skill.base_aim());
     }
 }
+
+// ---- a camouflaged target (docs/game/bots.md §3.1, "Visual range") ----
+
+#[test]
+fn a_camouflaged_target_is_tracked_with_more_error_at_every_skill() {
+    for skill in Skill::ALL {
+        let mut plain = Hand::new(11);
+        let mut cloaked = Hand::new(11);
+        let (mut a, mut b) = (0.0, 0.0);
+        for tick in 0..240 {
+            let target = [ray(0.0).map(|c| c * 6.0); 2];
+            plain.obscure(skill, false);
+            cloaked.obscure(skill, true);
+            let e = plain.track(skill, 1, tick, (0.0, 0.0), target, 0.0);
+            let f = cloaked.track(skill, 1, tick, (0.0, 0.0), target, 0.0);
+            a += e[0].hypot(e[1]);
+            b += f[0].hypot(f[1]);
+        }
+        assert!(b > 1.3 * a, "{skill:?}: {a} vs {b}");
+    }
+    // The better hand loses less to the shimmer.
+    assert!(camo_aim(Skill::Legendary) < camo_aim(Skill::Easy));
+}
+
+#[test]
+fn a_camouflaged_target_is_locked_onto_more_slowly() {
+    let skill = Skill::Normal;
+    let mut plain = Hand::new(3);
+    let mut cloaked = Hand::new(3);
+    plain.obscure(skill, false);
+    cloaked.obscure(skill, true);
+    let fast = plain.steer(skill, Some([0.5, 0.0]), 1);
+    let slow = cloaked.steer(skill, Some([0.5, 0.0]), 1);
+    assert!(slow.0.abs() < fast.0.abs(), "{slow:?} vs {fast:?}");
+    assert!((slow.0.abs() - CAMO_ENGAGE * fast.0.abs()).abs() < 1e-4);
+    // Plain again once the target shows.
+    cloaked.obscure(skill, false);
+    let mut again = Hand::new(3);
+    again.obscure(skill, false);
+    cloaked.release();
+    assert_eq!(
+        cloaked.steer(skill, Some([0.5, 0.0]), 1),
+        again.steer(skill, Some([0.5, 0.0]), 1)
+    );
+}
