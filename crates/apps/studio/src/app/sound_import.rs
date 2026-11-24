@@ -31,6 +31,23 @@ fn file_stem(tag: &str) -> String {
     if s.is_empty() { "sound".into() } else { s }
 }
 
+/// The directory of the local package `package`; a package that is not
+/// listed is `Params`, one that is built in is refused.
+pub(super) fn package_dir(data_root: &Path, package: &str) -> Result<std::path::PathBuf, CopyRefusal> {
+    use CopyRefusal::{Params, Refused};
+    let set = read_set(data_root);
+    set.listed
+        .iter()
+        .find(|l| l.id == package)
+        .ok_or_else(|| Params(format!("no package {package:?}")))
+        .and_then(|l| match &l.dir {
+            Some(d) => Ok(std::path::PathBuf::from(d)),
+            None => Err(Refused(format!(
+                "package {package:?} is built in: import into a package under <data>/packages/"
+            ))),
+        })
+}
+
 /// Add the WAV at `file` to the local package `package` as a `sound` item
 /// that writes the `snd!` `tag`, in `class` (a name or number; the
 /// default class when `None`).
@@ -50,18 +67,7 @@ pub fn import_sound(
         .map(|c| class_of(c).map(|n| (c.trim().to_owned(), n)))
         .transpose()
         .map_err(|e| Params(format!("class: {e}")))?;
-    let set = read_set(data_root);
-    let dir = set
-        .listed
-        .iter()
-        .find(|l| l.id == package)
-        .ok_or_else(|| Params(format!("no package {package:?}")))
-        .and_then(|l| match &l.dir {
-            Some(d) => Ok(std::path::PathBuf::from(d)),
-            None => Err(Refused(format!(
-                "package {package:?} is built in: import into a package under <data>/packages/"
-            ))),
-        })?;
+    let dir = package_dir(data_root, package)?;
     let bytes = std::fs::read(file).map_err(|e| Failed(format!("{}: {e}", file.display())))?;
     let clip = read_wav(&bytes).map_err(|e| Refused(format!("{}: {e}", file.display())))?;
     let encoded = encode(&clip).map_err(|e| Refused(format!("{}: {e}", file.display())))?;

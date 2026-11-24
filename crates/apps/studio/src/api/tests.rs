@@ -21,6 +21,7 @@ mod script_variants_tests;
 mod assets_tests;
 mod problems_tests;
 mod import_tests;
+mod sound_edit_tests;
 mod shell_tests;
 mod ui_export_tests;
 
@@ -190,6 +191,16 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             import_tests::package(&t.path("data/packages/mine"), "mine");
             std::fs::create_dir_all(t.path("out")).unwrap();
             std::fs::write(t.path("out/clip.wav"), import_tests::tone(1, 22_050, 640)).unwrap();
+        }
+        m::SOUND_EDIT | m::SOUND_RENDER | m::SOUND_PERMUTATION => {
+            // A package `mine` with the invented tone imported as a sound.
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            std::fs::create_dir_all(t.path("out")).unwrap();
+            std::fs::write(t.path("out/clip.wav"), import_tests::tone(1, 22_050, 640)).unwrap();
+            c(
+                m::IMPORT_SOUND,
+                json!({"file": t.path("out/clip.wav").display().to_string(), "package": "mine", "tag": "sounds\\clip"}),
+            );
         }
         m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP | m::SOUND_MEASURE => {
             // A map with a sound, played to the headless output.

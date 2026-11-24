@@ -20,6 +20,8 @@ map.workspace = true
 tags.workspace = true
 # The animation builder reads authored keys and bakes the jmad stream.
 anim-edit.workspace = true
+# The sound builder renders a sidecar's edit list before it encodes.
+sound-edit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The `tag` and `edits` item files.

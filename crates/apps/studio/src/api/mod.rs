@@ -56,6 +56,7 @@ mod shell;
 pub mod server;
 pub(crate) mod sound;
 mod strings;
+pub(crate) mod sound_edit;
 pub(crate) mod sound_measure;
 mod tag_fields;
 mod tag_io;

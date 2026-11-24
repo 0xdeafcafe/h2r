@@ -333,3 +333,36 @@ fn a_sidecar_beside_the_wav_names_the_class() {
     assert!(found[0].what.contains("class"), "{found:?}");
     assert!(found[0].what.contains("a.sound.yaml"), "{found:?}");
 }
+
+#[test]
+fn a_sidecars_edit_list_is_rendered_before_the_encode() {
+    // 22,050 Hz: a 1000 ms clip trimmed to its first 500 ms is half the
+    // frames, and the WAV in the package is the file it was.
+    let wav = wav_of(&sines(1, 22_050, 22_050));
+    let with = |yaml: &'static str| {
+        pkg(
+            "s",
+            &[],
+            &[
+                ("sound", "sounds/a.wav", Some("invented\\snd\\a"), "all"),
+                ("data", "sounds/a.sound.yaml", None, "all"),
+            ],
+            &[
+                ("sounds/a.wav", wav.as_slice()),
+                ("sounds/a.sound.yaml", yaml.as_bytes()),
+            ],
+        )
+    };
+    let whole = with("class: weapon_fire\n");
+    let trimmed = with("edits:\n- op: trim\n  start_ms: 0\n  end_ms: 500\n- op: fade_out\n  ms: 100\n");
+    assert_eq!(check_package(&trimmed), vec![]);
+    let (mut a, mut b) = (base(), base());
+    build(&mut a, &[whole], &target(), None).unwrap();
+    build(&mut b, &[trimmed], &target(), None).unwrap();
+    assert_eq!(header_of(&a, "invented\\snd\\a").max_play_time, 1000);
+    assert_eq!(header_of(&b, "invented\\snd\\a").max_play_time, 500);
+    // An edit that cannot apply is a named failure of the item.
+    let bad = with("edits:\n- op: trim\n  start_ms: 5000\n");
+    let found = check_package(&bad);
+    assert!(found[0].what.contains("edit 0"), "{found:?}");
+}

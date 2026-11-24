@@ -8,7 +8,8 @@
 //! as a `snd!` of that path: resampled, encoded as Xbox ADPCM and merged into
 //! the map's gestalt ([`crate::import`]), in its sound class (the `class` of its sidecar, `<source>.sound.yaml`, a
 //! `data` item beside it; the default of [`crate::import::DEFAULT_CLASS`] with
-//! none).
+//! none). The sidecar's `edits` (`sound-edit`) are applied to the decoded
+//! WAV first; the WAV file is never rewritten.
 //!
 //! A `data` item is any file, which adds no tag: a feature reads it (the
 //! Pogo's pose set) or another builder reads it beside its source (a
@@ -110,48 +111,71 @@ fn path_of<'a>(job: &Job<'a>) -> Option<&'a str> {
     job.item.tag.as_deref().filter(|t| !t.is_empty())
 }
 
-/// The sound class the item's sidecar (`<source>.sound.yaml`, a `data`
-/// item of the package) names, else the default.
-fn class_of(job: &Job<'_>) -> Result<u8, String> {
+/// The item's sidecar (`<source>.sound.yaml`, a `data` item of the
+/// package): its class and its edit list; empty with none.
+fn doc_of(job: &Job<'_>) -> Result<sound_edit::SoundDoc, String> {
     let Some(source) = job.item.source.as_deref() else {
-        return Ok(crate::import::DEFAULT_CLASS);
+        return Ok(Default::default());
     };
     let name = crate::import::sidecar_path(source);
     let Some(bytes) = job.files.get(&name) else {
-        return Ok(crate::import::DEFAULT_CLASS);
+        return Ok(Default::default());
     };
-    let side: Sidecar =
-        serde_yaml_ng::from_slice(bytes).map_err(|e| format!("{name}: {e}"))?;
-    match side.class {
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("{name}: {e}"))?;
+    sound_edit::SoundDoc::from_yaml(text).map_err(|e| format!("{name}: {e}"))
+}
+
+/// The sound class the item's sidecar names, else the default.
+fn class_of(doc: &sound_edit::SoundDoc) -> Result<u8, String> {
+    match &doc.class {
         None => Ok(crate::import::DEFAULT_CLASS),
-        Some(c) => crate::import::class_of(&c).map_err(|e| format!("{name}: class: {e}")),
+        Some(c) => crate::import::class_of(c).map_err(|e| format!("class: {e}")),
     }
 }
 
-/// The settings file of a sound: what the WAV does not say.
-#[derive(serde::Deserialize, Default)]
-struct Sidecar {
-    /// A sound class, by name or number.
-    class: Option<String>,
+/// The item's WAV through the sidecar's edit list. The file is not
+/// changed: the edits are applied to the decoded samples.
+fn edited(clip: Clip, doc: &sound_edit::SoundDoc) -> Result<Clip, String> {
+    if doc.edits.is_empty() {
+        return Ok(clip);
+    }
+    let wave = sound_edit::Wave {
+        channels: clip.channels,
+        rate: clip.rate,
+        pcm: clip.pcm,
+    };
+    let wave = sound_edit::render(&wave, &doc.edits).map_err(|e| e.to_string())?;
+    Ok(Clip {
+        channels: wave.channels,
+        rate: wave.rate,
+        pcm: wave.pcm,
+    })
 }
 
 pub fn check(job: &Job<'_>) -> Result<(), Failure> {
     let clip = read_clip(job.source)?;
     if path_of(job).is_some() {
-        crate::import::encode(&clip)?;
-        class_of(job)?;
+        let doc = doc_of(job)?;
+        class_of(&doc)?;
+        crate::import::encode(&edited(clip, &doc)?)?;
+    } else {
+        // A clip a feature plays: its edits still have to apply.
+        edited(clip, &doc_of(job)?)?;
     }
     Ok(())
 }
 
 /// An item with no `tag` adds nothing: the feature reads the clip from the
-/// package. With one, the clip is written as a `snd!` and its gestalt rows.
+/// package. With one, the clip is edited, then written as a `snd!` and its
+/// gestalt rows.
 pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
     let clip = read_clip(job.source)?;
     match path_of(job) {
         None => Ok(()),
         Some(path) => {
-            let class = class_of(job)?;
+            let doc = doc_of(job)?;
+            let class = class_of(&doc)?;
+            let clip = edited(clip, &doc)?;
             crate::import::install(cx, path, &clip, class).map_err(Failure::from)
         }
     }
