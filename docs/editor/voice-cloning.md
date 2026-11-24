@@ -58,8 +58,8 @@ committed, and the model runs locally with the network off.
    character's own lines (`App::character_target`, the dataset's `lufs`,
    measured by `sound.measure`'s meter), saved under
    `<data root>/voices/<character>/lines` (or `clips/<clip>.wav`), and
-   played. `voice.commit` copies a clip into the checkout as it does a Fish
-   line.
+   played. `voice.commit` keeps a clip as it does a Fish line: a `sound` item of
+   the edit target with `tag`, or a file in the checkout with `clip`.
 
 ### Naming a character
 
@@ -142,7 +142,8 @@ unless `min_minutes` says otherwise.
 
 - Everything is written under `<data root>/voices/` or the caches dir,
   never in a checkout. `voice.commit` is the only step that copies a line
-  into one, and only a line the user asked for.
+  into a package or a checkout, and only a line the user asked for. It
+  refuses a path inside a `dataset` or `model` folder.
 - No audio, transcript or weight is sent anywhere. The only network the
   clone uses is the install's package and weight downloads.
 - One background job at a time; a build or a train while one runs is
