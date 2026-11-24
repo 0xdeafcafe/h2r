@@ -950,13 +950,15 @@ fn files_under(dir: &Path) -> Vec<(PathBuf, u64)> {
     out
 }
 
-/// The newest modification under `dir` (itself or anything in it).
+/// The newest modification of a file under `dir`: when it was last
+/// written. The directory's own time moves whenever an entry is added or
+/// removed, so it stands in only for a directory with no files.
 fn newest(dir: &Path) -> Option<SystemTime> {
-    files_under(dir)
+    let files = files_under(dir)
         .into_iter()
         .filter_map(|(p, _)| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()))
-        .chain(std::fs::metadata(dir).ok().and_then(|m| m.modified().ok()))
-        .max()
+        .max();
+    files.or_else(|| std::fs::metadata(dir).ok().and_then(|m| m.modified().ok()))
 }
 
 /// The hashes every tag file and manifest in the tree names: the raw
