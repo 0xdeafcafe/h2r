@@ -2,7 +2,7 @@
 //! guest: what is queued, in what order, and when it may start.
 
 use engine::memory::{FlatMemory, GuestMemory};
-use hud_kit_core::huds::superbounce::{MEDALS, Medal};
+use hud_kit_core::views::superbounce::{MEDALS, Medal};
 
 use super::*;
 use crate::superbounce_chain::{Award, bounce_medals_with};

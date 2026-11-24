@@ -18,7 +18,7 @@
 //! and a client agree by construction, and a test can show it.
 //!
 //! **The HUD.** The HUD kit's `firefight` HUD
-//! (`hud_kit_core::huds::firefight`, docs/game/forge-firefight-ui.md,
+//! (`hud_kit_core::views::firefight`, docs/game/forge-firefight-ui.md,
 //! "The Firefight HUD") draws it on Halo 2's own HUD: [`view_of`] turns a
 //! blob into the kit's `View` for one viewer, [`view`] into its `Values`.
 //! The kit's layout, its checks (`h2 hud preview firefight`) and its
@@ -32,9 +32,9 @@ use std::sync::{Arc, Mutex};
 use ::firefight::director::Phase;
 use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector, Skull};
 use engine::memory::{GuestMemory, MemFault};
-use hud_kit_core::huds::firefight::{self as kit, Firefight};
+use hud_kit_core::views::firefight::{self as kit, Firefight};
 
-pub use hud_kit_core::huds::firefight::{BANNER, ENEMIES_COUNT, LIVES_COUNT, NOTE, Stage, View};
+pub use hud_kit_core::views::firefight::{BANNER, ENEMIES_COUNT, LIVES_COUNT, NOTE, Stage, View};
 pub use hud_kit_core::model::{Style, Value, Values};
 
 use crate::hud_kit::{self, Handle};

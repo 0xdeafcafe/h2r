@@ -11,7 +11,7 @@ use hud_edit::Mode;
 use hud_edit::model::WidgetKind;
 use hud_edit::place::{self, Frame};
 use hud_kit::check;
-use hud_kit::{Source, huds, rects, templates};
+use hud_kit::{Source, views, rects, templates};
 use hud_kit_core::map_file;
 use scenario_edit::MapSource;
 
@@ -49,7 +49,7 @@ fn templates_resolve_on_every_map() {
         }
         let mut src = Source::disc(&iso, name).unwrap_or_else(|e| panic!("{name}: {e:#}"));
         let mp = src.multiplayer();
-        for d in huds::all() {
+        for d in views::all() {
             let hud = d.hud();
             if let (false, Some(why)) = (mp, d.multiplayer_only()) {
                 skipped.push(format!("{name}: {}: {why}", hud.name));
@@ -139,7 +139,7 @@ fn the_retail_rectangles_match_the_editors_placement() {
     );
     // The grenade row: one 103-wide panel at the anchor, the counts 53
     // apart, so the next pill one step past the frag pill (at 53).
-    let t = src.templates(&hud_kit::huds::pill_block::hud());
+    let t = src.templates(&hud_kit::views::pill_block::hud());
     let row = t.row.as_ref().unwrap();
     assert_eq!((row.panel, row.frag), (103.0, [53.0, 50.0]));
     assert_eq!(row.pill[0], (106, 0));
@@ -153,7 +153,7 @@ fn the_retail_rectangles_match_the_editors_placement() {
 fn every_hud_passes_every_check_on_the_disc() {
     let mut src = Source::disc(&iso(), MAP).unwrap();
     assert!(src.fonts.is_some(), "the disc's fonts");
-    let all = huds::all();
+    let all = views::all();
     let ds: Vec<&dyn hud_kit::Describe> = all.iter().map(|d| d.as_ref()).collect();
     let r = check::all(&mut src, &ds, &Mode::ALL).unwrap();
     let text: Vec<String> = r.findings.iter().map(ToString::to_string).collect();
@@ -175,7 +175,7 @@ fn the_glyphs_are_in_the_fonts() {
     // The superbounce medals: new art the font rewrite adds to the two
     // message fonts (`font::medals`), not retail glyphs.
     for f in [5, 6] {
-        for (m, c) in hud_kit::huds::superbounce::MEDAL_GLYPHS {
+        for (m, c) in hud_kit::views::superbounce::MEDAL_GLYPHS {
             assert_eq!(
                 fonts.has_glyph(f, c as u16),
                 Some(true),
@@ -184,7 +184,7 @@ fn the_glyphs_are_in_the_fonts() {
         }
     }
     let mut r = check::Report::default();
-    for d in huds::all() {
+    for d in views::all() {
         check::glyphs(&mut r, &d.hud(), &d.states(), &|f, u| fonts.has_glyph(f, u));
     }
     let text: Vec<String> = r.findings.iter().map(ToString::to_string).collect();

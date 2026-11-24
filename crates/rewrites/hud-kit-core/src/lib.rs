@@ -11,14 +11,16 @@
 //! - [`motion`]: how a value moves between ticks, on wall time;
 //! - [`world`]: a world mark's shape at a pose, as line segments;
 //! - [`records`]: elements to `nhdt` widget record bytes;
-//! - [`huds`]: the HUDs the kit knows (superbounce, the Forge readout,
+//! - [`data`]: a HUD read from the YAML of a package's `hud` item;
+//! - [`views`]: the HUDs the kit knows (superbounce, the Forge readout,
 //!   Firefight).
 //!
 //! Guest-free: no guest memory, no hook. The game extension reads and
 //! writes the guest; this crate only computes.
 
+pub mod data;
 pub mod flash;
-pub mod huds;
+pub mod views;
 pub mod map_file;
 pub mod model;
 pub mod motion;
@@ -60,5 +62,9 @@ impl Mode {
     }
 }
 
+#[cfg(test)]
+mod data_tests;
+#[cfg(test)]
+mod expected;
 #[cfg(test)]
 mod tests;

@@ -15,8 +15,7 @@
 //! with no strips; the strip the charge's fill, primed and lost.
 
 use crate::model::{
-    self, Anchor, Art, Describe, Element, Font, Hud, Justify, Origin, PILL_BODY, PillPart, Place,
-    Pulse, Style, Value, Values,
+    self, Art, Describe, Hud, Origin, PILL_BODY, Pulse, Style, Value, Values,
 };
 
 use super::superbounce::{self, LOW_CHARGE, Phase, Scan, View};
@@ -50,45 +49,10 @@ pub const ICON_AT: (i16, i16) = (12, -1);
 /// A place of the block: fullscreen `by` from the pill's top left
 /// ([`PILL_FULL`]); in half and quarter screen `split` from `origin` in
 /// the grenade row.
-const fn place(by: (i16, i16), split: (i16, i16), origin: Origin) -> Place {
-    Place::new(Anchor::TopLeft, (PILL_FULL.0 + by.0, PILL_FULL.1 + by.1))
-        .split(split, split)
-        .split_from(origin)
-}
 
 /// The elements, in draw order.
 pub fn hud() -> Hud {
-    Hud {
-        name: NAME,
-        elements: vec![
-            Element::icon(
-                PILL,
-                Art::GrenadePill(PillPart::Body),
-                place((0, 0), (0, 0), Origin::NextGrenadePill),
-            ),
-            // The right end, against the body's right edge.
-            Element::icon(
-                PILL_END,
-                Art::GrenadePill(PillPart::End),
-                place((PILL_BODY, 0), (PILL_BODY, 0), Origin::NextGrenadePill),
-            ),
-            // Under the pill, as wide as it, in every mode the pill has.
-            Element::meter(
-                CHARGE,
-                Art::StripMeterEnd(CHARGE_COLUMNS),
-                place((0, CHARGE_DOWN), (0, CHARGE_DOWN), Origin::NextGrenadePill),
-            ),
-            // Centred where a pill's count is, as the counts are.
-            Element::text(
-                PILL_ICON,
-                Font::Hud,
-                Justify::Centre,
-                ICON_TEXT,
-                place(ICON_AT, (0, 0), Origin::NextGrenadeCount),
-            )
-            .over(PILL),
-        ],
-    }
+    crate::data::builtin(NAME)
 }
 
 /// The values for the superbounce HUD's view `v`.
@@ -153,6 +117,7 @@ impl Describe for PillBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Anchor;
 
     fn state(name: &str) -> Values {
         PillBlock.states().into_iter().find(|(n, _)| *n == name).unwrap().1

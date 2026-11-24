@@ -42,9 +42,7 @@
 //! (`game::superbounce_readout`) fills it from `superbounce_mode`'s state
 //! each tick, with the pieces a variant turned off left out.
 
-use crate::model::{
-    Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Pulse, Style, Value, Values,
-};
+use crate::model::{Describe, Hud, Pulse, Style, Value, Values};
 
 use super::superbounce::{Charge, DISTANCE_LONGEST, Phase, distance_text};
 use super::superbounce_guide::{self as guide, Guide};
@@ -459,54 +457,7 @@ pub fn next_text(next: &[Option<Next>; NEXT]) -> Option<String> {
 /// The elements, in draw order: the bar, the charge segments, the rows'
 /// texts, the navpoints, then the approach guide's world marks.
 pub fn hud() -> Hud {
-    let row = |up: i16| Place::new(Anchor::BottomLeft, (LEFT, up));
-    let navpoint = |id| {
-        Element::channel(
-            id,
-            Kind::Navpoint {
-                longest: DISTANCE_LONGEST,
-            },
-        )
-    };
-    let mut elements = vec![Element::meter(
-        FALL,
-        Art::StripMeterEnd(FALL_COLUMNS),
-        Place::new(Anchor::BottomLeft, (LEFT, FALL_UP + FALL_DOWN)),
-    )];
-    elements.extend(segs::elements());
-    let mut hud = Hud {
-        name: NAME,
-        elements,
-    };
-    hud.elements.extend([
-        Element::text(
-            SPEED,
-            Font::Hud,
-            Justify::Start,
-            SPEED_LONGEST,
-            row(SPEED_UP),
-        ),
-        Element::text(
-            STEER,
-            Font::Hud,
-            Justify::Start,
-            STEER_LONGEST,
-            Place::new(Anchor::BottomLeft, (STEER_LEFT, FALL_UP)),
-        ),
-        Element::text(INFO, Font::Hud, Justify::Start, INFO_LONGEST, row(INFO_UP)),
-        Element::text(
-            KINDS,
-            Font::Hud,
-            Justify::Start,
-            KINDS_LONGEST,
-            row(KINDS_UP),
-        ),
-        navpoint(TAG),
-        navpoint(TARGET_1),
-        navpoint(TARGET_2),
-    ]);
-    hud.elements.extend(guide::elements());
-    hud
+    crate::data::builtin(NAME)
 }
 
 /// The values for `v`: every element of [`hud`], once.
@@ -797,6 +748,7 @@ impl Describe for Readout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Anchor;
     use std::f32::consts::{FRAC_PI_2, PI};
 
     fn state(name: &str) -> Values {

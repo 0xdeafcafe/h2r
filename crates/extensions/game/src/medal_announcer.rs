@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::{self, announcer_queue};
-use hud_kit_core::huds::superbounce::{MEDALS, Medal};
+use hud_kit_core::views::superbounce::{MEDALS, Medal};
 
 /// The feature's id.
 pub const FEATURE: &str = "medal-announcer";

@@ -794,7 +794,7 @@ fn the_navpoint_is_skipped_when_our_point_is_gone() {
 /// tutorial.
 #[test]
 fn the_training_text_breaks_lines_as_the_game_does() {
-    let first = hud_kit_core::huds::superbounce::TUTORIAL_TEXT[0];
+    let first = hud_kit_core::views::superbounce::TUTORIAL_TEXT[0];
     assert_eq!(
         game_line_breaks(first),
         "Crouch, walk in under a lip,\r\nlet go, then walk out."

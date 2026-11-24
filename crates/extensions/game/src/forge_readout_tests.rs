@@ -1,7 +1,7 @@
 use super::*;
 use forge::{BlockKind, Frame};
-use hud_kit_core::huds::forge_readout::Axes;
-use hud_kit_core::huds::superbounce_readout::{ARROW_DOWN, ARROW_UP};
+use hud_kit_core::views::forge_readout::Axes;
+use hud_kit_core::views::superbounce_readout::{ARROW_DOWN, ARROW_UP};
 
 fn entry(
     block: BlockKind,

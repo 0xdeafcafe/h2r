@@ -27,6 +27,7 @@ use map::Map;
 use serde::{Deserialize, Serialize};
 
 use crate::build::{Loaded, Target, cache_key};
+use crate::builders::changes_map;
 use crate::game::{CACHE_DIR, PACKAGES_DIR};
 use crate::load::added_tag;
 use crate::onto::{build_map, scope_of};
@@ -103,7 +104,11 @@ impl PackageRewrite {
     pub fn new(packages: Vec<Loaded>) -> Self {
         let mut by_class = false;
         let mut names = HashSet::new();
-        for i in packages.iter().flat_map(|p| &p.package.manifest.items) {
+        for i in packages
+            .iter()
+            .flat_map(|p| &p.package.manifest.items)
+            .filter(|i| changes_map(i.kind))
+        {
             match &i.maps {
                 Maps::Scope(_) => by_class = true,
                 Maps::Names(n) => names.extend(n.iter().map(|n| n.to_ascii_lowercase())),
@@ -143,7 +148,7 @@ impl PackageRewrite {
     pub fn is_empty(&self) -> bool {
         self.packages
             .iter()
-            .all(|p| p.package.manifest.items.is_empty())
+            .all(|p| p.package.manifest.items.iter().all(|i| !changes_map(i.kind)))
     }
 
     fn files(&self, base: &Sha256, key: &Sha256) -> Option<(PathBuf, PathBuf)> {
@@ -203,7 +208,7 @@ impl PackageRewrite {
                 .manifest
                 .items
                 .iter()
-                .filter(|i| target.takes(&i.maps))
+                .filter(|i| changes_map(i.kind) && target.takes(&i.maps))
                 .collect();
             if items.is_empty() {
                 continue;

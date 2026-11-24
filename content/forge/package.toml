@@ -1,0 +1,9 @@
+[package]
+format = 1
+id = "forge"
+name = "Forge"
+description = "The Forge readout: what the player aims at, as rows beside the motion tracker and marks on the level."
+
+[[item]]
+kind = "hud"
+source = "huds/forge-readout.hud.yaml"

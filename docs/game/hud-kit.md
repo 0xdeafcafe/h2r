@@ -1,7 +1,7 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
 Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training, banner and navpoint channels, the superbounce HUD on them with its medals ("The medals"), and the Firefight HUD ([firefight.md](firefight.md), "The HUD"). Not built: the colour hook and the flash, the pointer's turn, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
-Code: `crates/rewrites/hud-kit-core` (the model, the HUDs, the templates, the record compiler), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/h2-tools/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
+Code: `crates/rewrites/hud-kit-core` (the model, the HUDs' states, `data` which reads a HUD's YAML, the templates, the record compiler), `content/{superbounce,forge,modes}/huds/` (the HUDs' elements as YAML), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/h2-tools/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
 A feature of ours that wants something on the in-game HUD describes it as
@@ -352,7 +352,7 @@ HUD"). The second is used only offline, by the preview, where
 
 ### The model (`crates/rewrites/hud-kit-core`)
 
-The model, the HUDs of ours, the template resolver and the record
+The model, the HUDs' states, the template resolver and the record
 compiler are in `hud-kit-core` (`rewrites` domain, guest-free), which
 both the offline preview (`crates/tools/hud-kit`) and the game's runtime
 use; `hud_edit::Mode` is its `Mode`. A HUD of ours is a `Hud`: a name
@@ -361,6 +361,29 @@ is a `Values`: per element its text, fill, angle, style and whether it
 shows. One layout per HUD: a state never adds, removes or moves an
 element (the UI kit's rule, for the same reasons: the runtime only
 answers hooks, and the checks cover every state).
+
+### HUDs as data
+
+A HUD's elements (its layout) are YAML, the `hud` item of a package
+([studio-redesign.md](../editor/studio-redesign.md), "Contents"); its
+states (`View`, `values`, the preview's samples) are Rust, in
+`hud-kit-core/src/views/`. The YAML is `name` and `elements`, each with an
+`id`, a `kind`, and what the kind takes (`art`, `font`, `justify`,
+`longest`, `glyphs`, `shape`), `at` (anchor, the offsets for each screen
+mode, registration, origin), `over`, `hide_when_d` and `outside`; the
+keys and what each kind needs are in `hud-kit-core/src/data.rs`, which
+reads one into a `Hud` and refuses an unknown key or an incomplete element
+by name. The first-party HUDs are in `content/superbounce/huds/`
+(`superbounce`, `superbounce-readout`, `pill-block`), `content/forge/huds/`
+(`forge-readout`) and `content/modes/huds/` (`firefight`); `data::BUILTIN`
+embeds them and each `views::*::hud()` reads its own, so the preview, the
+checks and the runtime all see the YAML. The `hud` builder
+(`crates/tools/workspace/src/hud.rs`) refuses a source that is not a HUD
+and adds no tag: the game compiles a HUD's records against the map it
+loads, so a package of HUDs alone leaves every map unchanged
+(`workspace::changes_map`). `workspace::huds` lists a set's HUDs.
+`hud-kit-core/src/expected.rs` keeps the Rust each HUD was built with and
+`data_tests.rs` holds the YAML to it element by element.
 
 ```rust
 pub struct Hud { pub name: &'static str, pub elements: Vec<Element> }
@@ -957,8 +980,9 @@ the preview's JSON, with `render.frame` for the pixels.
 
 ## The superbounce HUD on the kit
 
-`crates/rewrites/hud-kit-core/src/huds/superbounce.rs` describes it:
-the elements, `View` (what the HUD shows of `superbounce_mode`'s state),
+`crates/rewrites/hud-kit-core/src/views/superbounce.rs` describes it
+(its elements are `content/superbounce/huds/superbounce.hud.yaml`):
+`View` (what the HUD shows of `superbounce_mode`'s state),
 `values(&View)`, the preview's states and the tutorial's step machine.
 It is multiplayer only (`Describe::multiplayer_only`): the disc test
 skips campaign maps for it by that reason. It is shown to the first
@@ -980,7 +1004,7 @@ h2 hud preview superbounce --state all --synthetic --out DIR
 The kit can put a pill of its own in the grenade row. No registered HUD
 has one: the superbounce HUD's priming indicator is the readout's
 charge segments. The pieces are held under test by `huds::pill_block`
-(`crates/rewrites/hud-kit-core/src/huds/pill_block.rs`), a HUD of the
+(`crates/rewrites/hud-kit-core/src/views/pill_block.rs`), a HUD of the
 kit's own tests that is not registered (`huds::all`) and is never
 compiled into a map.
 
@@ -1441,7 +1465,7 @@ tutorial's step waits.
 ## The superbounce readout
 
 A second HUD on the kit, `superbounce-readout`
-(`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): nine
+(`crates/rewrites/hud-kit-core/src/views/superbounce_readout.rs`): nine
 charge segments round the motion tracker ("The charge segments"), three
 rows right of them and a fourth over the arming bar,
 three navpoints and the approach guide's five world marks ("The
@@ -1576,7 +1600,7 @@ segments. With the mode off every element is hidden.
 ### The charge segments
 
 The priming indicator
-(`crates/rewrites/hud-kit-core/src/huds/superbounce_segments.rs`): nine
+(`crates/rewrites/hud-kit-core/src/views/superbounce_segments.rs`): nine
 arcs round the motion tracker's left, bottom and right sides, three a
 side, concentric with its rim (`rects::TRACKER`, (47, 360) to (130, 443),
 83 across) and 4 pixels (`GAP`) clear of it, so they are apart from the
@@ -1672,7 +1696,7 @@ h2 hud preview superbounce-all --state 24-charge-warning --out DIR
 ### The approach guide
 
 Five world marks of the readout
-(`crates/rewrites/hud-kit-core/src/huds/superbounce_guide.rs`) on the
+(`crates/rewrites/hud-kit-core/src/views/superbounce_guide.rs`) on the
 seam the player is going for and the ground before it, so the line-up
 is read off the geometry. What they mean, the prediction, the depth
 rule and the jump cue are in

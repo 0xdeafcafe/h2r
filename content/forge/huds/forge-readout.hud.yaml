@@ -1,0 +1,113 @@
+# The Forge readout (docs/game/forge-map-variants-ui.md): three rows of
+# text under the aimed thing, as the superbounce readout's, then marks on
+# the level: the selection's bracket, the placement ring, the facing arrow,
+# the mark under and the one it came from, twelve near marks and eight
+# zone lines. Elements in draw order.
+name: forge-readout
+elements:
+  - id: fgr.name
+    kind: text
+    font: hud
+    justify: start
+    longest: "Assault Rifle Ammo Cache Crate"
+    at: {anchor: bottom-left, full: [101, -68]}
+  - id: fgr.facts
+    kind: text
+    font: hud
+    justify: start
+    longest: "Starting point  Neutral  Slayer, CTF, KotH"
+    at: {anchor: bottom-left, full: [101, -47]}
+  - id: fgr.guide
+    kind: text
+    font: hud
+    justify: start
+    longest: "Item spawners are full (100) in this map."
+    at: {anchor: bottom-left, full: [101, -26]}
+  - id: fgr.sel
+    kind: world-mark
+    shape: bracket
+    longest: "Assault Rifle Ammo Cache Crate"
+  - id: fgr.ring
+    kind: world-mark
+    shape: pipper
+  - id: fgr.face
+    kind: world-mark
+    shape: arrow
+  - id: fgr.under
+    kind: world-mark
+    shape: pipper
+  - id: fgr.from
+    kind: world-mark
+    shape: bracket
+  - id: fgr.near.1
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.2
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.3
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.4
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.5
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.6
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.7
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.8
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.9
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.10
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.11
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.near.12
+    kind: world-mark
+    shape: pipper
+    longest: "Rocket Launcher Red"
+  - id: fgr.zone.1
+    kind: world-mark
+    shape: line
+  - id: fgr.zone.2
+    kind: world-mark
+    shape: line
+  - id: fgr.zone.3
+    kind: world-mark
+    shape: line
+  - id: fgr.zone.4
+    kind: world-mark
+    shape: line
+  - id: fgr.zone.5
+    kind: world-mark
+    shape: line
+  - id: fgr.zone.6
+    kind: world-mark
+    shape: line
+  - id: fgr.zone.7
+    kind: world-mark
+    shape: line
+  - id: fgr.zone.8
+    kind: world-mark
+    shape: line

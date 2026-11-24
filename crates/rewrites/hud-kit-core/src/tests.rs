@@ -1,12 +1,12 @@
 //! The core without a map: the record bytes at the draw's offsets, the
 //! superbounce HUD's arming bar and the kit's pill block
-//! (`huds::pill_block`) compiled against templates resolved from an
+//! (`views::pill_block`) compiled against templates resolved from an
 //! invented `nhdt` through a [`MapView`], and the cropped meter's ramp.
 
 use map::{FourCC, TagId};
 
-use crate::huds::pill_block::{self, CHARGE, CHARGE_COLUMNS, CHARGE_DOWN};
-use crate::huds::superbounce;
+use crate::views::pill_block::{self, CHARGE, CHARGE_COLUMNS, CHARGE_DOWN};
+use crate::views::superbounce;
 use crate::model::*;
 use crate::records::{
     self, BITMAP_SIZE, KIT_INPUT, NO_FONT, TEXT_SIZE, WidgetKind, bitmap as bf, text as tf,
@@ -597,12 +597,12 @@ fn a_team_style_names_its_team() {
     assert_eq!(crate::world::TEAMS, 8);
 }
 
-/// The Forge readout (`huds::forge_readout`, slice H1): its states, the
+/// The Forge readout (`views::forge_readout`, slice H1): its states, the
 /// texts a view gives, the widest each row may be and what an overrun
 /// drops.
 mod forge_readout_tests {
-    use crate::huds::forge_readout::{self as fr, Readout, View};
-    use crate::huds::superbounce_readout as sb;
+    use crate::views::forge_readout::{self as fr, Readout, View};
+    use crate::views::superbounce_readout as sb;
     use crate::model::*;
     use crate::Mode;
 

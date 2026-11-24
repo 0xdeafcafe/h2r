@@ -1,7 +1,7 @@
 //! The adapter from `superbounce_mode::State` to the HUD's view, and the
 //! values each state gives (docs/game/hud-kit.md, "States").
 
-use hud_kit_core::huds::superbounce::{
+use hud_kit_core::views::superbounce::{
     self as sb, ARM, LOW_CHARGE, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
     MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PROMPT, PROMPT_CHARGE_AGAIN,
     PROMPT_HELD, PROMPT_KEEP_MOVING, PROMPT_NEAR, PROMPT_UNDER, Phase, Scan, Target, Verb,
@@ -191,7 +191,7 @@ fn primed_lights_the_pill_and_drains_the_meter() {
 /// to flash: 19 still ticks, half the fill.
 #[test]
 fn the_warning_lines_up_with_the_segments_flash() {
-    use hud_kit_core::huds::superbounce_segments::{Stage, segments};
+    use hud_kit_core::views::superbounce_segments::{Stage, segments};
     assert_eq!(
         1.0 - WARN_STILL_TICKS as f32 / SLEEP_TICKS as f32,
         LOW_CHARGE
@@ -580,7 +580,7 @@ fn the_locked_reticle_reads_autoaimed() {
 
 #[test]
 fn the_tutorial_counts_game_ticks_not_presents_or_wall_time() {
-    use hud_kit_core::huds::superbounce::{Change, STEP3_SECS, Tutorial, Watch};
+    use hud_kit_core::views::superbounce::{Change, STEP3_SECS, Tutorial, Watch};
     assert_eq!(tutorial_seconds(0), 0.0);
     assert_eq!(tutorial_seconds(30), 1.0);
     // Step 3 gives way after 600 ticks without a bounce, whatever the

@@ -1478,7 +1478,7 @@ impl Runtime {
         m: &dyn GuestMemory,
         awards: &[crate::superbounce_chain::Award],
     ) {
-        use hud_kit_core::huds::superbounce::Medal;
+        use hud_kit_core::views::superbounce::Medal;
         for a in awards {
             if let Some(spot) = a.spot {
                 self.bounce(m, a.slot, spot, a.chain, a.monster());

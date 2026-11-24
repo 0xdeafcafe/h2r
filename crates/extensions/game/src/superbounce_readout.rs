@@ -23,11 +23,11 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use hud_kit_core::huds::superbounce_guide as guide_marks;
-use hud_kit_core::huds::superbounce_readout::{
+use hud_kit_core::views::superbounce_guide as guide_marks;
+use hud_kit_core::views::superbounce_readout::{
     self as rd, Fall, KindsRow, Miss, Next, Readout, Speed, Steer, View,
 };
-use hud_kit_core::huds::superbounce_segments::{self as segs, Segments};
+use hud_kit_core::views::superbounce_segments::{self as segs, Segments};
 use hud_kit_core::model::Values;
 use hud_kit_core::world::Pose;
 use superbounce::Spot;

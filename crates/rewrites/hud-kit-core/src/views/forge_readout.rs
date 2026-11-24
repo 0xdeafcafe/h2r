@@ -33,7 +33,7 @@
 //! slice H3) fills it from what the session publishes each tick, so
 //! `forge.status` and the HUD cannot disagree.
 
-use crate::model::{Anchor, Describe, Element, Font, Hud, Justify, Kind, Place, Style, Value, Values};
+use crate::model::{Describe, Hud, Style, Value, Values};
 use crate::world::{Pose, Shape};
 
 use super::superbounce_readout::{ARROW_DOWN, ARROW_UP, FALL_UP, INFO_UP, LEFT, SPEED_UP};
@@ -402,24 +402,7 @@ pub fn zone_edges(v: &View) -> usize {
 
 /// The elements, in draw order: the three rows, then the marks.
 pub fn hud() -> Hud {
-    let row = |up: i16| Place::new(Anchor::BottomLeft, (LEFT, up));
-    let mark = |id, shape, longest| Element::channel(id, Kind::WorldMark { shape, longest });
-    let mut elements = vec![
-        Element::text(NAME_ROW, Font::Hud, Justify::Start, NAME_LONGEST, row(NAME_UP)),
-        Element::text(FACTS, Font::Hud, Justify::Start, FACTS_LONGEST, row(FACTS_UP)),
-        Element::text(GUIDE, Font::Hud, Justify::Start, GUIDE_LONGEST, row(GUIDE_UP)),
-        mark(SEL, Shape::Bracket, NAME_LONGEST),
-        mark(RING, Shape::Pipper, ""),
-        mark(FACE, Shape::Arrow, ""),
-        mark(UNDER, Shape::Pipper, ""),
-        mark(FROM, Shape::Bracket, ""),
-    ];
-    elements.extend(NEARS.iter().map(|id| mark(*id, Shape::Pipper, NEAR_LONGEST)));
-    elements.extend(ZONES.iter().map(|id| mark(*id, Shape::Line, "")));
-    Hud {
-        name: NAME,
-        elements,
-    }
+    crate::data::builtin(NAME)
 }
 
 /// The values for `v`: every element of [`hud`], once.

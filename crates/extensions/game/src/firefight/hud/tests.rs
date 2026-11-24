@@ -506,7 +506,7 @@ fn the_last_life_and_none_flash() {
 /// elements and nothing else, in every stage, lives kind and viewer.
 #[test]
 fn every_blob_gives_the_kits_one_layout() {
-    let hud = hud_kit_core::huds::firefight::hud();
+    let hud = hud_kit_core::views::firefight::hud();
     let mut modes = vec![sample_mode(), two_team_mode()];
     for stage in Stage::ALL {
         let base = if stage.two_teams_only() {
@@ -534,7 +534,7 @@ fn every_blob_gives_the_kits_one_layout() {
 /// forgets the last view.
 #[test]
 fn the_feed_publishes_the_view_and_sends_the_notes_a_change_makes() {
-    let hidden = hud_kit_core::huds::firefight::hidden();
+    let hidden = hud_kit_core::views::firefight::hidden();
     let mut f = Feed::default();
     assert_eq!(f.tick(None), (hidden.clone(), Vec::new()));
     let a = view_of(&sample_mode(), 0);
@@ -639,7 +639,7 @@ fn each_local_user_sees_its_own_lives() {
     };
     assert_eq!(lives(0).as_deref(), Some("3"));
     assert_eq!(lives(1).as_deref(), Some("1"));
-    assert_eq!(all[2].0, hud_kit_core::huds::firefight::hidden());
+    assert_eq!(all[2].0, hud_kit_core::views::firefight::hidden());
     // User 1 loses its last life: the note is its alone.
     let hit = Mode {
         lives: Lives::Each(vec![(0, 3), (2, 0)]),

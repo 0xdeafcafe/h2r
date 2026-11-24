@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use engine::GuestMemory;
-use hud_kit_core::huds::superbounce::{MEDALS, Medal};
+use hud_kit_core::views::superbounce::{MEDALS, Medal};
 use superbounce::{Spot, Vec3};
 
 use crate::superbounce_charge::{
