@@ -2044,6 +2044,7 @@ dependencies = [
  "sim-anim",
  "sim-collision",
  "sim-core",
+ "sim-havok",
  "sim-objects",
  "simd",
  "tags",
@@ -6650,6 +6651,15 @@ dependencies = [
 [[package]]
 name = "sim-ext"
 version = "0.1.0"
+
+[[package]]
+name = "sim-havok"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "simd",
+ "x87",
+]
 
 [[package]]
 name = "sim-objects"

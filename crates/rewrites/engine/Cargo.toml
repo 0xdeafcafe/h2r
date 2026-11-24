@@ -19,6 +19,7 @@ x87.workspace = true
 # The native simulation subsystems (docs/engine/sim-rewrite.md): float
 # rules and host lanes, and animation sampling behind src/sim_anim.rs.
 sim-core.workspace = true
+sim-havok.workspace = true
 sim-anim.workspace = true
 # The collision world behind src/sim_collision (phase 2).
 sim-collision.workspace = true
