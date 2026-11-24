@@ -1558,7 +1558,7 @@ mod tests {
         // A choice the picker makes sets the slot; one past the table is refused.
         assert!(p.choose_weapon(Slot::Secondary, |_| 2).contains("Gravity Hammer"));
         assert_eq!(p.ext().secondary, hammer.id);
-        assert!(p.choose_weapon(Slot::Secondary, |_| 99).contains("no other secondary weapon choice"));
+        assert!(p.choose_weapon(Slot::Secondary, |_| 99).contains("no secondary choice at 99"));
         assert!(p.describe(ROWS).unwrap().contains(&format!("[8] \"Secondary: {}\"", hammer.label)));
         // Every label and description is served.
         let served = strings();

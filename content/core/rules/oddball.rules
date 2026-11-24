@@ -129,7 +129,7 @@ on tick {
             hud_show(held_row, true)
         }
     } else {
-        if let loose = first(objectives o) { mark(ball_mark, loose) } else { unmark(ball_mark) }
+        if let loose = first(objectives) { mark(ball_mark, loose) } else { unmark(ball_mark) }
         hud_style(holder_row, 0)
         holder = -1
         held_for = 0t
