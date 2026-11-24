@@ -10,11 +10,10 @@
 use forge::{Thing, ThingKind};
 
 use super::sheet::{
-    Act, Choice, Extras, Kind, NumberField, Prop, SheetRow, TypeSpec, degrees, int_of,
+    Act, Choice, Extras, HEADINGS, Kind, NumberField, Prop, SheetRow, TypeSpec, degrees, int_of,
     nearest_heading, text_value_row, value_row,
 };
 use crate::ui_kit::data::{PropDoc, ScreenDoc};
-use crate::ui_kit::forge::HEADINGS;
 
 /// The name a doc calls `kind` by ([`crate::ui_kit::data::PROP_KINDS`]).
 pub fn kind_name(kind: ThingKind) -> &'static str {

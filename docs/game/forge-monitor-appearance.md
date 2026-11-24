@@ -1,7 +1,7 @@
 # Forge monitor appearance
 
-Status: Partly built (ML1 to ML7). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the look's page (ML6: `forge.look`'s rows and locks, the `Scene3d` preview widget, the Forge menu row) exist; the film records (ML8), the lobby row (ML9) and a real body (ML10) do not.
-Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_hud.rs` (`Points`, the navpoints over other monitors), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_hud_tests.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
+Status: Partly built (ML1 to ML5, ML7). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the kit's `Scene3d` preview widget exist; the look's page (ML6, a Forge screen of the game's), the film records (ML8), the lobby row (ML9) and a real body (ML10) do not.
+Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_hud.rs` (`Points`, the navpoints over other monitors), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/view.rs` (`Kind::Scene3d`). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_hud_tests.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player looks like while they fly as a monitor in a Forge session:
@@ -177,12 +177,13 @@ the camera is inside it.
 ### Choosing it
 
 The entry is a row, **Monitor look**, in two places: the Forge menu
-(Start while a monitor, the session's pause screen; **Code**,
-`ui_kit/forge/dialogs.rs`, `Parent::Menu`) and the Forge lobby (F14).
-Both open the same page, `forge.look`, a `Dialog` on the large base
-drawn `Over` by the compositor, as the Forge dialogs and Theater's
-pause menu are ([ui-builder.md](ui-builder.md), "Screen kinds", "The
-value picker").
+(Start while a monitor: the game's GAME MENU with the Forge rows,
+[forge-firefight-ui.md](forge-firefight-ui.md), "The screens") and the
+Forge lobby (F14). Both open the same page, `forge.look`, a Forge screen
+of the game's on the large dialog (`forge_screens`), as the object menu
+and Link are ([ui-builder.md](ui-builder.md), "Screen kinds", "The
+value picker"). Not built: the row joins the Forge menu with the page
+(`forge_screens::sheet`).
 
 ```text
  +----------------------------------------------------------+
@@ -197,7 +198,7 @@ value picker").
  +----------------------------------------------------------+
 ```
 
-- **Rows.** The list shows three rows at a time and scrolls through the seven, over the preview strip (`ui_kit/forge/dialogs.rs`, `Parent::Look`): the large panel holds no more. Each row shows its value in the second column; a colour's
+- **Rows.** The list shows three rows at a time and scrolls through the seven, over the preview strip: the large panel holds no more. Each row shows its value in the second column; a colour's
   name is the game's own string for that palette index, read at run
   time. A opens the
   kit's value picker over the page (`ui_kit::picker::offer_list`) with
@@ -210,7 +211,7 @@ value picker").
 - **Preview.** A new `View` widget, `Scene3d {id, rect}`: the look drawn
   by the native renderer into an offscreen target (the model, its
   colours, tint and light, a slow turn, a neutral backdrop) and placed
-  in the rect by the compositor. `h2 ui preview forge.look` draws the
+  in the rect by the window. `h2 ui preview forge.look` draws the
   rect with the model's name in it, since the offline preview has no
   GPU scene; the kit's checks treat the widget as art.
 - **Preview follows focus.** While a picker is open the preview shows

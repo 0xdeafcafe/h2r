@@ -20,11 +20,7 @@ use std::{
 use crate::forge_map::Opened;
 use crate::forge_screens::{
     self as screens, Facts,
-    sheet::{self, Ask, Choice, Group, Kind, Prop, Sheet, Tool as ToolKind},
-};
-use crate::ui_kit::{
-    forge::{ANGLE_STEPS, HEADINGS},
-    spec::ScreenSpec,
+    sheet::{self, ANGLE_STEPS, Ask, Choice, Group, HEADINGS, Kind, Prop, Sheet, Tool as ToolKind},
 };
 
 mod area;
@@ -721,14 +717,6 @@ impl Editor {
             Endpoint::Base { index, .. } => format!("Machine {index}"),
             Endpoint::Added(id) => self.linkable(Linkable::Object(id)),
         }
-    }
-
-    /// The compositor's page: the reticle alone (slice U7 removes it). The
-    /// rest of the HUD, the gizmo and the markers are the kit's
-    /// ([`Editor::monitor_hud`]) and the screens are the game's, so the
-    /// compositor draws none.
-    pub fn page(&self) -> Option<ScreenSpec> {
-        self.tool.monitor.then(crate::ui_kit::forge::reticle)
     }
 
     /// What the HUD kit's `forge` HUD shows this tick (docs/game/

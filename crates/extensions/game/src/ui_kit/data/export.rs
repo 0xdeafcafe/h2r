@@ -78,11 +78,6 @@ fn justify_name(j: Justify) -> &'static str {
     }
 }
 
-/// A view's `[u8; 3]` as a palette value that converts back to it.
-fn from_rgb(c: [u8; 3]) -> [f32; 3] {
-    c.map(|v| (f32::from(v) + 0.5) / 255.0)
-}
-
 impl Design {
     /// The palette entry for `c`: an entry of that colour, or a new one
     /// named `<screen>.<n>`.
@@ -216,7 +211,6 @@ fn text_of(screen: &str, id: &str, slot: &str, texts: &[String]) -> Option<Strin
 
 fn kind_and_layout(s: &ScreenSpec) -> (&'static str, &'static str) {
     match Kind::of(s) {
-        Kind::Hud => ("hud", "none"),
         Kind::CodeEntry => ("code_entry", "large"),
         Kind::Dialog(DialogBase::ValuePicker) => (
             "picker",
@@ -282,7 +276,7 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
     let first = &states[0].1;
     let all = || states.iter().map(|(_, s)| s);
     let (kind, layout) = kind_and_layout(first);
-    let (backing, opener) = if first.transparent && (first.hud.is_some() || first.dialog.is_none()) {
+    let (backing, opener) = if first.transparent && first.dialog.is_none() {
         (Some("none".to_string()), None)
     } else if let Some(u) = &first.underlay {
         if crate::ui_kit::screens::NAMES.contains(&u.name.as_str()) {
@@ -322,16 +316,14 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
     }
     // The title (its style is the header layout's).
     let titles: Vec<String> = all().map(|s| s.title.clone()).collect();
-    if first.hud.is_none() {
-        doc.widgets.insert(
-            "title".into(),
-            WidgetDoc {
-                component: Some("title".to_string()),
-                text: text_of(name, "title", "title", &titles),
-                ..WidgetDoc::default()
-            },
-        );
-    }
+    doc.widgets.insert(
+        "title".into(),
+        WidgetDoc {
+            component: Some("title".to_string()),
+            text: text_of(name, "title", "title", &titles),
+            ..WidgetDoc::default()
+        },
+    );
     // A dialog's body and status.
     if first.dialog.is_some() {
         let bodies: Vec<String> = all().map(|s| s.dialog.as_ref().map_or(String::new(), |d| d.body.clone())).collect();
@@ -496,52 +488,9 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
             },
         );
     }
-    // A HUD's texts.
-    if let Some(hud) = &first.hud {
-        for h in &hud.widgets {
-            let crate::ui_kit::view::Kind::Text {
-                font,
-                justify,
-                colour,
-                ..
-            } = &h.kind
-            else {
-                continue;
-            };
-            let of: Vec<_> = all()
-                .filter_map(|s| s.hud.as_ref()?.widgets.iter().find(|x| x.id == h.id))
-                .collect();
-            let texts: Vec<String> = of.iter().filter_map(|x| x.text().map(String::from)).collect();
-            let slot = h.id.replace(['.', '-'], "_");
-            let mut w = WidgetDoc {
-                text: text_of(name, &h.id, &slot, &texts).or_else(|| Some(format!("{{{slot}}}"))),
-                ..WidgetDoc::default()
-            };
-            let styles = same(of.iter().map(|x| match &x.kind {
-                crate::ui_kit::view::Kind::Text { font, justify, colour, .. } => Some((*font, *justify, *colour)),
-                _ => None,
-            }));
-            if styles.flatten().is_some() {
-                w.component = Some(design.component(
-                    &["hud.text", "hud.label"],
-                    "hud",
-                    name,
-                    *font,
-                    from_rgb(*colour),
-                    *justify,
-                ));
-            }
-            if let Some(r) = same(of.iter().map(|x| x.rect)) {
-                let (at, size) = at_size(r);
-                w.at = Some(at);
-                w.size = Some(size);
-            }
-            doc.widgets.insert(h.id.clone(), w);
-        }
-    }
     // Fixed rows.
     let fixed = FIXED_ROWS.contains(&name) || name.starts_with("design.") || name.starts_with("layout.");
-    if fixed && first.hud.is_none() {
+    if fixed {
         for (i, r) in first.rows.iter().enumerate() {
             doc.rows.insert(format!("row.{i}"), row_doc(r));
         }

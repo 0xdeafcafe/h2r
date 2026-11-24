@@ -213,7 +213,6 @@ fn an_animation_style_sets_the_pane_and_list_tracks() {
 #[test]
 fn the_kind_of_a_doc_picks_the_shape_and_the_template() {
     assert_eq!(entry("coop").unwrap().shape, Shape::List);
-    assert_eq!(entry("forge.hud").unwrap().shape, Shape::Bare);
     assert_eq!(
         entry("kit.dialog").unwrap().shape,
         Shape::Dialog { base: 222 },
@@ -227,7 +226,6 @@ fn the_kind_of_a_doc_picks_the_shape_and_the_template() {
     // Only a list screen opens on its tag.
     assert_eq!(list_id("coop"), id_of("coop"));
     assert_eq!(list_id("kit.dialog"), None);
-    assert_eq!(list_id("forge.hud"), None);
 }
 
 #[test]

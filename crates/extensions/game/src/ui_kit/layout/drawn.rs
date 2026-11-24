@@ -52,10 +52,8 @@ const CHROME: [&str; 2] = ["title", "legend"];
 
 /// The list's own texts and the chrome, which a modal opened from the list
 /// covers as retail's do: the rows, the help line about the focused row,
-/// the dialog's body and status, and the HUD's reticle, which the pause
-/// menu and every dialog in retail cover when they open over the world.
-const NOT_CONTENT: [&str; 8] = [
-    "reticle",
+/// and the dialog's body and status.
+const NOT_CONTENT: [&str; 7] = [
     "list",
     "title",
     "legend",

@@ -60,7 +60,7 @@ pub struct Facts {
     /// Edits not saved: Leave Game asks first.
     pub dirty: bool,
     pub pending_rebuild: usize,
-    /// The rotation snap, an index into `ui_kit::forge::ANGLE_STEPS`.
+    /// The rotation snap, an index into `sheet::ANGLE_STEPS`.
     pub rotation_snap: usize,
     /// The movement snap, an index into `sheet::MOVE_STEPS`.
     pub movement_snap: usize,

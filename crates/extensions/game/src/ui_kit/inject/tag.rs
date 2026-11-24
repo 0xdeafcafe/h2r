@@ -184,15 +184,6 @@ pub fn screen_block(e: &Entry, t: &Template, wigl: &Wigl) -> Result<Block, Strin
             pane.block(PANE_BITMAPS, kept.len() as u32, bitmaps_child(&kept));
             root.block(ROOT_PANES, 1, pane);
         }
-        Shape::Bare => {
-            let p = pane_of()?;
-            let mut pane = Block::zeroed(PANE_SIZE as usize);
-            pane.bytes[..4].copy_from_slice(&p.bytes[..4]);
-            if let Some((pane_track, _)) = want {
-                pane.put_u16(PANE_ANIMATION, pane_track);
-            }
-            root.block(ROOT_PANES, 1, pane);
-        }
     }
     Ok(root)
 }

@@ -99,9 +99,6 @@ pub enum Shape {
     /// base dialog's root, a pane holding its flags and animation, the
     /// list placed by the layout and the panel art; no text block.
     Dialog { base: i16 },
-    /// A screen with no list (a HUD): the template's root and a pane with
-    /// the template's flags and animation, nothing else.
-    Bare,
 }
 
 /// One screen's tag, as far as the map needs to know.
@@ -121,7 +118,7 @@ impl Entry {
     /// tried: the first the map's interface lists is the template.
     pub fn templates(&self) -> Vec<i16> {
         match self.shape {
-            Shape::List | Shape::Bare => vec![template::CONTROLS, template::INGAME],
+            Shape::List => vec![template::CONTROLS, template::INGAME],
             Shape::Dialog { base } => vec![base],
         }
     }
@@ -151,7 +148,6 @@ pub fn entry(name: &str) -> Result<Entry, String> {
     let spec = screens::sample(name).ok_or_else(|| format!("{name} has no sample"))?;
     let shape = match doc.kind.as_str() {
         "list" => Shape::List,
-        "hud" => Shape::Bare,
         kind => Shape::Dialog {
             base: dialog_base(name, kind, doc.layout.as_deref())?,
         },

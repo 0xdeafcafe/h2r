@@ -63,7 +63,6 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | `List` | the Controls tag (`KitScreen`) | header layout 0 | settings-style lists over the game shell |
 | `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (the shared settings dialog, "The settings dialog"), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
-| `Hud` | text and art widgets over the running game (`ScreenSpec::hud`) | supplied by the tool | the Forge monitor strip, reticle and controls |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
 
 **Backing.** A `Dialog` or `CodeEntry` is `Over` (drawn over the screen
@@ -71,15 +70,10 @@ beneath, as the game's own dialogs are) or `Own` (it carries the game shell
 backing, `framing_center` from screen 5, under its panel, so the screen
 beneath doesn't matter).
 
-The Forge monitor HUD has no list or focus. The compositor draws its
-widgets on a transparent surface with the preview renderer and disc fonts;
-its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
-(`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
-them.
-
-A `Hud` whose spec is not `transparent` is drawn over the game shell
-instead of a live picture (`preview::From::view`): widgets that sit on
-the shell's header and footer bands. Its doc says `backing: shell`.
+A HUD over the running game is not a screen kind: it is the HUD kit's
+([hud-kit.md](hud-kit.md)), drawn by the game's own HUD pass. The Forge
+monitor's HUD and the Forge screens are the game's
+([forge-firefight-ui.md](forge-firefight-ui.md)).
 
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
@@ -247,7 +241,7 @@ state.
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
 | on drawn | a text's glyphs meet another group's drawn row or cell art, picture (`Art::Level`) or text over more than 24 pixels (`Issue::OnDrawn`); the pairs `overlap` already names are left out |
 | panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`). A screen that draws the lobby's panel as retail's lobby does, the list and its status lines in one pane, is listed in `layout::drawn::SHARED_PANELS` with its retail precedent |
-| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
+| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
 | drawn outside | art drew more than `Rules::max_outside` (2) units past its declared rectangle (`Issue::DrawnOutside`): fix the rectangle |
 
 The last four read what the preview really drew. `preview::render_traced`
@@ -1328,7 +1322,7 @@ A screen's presentation is data in `content/ui/`; its Rust is behaviour
   colour, justification, place, variants and specimen page).
 - `content/ui/screens/<name>.yaml` is one screen of
   `ui_kit::screens::NAMES`: `screen`, `kind` (`list`, `dialog`,
-  `code_entry`, `picker`, `hud`), `layout` (a list's `controls`,
+  `code_entry`, `picker`), `layout` (a list's `controls`,
   `level_select` or `moved`; a dialog's `settings` or `large`), `backing`
   (`shell`, `over` an `opener` such as `main-menu`, `screen` over a screen
   of ours, or `none`), `scrolls`, its named `states` (the focus and a
@@ -1392,7 +1386,7 @@ change to a screen's Rust, then the tests.
 
 `ui_kit::components` puts a screen together from the components:
 `Screen::list`, `level_select`, `moved`, `large`,
-`message`, `code_entry`, `picker` and `hud`, with `row`, `legend`,
+`message`, `code_entry` and `picker`, with `row`, `legend`,
 `legend_on_panel`, `description`, `help`, `text`, `art`, `status`,
 `scrolls` and `over`; `build()` derives the inputs its rows and legend
 need. `components::row` makes each kind of row (`action`, `open`,
@@ -1427,8 +1421,8 @@ placeholder copy so each reads as a template: `layout.list`,
 `layout.list.description`, `layout.list.panel-edge`,
 `layout.list.level-select`, `layout.list.texts`,
 `layout.dialog.settings`, `layout.dialog.large`, `layout.dialog.message`,
-`layout.dialog.over-screen`, `layout.code-entry`, `layout.picker` and
-`layout.hud` (`ui_kit::components::specimens::PAGES`). A new screen
+`layout.dialog.over-screen`, `layout.code-entry` and `layout.picker`
+(`ui_kit::components::specimens::PAGES`). A new screen
 starts from the one it looks like.
 
 ## Consistency

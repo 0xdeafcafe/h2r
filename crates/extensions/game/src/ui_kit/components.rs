@@ -19,7 +19,7 @@ use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::spec::{
     DescriptionBlock, ListPlace, PaneText, Press, RowKind, RowSpec, ScreenSpec, ValueStyle,
 };
-use crate::ui_kit::view::{Opener, PaneArt, Widget};
+use crate::ui_kit::view::{Opener, PaneArt};
 
 mod specimen;
 pub mod specimens;
@@ -188,15 +188,11 @@ pub enum Kind {
     Dialog(DialogBase),
     /// The large dialog with entry cells.
     CodeEntry,
-    /// Widgets over the running game.
-    Hud,
 }
 
 impl Kind {
     pub fn of(s: &ScreenSpec) -> Kind {
-        if s.hud.is_some() {
-            Kind::Hud
-        } else if let Some(d) = &s.dialog {
+        if let Some(d) = &s.dialog {
             if d.cells.is_some() {
                 Kind::CodeEntry
             } else if s.content.picker {
@@ -208,13 +204,12 @@ impl Kind {
             Kind::List
         }
     }
-    /// Its retail header layout; `None` for a HUD.
-    pub fn header_layout(self) -> Option<u8> {
+    /// Its retail header layout.
+    pub fn header_layout(self) -> u8 {
         match self {
-            Kind::List => Some(0),
-            Kind::Dialog(DialogBase::QuickOptions) => Some(1),
-            Kind::Dialog(_) | Kind::CodeEntry => Some(2),
-            Kind::Hud => None,
+            Kind::List => 0,
+            Kind::Dialog(DialogBase::QuickOptions) => 1,
+            Kind::Dialog(_) | Kind::CodeEntry => 2,
         }
     }
     /// Its name in findings, in the docs' `kind` and `layout`.
@@ -225,7 +220,6 @@ impl Kind {
             Kind::Dialog(DialogBase::Large) => "dialog.large",
             Kind::Dialog(DialogBase::ValuePicker) => "picker",
             Kind::CodeEntry => "code_entry",
-            Kind::Hud => "hud",
         }
     }
 }
@@ -315,12 +309,6 @@ impl Screen {
             ),
         }
     }
-    /// Widgets over the running game, in title-safe coordinates.
-    pub fn hud(name: &str, title: &str, widgets: Vec<Widget>) -> Screen {
-        Screen {
-            spec: ScreenSpec::hud(name, title, widgets),
-        }
-    }
 
     pub fn row(mut self, row: RowSpec) -> Screen {
         self.spec.rows.push(row);
@@ -388,31 +376,29 @@ impl Screen {
                 )));
             }
         }
-        if s.hud.is_none() {
-            let mut inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
-            let steps = s
-                .rows
-                .iter()
-                .any(|r| matches!(r.kind, RowKind::Value { .. }) && r.press == Press::Step);
-            let cells = s.dialog.as_ref().is_some_and(|d| d.cells.is_some());
-            if steps || cells {
-                inputs.extend([Input::Left, Input::Right]);
-            }
-            let glyphs: Vec<Glyph> = s
-                .prompts
-                .iter()
-                .chain(s.rows.iter().flat_map(|r| r.prompts.iter().flatten()))
-                .flat_map(|p| p.glyphs.iter().copied())
-                .collect();
-            for g in glyphs {
-                if let Some(i) = input_of(g)
-                    && !inputs.contains(&i)
-                {
-                    inputs.push(i);
-                }
-            }
-            s.inputs = inputs;
+        let mut inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
+        let steps = s
+            .rows
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::Value { .. }) && r.press == Press::Step);
+        let cells = s.dialog.as_ref().is_some_and(|d| d.cells.is_some());
+        if steps || cells {
+            inputs.extend([Input::Left, Input::Right]);
         }
+        let glyphs: Vec<Glyph> = s
+            .prompts
+            .iter()
+            .chain(s.rows.iter().flat_map(|r| r.prompts.iter().flatten()))
+            .flat_map(|p| p.glyphs.iter().copied())
+            .collect();
+        for g in glyphs {
+            if let Some(i) = input_of(g)
+                && !inputs.contains(&i)
+            {
+                inputs.push(i);
+            }
+        }
+        s.inputs = inputs;
         s
     }
 }

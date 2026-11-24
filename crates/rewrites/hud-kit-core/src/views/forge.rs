@@ -25,10 +25,9 @@
 //!   axis colours ([`Style::Axis`]), from the held or aimed thing's origin
 //!   along each axis; the runtime gives their poses ([`gizmo_pose`]).
 //!
-//! The reticle is not here: the monitor's reticle is the compositor's `+`
-//! until a retail weapon's reticle widget is chosen from the disc census (a
-//! text at the screen's centre is in the retail reticle's reserved
-//! rectangle).
+//! The reticle is not here: the monitor has none until a retail weapon's
+//! reticle widget is chosen from the disc census (a text at the screen's
+//! centre is in the retail reticle's reserved rectangle).
 //!
 //! A button is the font's glyph, read from the pad's table: [`Buttons`] is
 //! what the game fills from `forge_controls::bindings::BINDINGS`, so no

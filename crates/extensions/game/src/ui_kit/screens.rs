@@ -267,10 +267,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 75] = [
-    "forge.hud",
-    "forge.palette",
-    "forge.menu",
+pub const NAMES: [&str; 71] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -342,7 +339,6 @@ pub const NAMES: [&str; 75] = [
     "layout.dialog.over-screen",
     "layout.code-entry",
     "layout.picker",
-    "layout.hud",
 ];
 
 /// The value picker as the Forge Map row opens it, with two saved maps
@@ -379,8 +375,6 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
 /// file.
 pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
-        // The compositor's (slice U7 removes them).
-        "forge.hud" | "forge.palette" | "forge.menu" => super::forge::live(name),
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
         | "forge.question" | "forge.options" | "forge.controls" | "forge.games" => {
