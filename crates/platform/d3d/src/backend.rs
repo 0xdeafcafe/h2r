@@ -281,6 +281,10 @@ pub trait ExternalPass: Send {
         std::any::type_name::<Self>()
     }
 
+    /// Produce counted packets for a replacement of a z-pass query draw.
+    /// Every active copy prepares the count pipeline before any can commit.
+    fn counts_samples(&self) -> bool { false }
+
     /// Supplemental geometry seen only through the display lens. The game
     /// has no draw for it. Only display attachments may receive a recording.
     fn display_only(&self) -> bool { false }
@@ -818,6 +822,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
 
     let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
     let check_recording = !pass.uses_validated_resources();
+    let counted = pass.counts_samples();
     let mut failure = None;
     let mut prepared = [None, None];
     for (slot, target) in prepared.iter_mut().zip(targets) {
@@ -826,6 +831,9 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
         }
         let result = if let Some(draws) = pass.record_draws(target, request) {
             draws.map(Prepared::Draws).map_err(|_| Metric::RefusedInputs)
+        } else if counted {
+            // Only ordered draw packets can contribute to the backend's report.
+            Err(Metric::RefusedInputs)
         } else if let Some(encoded) = pass.record_encoded(target, request) {
             encoded.map_err(|_| Metric::RefusedInputs).and_then(|encoded| {
                 if check_recording {
@@ -865,7 +873,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
                 let ranges = draws.ranges;
                 // A packet can join adjacent ranges (the world's triangle lists).
                 let valid = !draws.packets.is_empty()
-                    && !draws.packets.iter().any(gfx::RecordedDraw::counts_samples);
+                    && draws.packets.iter().all(|packet| packet.counts_samples() == counted);
                 (ranges, ExternalCommands::Draws { targets: target.targets, draws }, valid)
             }
             Prepared::Encoded(encoded) => (encoded.ranges, ExternalCommands::Encoded(encoded), true),
@@ -934,15 +942,24 @@ pub trait DrawAdmission: Send + Sync {
     fn stage(&self) -> Option<timeline::native::Stage> { None }
 
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
+
+    /// A query replacement must preserve the running sample counter.
+    /// Ordinary owners are never consulted for counted packets.
+    fn admit_counted(&self, _: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        None
+    }
 }
 
 pub(crate) fn admit_draw(
     admission: &dyn DrawAdmission, snapshot: &DrawSnapshot<'_>,
 ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
     use timeline::native::{Metric, Timer};
+    if snapshot.draw.hw.zpass_count_enable {
+        return admission.admit_counted(snapshot).filter(|(_, pass)| pass.counts_samples());
+    }
     let stage = admission.stage();
     let _timer = stage.map(|s| Timer::start(s, Metric::PrepareNs));
-    let candidate = admission.admit(snapshot);
+    let candidate = admission.admit(snapshot).filter(|(_, pass)| !pass.counts_samples());
     if candidate.is_none() && let Some(s) = stage {
         s.count(Metric::Examined, 1);
         s.count(Metric::RefusedOwnership, 1);

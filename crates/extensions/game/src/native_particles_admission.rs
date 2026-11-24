@@ -444,6 +444,16 @@ impl DrawAdmission for Admission {
             Issuing::Flare(site) => flare_pass::plan(site, snapshot, &self.flare_gpu),
         }
     }
+
+    fn admit_counted(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        let mut scope = self.scope.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(&scope.issuing, Some(Issuing::Flare(flares::Site::Visibility))) {
+            return None;
+        }
+        scope.issuing = None;
+        drop(scope);
+        flare_pass::plan(flares::Site::Visibility, snapshot, &self.flare_gpu)
+    }
 }
 
 struct Direct<'a> {
@@ -475,7 +485,7 @@ impl Admission {
         } else if snapshot.draw.glyph_cache != 0 {
             Some("GlyphFiltering")
         } else if snapshot.draw.hw.zpass_count_enable {
-            Some("VisibilityQuery")
+            Some("UnexpectedSampleCount")
         } else if !snapshot.draw.state.bad.is_empty() {
             Some("UnresolvedState")
         } else {
@@ -915,6 +925,49 @@ mod tests {
         assert!(admission.admit(&snapshot(&fan)).is_none());
         fan.hw.zpass_count_enable = false;
         assert!(admission.admit(&snapshot(&fan)).is_none());
+    }
+
+    #[test]
+    fn visibility_fans_are_counted_only_inside_their_one_read_only_scope() {
+        let admission = Admission {
+            scope: Mutex::new(Scope::default()),
+            renderer: Default::default(),
+            flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        };
+        let arm = || {
+            admission.scope.lock().unwrap().issuing = Some(Issuing::Flare(flares::Site::Visibility));
+        };
+        let (mut fan, _) = particle();
+        fan.entry = "D3DDevice_End";
+        fan.primitive = PrimitiveType::TriangleFan;
+        fan.layout.streams[0].stride = 256;
+        fan.layout.streams[0].attributes[0].data_type = VertexDataType::Float4;
+        fan.streams[0] = StreamBytes { stride: 256, data: vec![0; 1024].into() };
+        fan.state.render.color_write = gfx::state::ColorWriteMask::from_xbox(0);
+        fan.state.render.depth_write = false;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        arm();
+        assert!(admission.admit(&snapshot(&fan)).is_none());
+
+        fan.hw.zpass_count_enable = true;
+        arm();
+        let (plan, pass) = admission.admit_counted(&snapshot(&fan)).unwrap();
+        assert_eq!((plan.stage, plan.ranges), (Stage::Flares, 1));
+        assert!(pass.counts_samples() && pass.replays_scene());
+        assert_eq!(pass.resolved_fallback().as_deref(), Some(&fan));
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+
+        arm();
+        fan.state.render.color_write = gfx::state::ColorWriteMask::ALL;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        fan.state.render.color_write = gfx::state::ColorWriteMask::from_xbox(0);
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+        arm();
+        fan.state.render.depth_mode = gfx::state::DepthBufferMode::W;
+        fan.state.render.depth_write = true;
+        assert!(admission.admit_counted(&snapshot(&fan)).is_none());
     }
 
     #[test]

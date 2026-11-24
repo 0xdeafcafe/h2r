@@ -146,8 +146,9 @@ Explicit assumptions and limits:
   still come from its own snapshot. No stale per-view matrices are cached.
 - Only programmable vertex shaders, one scissor rectangle, a depth-backed
   target and the researched vertex declarations are admitted. Shadow
-  sampling, query-counted draws, glyph filtering, unknown shader behavior
-  and missing sampled stages refuse. Integer uniform render scale and
+  sampling, glyph filtering, unknown shader behavior and missing sampled
+  stages refuse. Only the dedicated flare visibility boundary admits a
+  counted draw. Integer uniform render scale and
   single-sample attachments are the handoff/backend contract here.
 - The stage replaces D3D's GPU recording and keeps guest geometry construction and resolved-draw capture. Uploads are owned per recording so cancellation stays correct. The feature's armed count is not replacement coverage; the stage counters are.
 
@@ -243,13 +244,20 @@ restores its render state afterwards. Other callers give `UnownedCaller`.
 Lens flares use a separate queue: `0x0002dba0` → `0x000209b0`, populated
 from sky, object attachments, lights and effect parts. Pass `0x0002dd30`
 invokes callback `0x0002e540` through `0x00020bb0` with query work enabled.
-The guest owns its END at `0x0002e9b6`. The queue helper brackets this
-callback with z-pass query packets and retains its readback lifecycle.
-Reflection pass `0x0002df00` invokes `0x0002e9e0` without those
-queries. Its visible billboards go to the native flare stage through the shared
-leaf at `0x000480a0` when the saved caller is `0x0002f24c`. Neither queue
-nor visibility-history logic is replaced. The central handoff also rejects
-query-counted draws before asking admission owners.
+The native flare hook arms one read-only, position-only fan at END
+(`0x0002e9b6`) and disarms on return. The queue helper brackets it with
+the guest's existing z-pass clear and report. The ordered fan carries a
+count pipeline using its actual scissor, vertex program and depth/stencil
+state. W-buffered fans use the count entry's W-depth output. The backend
+sums on the copy that owns the query and scales the count to guest pixels.
+The report stays ordered with earlier draws and retains the guest's
+ticket and polling lifecycle. If the fan, targets or count pipeline fail
+preparation, the original packet adds its samples through the same
+counter.
+
+Reflection pass `0x0002df00` invokes `0x0002e9e0` with counting disabled.
+Its visible billboards go to the native flare stage through the shared
+leaf at `0x000480a0` when the saved caller is `0x0002f24c`.
 
 Weather is a BSP weather-palette path, not one of these effect sort-list
 handlers. The palette is `sbsp+0x84`, stride 0x88, weather datum +0x24;
@@ -297,7 +305,7 @@ guest-issued leaves are queued behind the render thread the same way.
 ## Rules and limits
 
 - Coverage comes from the `particles` stage counters in `H2_FRAME_STATS` (suppressed, and positive reference and display ranges in view bucket `other`). Resource and range refusals are named counters, not receipts.
-- The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires render-safe leaf hooks and verifies that the particle update, visibility query and layered handlers have no particle hooks.
+- The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires render-safe leaf and visibility hooks and verifies that the particle update and layered handlers have no particle hooks.
 - `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
 
 ## Not verified
@@ -305,7 +313,7 @@ guest-issued leaves are queued behind the render thread the same way.
 - Pixel parity of colour, depth and particle evolution against D3D over the first 4,000 presents of the Old Mombasa level, including a contrail-bearing projectile and the four-vertex effect builder.
 - Combat and explosion sections at render scale 1 and 2 and two views, with a receipt on each copy: sprite blending, near clipping, alpha test, additive particles and D3D-only neighbours.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
-- Query results and weather and beam simulation state equal to the D3D baseline; refused point and layered-geometry draws keep their D3D receipts.
+- Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
 
 ## Related

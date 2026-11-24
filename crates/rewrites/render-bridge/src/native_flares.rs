@@ -1,5 +1,5 @@
-//! Colour geometry of the late flare pass. The queue, state changes and
-//! visibility tickets remain guest-owned. See the retail trace linked from
+//! Draws of the flare passes. The queue, state changes and visibility
+//! tickets remain guest-owned. See the retail trace linked from
 //! docs/graphics/native-renderer.md.
 use crate::native_particles::{HOST, Producer};
 use engine::points::scene_effects::*;
@@ -21,7 +21,7 @@ fn owns_late_fan(site: Site, word: impl Fn(u32) -> Option<u32>) -> bool {
             matches!(word(0x90), Some(0x0004_7523 | 0x0004_752f)) && word(0xf0) == Some(LATE_RETURN)
         }
         Site::Filter => word(0x9c) == Some(0x0004_753a) && word(0x100) == Some(LATE_RETURN),
-        Site::Reflection => false, // shares the billboard hook with light volumes
+        Site::Visibility | Site::Reflection => false, // separate hooks
     }
 }
 
@@ -34,6 +34,23 @@ static LEAVES: [(Site, EffectLeaf); 5] = [
 ];
 
 pub(super) fn build(b: &mut hooks::Builder) {
+    b.raw()
+        .observe_before(&EFFECT_QUERY, "native_flare_query", |o| {
+            let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(host) = host {
+                host.arm_flare(&mut *o.guest(), Site::Visibility);
+            }
+        })
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_before(&engine::points::render_aspect::FLARE_QUERY_END, "native_flare_query_return", |o| {
+            let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(host) = host {
+                host.finish(&mut *o.guest(), Producer::Flare(Site::Visibility));
+            }
+        })
+        .context_only();
     for (site, leaf) in &LEAVES {
         let site = *site;
         b.raw()

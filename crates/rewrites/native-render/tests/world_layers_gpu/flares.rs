@@ -13,7 +13,7 @@ use d3d::{
     Backend, ExternalPass, ExternalPlan, ExternalWrites, GfxBackend, ResolvedDraw, TargetCopy,
 };
 use gfx::encode::HostPixelOrder;
-use gfx::state::{BlendFactor, BlendOp, CompareFunc};
+use gfx::state::{BlendFactor, BlendOp, ColorWriteMask, CompareFunc};
 use gfx::surface::SurfaceId;
 use gfx::vertex::{
     PrimitiveType, StreamLayout, VertexAttribute, VertexDataType, VertexLayout, VertexRegister,
@@ -133,6 +133,9 @@ struct FlarePass {
 }
 
 impl ExternalPass for FlarePass {
+    fn counts_samples(&self) -> bool {
+        self.site == Site::Visibility
+    }
     fn replays_scene(&self) -> bool {
         true
     }
@@ -156,7 +159,7 @@ impl ExternalPass for FlarePass {
 
     fn writes(&self) -> ExternalWrites {
         ExternalWrites {
-            color: true,
+            color: self.draw.state.render.color_write.xbox_value() != 0,
             depth_stencil: false,
         }
     }
@@ -192,11 +195,15 @@ impl Scene {
     /// `FlareGpu::prepare` answered (`None` when the backend never asked) and
     /// whether the backend committed a recording.
     fn issue(&mut self, site: Site, f: &Fan) -> (Option<Result<(), Refusal>>, bool) {
+        self.issue_draw(site, fan(f, false))
+    }
+
+    fn issue_draw(&mut self, site: Site, draw: ResolvedDraw) -> (Option<Result<(), Refusal>>, bool) {
         self.frame += 1;
         let answer = Arc::new(Mutex::new(None));
         let pass: Box<dyn ExternalPass> = Box::new(FlarePass {
             site,
-            draw: Arc::new(fan(f, false)),
+            draw: Arc::new(draw),
             gpu: Arc::clone(&self.gpu),
             frame: self.frame,
             answer: Arc::clone(&answer),
@@ -261,6 +268,35 @@ fn near(actual: [u8; 3], expected: [u8; 3]) -> bool {
         .iter()
         .zip(expected)
         .all(|(&a, e)| a.abs_diff(e) <= 3)
+}
+
+#[test]
+fn a_visibility_fan_tests_w_depth_and_contributes_to_the_current_report() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut scene) = Scene::new() else { return };
+    let mut query = fan(&Fan {
+        registers: &[0],
+        rect: (2.0, 4.0, 10.0, 10.0),
+        color: [1.0; 4],
+        carried: [1.0; 4],
+        blend: None,
+    }, false);
+    query.hw.zpass_count_enable = true;
+    query.state.render.color_write = ColorWriteMask::from_xbox(0);
+    query.state.render.depth_func = CompareFunc::Less;
+
+    scene.backend.clear_pixel_count().unwrap();
+    assert_eq!(scene.issue_draw(Site::Visibility, query.clone()), (Some(Ok(())), true));
+    // Compare the next fan against a depth between its z (0) and w (4096).
+    // It must contribute no samples. Ending the report includes both draws.
+    scene.backend.clear(scene.color, Some(scene.depth), Clear {
+        depth: Some(0.0001),
+        ..Clear::NONE
+    }).unwrap();
+    assert_eq!(scene.issue_draw(Site::Visibility, query), (Some(Ok(())), true));
+    let ticket = scene.backend.report_pixel_count().unwrap().unwrap();
+    assert_eq!(scene.backend.read_pixel_count(ticket), Ok(8 * 6));
+    assert!(scene.read().iter().all(|pixel| *pixel == [0, 0, 0, 255]));
 }
 
 #[test]

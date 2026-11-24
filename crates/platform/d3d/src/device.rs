@@ -1269,10 +1269,15 @@ impl<S: Copy + Eq> ExternalBinding<S> {
         header: u32,
         color: S,
         depth: Option<S>,
+        writes_color: bool,
         writes_depth: bool,
     ) -> bool {
-        self.colors.as_slice() == [(header, color)]
-            && self.depth_write == writes_depth
+        let same_color_write = if writes_color {
+            self.colors.as_slice() == [(header, color)]
+        } else {
+            self.colors.is_empty()
+        };
+        same_color_write && self.depth_write == writes_depth
             && self.surfaces.color == color
             && match depth {
                 Some(depth) => self.surfaces.depth == depth,
@@ -6186,6 +6191,7 @@ impl<B: Backend> Device<B> {
                     .is_some_and(|i| (i.width, i.height) == (target.width, target.height))
         });
         let (color, depth) = self.current_targets(mem, entry)?;
+        let writes_color = state.render.color_write.xbox_value() != 0;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
         // the draw dirties is noted only once it has drawn.
@@ -6246,7 +6252,6 @@ impl<B: Backend> Device<B> {
         let admission = if self.swallowing.is_some()
             || (native.is_none() && scoped.is_none() && self.admissions.is_empty())
             || !draw.state.bad.is_empty()
-            || self.hw.zpass_count_enable
         {
             None
         } else {
@@ -6286,6 +6291,14 @@ impl<B: Backend> Device<B> {
                 return None;
             }
             match self.external_binding(mem, &plan, &mut *pass, None) {
+                Ok(binding) if pass.counts_samples() => {
+                    if binding.same_draw_writes(self.render_target, color, depth, writes_color, writes_depth) {
+                        Some((plan, pass, binding))
+                    } else {
+                        plan.stage.count(Metric::RefusedInputs, 1);
+                        None
+                    }
+                }
                 Ok(binding)
                     if native.is_none()
                         || (binding.surfaces.color == color
@@ -6348,7 +6361,7 @@ impl<B: Backend> Device<B> {
             let tail = pass.indexed_tail();
             let fallback = if tail.is_none()
                 && scoped.is_none()
-                && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
+                && binding.same_draw_writes(self.render_target, color, depth, writes_color, writes_depth)
                 && !(parts.indexed_esp.is_some()
                     && compatible_geometry_target
                     && (self.indexed_geometry_scope)())
@@ -6396,8 +6409,13 @@ impl<B: Backend> Device<B> {
                     }),
                 };
                 if self.backend.queue_external_draw(queued, textures) {
-                    self.present_cameras.color_written(color);
-                    self.mark_written(writes_depth);
+                    if writes_color {
+                        self.present_cameras.color_written(color);
+                        self.mark_color_written(self.render_target);
+                    }
+                    if writes_depth {
+                        self.mark_depth_written();
+                    }
                     self.stats.claimed_draws += u64::from(native.is_none());
                     if let Some((_, committed)) = native.as_mut() {
                         **committed = true;
@@ -6467,7 +6485,6 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
-        let writes_color = draw.state.render.color_write.xbox_value() != 0;
         // An adapted draw (`original`) is no longer the admitted packet. The
         // sink checks the rest once, for a retaining replay only.
         let (outcome, spare) = match retained.filter(|_| original.is_none()) {
@@ -7373,20 +7390,23 @@ mod depth_write_tests {
             colors: vec![(11, 1)],
             depth_write: true,
         };
-        assert!(binding.same_draw_writes(11, 1, Some(2), true));
-        assert!(!binding.same_draw_writes(11, 1, None, true));
-        assert!(!binding.same_draw_writes(11, 1, Some(3), true));
-        assert!(!binding.same_draw_writes(11, 1, Some(2), false));
-        assert!(!binding.same_draw_writes(12, 1, Some(2), true));
+        assert!(binding.same_draw_writes(11, 1, Some(2), true, true));
+        assert!(!binding.same_draw_writes(11, 1, None, true, true));
+        assert!(!binding.same_draw_writes(11, 1, Some(3), true, true));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), true, false));
+        assert!(!binding.same_draw_writes(12, 1, Some(2), true, true));
         binding.colors.push((13, 3));
-        assert!(!binding.same_draw_writes(11, 1, Some(2), true));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), true, true));
         binding.colors.clear();
-        assert!(!binding.same_draw_writes(11, 1, Some(2), true));
-        binding.colors.push((11, 1));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), true, true));
         binding.depth_write = false;
-        assert!(!binding.same_draw_writes(11, 1, None, false));
+        assert!(binding.same_draw_writes(11, 1, Some(2), false, false));
+        assert!(!binding.same_draw_writes(11, 1, Some(3), false, false));
+        binding.colors.push((11, 1));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), false, false));
+        assert!(!binding.same_draw_writes(11, 1, None, true, false));
         binding.surfaces.depth = binding.surfaces.color;
-        assert!(binding.same_draw_writes(11, 1, None, false));
+        assert!(binding.same_draw_writes(11, 1, None, true, false));
     }
 
     /// Review P3: a stencil test that can store nothing does not change the
