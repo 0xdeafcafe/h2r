@@ -109,8 +109,7 @@ Each step is proven with tests; the user plays the result.
    player spawn. You walk around a30 in Halo 2's engine with Halo 2's
    physics. Halo 2's assets stand in for anything not converted yet.
    **Built** (§9): `h2 h1 convert <iso> a30` (and the other nine levels,
-   every BSP each); a30 ran headless in the game, and with round 2's
-   three-BSP cap so did a10, b30, c10, c20, c40, d20 and d40.
+   every BSP each); a30 has run headless in the game.
 4. **Objects.** Scenery, machines and doors, weapons, vehicles, equipment.
    **Built for weapons, equipment, vehicles, scenery, placed bipeds,
    the cyborg as the player, and machines, controls and light fixtures**
