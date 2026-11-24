@@ -1127,6 +1127,11 @@ pub struct Runtime {
     /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
     /// machine that joins late has it (`super::world::show::walls`).
     wall_cue: Option<(Vec<(u32, Option<u8>)>, u32)>,
+    /// The pickers' offers last sent as `Pick` cues on the actor channel,
+    /// and the tick they were sent: sent when they change and again every
+    /// `::rules::show::PICK_REPEAT` ticks while any stands, so a machine
+    /// that joins late has them (`super::world::show::pick_offer`).
+    pick_cue: Option<(Vec<::rules::vm::PickOffer>, u32)>,
     /// The players' bodies at the superbounce chain's last step: what
     /// `airborne` and `primed` read (`super::world::physics`).
     bodies: Vec<crate::superbounce_chain::Body>,
@@ -1194,6 +1199,7 @@ impl Runtime {
             walled: false,
             hud_on: false,
             wall_cue: None,
+            pick_cue: None,
             bodies: Vec::new(),
         }
     }
@@ -1915,6 +1921,7 @@ impl Runtime {
         self.publish_hud(Some(m));
         self.send_show();
         self.send_walls(tick);
+        self.send_picks(tick);
     }
 
     /// Offers the running script's show state to the actor channel's
@@ -1962,6 +1969,45 @@ impl Runtime {
             super::world::show::walls(tick, shown.clone());
             self.wall_cue = Some((shown, tick));
         }
+    }
+
+    /// Sends the pickers' offers to the clients as `Pick` cues
+    /// (`::rules::show::Cue::Pick`), one per picker, from the authority
+    /// that runs the script: again when the offers change and every
+    /// `::rules::show::PICK_REPEAT` ticks while any stands, so a machine
+    /// that joins late has them. A picker taken away goes as an empty
+    /// one, which takes the asking on the clients off. A film's run
+    /// sends none: it has no channel.
+    fn send_picks(&mut self, tick: u32) {
+        let offers = match &self.status {
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.picks().to_vec(),
+            _ => return,
+        };
+        let (sent, at) = match self.pick_cue.as_ref() {
+            Some((sent, at)) => (Some(sent), *at),
+            None => (None, tick),
+        };
+        let changed = sent != Some(&offers);
+        let repeat = !offers.is_empty() && tick.wrapping_sub(at) >= ::rules::show::PICK_REPEAT;
+        if !changed && !repeat {
+            return;
+        }
+        for old in sent.into_iter().flatten() {
+            if !offers.iter().any(|o| o.slot == old.slot) {
+                super::world::show::pick_offer(
+                    tick,
+                    ::rules::vm::PickOffer {
+                        slot: old.slot,
+                        title: old.title,
+                        rows: Vec::new(),
+                    },
+                );
+            }
+        }
+        for offer in &offers {
+            super::world::show::pick_offer(tick, offer.clone());
+        }
+        self.pick_cue = Some((offers, tick));
     }
 
     /// The walls the running script shows in play (`show_area`), in the
@@ -2030,6 +2076,7 @@ impl Runtime {
         self.store.remove();
         self.status = Status::Idle("the game ended");
         self.wall_cue = None;
+        self.pick_cue = None;
         self.publish_walls();
         self.publish_hud(None);
     }
