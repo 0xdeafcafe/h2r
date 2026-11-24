@@ -276,7 +276,7 @@ fn loading_fan(c: &mut Call<'_>, spinner: bool) -> Option<TransferAbi> {
     let host = host()?;
     let drawn = if spinner {
         let Some(vertices) = spinner_vertices(&*mem, esp) else { return geometry_refused() };
-        host.draw_quad(&mut *mem, &vertices)
+        host.loading_spinner(&mut *mem, &vertices)
     } else {
         let vertices = u8::try_from(c.cpu.ebp).ok().and_then(|register| {
             engine::ui_sprite::mapped_rectangle(

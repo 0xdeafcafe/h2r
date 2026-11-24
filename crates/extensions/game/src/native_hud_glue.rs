@@ -17,6 +17,7 @@ use gfx::vertex::PrimitiveType;
 use native_render::ui_gpu::{Refusal, UiGpu};
 use timeline::native::{Metric, Stage, Ui};
 
+use crate::hud_overlay::ScreenDraw;
 use crate::native_lights_glue::DeviceMemory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +247,20 @@ impl<B: d3d::Backend> Glue<B> {
         drawn
     }
 
+    /// A screen draw from the overlay (`hud_overlay::draw_screen`): its
+    /// immediate fan, with the guest's combiner and blend at the draw.
+    fn screen_overlay<const N: usize>(
+        &self,
+        mem: &mut dyn GuestMemory,
+        what: ScreenDraw,
+        vertices: &[[(u8, [f32; 4]); N]; 4],
+    ) -> bool {
+        self.permits_draw()
+            && crate::hud_overlay::draw_screen(&self.device, mem, what, |d, m, a| {
+                d.try_native_immediate_draw(m, PrimitiveType::TriangleFan, vertices, a)
+            })
+    }
+
     fn permits_draw(&self) -> bool {
         SCOPES.with(|scopes| scopes.borrow().permits(self.admission.owner))
     }
@@ -312,11 +327,15 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn fade_fan(&self, mem: &mut dyn GuestMemory, vertices: &[[(u8, [f32; 4]); 1]; 4]) -> bool {
-        self.fan(mem, vertices, None)
+        self.screen_overlay(mem, ScreenDraw::Fade, vertices) || self.fan(mem, vertices, None)
     }
 
     fn loading_bitmap_fan(&self, mem: &mut dyn GuestMemory, vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
-        self.fan(mem, vertices, None)
+        self.screen_overlay(mem, ScreenDraw::Loading, vertices) || self.fan(mem, vertices, None)
+    }
+
+    fn loading_spinner(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        self.screen_overlay(mem, ScreenDraw::Loading, vertices) || self.fan(mem, vertices, None)
     }
 
     fn backdrop_wash(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
@@ -387,6 +406,17 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             return false;
         }
         let Some(primitive) = PrimitiveType::from_xbox(primitive) else { return false };
+        // A bar on the overlay, with the combiner the last record with an
+        // image left (`0x00052857` writes none for a record without). The
+        // overlay's corners go round the quad: a strip's do not.
+        let carried = [None; 16];
+        if matches!(primitive, PrimitiveType::TriangleFan | PrimitiveType::QuadList)
+            && crate::hud_overlay::draw_screen(&self.device, mem, ScreenDraw::Bar, |d, m, a| {
+                d.try_native_inline_draw(m, primitive, bytes.clone(), &carried, a)
+            })
+        {
+            return true;
+        }
         let Ok(mut device) = self.device.lock() else { return false };
         let candidate = Direct::new(&self.admission, device.swap_count());
         let drawn = device.try_native_inline_draw(

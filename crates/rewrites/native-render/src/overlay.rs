@@ -244,6 +244,8 @@ pub struct OverlayBatch {
     pub alpha_kill: u8,
     pub color_write: u32,
     pub shader_words: Option<Box<[u32]>>,
+    /// The blend's constant colour, RGBA (`OverlayItem::blend_constant`).
+    pub blend_constant: [f32; 4],
     pub material: OverlayMaterial,
     pub clip: ClipRect,
     pub scissor: Scissor,
@@ -424,7 +426,8 @@ impl OverlayPlan {
                 b.material == item.material && b.color_write == item.color_write && b.glyph_cache == glyph_cache
                     && b.alpha_test == item.alpha_test && b.alpha_kill == item.alpha_kill
                     && b.shader_stages == item.shader_stages
-                    && b.shader_words == item.shader_words && b.clip == item.clip && b.first_index + b.index_count == start
+                    && b.shader_words == item.shader_words && b.blend_constant == item.blend_constant
+                    && b.clip == item.clip && b.first_index + b.index_count == start
             });
             if let Some(b) = plan.batches.last_mut().filter(|_| joins) {
                 b.index_count += count;
@@ -434,6 +437,7 @@ impl OverlayPlan {
                     material: item.material,
                     shader_stages: item.shader_stages,
                     shader_words: item.shader_words.clone(),
+                    blend_constant: item.blend_constant,
                     color_write: item.color_write,
                     glyph_cache,
                     alpha_test: item.alpha_test,
@@ -523,6 +527,21 @@ mod tests {
         assert_eq!(plan.batches[0].glyph_cache, 0);
         let magnified = OverlayPlan::new(&overlay, [720, 480], &NoGlyphs);
         assert_eq!(magnified.batches[0].glyph_cache, 2);
+    }
+
+    /// Fades of one blend but another constant colour are separate draws,
+    /// each carrying its colour for the pass.
+    #[test]
+    fn a_new_blend_constant_starts_a_batch() {
+        let mut o = Overlay::new([640, 480]);
+        let blend = OverlayBlend::On { source: 0x307, dest: 0x8002, equation: 0x8006 };
+        for colour in [[0.5, 0.25, 0.0, 1.0], [0.5, 0.25, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]] {
+            let n = o.push_fill(all(), [0.0, 0.0, 640.0, 480.0], [1.0; 4], blend).unwrap();
+            o.items[n as usize].blend_constant = colour;
+        }
+        let p = OverlayPlan::new(&o, [640, 480], &NoGlyphs);
+        let batches: Vec<_> = p.batches.iter().map(|b| (b.items, b.blend_constant)).collect();
+        assert_eq!(batches, [(2, [0.5, 0.25, 0.0, 1.0]), (1, [1.0, 0.0, 0.0, 1.0])]);
     }
 
     #[test]

@@ -1,4 +1,9 @@
-//! Individual HUD draws after the guest has installed the widget shader.
+//! Individual HUD draws after the guest has installed the widget shader,
+//! menu shader bitmaps' quads, and the fade's, the bars' and the loading
+//! screen's draws (docs/graphics/native-post-hud.md, "The HUD on the
+//! overlay", "The fade, the bars and the loading screen"), each captured
+//! onto the overlay with the guest's combiner and blend at the draw; and
+//! the passes of the menus' runs (`place_menu`).
 //! The draw snapshot pins the sampled image, including the changing glyph cache.
 //!
 //! The overlay's glyphs are every list's to share: [`fonts`] is the disc's fonts
@@ -18,54 +23,99 @@ use frame_scene::{
 use gfx::state::{
     BlendFactor, CompareFunc, CullMode, DepthBufferMode, FillMode, TextureAddress, TextureFilter,
 };
-use hud_edit::render::Fonts;
-use native_render::overlay::{GlyphPages, NoGlyphs, OverlayAssets, OverlayPlan};
+use hud_edit::render::{Art, Fonts};
+use map::TagId;
+use native_render::overlay::{GlyphPages, NoGlyphs, OverlayAssets, OverlayImage, OverlayPlan};
 use native_render::ui_gpu::{OverlayGpu, OverlayResidency, OverlayTextures};
 use render_bridge::native_hud::{HudTagQuad, HudVertices};
 use timeline::native::Stage;
 
 use crate::native_lights_glue::DeviceMemory;
+use crate::native_map::NativeMap;
 
+/// A HUD bitmap widget's quad, or a menu shader bitmap's: drawn from the
+/// overlay with its tag shader's evaluated combiner. Whether it was taken.
 pub fn draw_tag_quad<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     at: &HudTagQuad,
     vertices: &HudVertices,
 ) -> bool {
-    submit(device, mem, at, vertices, false)
+    capture(device, mem, Source::Tag(at), |d, m, a| {
+        d.try_native_immediate_draw(m, gfx::vertex::PrimitiveType::TriangleFan, vertices, a)
+    })
 }
 
+/// A HUD text widget's glyph quad, over the live glyph cache.
 pub fn draw_text_quad<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     at: &HudTagQuad,
     vertices: &HudVertices,
 ) -> bool {
-    submit(device, mem, at, vertices, true)
+    capture(device, mem, Source::Glyph(at), |d, m, a| {
+        d.try_native_pushed_draw(m, gfx::vertex::PrimitiveType::TriangleFan, vertices, a)
+    })
 }
 
-fn submit<B: d3d::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
-    mem: &mut dyn GuestMemory,
-    at: &HudTagQuad,
-    vertices: &HudVertices,
-    glyph: bool,
-) -> bool {
+/// A UI screen draw that names no tag: the fade, a bar, the loading
+/// screen's bitmaps and spinner (docs/graphics/native-post-hud.md, "The
+/// fade, the bars and the loading screen").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenDraw {
+    /// The full-screen fade `0x00040890`, any of its six modes.
+    Fade,
+    /// A solid rectangle of `0x00052ce7`: a menu fade rectangle, a
+    /// cinematic or progress bar, a split-screen divider.
+    Bar,
+    /// The loading screen's background, sweep or spinner (`0x000289e0`).
+    Loading,
+}
+
+impl ScreenDraw {
+    /// The counter of its draws the overlay took.
+    pub fn counter(self) -> timeline::native::Ui {
+        use timeline::native::Ui;
+        match self {
+            ScreenDraw::Fade => Ui::OverlayFadeQuads,
+            ScreenDraw::Bar => Ui::OverlayBarQuads,
+            ScreenDraw::Loading => Ui::OverlayLoadingQuads,
+        }
+    }
+}
+
+/// Screen draw `what`, issued by `issue` (the producer's immediate fan or
+/// inline quad): drawn from the overlay with the guest's own combiner,
+/// constants, blend and bound textures at the draw. Whether it was taken;
+/// when not, the caller draws it as before.
+pub fn draw_screen<B, F>(device: &d3d::abi::SharedDevice<B>, mem: &mut dyn GuestMemory, what: ScreenDraw, issue: F) -> bool
+where
+    B: d3d::Backend + Send + 'static,
+    F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
+{
+    let taken = capture(device, mem, Source::Screen(what), issue);
+    if taken {
+        what.counter().count();
+    } else {
+        timeline::native::Ui::OverlayScreenFallback.count();
+    }
+    taken
+}
+
+fn capture<B, F>(device: &d3d::abi::SharedDevice<B>, mem: &mut dyn GuestMemory, source: Source<'_>, issue: F) -> bool
+where
+    B: d3d::Backend + Send + 'static,
+    F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
+{
     let admission = Widget {
-        at,
-        glyph,
+        source,
         captured: Mutex::new(None),
     };
     let Ok(mut device) = device.lock() else {
         return false;
     };
     let mut mem = DeviceMemory(mem);
-    let fan = gfx::vertex::PrimitiveType::TriangleFan;
-    let taken = if glyph {
-        device.try_native_pushed_draw(&mut mem, fan, vertices, &admission)
-    } else {
-        device.try_native_immediate_draw(&mut mem, fan, vertices, &admission)
-    };
+    let taken = issue(&mut *device, &mut mem, &admission);
     drop(device);
     if taken.ok() != Some(true) {
         return false;
@@ -80,9 +130,44 @@ fn submit<B: d3d::Backend + Send + 'static>(
     true
 }
 
+/// What a captured draw is, and so what its item names.
+#[derive(Clone, Copy, Debug)]
+enum Source<'a> {
+    /// A tag shader's quad: its bitmap's image.
+    Tag(&'a HudTagQuad),
+    /// A glyph: the glyph cache, which must be bound.
+    Glyph(&'a HudTagQuad),
+    /// A screen draw: its first bound texture, no tag.
+    Screen(ScreenDraw),
+}
+
+impl Source<'_> {
+    /// The item's shader datum (0 for a screen draw) and inputs.
+    fn shader(&self) -> (u32, [f32; 4]) {
+        match self {
+            Source::Tag(at) | Source::Glyph(at) => (at.shader, at.hud_input),
+            Source::Screen(_) => (0, [0.0; 4]),
+        }
+    }
+
+    /// The item's texture from the stages bound at the draw (`first` the
+    /// first sampled): `None` when a glyph's cache is not among them.
+    fn texture(&self, stages: &[Option<OverlayTexture>; 4], first: Option<usize>) -> Option<OverlayTexture> {
+        if let Source::Glyph(at) = self
+            && !stages.contains(&Some(OverlayTexture::Bound { header: at.bitmap }))
+        {
+            return None;
+        }
+        Some(match (self, first) {
+            (_, None) => OverlayTexture::None,
+            (Source::Tag(at), Some(_)) => OverlayTexture::Bitmap { tag: at.bitmap, image: at.image },
+            (Source::Glyph(_) | Source::Screen(_), Some(n)) => stages[n]?,
+        })
+    }
+}
+
 struct Widget<'a> {
-    at: &'a HudTagQuad,
-    glyph: bool,
+    source: Source<'a>,
     captured: Mutex<Option<Arc<Overlay>>>,
 }
 
@@ -107,9 +192,11 @@ fn sampler(draw: &d3d::ResolvedDraw, stage: usize) -> Option<Sampler> {
     })
 }
 
-fn blend(rs: &gfx::state::RenderState) -> Option<OverlayBlend> {
+/// The draw's blend and the constant colour its factors name (RGBA; zero
+/// when they name none). The fade's modes 3 to 6 blend by the constant.
+fn blend(rs: &gfx::state::RenderState) -> (OverlayBlend, [f32; 4]) {
     if !rs.blend_enable {
-        return Some(OverlayBlend::Off);
+        return (OverlayBlend::Off, [0.0; 4]);
     }
     let constant = |v| {
         matches!(
@@ -120,14 +207,18 @@ fn blend(rs: &gfx::state::RenderState) -> Option<OverlayBlend> {
                 | BlendFactor::InvConstantAlpha
         )
     };
-    if constant(rs.src_blend) || constant(rs.dst_blend) {
-        return None;
-    }
-    Some(OverlayBlend::On {
+    let colour = if constant(rs.src_blend) || constant(rs.dst_blend) {
+        let c = gfx::translate::blend_constant(rs);
+        [c.r, c.g, c.b, c.a].map(|v| v as f32)
+    } else {
+        [0.0; 4]
+    };
+    let on = OverlayBlend::On {
         source: rs.src_blend.xbox_value(),
         dest: rs.dst_blend.xbox_value(),
         equation: rs.blend_op.xbox_value(),
-    })
+    };
+    (on, colour)
 }
 
 fn clip(r: d3d::backend::PixelRect) -> ClipRect {
@@ -192,21 +283,9 @@ impl DrawAdmission for Widget<'_> {
                 alpha_kill |= 1u8 << stage;
             }
         }
-        if self.glyph
-            && !shader_stages.contains(&Some(OverlayTexture::Bound {
-                header: self.at.bitmap,
-            }))
-        {
-            return None;
-        }
-        let texture = match first {
-            Some(n) if self.glyph => shader_stages[n]?,
-            Some(_) => OverlayTexture::Bitmap {
-                tag: self.at.bitmap,
-                image: self.at.image,
-            },
-            None => OverlayTexture::None,
-        };
+        let texture = self.source.texture(&shader_stages, first)?;
+        let (tag, hud_input) = self.source.shader();
+        let (blend, blend_constant) = blend(rs);
         let evaluated = d3d::nv2a::overlay_vertices(draw, sampled)?;
         let corners = evaluated.map(|(position, coords, color)| OverlayVertex {
             position,
@@ -217,12 +296,10 @@ impl DrawAdmission for Widget<'_> {
             return None;
         }
         let material = OverlayMaterial {
-            program: Program::Shader {
-                tag: self.at.shader,
-            },
+            program: Program::Shader { tag },
             texture,
             sampler: first.map_or_else(Sampler::default, |n| samplers[n]),
-            blend: blend(rs)?,
+            blend,
         };
         let mut overlay = Overlay::new([draw.target.width, draw.target.height]);
         overlay
@@ -236,7 +313,8 @@ impl DrawAdmission for Widget<'_> {
         item.shader_stages = shader_stages;
         item.stage_uv = Some(Box::new(evaluated.map(|(_, coords, _)| coords)));
         item.glyph_cache = draw.glyph_cache;
-        item.hud_input = self.at.hud_input;
+        item.hud_input = hud_input;
+        item.blend_constant = blend_constant;
         item.shader_words = Some(Box::new(words));
         item.color_write = rs.color_write.xbox_value();
         let overlay = Arc::new(overlay);
@@ -404,11 +482,20 @@ impl ExternalPass for WidgetPass {
     }
 }
 
-/// The map whose overlay assets are held, and the assets: one generation a
-/// map, so the resident textures are not replaced between passes.
+/// A map read for the menus' bitmap images: the map and its decoded
+/// bitmaps.
+struct MenuArt {
+    map: NativeMap,
+    art: Art,
+}
+
+/// The map whose overlay assets are held, the assets (one generation a
+/// map, so the resident textures are not replaced between passes), and the
+/// map read for the menus' images once it has loaded.
 #[derive(Default)]
 struct Slot {
     map: Option<(String, u64)>,
+    art: Option<Arc<Mutex<MenuArt>>>,
     assets: Arc<Mutex<OverlayAssets>>,
 }
 
@@ -417,14 +504,58 @@ static SLOT: LazyLock<Mutex<Slot>> = LazyLock::new(Mutex::default);
 /// The map's overlay assets, shared by the menus' passes; `None` with no
 /// map loaded.
 pub fn assets(mem: &dyn GuestMemory) -> Option<Arc<Mutex<OverlayAssets>>> {
+    slot(mem).map(|(_, assets)| assets)
+}
+
+/// The slot for the loaded map: its read for the menus' images, once
+/// loaded, and its overlay assets; starts the read at the first ask on a
+/// map; `None` with no map loaded.
+fn slot(mem: &dyn GuestMemory) -> Option<(Option<Arc<Mutex<MenuArt>>>, Arc<Mutex<OverlayAssets>>)> {
     let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty())?;
     let generation = render_bridge::native_map_work::generation();
     let mut slot = SLOT.lock().unwrap_or_else(|e| e.into_inner());
     if slot.map.as_ref().is_none_or(|(n, g)| *n != name || *g != generation) {
-        slot.map = Some((name, generation));
+        slot.map = Some((name.clone(), generation));
+        slot.art = None;
         slot.assets = Arc::new(Mutex::new(OverlayAssets { generation, ..OverlayAssets::default() }));
+        spawn_load(name, generation);
     }
-    Some(slot.assets.clone())
+    Some((slot.art.clone(), slot.assets.clone()))
+}
+
+/// Reads map `name` off the game thread for the menus' images.
+fn spawn_load(name: String, generation: u64) {
+    let spawned = std::thread::Builder::new().name("menu overlay load".into()).spawn(move || {
+        let art = match crate::native_map::open(&name) {
+            Ok((map, files)) => MenuArt { map, art: Art::new(files) },
+            Err(e) => {
+                eprintln!("menu overlay: {name}: the map did not open ({e}); the game draws its bitmaps");
+                return;
+            }
+        };
+        let mut slot = SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.map.as_ref().is_some_and(|(n, g)| *n == name && *g == generation) {
+            slot.art = Some(Arc::new(Mutex::new(art)));
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("menu overlay: {e}: the map did not open; the game draws its bitmaps");
+    }
+}
+
+/// Decodes the images `part`'s quads name into `assets`: whether each did.
+fn decode_images(a: &mut MenuArt, part: &Overlay, assets: &mut OverlayAssets) -> bool {
+    for item in &part.items {
+        let OverlayTexture::Bitmap { tag, image } = item.material.texture else { continue };
+        if assets.images.contains_key(&(tag, image)) {
+            continue;
+        }
+        let Ok((width, height, rgba)) = a.art.image(&mut a.map, TagId(tag), usize::from(image)) else {
+            return false;
+        };
+        assets.images.insert((tag, image), OverlayImage { width, height, rgba: rgba.into() });
+    }
+    true
 }
 
 /// Why a font did not give a glyph.
@@ -549,13 +680,23 @@ pub fn place<B: d3d::Backend + Send + 'static>(
 
 /// A run of menu widgets (`render_bridge::native_hud::ui_overlay`), drawn
 /// from the overlay at this point in the frame with the map's assets:
-/// whether it was placed.
+/// whether it was placed. The bitmap images its quads name are decoded
+/// first, from the map read for the menus; while that loads, or when an
+/// image does not decode, the run is not placed and the game draws it.
 pub fn place_menu<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     part: &Overlay,
 ) -> bool {
-    let Some(assets) = assets(mem) else { return false };
+    let Some((art, assets)) = slot(mem) else { return false };
+    let bitmaps = part.items.iter().any(|i| matches!(i.material.texture, OverlayTexture::Bitmap { .. }));
+    if bitmaps {
+        let Some(art) = art else { return false };
+        let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
+        if !decode_images(&mut a, part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
+            return false;
+        }
+    }
     // A glyph the fonts do not give leaves its run out of the plan
     // (`refused_glyph`); the rest of the list still draws.
     if let Some(fonts) = fonts() {
@@ -624,6 +765,68 @@ mod tests {
         let mut crossed = quad;
         crossed.swap(2, 3);
         assert!(!faces_visible(&crossed, CullMode::Ccw));
+    }
+
+    /// Each blend the fade's modes set (invented colours): the factors
+    /// and equation as the draw has them, and the constant colour only
+    /// when a factor names it, its alpha splatted for an alpha factor.
+    #[test]
+    fn every_fade_blend_is_taken_with_its_constant() {
+        use gfx::state::{BlendOp, RenderState};
+        let state = |src, dst, op, colour| RenderState {
+            blend_enable: true,
+            src_blend: src,
+            dst_blend: dst,
+            blend_op: op,
+            blend_color: colour,
+            ..RenderState::default()
+        };
+        let on = |s: BlendFactor, d: BlendFactor, o: BlendOp| OverlayBlend::On {
+            source: s.xbox_value(),
+            dest: d.xbox_value(),
+            equation: o.xbox_value(),
+        };
+        use BlendFactor::*;
+        let modes = [
+            (One, InvSrcAlpha, BlendOp::Add, 0x4020_1008, [0.0; 4]),
+            (One, One, BlendOp::ReverseSubtract, 0x4020_1008, [0.0; 4]),
+            (InvDestColor, InvConstantColor, BlendOp::Max, 0xff80_4000, [128.0 / 255.0, 64.0 / 255.0, 0.0, 1.0]),
+            (InvDestColor, InvConstantColor, BlendOp::Min, 0x0000_00ff, [0.0, 0.0, 1.0, 0.0]),
+            (InvDestColor, InvConstantColor, BlendOp::Add, 0x80ff_ffff, [1.0, 1.0, 1.0, 128.0 / 255.0]),
+            (One, InvConstantColor, BlendOp::Add, 0x0010_2030, [16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0, 0.0]),
+        ];
+        // An alpha factor splats the constant's alpha.
+        let (_, c) = blend(&state(ConstantAlpha, InvConstantAlpha, BlendOp::Add, 0x4000_0000));
+        assert!(c.iter().all(|v| (v - 64.0 / 255.0).abs() < 1e-6), "{c:?}");
+        for (n, (src, dst, op, colour, constant)) in modes.into_iter().enumerate() {
+            let (b, c) = blend(&state(src, dst, op, colour));
+            assert_eq!(b, on(src, dst, op), "mode {}", n + 1);
+            for (got, want) in c.iter().zip(constant) {
+                assert!((got - want).abs() < 1e-6, "mode {}: {c:?}", n + 1);
+            }
+        }
+        let off = RenderState { blend_color: 0xffff_ffff, ..RenderState::default() };
+        assert_eq!(blend(&off), (OverlayBlend::Off, [0.0; 4]));
+    }
+
+    /// A tag quad names its bitmap's image; a glyph needs its cache bound
+    /// and names it; a screen draw names its first bound stage, or none.
+    #[test]
+    fn each_source_names_its_texture() {
+        let at = HudTagQuad { bitmap: 0x40, image: 3, shader: 0xe000_0001, hud_input: [0.5; 4] };
+        let bound = [None, Some(OverlayTexture::Bound { header: 0x40 }), None, None];
+        assert_eq!(
+            Source::Tag(&at).texture(&bound, Some(1)),
+            Some(OverlayTexture::Bitmap { tag: 0x40, image: 3 })
+        );
+        assert_eq!(Source::Glyph(&at).texture(&bound, Some(1)), bound[1]);
+        let other = [Some(OverlayTexture::Bound { header: 0x50 }), None, None, None];
+        assert_eq!(Source::Glyph(&at).texture(&other, Some(0)), None, "the cache is not bound");
+        let screen = Source::Screen(ScreenDraw::Loading);
+        assert_eq!(screen.texture(&other, Some(0)), other[0]);
+        assert_eq!(Source::Screen(ScreenDraw::Fade).texture(&[None; 4], None), Some(OverlayTexture::None));
+        assert_eq!(screen.shader(), (0, [0.0; 4]));
+        assert_eq!(Source::Tag(&at).shader(), (0xe000_0001, [0.5; 4]));
     }
 
     /// An invented font: a blank record every unit maps to, with a glyph

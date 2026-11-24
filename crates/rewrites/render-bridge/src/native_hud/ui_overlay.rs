@@ -15,7 +15,13 @@
 //! (`super::Host::ui_pass`), and each claimed entry's draw is skipped as a
 //! host-drawn widget's is. At [`LIST_DONE`] the claim closes; a list whose
 //! skipped draws are not its claimed ones is counted and its screen is not
-//! claimed again until the next map ([`close`]).
+//! claimed again until the next map ([`close`]). A bitmap widget's draw
+//! is read by [`bitmaps`]. A shader bitmap's draw is the game's here and
+//! its quad is the overlay's at the shader quad
+//! (`super::hud_overlay::menu_shader_quad`): it ends a run and is not
+//! refused.
+
+pub mod bitmaps;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -76,6 +82,8 @@ pub enum MenuRefusal {
     Mismatched,
     /// The widget's draw is not read yet.
     Widget(Unread),
+    /// A bitmap widget's draw the overlay does not make.
+    Bitmap(bitmaps::Refusal),
     /// The overlay refused the widget's items.
     Unlisted,
     /// The host did not place the run's pass.
@@ -87,8 +95,11 @@ impl MenuRefusal {
         match self {
             MenuRefusal::Frame => Ui::OverlayMenuRefusedFrame,
             MenuRefusal::Mismatched => Ui::OverlayMenuRefusedMismatched,
-            MenuRefusal::Widget(Unread::Bitmap) => Ui::OverlayMenuRefusedBitmap,
-            MenuRefusal::Widget(Unread::Shader) => Ui::OverlayMenuRefusedShader,
+            // Read by `bitmaps`: never a reason of its own.
+            MenuRefusal::Widget(Unread::Bitmap) => Ui::OverlayMenuRefusedBitmapState,
+            MenuRefusal::Bitmap(why) => why.counter(),
+            // Drawn at its quad (`plan`): never a reason of its own.
+            MenuRefusal::Widget(Unread::Shader) => Ui::OverlayMenuShaderFallback,
             MenuRefusal::Widget(Unread::Text) => Ui::OverlayMenuRefusedText,
             MenuRefusal::Widget(Unread::Model) => Ui::OverlayMenuRefusedModel,
             MenuRefusal::Widget(Unread::Draw) => Ui::OverlayMenuRefusedDraw,
@@ -199,9 +210,16 @@ pub fn screen_rect(mem: &dyn GuestMemory) -> Option<[i16; 4]> {
 }
 
 /// One drawn entry's items: its widget read and listed alone, or why the
-/// game draws it.
-fn part(mem: &dyn GuestRead, e: &ListEntry) -> Result<Overlay, MenuRefusal> {
-    let mut widget = walk::read_widget(mem, e.widget, e.depth).map_err(MenuRefusal::Widget)?;
+/// game draws it. `view` is the list's user argument, the view a bitmap
+/// widget's draw places it in.
+fn part(mem: &dyn GuestRead, e: &ListEntry, view: u32) -> Result<Overlay, MenuRefusal> {
+    let mut widget = match walk::read_widget(mem, e.widget, e.depth) {
+        Ok(widget) => widget,
+        Err(Unread::Bitmap) => {
+            bitmaps::read(mem, e.widget, e.depth, view).map_err(MenuRefusal::Bitmap)?
+        }
+        Err(why) => return Err(MenuRefusal::Widget(why)),
+    };
     // The bias the guest sorted by.
     widget.bias = e.bias;
     let frame = UiFrame {
@@ -231,8 +249,15 @@ pub fn plan(mem: &dyn GuestRead, list: &UiList) -> (Claim, Vec<(u32, MenuRefusal
         if !walk::in_window(e.depth, list.window) {
             continue;
         }
-        let items = match part(mem, e) {
+        let items = match part(mem, e, list.user) {
             Ok(items) => items,
+            Err(MenuRefusal::Widget(Unread::Shader)) => {
+                // A shader bitmap: the game draws it, and its quad is drawn
+                // from the overlay at the shader quad (`super::hud_overlay::
+                // menu_shader_quad`). It ends the run, so order holds.
+                open = false;
+                continue;
+            }
             Err(why) => {
                 refused.push((i as u32, why));
                 open = false;
@@ -534,6 +559,61 @@ mod tests {
         assert!(refused(0x1000));
         forget();
         assert!(!refused(0x1000));
+    }
+
+    /// A bitmap widget lists as the quad its draw makes, in a run of its
+    /// own; a meter is the game's, counted by its reason.
+    #[test]
+    fn a_bitmap_widget_is_claimed_with_its_quad() {
+        use bitmaps::tests::{DATUM, DEF, VIEW, WIDGET, bitmap_widget};
+        let mut mem = Mem::default();
+        bitmap_widget(&mut mem);
+        let list = UiList {
+            frame: 0x8000,
+            root: WIDGET,
+            user: VIEW,
+            window: [-1.0, 1.0],
+            entries: vec![ListEntry {
+                widget: WIDGET,
+                depth: 0.0,
+                bias: 0,
+            }],
+        };
+        let (claim, refused) = plan(&mem, &list);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(claim.claimed(), 1);
+        let part = &claim.runs[0].part;
+        assert_eq!(part.items.len(), 1);
+        assert_eq!(
+            part.items[0].material.texture,
+            frame_scene::OverlayTexture::Bitmap {
+                tag: DATUM,
+                image: 1
+            }
+        );
+        mem.w(DEF, 4);
+        let (claim, refused) = plan(&mem, &list);
+        assert!(claim.runs.is_empty());
+        assert_eq!(refused, [(0, MenuRefusal::Bitmap(bitmaps::Refusal::Meter))]);
+        assert_eq!(
+            MenuRefusal::Bitmap(bitmaps::Refusal::Meter).counter() as usize,
+            Ui::OverlayMenuRefusedBitmapMeter as usize
+        );
+    }
+
+    /// A shader bitmap is the game's at the list, drawn from the overlay at
+    /// its quad: it ends a run and is not refused.
+    #[test]
+    fn a_shader_bitmap_ends_a_run_and_is_not_refused() {
+        const SHADER_VTABLE: u32 = 0x5300;
+        let mut mem = widgets();
+        mem.w(SHADER_VTABLE + 0x10, draws::SHADER_BITMAP);
+        mem.w(0x1200, SHADER_VTABLE);
+        let (claim, refused) = plan(&mem, &list(0x8000, [0.0; 5]));
+        assert!(refused.is_empty(), "{refused:?}");
+        let runs: Vec<_> = claim.runs.iter().map(|r| r.entries.clone()).collect();
+        assert_eq!(runs, [vec![0, 1], vec![3, 4]]);
+        assert_eq!(claim.run_of[2], None, "the game draws it");
     }
 
     /// A list drawn inside another's draw has its own frame; its end
