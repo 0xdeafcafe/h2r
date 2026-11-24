@@ -3,6 +3,8 @@
 //! frustum-culled indirect slots.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
@@ -14,10 +16,16 @@ use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipe
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
+/// Clones share the decoded storage across material programs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
+    pixels: Arc<ImagePixels>,
+}
+
+#[derive(Debug)]
+pub struct ImagePixels {
     pub rgba: Vec<u8>,
     /// Levels 1.. of the mip chain, each half the last (at least 1).
     pub mips: Vec<Vec<u8>>,
@@ -26,6 +34,36 @@ pub struct Image {
     /// device takes BC textures, so the GPU decodes them as it does the
     /// D3D path's (the CPU decoder rounds the interpolated colours down).
     pub blocks: Option<Blocks>,
+    bytes: mem_watch::Gauge,
+}
+
+impl Deref for Image {
+    type Target = ImagePixels;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pixels
+    }
+}
+
+impl PartialEq for ImagePixels {
+    fn eq(&self, other: &Self) -> bool {
+        self.rgba == other.rgba && self.mips == other.mips && self.blocks == other.blocks
+    }
+}
+
+impl ImagePixels {
+    fn new(rgba: Vec<u8>, mips: Vec<Vec<u8>>) -> Self {
+        static DECODED: mem_watch::Counter = mem_watch::Counter::new("native.decoded_image_bytes");
+        let bytes = DECODED.track((rgba.capacity() + mips.iter().map(Vec::capacity).sum::<usize>()) as u64);
+        Self { rgba, mips, blocks: None, bytes }
+    }
+
+    fn set_blocks(&mut self, blocks: Option<Blocks>) {
+        let capacity = |b: &Blocks| b.levels.iter().map(Vec::capacity).sum::<usize>() as u64;
+        self.bytes.set(self.bytes.get() - self.blocks.as_ref().map_or(0, capacity)
+            + blocks.as_ref().map_or(0, capacity));
+        self.blocks = blocks;
+    }
 }
 
 /// An image's levels as BC blocks ([`Image::blocks`]).
@@ -48,13 +86,28 @@ pub fn block_bytes(format: wgpu::TextureFormat) -> Option<usize> {
 
 impl Image {
     pub fn solid(rgba: [u8; 4]) -> Self {
-        Self {
-            width: 1,
-            height: 1,
-            rgba: rgba.to_vec(),
-            mips: Vec::new(),
-            blocks: None,
+        Self::from_rgba(1, 1, rgba.to_vec(), Vec::new())
+    }
+
+    /// Builds a caller-validated RGBA chain. Decoders use `from_levels`
+    /// when mip dimensions and sizes come from the source.
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>, mips: Vec<Vec<u8>>) -> Self {
+        Self { width, height, pixels: Arc::new(ImagePixels::new(rgba, mips)) }
+    }
+
+    fn uncompressed_mut(&mut self) -> &mut ImagePixels {
+        if Arc::get_mut(&mut self.pixels).is_none() {
+            self.pixels = Arc::new(ImagePixels::new(self.rgba.clone(), self.mips.clone()));
         }
+        let pixels = Arc::get_mut(&mut self.pixels).expect("image payload is unique");
+        pixels.set_blocks(None);
+        pixels
+    }
+
+    // Fixed lengths keep the payload's byte probe accurate.
+    pub(crate) fn edit_rgba(&mut self, edit: impl FnOnce(&mut [u8], &mut [Vec<u8>])) {
+        let pixels = self.uncompressed_mut();
+        edit(&mut pixels.rgba, &mut pixels.mips);
     }
 
     /// `self` with its levels as BC blocks too, when they fit it: a BC
@@ -71,7 +124,7 @@ impl Image {
             l.len() == w.div_ceil(4) as usize * h.div_ceil(4) as usize * unit
         });
         if fits {
-            self.blocks = Some(Blocks { format, levels });
+            self.uncompressed_mut().set_blocks(Some(Blocks { format, levels }));
         }
         self
     }
@@ -102,7 +155,7 @@ impl Image {
             }
             mips.push(bytes);
         }
-        Some(Self { width, height, rgba, mips, blocks: None })
+        Some(Self::from_rgba(width, height, rgba, mips))
     }
 }
 
@@ -243,6 +296,7 @@ impl WorldSelection {
 pub struct GpuWorld {
     part_slots: std::collections::HashMap<(Owner, u8), usize>,
     world: World,
+    _geometry_bytes: mem_watch::Gauge,
     /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
     stencil: PassStencil,
     /// The cull the next pass's inheriting programs draw with
@@ -691,8 +745,12 @@ impl GpuWorld {
         let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
         let fixed = WorldPipelines::new(device, SHADER, shader, layout, gfx::pipeline::ShaderId(0), "native world", attributes.to_vec());
         let part_slots = world.draws.iter().enumerate().map(|(i, d)| ((d.owner, d.part), i)).collect();
+        static GEOMETRY: mem_watch::Counter = mem_watch::Counter::new("native.world_cpu_geometry_bytes");
+        let geometry_bytes = (world.vertices.capacity() + world.program_vertices.capacity()) * size_of::<WorldVertex>()
+            + world.indices.capacity() * size_of::<u32>();
         Self {
             part_slots, world,
+            _geometry_bytes: GEOMETRY.track(geometry_bytes as u64),
             stencil: PassStencil::default(),
             inherited_cull: crate::program::InheritedCull::default(),
             vertices,
@@ -2023,5 +2081,27 @@ mod tests {
         let small = Image::from_levels(vec![level(2, 8)]).unwrap();
         assert_eq!(small.with_blocks(F::Bc1RgbaUnorm, vec![vec![0; 16]]).blocks, None, "2x8: not whole blocks");
         assert_eq!(block_bytes(F::Bc2RgbaUnorm), Some(16));
+    }
+}
+
+
+#[cfg(test)]
+mod image_storage_tests {
+    use super::*;
+
+    #[test]
+    fn image_clones_share_accounted_storage_until_edited() {
+        let image = Image::solid([10, 20, 30, 255]);
+        let original = Arc::downgrade(&image.pixels);
+        let mut biased = image.clone();
+        assert!(Arc::ptr_eq(&image.pixels, &biased.pixels));
+        assert_eq!(image.pixels.bytes.get(), 4);
+
+        biased.edit_rgba(|rgba, _| rgba[0] = 32);
+        assert_eq!(image.rgba[0], 10);
+        assert_eq!(biased.rgba[0], 32);
+        assert_eq!(biased.pixels.bytes.get(), 4);
+        drop(image);
+        assert!(original.upgrade().is_none());
     }
 }

@@ -13,7 +13,7 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
 
 #[derive(Default)]
 struct ResidualDraws {
-    geometry: std::sync::Arc<native_render::world_layers_gpu::Cache>,
+    geometry: crate::native_map::MapIndexedCache,
 }
 
 impl d3d::DrawAdmission for ResidualDraws {
@@ -33,7 +33,7 @@ impl d3d::DrawAdmission for ResidualDraws {
                 let item = crate::native_world_layers_glue::take_sky()?;
                 let plan = native_sky::admit(
                     item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
-                    |item| IndexedPass::for_sky(draw, self.geometry.clone(), call.frame, call.generation, item),
+                    |item| IndexedPass::for_sky(draw, self.geometry.get(), call.frame, call.generation, item),
                 );
                 match plan {
                     Ok(pass) => {
@@ -54,7 +54,7 @@ impl d3d::DrawAdmission for ResidualDraws {
                     Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
                     Owner::Object { .. } => timeline::native::Stage::Objects,
                 };
-                let pass = IndexedPass::new(draw, self.geometry.clone(), call.frame, None)?;
+                let pass = IndexedPass::new(draw, self.geometry.get(), call.frame, None)?;
                 (stage, pass)
             }
             _ => return None,

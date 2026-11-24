@@ -118,6 +118,9 @@ pub trait OpaqueView: Send + Sync {
 
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
+    /// Release the displaced BSP before any stage asks for new resources.
+    fn retire_bsp(&self) {}
+
     /// Publish completed worker resources before the frame draws its views.
     fn begin_frame(&self) {}
 
@@ -310,6 +313,11 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
 /// The loaded item lists are the loaded render's, built again each frame.
 pub fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
+pub(crate) fn retire_bsp() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host { host.retire_bsp(); }
 }
 
 pub(crate) fn begin_frame() {

@@ -23,10 +23,14 @@
 //! owner drops what is still queued ([`Compiler::drop_prewarms`]). A
 //! dropped value is not lost: its first user builds it, or it is queued
 //! again.
+//!
+//! The queues borrow jobs from their caches and draws. If their last
+//! owner drops a value before a worker starts it, its inputs are freed
+//! immediately and the worker skips its queue slot.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 
 type Build<T> = Box<dyn FnOnce() -> T + Send>;
 
@@ -167,18 +171,55 @@ impl<T: Send + Sync> Job for Pending<T> {
 /// Worker thread names start with this.
 pub const WORKER_NAME: &str = "gfx compile";
 
-#[derive(Default)]
+static DRAW_JOBS: mem_watch::Counter = mem_watch::Counter::new("gfx.pipeline_draw_jobs");
+static PREWARM_JOBS: mem_watch::Counter = mem_watch::Counter::new("gfx.pipeline_prewarm_jobs");
+const QUEUE_PRUNE_INTERVAL: usize = 1024;
+
 struct Queues {
-    draw: VecDeque<Arc<dyn Job>>,
+    draw: VecDeque<Weak<dyn Job>>,
     /// Prewarms, with the owner each was queued for.
-    background: VecDeque<(u64, Arc<dyn Job>)>,
+    background: VecDeque<(u64, Weak<dyn Job>)>,
+    since_prune: usize,
+    draw_jobs: mem_watch::Gauge,
+    prewarm_jobs: mem_watch::Gauge,
+}
+
+impl Default for Queues {
+    fn default() -> Self {
+        Self {
+            draw: VecDeque::new(),
+            background: VecDeque::new(),
+            since_prune: 0,
+            draw_jobs: DRAW_JOBS.track(0),
+            prewarm_jobs: PREWARM_JOBS.track(0),
+        }
+    }
 }
 
 impl Queues {
     fn next(&mut self) -> Option<Arc<dyn Job>> {
-        self.draw
-            .pop_front()
-            .or_else(|| self.background.pop_front().map(|(_, j)| j))
+        let job = std::iter::from_fn(|| {
+            self.draw
+                .pop_front()
+                .or_else(|| self.background.pop_front().map(|(_, job)| job))
+        })
+        .find_map(|job| job.upgrade());
+        self.refresh_jobs();
+        job
+    }
+
+    fn prune_expired(&mut self) {
+        self.since_prune += 1;
+        if self.since_prune == QUEUE_PRUNE_INTERVAL {
+            self.draw.retain(|job| job.strong_count() > 0);
+            self.background.retain(|(_, job)| job.strong_count() > 0);
+            self.since_prune = 0;
+        }
+    }
+
+    fn refresh_jobs(&mut self) {
+        self.draw_jobs.set(self.draw.len() as u64);
+        self.prewarm_jobs.set(self.background.len() as u64);
     }
 }
 
@@ -249,6 +290,7 @@ impl Compiler {
     /// nothing, when it is built or being built, or already waits at
     /// `priority` or above: a draw's [`Priority::Draw`] moves a queued
     /// prewarm ahead, and the same draw every frame queues it once.
+    /// The caller keeps the value alive while its work is needed.
     /// Background work queued here has no owner: use
     /// [`prewarm`](Self::prewarm) for work that may be dropped.
     pub fn submit<T: Send + Sync + 'static>(
@@ -283,12 +325,15 @@ impl Compiler {
         if pending.queued.fetch_max(level, Ordering::AcqRel) >= level {
             return false;
         }
-        let job: Arc<dyn Job> = pending.clone();
+        let job = Arc::downgrade(pending);
+        let job: Weak<dyn Job> = job;
         let mut q = self.queues.lock().unwrap();
         match priority {
             Priority::Draw => q.draw.push_back(job),
             Priority::Background => q.background.push_back((owner, job)),
         }
+        q.prune_expired();
+        q.refresh_jobs();
         drop(q);
         self.ready.notify_one();
         true
@@ -309,9 +354,12 @@ impl Compiler {
                 true
             }
         });
+        q.refresh_jobs();
         drop(q);
         for job in &dropped {
-            job.dropped();
+            if let Some(job) = job.upgrade() {
+                job.dropped();
+            }
         }
         dropped.len()
     }
@@ -322,7 +370,7 @@ impl Compiler {
         NEXT.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Jobs not started yet.
+    /// Waiting queue slots, including cancelled jobs that have yet to be skipped.
     pub fn queued(&self) -> usize {
         let q = self.queues.lock().unwrap();
         q.draw.len() + q.background.len()
@@ -469,5 +517,32 @@ mod tests {
         assert!(c.prewarm(&old, me));
         drain(&c);
         assert!(old.is_ready());
+    }
+
+    #[test]
+    fn pending_work_does_not_pin_its_inputs_after_the_last_owner_drops_it() {
+        for priority in [Priority::Draw, Priority::Background] {
+            let compiler = Compiler::new(0);
+            let input = Arc::new(vec![1; 16]);
+            let weak_input = Arc::downgrade(&input);
+            let pending = Pending::new(move || input.len());
+            assert!(compiler.submit(&pending, priority));
+            assert!(weak_input.upgrade().is_some());
+
+            drop(pending);
+            assert!(weak_input.upgrade().is_none());
+            let mut queues = compiler.queues.lock().unwrap();
+            assert!(queues.next().is_none());
+            assert_eq!(queues.draw_jobs.get() + queues.prewarm_jobs.get(), 0);
+        }
+    }
+
+    #[test]
+    fn a_queue_without_workers_reclaims_expired_slots() {
+        let compiler = Compiler::new(0);
+        for _ in 0..QUEUE_PRUNE_INTERVAL * 2 {
+            compiler.submit(&Pending::new(|| ()), Priority::Draw);
+        }
+        assert_eq!(compiler.queued(), 1, "only the newest slot survived pruning");
     }
 }

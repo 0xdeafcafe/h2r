@@ -7996,6 +7996,7 @@ dependencies = [
  "content",
  "host-dirs",
  "libc",
+ "mem-watch",
  "memmap2",
  "rustix 1.1.6",
  "tags",

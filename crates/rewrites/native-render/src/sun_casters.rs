@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use frame_scene::{FrameScene, InstanceKey, LayerOwner, NodeMatrix, View};
 
@@ -45,15 +45,15 @@ pub type SharedModels = Arc<dyn CasterModels + Send + Sync>;
 
 /// The current map's caster models with the map epoch they load for
 /// (`frame_scene::SceneId::map_epoch`).
-static MODELS: Mutex<Option<(u64, SharedModels)>> = Mutex::new(None);
+static MODELS: Mutex<Option<(u64, Weak<dyn CasterModels + Send + Sync>)>> = Mutex::new(None);
 
 /// The game's object loader offers map `map_epoch`'s caster models to the
 /// render thread, or withdraws them (`None`). Only the frame graph's E3
 /// sun tiles read them ([`models_for`]); retail never does.
-pub fn set_models(map_epoch: u64, models: Option<SharedModels>) {
+pub fn set_models(map_epoch: u64, models: Option<&SharedModels>) {
     let mut slot = MODELS.lock().unwrap_or_else(|e| e.into_inner());
     match models {
-        Some(m) => *slot = Some((map_epoch, m)),
+        Some(m) => *slot = Some((map_epoch, Arc::downgrade(m))),
         // An older map's loader does not withdraw a newer map's models.
         None => {
             if slot.as_ref().is_some_and(|(epoch, _)| *epoch == map_epoch) {
@@ -69,7 +69,7 @@ pub fn models_for(map_epoch: u64) -> Option<SharedModels> {
     let slot = MODELS.lock().unwrap_or_else(|e| e.into_inner());
     slot.as_ref()
         .filter(|(epoch, _)| *epoch == map_epoch)
-        .map(|(_, m)| Arc::clone(m))
+        .and_then(|(_, m)| m.upgrade())
 }
 
 /// The structure's parts as sun tile receivers: a structure cluster's or
@@ -114,15 +114,15 @@ pub struct WorldPart {
 pub type SharedWorld = Arc<dyn WorldReceivers + Send + Sync>;
 
 /// The current map's world receivers with the map epoch they load for.
-static WORLD: Mutex<Option<(u64, SharedWorld)>> = Mutex::new(None);
+static WORLD: Mutex<Option<(u64, Weak<dyn WorldReceivers + Send + Sync>)>> = Mutex::new(None);
 
 /// The world loader offers map `map_epoch`'s structure to the render
 /// thread, or withdraws it (`None`). Only the frame graph's E3 sun tiles
 /// read it ([`world_for`]); retail never does.
-pub fn set_world(map_epoch: u64, world: Option<SharedWorld>) {
+pub fn set_world(map_epoch: u64, world: Option<&SharedWorld>) {
     let mut slot = WORLD.lock().unwrap_or_else(|e| e.into_inner());
     match world {
-        Some(w) => *slot = Some((map_epoch, w)),
+        Some(w) => *slot = Some((map_epoch, Arc::downgrade(w))),
         // An older map's loader does not withdraw a newer map's world.
         None => {
             if slot.as_ref().is_some_and(|(epoch, _)| *epoch == map_epoch) {
@@ -138,8 +138,9 @@ pub fn set_world(map_epoch: u64, world: Option<SharedWorld>) {
 pub fn world_for(map_epoch: u64) -> Option<SharedWorld> {
     let slot = WORLD.lock().unwrap_or_else(|e| e.into_inner());
     slot.as_ref()
-        .filter(|(epoch, w)| *epoch == map_epoch && w.current())
-        .map(|(_, w)| Arc::clone(w))
+        .filter(|(epoch, _)| *epoch == map_epoch)
+        .and_then(|(_, w)| w.upgrade())
+        .filter(|w| w.current())
 }
 
 /// One structure part's triangles in [`SunWorld`]'s lists.
@@ -970,7 +971,7 @@ mod tests {
         let world: SharedWorld = Arc::new(
             SunWorld::new(&two_section_world()).with_current(move || held.load(Ordering::Relaxed)),
         );
-        set_world(0x5ca2_0001, Some(world));
+        set_world(0x5ca2_0001, Some(&world));
         assert!(world_for(0x5ca2_0001).is_some_and(|w| w.part(Owner::Cluster(4), 1).is_some()));
         assert!(world_for(0x5ca2_0002).is_none());
         current.store(false, Ordering::Relaxed);
@@ -978,7 +979,7 @@ mod tests {
         current.store(true, Ordering::Relaxed);
         set_world(0x5ca2_0000, None);
         assert!(world_for(0x5ca2_0001).is_some());
-        set_world(0x5ca2_0001, None);
+        drop(world);
         assert!(world_for(0x5ca2_0001).is_none());
     }
 
@@ -988,12 +989,15 @@ mod tests {
     fn caster_models_serve_only_their_maps_scenes() {
         let loaded: SharedModels =
             Arc::new(Models(HashMap::from([(DEFINITION, triangle_model())])));
-        set_models(0x5ca1_0001, Some(loaded));
+        set_models(0x5ca1_0001, Some(&loaded));
         assert!(models_for(0x5ca1_0001).is_some_and(|m| m.model(DEFINITION).is_some()));
         assert!(models_for(0x5ca1_0002).is_none());
         set_models(0x5ca1_0000, None);
         assert!(models_for(0x5ca1_0001).is_some());
-        set_models(0x5ca1_0001, None);
+        let in_flight = models_for(0x5ca1_0001).unwrap();
+        drop(loaded);
+        assert!(in_flight.model(DEFINITION).is_some());
+        drop(in_flight);
         assert!(models_for(0x5ca1_0001).is_none());
     }
 

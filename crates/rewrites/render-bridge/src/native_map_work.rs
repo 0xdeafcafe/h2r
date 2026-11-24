@@ -145,9 +145,15 @@ pub fn reset() {
     crate::native_water::forget_pending();
     crate::native_decorators::forget_pending();
     crate::native_objects::forget_pending();
+    crate::native_first_person::forget_pending();
     MAP.reset();
-    crate::scene_step::map_changed();
     BSP_GENERATION.fetch_add(1, Ordering::Release);
+    crate::scene_step::map_changed();
+    retire_bsp();
+    crate::native_lights::retire_map();
+    crate::native_objects::retire_map();
+    crate::native_first_person::retire_map();
+    crate::native_post::retire_map();
     request_bsp_load();
 }
 
@@ -162,7 +168,13 @@ pub(crate) fn request_bsp_load() {
 /// (docs/editor/realtime-edits.md, "The native refresh").
 pub fn reload_bsp() {
     BSP_GENERATION.fetch_add(1, Ordering::Release);
+    retire_bsp();
     request_bsp_load();
+}
+
+fn retire_bsp() {
+    crate::native_world::retire_bsp();
+    crate::native_transparents::retire_bsp();
 }
 
 /// A cache load's identity, including reloads of the same map.
@@ -202,9 +214,6 @@ impl Feature for NativeMapWork {
             || crate::native_water::on(b.switches());
         // Boot resets this derived state after loading the feature sections.
         b.snapshot(SnapshotPolicy::Stateless);
-        if !needs_bsp && !crate::native_objects::on(b.switches()) {
-            return Ok(());
-        }
         b.game().on_start("native_map_reset", |_| reset());
         if needs_bsp {
             b.raw()
@@ -214,10 +223,7 @@ impl Feature for NativeMapWork {
                 .context_only();
             for point in [&points::BSP_SWITCH, &points::GAME_STATE_REVERT] {
                 b.raw()
-                    .observe_after(point, "native_bsp_reload", |_| {
-                        BSP_GENERATION.fetch_add(1, Ordering::Release);
-                        request_bsp_load();
-                    })
+                    .observe_after(point, "native_bsp_reload", |_| reload_bsp())
                     .optional();
             }
             b.raw()

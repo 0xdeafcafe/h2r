@@ -31,6 +31,7 @@ use crate::native_world_glue::{Raw, StagePalettes, light_image};
 pub struct ModelLights {
     retire: Option<crate::native_map::RetireQueue>,
     pub models: LightModels,
+    model_entries: Option<mem_watch::Gauge>,
     /// Vertex programs by (`vrtx`, classification).
     pub microcode: HashMap<(TagId, u32), Vec<u8>>,
     /// Stage images by (stage, bitmap, image), as the world's.
@@ -71,7 +72,9 @@ impl Loader {
     /// load is done the object entries keep their handlers.
     pub fn invalidate(&self) {
         let old = self.state.lock().unwrap_or_else(|e| e.into_inner()).take();
-        drop(old);
+        if let Some(old) = old {
+            crate::native_map::retire_owned(timeline::setup::Stage::Lights, old);
+        }
     }
 
     /// A view sees the same models for the whole frame. The worker sends
@@ -86,6 +89,9 @@ impl Loader {
         let generation = native_map_work::generation();
         let frame = timeline::frames();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if generation != native_map_work::generation() {
+            return None;
+        }
         if let Some(load) = state
             .as_mut()
             .filter(|load| load.map == name && load.generation == generation)
@@ -106,23 +112,31 @@ impl Loader {
             ready: None,
         });
         drop(state);
+        if let Some(retired) = retired {
+            crate::native_map::retire_owned(timeline::setup::Stage::Lights, retired);
+        }
         let formats = formats();
         let palettes = palettes();
         let device = device.clone();
         let name = name.to_string();
         let launched = background::spawn("native-lights models", move || {
-            drop(retired);
             let Some(formats) = formats else {
                 eprintln!(
                     "native-lights: {name}: the game's stream formats do not read; object entries keep their handlers"
                 );
                 return;
             };
+            let current = || generation == native_map_work::generation();
+            let Some(_load) = crate::native_map::begin_load(timeline::setup::Stage::Lights, current) else {
+                return;
+            };
             let _setup = timeline::setup::Stage::Lights.worker();
+            let _scope = mem_watch::scope("native.light_models.load");
             match load(&name, generation, &formats, &palettes, &device) {
-                Ok(loaded) => {
+                Ok(loaded) if current() => {
                     let _ = send.send(Arc::new(loaded));
                 }
+                Ok(_) => {}
                 Err(why) if generation == native_map_work::generation() => {
                     eprintln!(
                         "native-lights: {name}: model parts not loaded ({why}); object entries keep their handlers"
@@ -183,9 +197,9 @@ fn load(
 ) -> Result<ModelLights, String> {
     let (mut map, files) = crate::native_map::open(name).map_err(|e| e.to_string())?;
     let mut raw = Raw(files);
-    let mut lib =
-        ShaderLibrary::read(&mut map).map_err(|e| format!("the shader tags do not read ({e})"))?;
-    let meta = tags::object::Metadata::read(&mut map).ok();
+    let meta = tags::object::Metadata::read(&mut map)
+        .map_err(|e| format!("the shader tags do not read ({e})"))?;
+    let mut lib = ShaderLibrary::with_metadata(&map, meta.shader_view());
     let modes: Vec<TagId> = map
         .tags()
         .iter()
@@ -195,6 +209,7 @@ fn load(
     let mut out = ModelLights {
         retire: Some(crate::native_map::retire_queue().map_err(|e| e.to_string())?),
         models: LightModels::default(),
+        model_entries: None,
         microcode: HashMap::new(),
         images: HashMap::new(),
         palettized: HashSet::new(),
@@ -208,7 +223,7 @@ fn load(
         if native_map_work::generation() != generation {
             return Err("the map changed".into());
         }
-        let Ok(geo) = RenderModelGeometry::read_in(&mut map, mode, &mut raw, meta.as_ref()) else {
+        let Ok(geo) = RenderModelGeometry::read_in(&mut map, mode, &mut raw, Some(&meta)) else {
             refused += 1;
             continue;
         };
@@ -354,5 +369,7 @@ fn load(
         out.microcode.len(),
         out.images.len()
     );
+    static MODELS: mem_watch::Counter = mem_watch::Counter::new("native.light_model_entries");
+    out.model_entries = Some(MODELS.track(out.models.models.len() as u64));
     Ok(out)
 }

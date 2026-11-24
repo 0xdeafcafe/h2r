@@ -39,7 +39,7 @@ use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler
 /// ([`crate::object_streams::gather`]) of the guest format in `formats`,
 /// which the vertex unit converts as the D3D path's fetch does
 /// ([`vertex_fetch`]); and the section's index list.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LitBufferInput {
     pub registers: Vec<u8>,
     pub formats: Vec<Attribute>,
@@ -346,12 +346,35 @@ impl LitModelInput {
             )
         }) && self.layers.iter().all(|part| {
             valid(
-                &mut part.passes.iter().flat_map(|p| p.implementations.iter().flatten().copied()),
+                &mut part.passes.iter().flat_map(|p| p.implementations.iter().chain(&p.prt).flatten().copied()),
                 &part.indices,
                 part.subparts.as_ref(),
                 part.listed.as_ref(),
             )
         })
+    }
+
+    /// A shader override can gather the same section as the base material,
+    /// and a refused implementation may leave an unreferenced buffer.
+    /// Keep one copy of each distinct, reachable upload.
+    fn compact_buffers(&mut self) {
+        let slots = self.parts.iter_mut().flat_map(|p| &mut p.implementations);
+        let layers = self.layers.iter_mut().flat_map(|p| &mut p.passes)
+            .flat_map(|p| p.implementations.iter_mut().chain(&mut p.prt));
+        let mut canonical = HashMap::new();
+        let mut sources = Vec::new();
+        let mut remap = vec![None; self.buffers.len()];
+        for (_, index) in slots.chain(layers).flatten() {
+            let from = *index;
+            *index = *remap[from].get_or_insert_with(|| {
+                *canonical.entry(&self.buffers[from]).or_insert_with(|| {
+                    sources.push(from);
+                    sources.len() - 1
+                })
+            });
+        }
+        drop(canonical);
+        self.buffers = sources.into_iter().map(|i| std::mem::take(&mut self.buffers[i])).collect();
     }
 
     /// Whether a program samples the texture accumulation target
@@ -512,6 +535,7 @@ struct LitModel {
     /// layers those of a shader the game puts on its record instead
     /// ([`OVERRIDE_LAYERS`]).
     layer_index: HashMap<(u8, u16, u8, u32), usize>,
+    _geometry_bytes: mem_watch::Gauge,
 }
 
 /// Every model's lit parts on the GPU.
@@ -664,7 +688,7 @@ impl Shared {
             return view.clone();
         }
         let keep = image.is_some();
-        let mut image = image.unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new(), blocks: None });
+        let mut image = image.unwrap_or_else(|| Image::solid([0, 0, 0, 255]));
         bias_signed(&mut image, program.signed[n]);
         self.created.textures += 1;
         let view = texture(device, queue, &image, "native object program stage");
@@ -913,12 +937,13 @@ impl LitObjects {
     /// Publish a model only when its geometry and every material program
     /// upload successfully. Failure keeps the previous entry, if present.
     /// The result belongs to this upload, even when the key was already used.
-    pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) -> bool {
+    pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, mut input: LitModelInput) -> bool {
         if !input.valid_draw_references() {
             return false;
         }
+        input.compact_buffers();
         let mut layouts = HashMap::new();
-        let buffers = input
+        let buffers: Vec<_> = input
             .buffers
             .iter()
             .map(|b| LitBuffer {
@@ -949,7 +974,12 @@ impl LitObjects {
         for (i, p) in input.layers.iter().enumerate() {
             layer_index.entry((p.layer, p.section, p.part, p.shader_tag)).or_insert(i);
         }
-        self.models.insert(index, LitModel { programs, buffers, parts: input.parts, part_index, layers: input.layers, layer_index });
+        static GEOMETRY: mem_watch::Counter = mem_watch::Counter::new("native.object_geometry_buffer_bytes");
+        let geometry_bytes = buffers.iter().map(|b| b.vertices.size() + b.indices.size()).sum();
+        self.models.insert(index, LitModel {
+            programs, buffers, parts: input.parts, part_index, layers: input.layers, layer_index,
+            _geometry_bytes: GEOMETRY.track(geometry_bytes),
+        });
         true
     }
 
@@ -2548,15 +2578,15 @@ mod tests {
 
     #[test]
     fn a_uniform_image_is_one_texel_everywhere() {
-        let grey = Image { width: 2, height: 1, rgba: vec![9, 9, 9, 255, 9, 9, 9, 255], mips: vec![vec![9, 9, 9, 255]], blocks: None };
+        let grey = Image::from_rgba(2, 1, vec![9, 9, 9, 255, 9, 9, 9, 255], vec![vec![9, 9, 9, 255]]);
         assert!(uniform(&grey));
         let mut mip = grey.clone();
-        mip.mips[0][0] = 10;
+        mip.edit_rgba(|_, levels| levels[0][0] = 10);
         assert!(!uniform(&mip), "a level below differs");
         let mut texel = grey.clone();
-        texel.rgba[4] = 0;
+        texel.edit_rgba(|rgba, _| rgba[4] = 0);
         assert!(!uniform(&texel));
-        assert!(!uniform(&Image { width: 0, height: 0, rgba: Vec::new(), mips: Vec::new(), blocks: None }));
+        assert!(!uniform(&Image::from_rgba(0, 0, Vec::new(), Vec::new())));
     }
 
     #[test]
@@ -2594,7 +2624,7 @@ mod tests {
         // v1 reads semantic 7: the lightmap coordinates the draw adds.
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 7, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let grey = Image { width: 1, height: 1, rgba: vec![128, 128, 128, 255], mips: Vec::new(), blocks: None };
+        let grey = Image::solid([128, 128, 128, 255]);
         let without = lit_model(
             std::slice::from_ref(&section),
             &materials,
@@ -3632,6 +3662,23 @@ mod tests {
         input.parts[0].subparts = None;
         input.parts[0].indices = 2..4;
         assert!(!input.valid_draw_references());
+    }
+
+    #[test]
+    fn duplicate_geometry_uploads_share_a_buffer_and_unused_buffers_drop() {
+        let geometry = LitBufferInput { indices: vec![0, 1, 2], ..Default::default() };
+        let unused = LitBufferInput { indices: vec![2, 1, 0], ..Default::default() };
+        let mut input = LitModelInput {
+            parts: vec![part(0, 0, [Some((0, 0)), Some((0, 2)), None, None, None])],
+            programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default() }],
+            buffers: vec![geometry.clone(), unused, geometry],
+            layers: Vec::new(),
+        };
+        assert!(input.valid_draw_references());
+        input.compact_buffers();
+        assert!(input.valid_draw_references());
+        assert_eq!(input.buffers.len(), 1);
+        assert_eq!(input.parts[0].implementations[..2], [Some((0, 0)); 2]);
     }
 
     /// The map loader uploads every object definition in the tag index:

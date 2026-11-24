@@ -46,6 +46,8 @@ pub struct IndexRange {
 }
 
 pub trait WalkHost: Send + Sync {
+    fn retire_bsp(&self) {}
+
     fn draw(&self, mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool;
 }
 
@@ -53,6 +55,11 @@ static WALK: Mutex<Option<Arc<dyn WalkHost>>> = Mutex::new(None);
 
 pub fn set_walk_host(host: Arc<dyn WalkHost>) {
     *WALK.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+pub(crate) fn retire_bsp() {
+    let walk = WALK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(walk) = walk { walk.retire_bsp(); }
 }
 
 fn sorted_data(mem: &dyn GuestMemory, ordinal: u32) -> Option<u32> {

@@ -78,6 +78,7 @@ struct ModelCoverage {
 #[derive(Default)]
 struct Models {
     retire: Option<native_map::RetireQueue>,
+    sun_models: Option<native_render::sun_casters::SharedModels>,
     lit: Mutex<Option<LitObjects>>,
     /// Definition index to render-model datum, shared across definitions.
     index: HashMap<u16, u32>,
@@ -188,11 +189,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         drop(state);
         let state = Arc::clone(&self.state);
         let gpu = self.gpu.clone();
+        if let Some(retired) = retired {
+            native_map::retire_owned(timeline::setup::Stage::Objects, retired);
+        }
         let launched = background::spawn("native-objects load", move || {
-            let _timer = timeline::setup::Stage::Objects.worker();
-            // Destruction of the old map's textures and buffers also belongs
-            // off the guest thread. Already committed passes own their models.
-            drop(retired);
             load_objects(&name, generation, &job, &state, &palette, palettes, formats, gpu);
         });
         if let Err(e) = launched {
@@ -342,19 +342,14 @@ fn refresh_models(
     };
     if !shaders.is_empty() {
         let model_shaders = models.lit.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(LitObjects::model_shaders);
-        match tags::material::ShaderLibrary::read(&mut opened.map) {
-            Ok(mut lib) => {
-                let mut known = HashMap::new();
-                let edited = shader_models(&model_shaders.unwrap_or_default(), &mut |s| {
-                    crate::native_world_glue::shader_edited(&mut lib, &mut known, &shaders, s)
-                });
-                for mode in edited {
-                    if !modes.contains(&mode) {
-                        modes.push(mode);
-                    }
-                }
+        let mut known = HashMap::new();
+        let edited = shader_models(&model_shaders.unwrap_or_default(), &mut |s| {
+            crate::native_world_glue::shader_edited(&mut opened.lib, &mut known, &shaders, s)
+        });
+        for mode in edited {
+            if !modes.contains(&mode) {
+                modes.push(mode);
             }
-            Err(e) => eprintln!("native-objects: {name}: a shader edit's shader tags do not read ({e}); models keep their programs until the map reloads"),
         }
     }
     for mode in modes {
@@ -441,6 +436,19 @@ fn refresh_models(
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_map(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let retired = if state.as_ref().is_some_and(|s| s.generation != native_map_work::generation()) {
+            state.take()
+        } else {
+            None
+        };
+        drop(state);
+        if let Some(retired) = retired {
+            native_map::retire_owned(timeline::setup::Stage::Objects, retired);
+        }
+    }
+
     fn preload(&self, mem: &dyn GuestMemory) {
         if let Some((models, generation)) = self.load(mem) {
             self.refresh_edits(mem, &models, generation);
@@ -908,9 +916,13 @@ fn load_objects(
     formats: Option<StreamFormats>,
     (device, queue): (wgpu::Device, wgpu::Queue),
 ) {
-    if generation != native_map_work::generation() {
+    let Some(_load) = native_map::begin_load(timeline::setup::Stage::Objects, || {
+        generation == native_map_work::generation()
+    }) else {
         return;
-    }
+    };
+    let _timer = timeline::setup::Stage::Objects.worker();
+    let _scope = mem_watch::scope("native.objects.load");
     let retire = match native_map::retire_queue() {
         Ok(queue) => queue,
         Err(error) => {
@@ -1022,14 +1034,14 @@ fn load_objects(
         coverage: RwLock::new(coverage.into_iter().filter_map(|(mode, result)| Some((mode, result.ok()?))).collect()),
         index,
         palettes: opened.decoder.used().clone(),
+        sun_models: Some(Arc::new(casters.finish())),
     });
     {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(s) = state.as_mut().filter(|s| owns(s)) else { return };
+        native_render::sun_casters::set_models(generation, models.sun_models.as_ref());
         s.published = Some((timeline::frames(), Arc::clone(&models)));
     }
-    // E3's sun tiles read these on the render thread; retail never does.
-    native_render::sun_casters::set_models(generation, Some(Arc::new(casters.finish())));
     // The palette counts a model resident once the walk can draw it.
     for cover in models.coverage.read().unwrap_or_else(|e| e.into_inner()).values() {
         cover.assets.finish(true);
@@ -1101,8 +1113,8 @@ struct Opened {
     /// through the stage's palette), shared by every model of the map.
     decoder: StageDecoder,
     images: StageImages,
-    /// The shader tags, read at the first material that needs them.
-    lib: Option<Option<tags::material::ShaderLibrary>>,
+    /// Resolves shader tags against the same metadata as `ctx`.
+    lib: tags::material::ShaderLibrary,
     /// The vector normalization cube, loaded as the lights load it at the
     /// first lit model (`Some(None)`: it does not load).
     normalization: Option<Option<Arc<StaticLightTexture>>>,
@@ -1121,13 +1133,14 @@ struct Opened {
 fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
     let (mut map, files) = native_map::open(name)?;
     let ctx = tags::object::Context::read(&mut map)?;
+    let lib = tags::material::ShaderLibrary::with_metadata(&map, ctx.meta.shader_view());
     Ok(Opened {
         map,
         ctx,
         raw: Raw(files),
         decoder: StageDecoder::new(palettes),
         images: StageImages::new(),
-        lib: None,
+        lib,
         normalization: None,
         lightmap: None,
         overrides: None,
@@ -1183,14 +1196,7 @@ fn log_override_refusal(shader: u32, layer: u8, why: &str) {
 }
 
 fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
-    if o.lib.is_none() {
-        let lib = tags::material::ShaderLibrary::read(&mut o.map);
-        if let Err(e) = &lib {
-            eprintln!("native-objects: the shader tags do not read ({e}); every object stays on D3D");
-        }
-        o.lib = Some(lib.ok());
-    }
-    o.lib.as_mut()?.as_mut()?.material(shader, None).ok()
+    o.lib.material(shader, None).ok()
 }
 
 /// Why an opaque material stays on D3D: no layer-3 implementation reads
@@ -1295,7 +1301,7 @@ fn lit_material(o: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
         if o.formats.is_none() {
             return Err("the game's stream formats do not read".into());
         }
-        let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+        let lib = &o.lib;
         let address = o.map.tag(shader).ok().and_then(|t| t.location).map(|l| l.address).ok_or("its shader tag has no address")?;
         let values = lib.metadata().bytes(address + SHADER_VALUES, 8).map_err(|_| "its shader values do not read")?;
         let word = |k: usize| u32::from_le_bytes([values[k], values[k + 1], values[k + 2], values[k + 3]]);
@@ -1395,10 +1401,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
     }
     // The normalization cube, as the lights load it (once per map).
     if o.normalization.is_none() {
-        let cube = match o.lib.as_ref().and_then(Option::as_ref) {
-            Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0,
-            None => None,
-        };
+        let cube = crate::native_lights_glue::light_textures(&mut o.map, o.lib.metadata(), &mut o.raw.0).0;
         o.normalization = Some(cube);
     }
     if o.lightmap.is_none() {
@@ -1458,7 +1461,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
 /// globals' rasterizer bitmap at `+0x64`, decoded as stage 3 samples it,
 /// when it is uniform (then the coordinates the draw adds do not matter).
 fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
-    let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+    let lib = &o.lib;
     engine_lightmap(&mut o.map, lib, &mut o.raw.0, &mut o.decoder, &mut o.images, 3)
 }
 
@@ -1498,7 +1501,7 @@ pub(crate) fn engine_lightmap<R: std::io::Read + std::io::Seek>(
 /// `0x0001cb20` picks its classification.
 fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u8) -> Result<(Vec<u8>, Vec<u16>), String> {
     let address = o.map.tag(vs).ok().and_then(|t| t.location).map(|l| l.address).ok_or("the vertex shader tag has no address")?;
-    let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+    let lib = &o.lib;
     let meta = lib.metadata();
     let count = look::classification_count(meta, address).ok_or("the vertex shader's classifications do not read")?;
     let class = object_streams::classification(geometry, influences, count).ok_or_else(|| format!("geometry classification {geometry}"))?;

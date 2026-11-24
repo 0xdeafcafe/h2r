@@ -158,10 +158,7 @@ fn fixture() -> Fixture {
         .insert(FourCC(*b"scen"), (Some(FourCC(*b"obje")), None));
     let ctx = Context {
         catalog,
-        meta: Metadata {
-            base: BASE,
-            bytes: img.bytes,
-        },
+        meta: Metadata::new(BASE, img.bytes),
     };
     Fixture {
         ctx,
@@ -173,8 +170,20 @@ fn fixture() -> Fixture {
 impl Fixture {
     fn poke(&mut self, addr: u32, v: u32) {
         let at = (addr - BASE) as usize;
-        self.ctx.meta.bytes[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        std::sync::Arc::make_mut(&mut self.ctx.meta.bytes)[at..at + 4].copy_from_slice(&v.to_le_bytes());
     }
+}
+
+#[test]
+fn shader_metadata_shares_the_object_metadata_snapshot() {
+    let mut metadata = Metadata::new(0x1000, vec![1, 2, 3, 4]);
+    let backing = std::sync::Arc::downgrade(&metadata.bytes);
+    let shader = metadata.shader_view();
+    assert_eq!(std::sync::Arc::strong_count(&metadata.bytes), 2);
+    std::sync::Arc::make_mut(&mut metadata.bytes)[0] = 9;
+    assert_eq!(shader.bytes(0x1000, 4).unwrap(), [1, 2, 3, 4]);
+    drop(shader);
+    assert!(backing.upgrade().is_none());
 }
 
 #[test]
@@ -294,7 +303,7 @@ fn aliased_blocks_decode_and_are_flagged() {
     // Point the scenery's attachments at an element copied into the effe's data.
     let copy: Vec<u8> = f.ctx.meta.slice(f.scen + 0xc4, 0x18).unwrap().to_vec();
     let at = (f.effe - BASE) as usize;
-    f.ctx.meta.bytes[at..at + 0x18].copy_from_slice(&copy);
+    std::sync::Arc::make_mut(&mut f.ctx.meta.bytes)[at..at + 0x18].copy_from_slice(&copy);
     f.poke(f.scen + 0x98, f.effe);
     let t = f.ctx.decode(SCEN).unwrap();
     match t.layers[0].get("attachments") {
@@ -310,10 +319,10 @@ fn budgets_bound_aliased_amplification() {
     let mut f = fixture();
     // 20 predicted resources all reading the same eight bytes inside the effe.
     let at = (f.effe - BASE) as usize;
-    f.ctx.meta.bytes[at + 4..at + 8].copy_from_slice(&EFFE.0.to_le_bytes());
+    std::sync::Arc::make_mut(&mut f.ctx.meta.bytes)[at + 4..at + 8].copy_from_slice(&EFFE.0.to_le_bytes());
     let fill = f.ctx.meta.bytes[at..at + 8].to_vec();
     for i in 1..8 {
-        f.ctx.meta.bytes[at + i * 8..at + i * 8 + 8].copy_from_slice(&fill);
+        std::sync::Arc::make_mut(&mut f.ctx.meta.bytes)[at + i * 8..at + i * 8 + 8].copy_from_slice(&fill);
     }
     f.poke(f.scen + 0xb4, 8);
     f.poke(f.scen + 0xb8, f.effe);
@@ -430,10 +439,7 @@ fn collections_decode_weighted_entries() {
     );
     let ctx = Context {
         catalog,
-        meta: Metadata {
-            base: BASE,
-            bytes: img.bytes,
-        },
+        meta: Metadata::new(BASE, img.bytes),
     };
     let t = ctx.decode(id).unwrap();
     let e = t.layers[0].elements("entries");
@@ -502,7 +508,7 @@ fn element_budget_is_shared_across_blocks() {
     // total, no block larger than three.
     let at = (f.effe - BASE) as usize;
     for i in 0..3 {
-        f.ctx.meta.bytes[at + i * 8 + 4..at + i * 8 + 8].copy_from_slice(&EFFE.0.to_le_bytes());
+        std::sync::Arc::make_mut(&mut f.ctx.meta.bytes)[at + i * 8 + 4..at + i * 8 + 8].copy_from_slice(&EFFE.0.to_le_bytes());
     }
     f.poke(f.scen + 0xb4, 3);
     f.poke(f.scen + 0xb8, f.effe);

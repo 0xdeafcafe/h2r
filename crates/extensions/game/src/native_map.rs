@@ -8,11 +8,12 @@
 
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
-use std::sync::{Arc, Mutex, Weak, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
 
 use assets::{Region, ResourceFiles};
 use map::{Map, ResourceFile, TagId};
 use native_render::load::Error;
+use native_render::world_layers_gpu::Cache as IndexedCache;
 use vfs::{FileSource, Vfs};
 
 use crate::pad_speaker::SHARED_MAPS;
@@ -27,6 +28,10 @@ pub type NativeMap = Map<Box<dyn MapReader>>;
 /// resources here to be destroyed away from the render thread.
 pub(crate) type RetireQueue = mpsc::Sender<(timeline::setup::Stage, Box<dyn Send>)>;
 
+thread_local! {
+    static RETIRING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub(crate) fn retire_queue() -> std::io::Result<RetireQueue> {
     static QUEUE: Mutex<Option<RetireQueue>> = Mutex::new(None);
     let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
@@ -35,6 +40,7 @@ pub(crate) fn retire_queue() -> std::io::Result<RetireQueue> {
     }
     let (send, receive) = mpsc::channel::<(timeline::setup::Stage, Box<dyn Send>)>();
     background::spawn("native-map retire", move || {
+        RETIRING.set(true);
         for (stage, payload) in receive {
             let _timer = stage.worker();
             drop(payload);
@@ -44,10 +50,93 @@ pub(crate) fn retire_queue() -> std::io::Result<RetireQueue> {
     Ok(send)
 }
 
+struct RetiredPayload<T> {
+    _payload: T,
+    _pending: mem_watch::Gauge,
+}
+
+fn tracked_retirement(payload: impl Send + 'static) -> Box<dyn Send> {
+    static RETIRING_PAYLOADS: mem_watch::Counter =
+        mem_watch::Counter::new("native.map_retired_payloads");
+    Box::new(RetiredPayload { _payload: payload, _pending: RETIRING_PAYLOADS.track(1) })
+}
+
 /// Call from Drop after detaching the payload's sender so the worker
 /// destroys the payload directly.
 pub(crate) fn retire<T: Default + Send + 'static>(send: RetireQueue, stage: timeline::setup::Stage, payload: &mut T) {
-    let _ = send.send((stage, Box::new(std::mem::take(payload))));
+    if !RETIRING.try_with(std::cell::Cell::get).unwrap_or(false) {
+        let _ = send.send((stage, tracked_retirement(std::mem::take(payload))));
+    }
+}
+
+/// Disconnects a map slot on activation and destroys its payload on the
+/// retire worker. Passes already handed to the renderer keep their own pins.
+pub(crate) fn retire_owned(stage: timeline::setup::Stage, payload: impl Send + 'static) {
+    if let Ok(send) = retire_queue() {
+        let _ = send.send((stage, tracked_retirement(payload)));
+    }
+}
+
+struct RetireFence(mpsc::Sender<()>);
+
+impl Drop for RetireFence {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+/// Map builds share scratch allocation headroom. Wait on a loader thread
+/// for an older build to leave and for detached resources to be destroyed.
+pub(crate) fn begin_load(
+    stage: timeline::setup::Stage,
+    current: impl Fn() -> bool,
+) -> Option<MutexGuard<'static, ()>> {
+    static LOADER: Mutex<()> = Mutex::new(());
+    let guard = LOADER.lock().unwrap_or_else(|e| e.into_inner());
+    if !current() {
+        return None;
+    }
+    let (done, wait) = mpsc::channel();
+    retire_queue().ok()?.send((stage, Box::new(RetireFence(done)))).ok()?;
+    wait.recv().ok()?;
+    current().then_some(guard)
+}
+
+type IndexedSlot = Mutex<Arc<IndexedCache>>;
+static INDEXED_CACHES: Mutex<Vec<Weak<IndexedSlot>>> = Mutex::new(Vec::new());
+
+/// A draw gets the current cache at admission. A queued draw can finish
+/// with that cache after activation, without refilling the next map's cache.
+pub(crate) struct MapIndexedCache(Arc<IndexedSlot>);
+
+impl Default for MapIndexedCache {
+    fn default() -> Self {
+        let slot = Arc::new(IndexedSlot::default());
+        let mut caches = INDEXED_CACHES.lock().unwrap_or_else(|e| e.into_inner());
+        caches.retain(|cache| cache.strong_count() != 0);
+        caches.push(Arc::downgrade(&slot));
+        Self(slot)
+    }
+}
+
+impl MapIndexedCache {
+    pub(crate) fn get(&self) -> Arc<IndexedCache> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+fn detach_indexed_cache(cache: &IndexedSlot) -> Arc<IndexedCache> {
+    std::mem::take(&mut *cache.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+pub(crate) fn retire_indexed_caches() {
+    let mut caches = INDEXED_CACHES.lock().unwrap_or_else(|e| e.into_inner());
+    caches.retain(|cache| {
+        let Some(cache) = cache.upgrade() else { return false };
+        let retired = detach_indexed_cache(&cache);
+        retire_owned(timeline::setup::Stage::World, retired);
+        true
+    });
 }
 
 /// Resolve a live datum by its map tag index when the salt differs.
@@ -300,6 +389,20 @@ fn register(files: &mut ResourceFiles, file: ResourceFile, source: FileSource) -
 mod tests {
     use super::*;
     use crate::map_override::tests::{Temp, named_map};
+
+    #[test]
+    fn a_displaced_indexed_cache_lives_only_as_long_as_already_admitted_draws() {
+        let slot = IndexedSlot::default();
+        let pass_cache = slot.lock().unwrap().clone();
+        let old = Arc::downgrade(&pass_cache);
+        let retired = detach_indexed_cache(&slot);
+        assert!(Arc::ptr_eq(&pass_cache, &retired));
+        assert!(!Arc::ptr_eq(&pass_cache, &slot.lock().unwrap()));
+        drop(retired);
+        assert!(old.upgrade().is_some());
+        drop(pass_cache);
+        assert!(old.upgrade().is_none());
+    }
 
     #[test]
     fn a_private_source_is_visible_to_native_jobs_only_after_activation() {

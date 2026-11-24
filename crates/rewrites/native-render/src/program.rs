@@ -948,8 +948,7 @@ pub fn describe_image(image: &Image, bc: bool) -> String {
 pub fn bias_signed(image: &mut Image, signed: [bool; 4]) {
     if signed.iter().any(|&s| s) {
         // BC blocks no longer represent the biased channels.
-        image.blocks = None;
-        bias_levels(&mut image.rgba, &mut image.mips, signed);
+        image.edit_rgba(|rgba, mips| bias_levels(rgba, mips, signed));
     }
 }
 

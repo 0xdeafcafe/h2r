@@ -795,13 +795,7 @@ pub(crate) mod tests {
             Stage::Empty,
         ];
         p.dims = [Some(TextureDim::D2), Some(TextureDim::D2), None, None];
-        let image = |rgba: Vec<u8>| Image {
-            width: 2,
-            height: 1,
-            rgba,
-            mips: Vec::new(),
-            blocks: None,
-        };
+        let image = |rgba: Vec<u8>| Image::from_rgba(2, 1, rgba, Vec::new());
         let grey = image(vec![9, 9, 9, 255, 9, 9, 9, 255]);
         let varied = image(vec![9, 9, 9, 255, 1, 2, 3, 255]);
         let bitmap = |id: TagId, n: u32| (id == base && n == 0).then(|| varied.clone());

@@ -161,6 +161,8 @@ pub struct TypedPasses<'a> {
 }
 
 pub trait Host: Send + Sync {
+    fn retire_map(&self) {}
+
     /// Reserve the entire sequence on every copy before issuing any of it.
     /// A refusal leaves the caller at the start of its ordinary passes.
     fn draw_typed(&self, _mem: &mut dyn GuestMemory, _batch: &TypedPasses<'_>) -> bool {
@@ -245,6 +247,13 @@ thread_local! {
 
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+pub(crate) fn retire_map() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host {
+        host.retire_map();
+    }
 }
 
 /// Forward a scene caster group to the light material and geometry owner.

@@ -672,6 +672,13 @@ paths in "What exists":
    `PackageRewrite::observed` hands
    each map, as the game is given it, to the boot's hook, which records
    the pogo stick's weapons (`pogo_kit::served::publish`).
+   Boot reads one set for map preparation and mounting. The runtime
+   rewrite and store level builder share the enabled package payloads.
+   `packages.list` keeps the set's summary and reads map results from
+   the served-map record. `vfs::RewriteBackend` keeps a 64 MiB cache for
+   idle rewritten level payloads, protecting open levels and retaining
+   the shared resource maps separately. File metadata and directory
+   listings reuse the rewritten sizes after eviction.
    With the maps served from the tag store (`store-maps`), the per-map
    items reach the game as level images instead: `vfs::store_map` asks
    `workspace::level::StoreLevels` for each level it opens, which builds

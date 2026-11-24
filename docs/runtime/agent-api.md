@@ -2672,6 +2672,34 @@ connection thread so the game can continue ticking. A write failure returns
 | `probes` | Named subsystem counts, including pending requests, socket reply buffers and queued pad steps |
 | `reports` | Recent report paths on the game host |
 
+### Explain memory growth
+
+The memory watchdog exposes these map-load and cache probes through
+`host.memory`, its reports, and the flight recorder. Byte gauges follow
+the listed owners. The process footprint also includes driver allocations,
+in-flight GPU work, and heap pages the allocator keeps for reuse.
+
+| Probe | Ownership measured |
+|---|---|
+| `native.map_retired_payloads` | Detached native payloads queued for or being destroyed by the retirement worker |
+| `native.decoded_image_bytes` | Capacity of shared native RGBA, mip and BC payloads, counted once per allocation |
+| `native.light_model_entries` | Models retained for standalone light and shadow passes |
+| `native.world_cpu_geometry_bytes`, `native.object_geometry_buffer_bytes` | Retained world vertex/index vector capacity and live object vertex/index buffer size |
+| `native.world_buffer_cache_bytes`, `native.world_section_payload_bytes`, `native.transparent_packed_bytes` | Indexed draw caches and packed transparent geometry |
+| `native.world_section_windows`, `native.transparent_packed_bindings` | Live indexed windows and packed binding entries |
+| `gfx.pipeline_cache_entries`, `gfx.shader_cache_entries`, `gfx.texture_group_cache_entries` | Entries across live renderers or binding sets |
+| `gfx.pipeline_draw_jobs`, `gfx.pipeline_prewarm_jobs` | Queued compile slots, including cancelled slots awaiting removal |
+| `d3d.nv2a_program_entries`, `d3d.nv2a_archive_pending_keys`, `d3d.nv2a_archive_pipeline_records` | Translated program results, unregistered archive keys and archive pipeline records |
+| `gfx.upload_ring_staging_bytes`, `gfx.upload_ring_buffer_bytes` | CPU capacity and GPU buffer size for live upload rings |
+| `gfx.upload_idle_cpu_bytes`, `gfx.upload_idle_gpu_bytes` | The idle subset of the corresponding upload ring totals |
+| `assets.rewritten_map_cache_bytes`, `assets.rewritten_shared_map_cache_bytes` | Rewritten level and shared resource payloads in the VFS cache |
+
+Use the memory history to compare the menu, level activation, settled
+play, and the return to the menu. For a short peak between recorder rows,
+read `host.memory` during the load. `host.memory.heap` breaks out live
+Rust allocations from the `native.*.load` and `assets.map_rewrite`
+scopes and can sample their allocation stacks.
+
 ### Finding a leak after the fact
 
 Every watched process (`h2 play`, `run`, `serve`, `h2 lab host` and

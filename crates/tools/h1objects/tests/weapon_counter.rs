@@ -129,10 +129,7 @@ fn counter_base() -> Base {
         lod_offset: 0.0,
     };
     Base {
-        meta: Metadata {
-            base: 0,
-            bytes: Vec::new(),
-        },
+        meta: Metadata::new(0, Vec::new()),
         tags: Vec::new(),
         model_shader: ModelTemplate {
             library: Library::new(
