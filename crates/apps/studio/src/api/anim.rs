@@ -44,6 +44,13 @@ const READ: MethodDef = def(
     r#"{"doc":"integer|null","tag?":"string (jmad clip)","animation?":"{index,name,type,frames,codecs,aim_grid,error} (jmad clip)","name?":"string (document)","revision?":"integer (document)","frame_rate":"number (30)","frames":"integer","duration":"number (seconds)","tolerance?":"{rotation_degrees,translation,scale} (jmad clip)","nodes":"[{index,name,parent,channels:[{kind,moves,key_count,keys?:[{frame,value:[number],interp?,tangent?}]}]}]","reduction?":"{channels,dense_values,keys,max_error:{rotation_degrees,translation,scale}} (jmad clip)","events?":"{frame,sound,effect,decoded} (jmad clip)","notes?":"[string] (jmad clip)"}"#,
     r#"{"tag":"jmad:invented\\stickman","animation":"combat:idle"}"#,
 );
+const FACE: MethodDef = def(
+    m::SOUND_FACE,
+    "The face preview: an object (a biped) posed with its graph's talk overlay at the weight a sound's mouth curve gives at one instant, drawn to a PNG outside Git. The weight is the byte of the 30 Hz tick `at_ms` falls in over 255 (0 past the curve's end), from `tag`'s permutation, or `weight` given directly. The overlay is found as the game finds it, mode combat, class any, type any, each exact then any; `overlay` names another of the graph's animations instead. Its frame 0 blends over the idle action's frame 0, else the rest pose. Without `on` only the weight answers",
+    r#"{"tag?":"string (a snd!)","range?":"integer","permutation?":"integer","at_ms?":"integer (default: the playhead while that permutation plays, else 0)","weight?":"number (0 to 1, instead of tag)","on?":"string (the object to pose, a tag)","overlay?":"string|integer (an animation of its graph, instead of talk)","size?":"[w,h] (default [640,480])","out?":"string"}"#,
+    r#"{"weight":"number","at_ms":"integer|null","tick":"integer|null","ticks":"integer|null","byte":"integer|null","voiced":"boolean","talk?":"string","base?":"string|null","animation?":"{index,name,type,frames,codecs,aim_grid,error}","model?":"{object,name,triangles,untextured}|null","nodes?":"[...] (as anim.pose)","png?":"string|null","width?":"integer","height?":"integer","covered?":"integer","notes?":"[string]"}"#,
+    r#"{"on":"bipd:invented\\stickman","weight":1,"overlay":"combat:arm_over","out":"$OUT/face.png"}"#,
+);
 
 fn failed(e: AnimError) -> agent_proto::RpcError {
     match e {
@@ -326,6 +333,7 @@ impl Provider for Anim {
             save::SAVE,
             transfer::RETARGET,
             transfer::IMPORT,
+            FACE,
         ]
     }
 
@@ -342,6 +350,7 @@ impl Provider for Anim {
             m::ANIM_SAVE => save::save(app, &p),
             m::ANIM_RETARGET => transfer::retarget(app, &p),
             m::ANIM_IMPORT => transfer::import(app, &p),
+            m::SOUND_FACE => self.face(app, &p),
             _ => return None,
         })
     }
@@ -426,6 +435,98 @@ impl Anim {
         Ok(answer_json(&answer, (&png, w, h, covered)))
     }
 
+    /// `sound.face`: the weight from a sound's curve (or given), and the
+    /// object posed at it.
+    fn face(&mut self, app: &mut App, p: &P) -> Reply {
+        let sound_failed = |e: crate::app::audition::SoundError| match e {
+            crate::app::audition::SoundError::Refused(m) => err(code::REFUSED, m),
+            crate::app::audition::SoundError::Failed(m) => err(code::FAILED, m),
+        };
+        let (weight, at, info) = match (p.has("tag"), p.opt_f32("weight")?) {
+            (true, Some(_)) => {
+                return Err(err(code::INVALID_PARAMS, "tag and weight cannot be combined"));
+            }
+            (false, None) => {
+                return Err(err(code::INVALID_PARAMS, "tag (a sound) or weight is needed"));
+            }
+            (false, Some(w)) => {
+                if !(0.0..=1.0).contains(&w) {
+                    return Err(err(code::INVALID_PARAMS, "weight: a number from 0 to 1"));
+                }
+                (w, None, None)
+            }
+            (true, None) => {
+                let id = super::tag_fields::resolve(app, p)?;
+                let range = p.opt_usize("range")?.unwrap_or(0);
+                let permutation = p.opt_usize("permutation")?.unwrap_or(0);
+                let at = match p.opt_u64("at_ms")? {
+                    Some(ms) => ms,
+                    None => {
+                        let s = app.sound_state();
+                        let here = s.playing
+                            && s.tag == Some(id)
+                            && (s.range, s.permutation) == (range, permutation);
+                        if here { s.position_ms } else { 0 }
+                    }
+                };
+                let w = app
+                    .face_weight(id, range, permutation, at)
+                    .map_err(sound_failed)?;
+                (w.map_or(0.0, |w| w.weight), Some(at), w)
+            }
+        };
+        let mut out = json!({
+            "weight": weight,
+            "at_ms": at,
+            "tick": info.map(|w| w.tick),
+            "ticks": info.map(|w| w.ticks),
+            "byte": info.and_then(|w| w.byte),
+            "voiced": at.is_none() || info.is_some(),
+        });
+        let Some(on) = p.get("on").cloned() else {
+            return Ok(out);
+        };
+        let object = super::tag_fields::resolve(app, &P(&json!({ "tag": on })))?;
+        let overlay = match p.get("overlay") {
+            Some(want) => {
+                let graph = app.face_graph(object).map_err(failed)?;
+                let info = app.anim_info(graph).map_err(failed)?;
+                Some(find_animation(&info, want)?)
+            }
+            None => None,
+        };
+        let face = app.face_pose(object, weight, overlay).map_err(failed)?;
+        let size = size(p)?;
+        let png = match p.opt_str("out")? {
+            Some(o) => PathBuf::from(o),
+            None => {
+                let stem = on.as_str().and_then(|t| t.rsplit(['\\', '/']).next()).unwrap_or("face");
+                studio_proto::output_dir()
+                    .join("face")
+                    .join(format!("{stem}_{:.3}.png", face.weight))
+            }
+        };
+        let mut answer = face.pose;
+        let picture = match &answer.model {
+            Some(m) => match self.picture(m, &png, size) {
+                Ok((w, h, covered)) => (json!(png.display().to_string()), w, h, covered),
+                Err(e) => {
+                    answer.notes.push(e);
+                    (Value::Null, 0, 0, 0)
+                }
+            },
+            None => (Value::Null, 0, 0, 0),
+        };
+        let (png, w, h, covered) = picture;
+        let posed = answer_json(&answer, (&png, w, h, covered));
+        if let (Value::Object(o), Value::Object(posed)) = (&mut out, posed) {
+            o.extend(posed);
+            o.insert("talk".into(), json!(face.talk));
+            o.insert("base".into(), json!(face.base));
+        }
+        Ok(out)
+    }
+
     /// The posed model drawn to `out`: the picture's size and how many
     /// pixels it covers; an error names why there is none.
     fn picture(
@@ -464,3 +565,6 @@ pub(super) mod read_tests;
 #[cfg(test)]
 #[path = "anim/transfer_tests.rs"]
 pub(super) mod transfer_tests;
+#[cfg(test)]
+#[path = "anim/face_tests.rs"]
+mod face_tests;

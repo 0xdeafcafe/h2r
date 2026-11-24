@@ -10,6 +10,11 @@
 //! agent API's `sound.read`, `sound.play` and `sound.mouth` use the same
 //! calls.
 //!
+//! Under the track, **Preview on** opens a picker of the map's bipeds; the
+//! picked one draws with its `talk` overlay at the weight the curve gives
+//! at the playhead (the face preview, docs/editor/rich-editors.md, slice
+//! A3, [`crate::app::anim`]'s `face_pose`, which `sound.face` shares).
+//!
 //! The window is one scrolling body. The waveform and the mouth track
 //! have heights of their own; they never take the leftover height.
 use std::sync::Arc;
@@ -18,9 +23,12 @@ use dear_imgui_rs::{Condition, MouseButton, Ui};
 use map::TagId;
 use tags::sound::MOUTH_HZ;
 
+use crate::app::anim::{AnimError, FacePose};
 use crate::app::audition::{Clip, SoundError, SoundInfo, SoundRow};
 use crate::app::{App, ToolKind};
 use crate::theme::{self, icon};
+use crate::ui::anim::{PICTURE, Preview};
+use crate::viewport::Gpu;
 
 /// The map shown and the tag.
 type Key = (Option<String>, TagId);
@@ -44,6 +52,36 @@ pub struct SoundUi {
     mouth: Option<((Key, (usize, usize)), Result<Option<Arc<[u8]>>, SoundError>)>,
     peaks: Option<((Key, (usize, usize), usize), Vec<[i16; 2]>)>,
     problem: Option<String>,
+    face: Face,
+}
+
+/// The picker that **Preview on** opens.
+const FACE_PICK: &str = "##face-pick";
+
+/// The face preview: the object picked, and the picture drawn for one
+/// aperture byte (a new byte draws a new one; the same byte keeps it).
+#[derive(Default)]
+struct Face {
+    on: Option<(TagId, String)>,
+    picture: Option<FacePicture>,
+}
+
+/// The sound, the permutation, the object, and the byte (`None`: no
+/// byte, the mouth closed).
+type FaceKey = (Key, (usize, usize), TagId, Option<u8>);
+
+struct FacePicture {
+    key: FaceKey,
+    preview: Option<Preview>,
+    pose: Result<FacePose, AnimError>,
+}
+
+impl Face {
+    fn clear(&mut self, gpu: &mut Gpu<'_>) {
+        if let Some(preview) = self.picture.take().and_then(|p| p.preview) {
+            let _ = gpu.renderer.unregister_external_texture(preview.id);
+        }
+    }
 }
 
 /// `m:ss.t` of `ms`.
@@ -83,7 +121,7 @@ pub fn target(app: &App) -> Option<(TagId, String)> {
 }
 
 /// The window, when the front document is a sound.
-pub fn window(ui: &Ui, app: &mut App, st: &mut SoundUi) {
+pub fn window(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi) {
     let Some((id, name)) = target(app) else {
         return;
     };
@@ -92,11 +130,12 @@ pub fn window(ui: &Ui, app: &mut App, st: &mut SoundUi) {
         .size([440.0, 380.0], Condition::FirstUseEver)
         .build(|| {
             ui.text(format!("{} {name}", icon::SOUND));
-            body(ui, app, st, id, key);
+            body(ui, app, gpu, st, id, key);
         });
 }
 
-fn body(ui: &Ui, app: &mut App, st: &mut SoundUi, id: TagId, key: Key) {
+fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, key: Key) {
+    let face_key = key.clone();
     if st.info.as_ref().map(|i| &i.0) != Some(&key) {
         st.info = Some((key.clone(), app.sound_info(id)));
         st.rows = Some((key.clone(), app.sound_rows(id)));
@@ -301,6 +340,103 @@ fn body(ui: &Ui, app: &mut App, st: &mut SoundUi, id: TagId, key: Key) {
     }
     if let Some(p) = &st.problem {
         ui.text_colored(theme::ERROR, format!("{} {p}", icon::ALERT));
+    }
+    let ms = if here { state.position_ms } else { 0 };
+    face(ui, app, gpu, st, id, face_key, ms);
+}
+
+/// The **Preview on** row and the face it draws: the picked biped with its
+/// `talk` overlay at the curve's weight `ms` into the permutation.
+fn face(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, key: Key, ms: u64) {
+    ui.separator();
+    ui.text("Preview on");
+    ui.same_line();
+    let label = st.face.on.as_ref().map_or("None", |(_, name)| name.as_str()).to_owned();
+    if ui.button(format!("{label}##face-on")) {
+        ui.open_popup(FACE_PICK);
+    }
+    if let Some(_popup) = ui.begin_popup(FACE_PICK) {
+        if ui
+            .selectable_config("None##face-none")
+            .selected(st.face.on.is_none())
+            .build()
+        {
+            st.face.on = None;
+            st.face.clear(gpu);
+        }
+        let objects = app.face_objects();
+        if objects.is_empty() {
+            ui.text_disabled("This map has no bipeds.");
+        }
+        for (object, name) in objects {
+            let picked = st.face.on.as_ref().is_some_and(|(o, _)| *o == object);
+            if ui
+                .selectable_config(format!("{name}##face-{:#010x}", object.0))
+                .selected(picked)
+                .build()
+                && !picked
+            {
+                st.face.on = Some((object, name));
+                st.face.clear(gpu);
+            }
+        }
+    }
+    let Some((object, _)) = st.face.on.clone() else {
+        return;
+    };
+    let (range, permutation) = st.pick;
+    let weight = match app.face_weight(id, range, permutation, ms) {
+        Ok(w) => w,
+        Err(e) => {
+            ui.text_colored(theme::WARN, format!("{} {e}", icon::ALERT));
+            return;
+        }
+    };
+    let fk: FaceKey = (key, st.pick, object, weight.and_then(|w| w.byte));
+    if st.face.picture.as_ref().map(|p| &p.key) != Some(&fk) {
+        let pose = app.face_pose(object, weight.map_or(0.0, |w| w.weight), None);
+        let preview = pose
+            .as_ref()
+            .ok()
+            .and_then(|f| f.pose.model.as_ref())
+            .and_then(|m| Preview::render(gpu, m));
+        st.face.clear(gpu);
+        st.face.picture = Some(FacePicture {
+            key: fk,
+            preview,
+            pose,
+        });
+    }
+    let Some(picture) = &st.face.picture else {
+        return;
+    };
+    let face = match &picture.pose {
+        Ok(face) => face,
+        Err(e) => {
+            ui.text_colored(theme::WARN, format!("{} {e}", icon::ALERT));
+            return;
+        }
+    };
+    ui.text_disabled(match weight {
+        Some(w) => format!(
+            "{}  weight {:.2}  tick {} of {}",
+            face.talk, face.weight, w.tick, w.ticks
+        ),
+        None => format!("{}  unvoiced: the mouth stays closed", face.talk),
+    });
+    match &picture.preview {
+        Some(preview) => {
+            let width = ui.content_region_avail()[0].max(64.0);
+            ui.image(
+                preview.id.texture_id(),
+                [width, width * PICTURE[1] as f32 / PICTURE[0] as f32],
+            );
+        }
+        None => {
+            for note in &face.pose.notes {
+                ui.text_disabled(note);
+            }
+        }
     }
 }
 

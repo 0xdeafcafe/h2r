@@ -49,7 +49,9 @@ use tags::sound::ResourceReader;
 use super::App;
 
 mod document;
+mod face;
 pub use document::save::{AnimationPlacement, SavedAnimation};
+pub use face::{FacePose, FaceWeight, mouth_weight};
 pub use document::transfer::{RetargetOptions, Transfer};
 
 /// The renders' background, sRGB-encoded: `model.render`'s own.
@@ -290,7 +292,12 @@ pub(crate) struct GraphKey {
 /// What was read for one graph, kept between calls.
 struct Loaded {
     key: GraphKey,
+    /// The graph's tag name, for messages.
+    name: String,
     graph: AnimationGraph,
+    /// The graph's mode tree, names resolved, for the face preview's
+    /// lookups ([`face`]).
+    tree: Vec<face::TreeEntry>,
     /// The graph's node and animation names, resolved through the map's
     /// strings (a name that does not resolve is `animation <index>`).
     node_names: Vec<Option<String>>,
@@ -540,6 +547,8 @@ pub struct Anim {
     loaded: Option<Loaded>,
     docs: Vec<document::AnimationDocument>,
     graph_rests: HashMap<GraphKey, GraphRest>,
+    /// The graph each object posed by the face preview uses, by object.
+    face_graphs: HashMap<GraphKey, Result<TagId, AnimError>>,
 }
 
 fn model_defaults(piece: &Piece) -> Vec<NodeDefault> {
@@ -853,6 +862,7 @@ impl App {
                     .unwrap_or_else(|| format!("animation {i}"))
             })
             .collect();
+        let tree = face::tree(&graph, map.strings());
         let users = users_of(&ctx, id);
         let mut files = self
             .shown_raw_files()
@@ -869,7 +879,7 @@ impl App {
         self.anim.graph_rests.insert(
             key.clone(),
             GraphRest {
-                name: graph_name,
+                name: graph_name.clone(),
                 models: models
                     .iter()
                     .map(|(user, piece)| {
@@ -881,7 +891,9 @@ impl App {
         );
         self.anim.loaded = Some(Loaded {
             key,
+            name: graph_name,
             graph,
+            tree,
             node_names,
             animation_names,
             resources: HashMap::new(),

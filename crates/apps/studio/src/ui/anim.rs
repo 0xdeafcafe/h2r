@@ -20,7 +20,7 @@ use crate::viewport::Gpu;
 mod edit;
 mod save;
 
-const PICTURE: [u32; 2] = [480, 360];
+pub(crate) const PICTURE: [u32; 2] = [480, 360];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Clip {
@@ -37,13 +37,15 @@ struct PictureKey {
     base: Option<(usize, Option<u64>)>,
 }
 
-struct Preview {
-    id: ExternalTextureId,
+/// A posed model drawn to a texture the window shows; the face preview
+/// (`ui::sound`) draws its pictures the same way.
+pub(crate) struct Preview {
+    pub(crate) id: ExternalTextureId,
     _texture: wgpu::Texture,
 }
 
 impl Preview {
-    fn render(gpu: &mut Gpu<'_>, model: &PoseModel) -> Option<Self> {
+    pub(crate) fn render(gpu: &mut Gpu<'_>, model: &PoseModel) -> Option<Self> {
         let texture = crate::app::anim::texture(&gpu.device, &gpu.queue, model, PICTURE);
         let view = texture.create_view(&Default::default());
         let id = gpu.renderer.register_external_texture(&view).ok()?;

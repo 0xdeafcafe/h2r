@@ -482,12 +482,25 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
   **Sound** window (`ui/sound.rs`, floating until the tag view tabs of X1
   exist) lists the permutations, draws the waveform, plays, stops and
   plays from a click on the waveform. A permutation whose compression is
-  neither Xbox ADPCM nor a codec stream is refused by name. The face
-  preview and the curve's drawing are A3 and A4;
+  neither Xbox ADPCM nor a codec stream is refused by name. The curve's
+  drawing is A4;
 - models posed from their animation graphs: slice M1 (built) samples a
   clip with `tags::anim_sample::AnimationClip` and draws the posed node
   matrices in place of `native_view`'s `rest_nodes` (the Animation
-  window, `anim.pose`), so the face preview (A3) has its model;
+  window, `anim.pose`), so the face preview has its model;
+- the face preview (slice A3, built): `crates/apps/studio/src/app/anim/face.rs`.
+  **Preview on** under the mouth track opens a picker of the map's
+  bipeds; the picked one draws with its graph's `talk` overlay, frame
+  zero, at the weight of the playhead's tick (its byte over 255, 0 past
+  the curve's end), redrawn when the byte changes, so it follows play
+  and a click on the waveform or the track. The overlay is looked up as
+  the engine looks one up, mode, weapon class and weapon type each exact
+  then `any`, from `combat:any:any` (**Design**: a model in the editor
+  has no mode or weapon; a converted biped keeps `talk` there). It
+  blends over the `idle` action the same lookup finds, at frame zero,
+  else the rest pose. The unit's onset and release weights are not
+  applied, and a `talk` in an inherited graph is refused by name.
+  `sound.face` gives the same pose and picture;
 - a WMA sound without the executable is refused: `This sound needs the
   game's executable to decode.` The mouth track still shows.
 
@@ -649,6 +662,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `sound.play` | `{tag, range?, permutation?, from_ms?}` | `{playing, frames, rate, channels, duration_ms, from_ms, output}`; `output` is `headless` when `Audition::headless` is set (tests, the API's own examples), which plays to nothing in real time |
 | `sound.stop` | `{}` | `{stopped}` |
 | `sound.mouth` | `{tag, range?, permutation?}`; `curve?` or `from_sound?: {gain, smoothing}` to write are A4 | `{ticks, curve}` (0 to 1 per tick; `curve` null when unvoiced) |
+| `sound.face` | `{tag?, range?, permutation?, at_ms?}` or `{weight?}`, with `on?` (the object), `overlay?` (in place of `talk`), `size?`, `out?` | `{weight, at_ms, tick, ticks, byte, voiced}`; with `on`, `talk`, `base` and `anim.pose`'s answer and PNG |
 | `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame?, overlay?: {animation, weight}, model?, size?, out?}` | the animations with types, frame counts and codecs, and the models that use the graph; the posed node transforms (local and world, which channels the animation supplied), and the posed model drawn to a PNG |
 | `recording.list` | none | `{recordings: [{name, ticks, version, control_version, stream_bytes, events, problem?, played_by}], note?}` |
 | `recording.read` | `{name, limit?, offset?}` | `{initial: {fields, trailer}, events: [{tick, at, delay, kind, name, fields, payload}], total, truncated, ...}`; a stream that does not read is `REFUSED` with the offset |
@@ -727,7 +741,7 @@ the first one whose needs are met.
 | S2 | **Shader animation**: animated properties as curves, the preview clock | S | S1, F1 | a periodic property changes the preview between two clock times; a refused animation kind is named |
 | S4 | **Shader code, read**: listings, WGSL and warnings per pass, `shader.code` | S | S1 | an invented pass lists both programs; a state program shows its refusal |
 | A2 (built) | **Mouth curves, read**: the extra-info names in `defs`, `Gestalt::mouth_curve`, the track under the waveform, `sound.mouth` read | S | A1 | an invented gestalt with one voiced and one unvoiced permutation gives one curve and one null |
-| A3 | **Face preview**: the `talk` overlay by the curve on a picked model, in step with play and scrub | S | A2, M1 | `anim.pose` with the overlay at weight 0 and 1 gives two pictures; the preview at a tick uses that tick's byte |
+| A3 (built) | **Face preview**: the `talk` overlay by the curve on a picked model, in step with play and scrub | S | A2, M1 | `anim.pose` with the overlay at weight 0 and 1 gives two pictures; the preview at a tick uses that tick's byte |
 | X2 | **Data that changes length**: `TagDoc::resize_data`, the grown-data entry in the save, the session's form for the scenario | M | nothing | a shorter and a longer invented payload save and read back; growth off refuses; the old bytes are unreferenced; undo restores the pair |
 | F2 (built) | **Curve type changes** | S | F1, X2 | changing type saves at the new `blob_len` and reads back equal |
 | S3 | **Template parameter names**: read `stem`'s parameter and category blocks (**E** first), names on slots | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |

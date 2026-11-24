@@ -956,8 +956,11 @@ permutation says its place, length, integrated loudness and peak, and the
 length of its mouth curve (`App::sound_rows`, the numbers
 `sound.measure` gives each permutation); a permutation that does not
 decode keeps its row with the reason. The waveform and the mouth track
-sit under the rows on one time axis. `sound.read`, `sound.play`,
-`sound.stop`, `sound.mouth` and `sound.measure` are the API.
+sit under the rows on one time axis; under them **Preview on** picks a
+biped to draw with its `talk` overlay at the playhead's weight (the face
+preview, [rich-editors.md](rich-editors.md), slice A3). `sound.read`,
+`sound.play`, `sound.stop`, `sound.mouth`, `sound.face` and
+`sound.measure` are the API.
 
 **Waveform editing (built).** Edits apply to a package's source WAV and are
 kept as a list in `<name>.sound.yaml`, the sidecar of the `sound` item
@@ -1031,6 +1034,7 @@ engine's own sound start ([agent-api.md](../runtime/agent-api.md#audioplay)).
 |---|---|
 | `sound.read`, `sound.play`, `sound.stop`, `sound.measure` | built |
 | `sound.mouth {sound, permutation, set?}` | reads a curve (A2, built); the write is A4 |
+| `sound.face {tag, at_ms, on}` | the face preview's weight and pose (A3, built) |
 | `sound.edit {package, source, op, ...}`, `sound.render {package, source, out?}` | the edit list (built) and its result as numbers and a WAV (built) |
 | `sound.permutation {package, source, op: add \| remove \| set \| move \| list}` | the permutation list (built) |
 | `import.sound {file, package, tag, class?}` | a new `sound` item (built) |
