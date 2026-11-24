@@ -6,7 +6,9 @@
 //! guest itself would read, into flat arrays ([`Bsp`]), and each MOPP
 //! program into a flat tree ([`mopp::Tree`]). A query is then one
 //! Rust call over those arrays and a few live guest words read through
-//! [`GuestRead`]. Nothing here writes guest memory: a kernel returns plain
+//! [`GuestRead`]. The structure's portal graph is decoded the same way
+//! ([`Topology`]) for the cluster flood and the object visit. Nothing here
+//! writes guest memory: a kernel returns plain
 //! result structs, and the engine adapter (`engine::sim_collision`) writes
 //! them back once the whole answer is known.
 //!
@@ -18,7 +20,9 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod bsp;
+pub mod flood;
 pub mod mem;
+pub mod objects;
 pub mod mopp;
 pub mod structure;
 mod world;
@@ -28,7 +32,9 @@ pub mod synth;
 
 pub use bsp::segment::{Hit, Outcome, Segment};
 pub use bsp::{Bsp, Consts};
+pub use flood::{Flood, FloodQuery, Topology, TopologyKey};
 pub use mem::{Fault, GuestRead};
+pub use objects::{Visit, VisitQuery};
 pub use world::{CollisionWorld, Entry, EntryStats, Stats};
 
 /// Why a query was left to the lifted code. Nothing was written.

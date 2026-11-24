@@ -379,11 +379,15 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 3] = [
 ];
 
 /// These entries have a contract and a precision census. The vector kernels
-/// still need transitive register liveness or exact scratch replay.
-const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 3] = [
+/// still need transitive register liveness or exact scratch replay; the
+/// flood and the visit need their call-site scans. The flood's census also
+/// counts its own recursive entries.
+const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 5] = [
     (&points::COLLISION_VECTOR_TEST, Entry::VectorTest, "collision-vector-fp"),
     (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext, "collision-walk-fp"),
     (&points::COLLISION_INSTANCE_TRACE, Entry::InstanceTrace, "collision-instance-fp"),
+    (&points::COLLISION_CLUSTER_FLOOD, Entry::ClusterFlood, "collision-flood-fp"),
+    (&points::OBJECT_SPATIAL_VISIT, Entry::ObjectVisit, "collision-visit-fp"),
 ];
 
 /// Points after which the collision BSPs in guest memory may differ from

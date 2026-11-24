@@ -6,8 +6,9 @@
 //! snapshot or source change drops the old generation. Index order only
 //! matters to bookkeeping; the tree walk always follows guest node order.
 use crate::bsp::{Bsp, Consts, HEADER_WORDS};
+use crate::flood::{Topology, TopologyKey};
 use crate::mopp::{self, Tree};
-use crate::structure::{LeafTable, Structure};
+use crate::structure::{LeafTable, Structure, TableVersion};
 use crate::{BAILS, Bail, GuestRead};
 use sim_core::Epoch;
 use std::collections::{BTreeMap, HashMap};
@@ -32,11 +33,15 @@ pub enum Entry {
     VectorContext,
     /// E: the instanced-geometry trace (observed, still lifted).
     InstanceTrace,
+    /// G: `0x0014a5b0`, the sphere cluster flood.
+    ClusterFlood,
+    /// H: `0x000bb050`, the object spatial visit.
+    ObjectVisit,
     /// F: `0x00300150`, the integer MOPP box query.
     MoppBox,
 }
 
-pub const ENTRIES: usize = 6;
+pub const ENTRIES: usize = 8;
 /// Retained map arrays, BSP owners and address index capacity.
 pub const MAP_BUDGET: u64 = 8 << 20;
 /// Bounds address-index bookkeeping independently of decoded array size:
@@ -59,6 +64,8 @@ impl Entry {
         Entry::VectorTest,
         Entry::VectorContext,
         Entry::InstanceTrace,
+        Entry::ClusterFlood,
+        Entry::ObjectVisit,
         Entry::MoppBox,
     ];
 
@@ -69,6 +76,8 @@ impl Entry {
             Entry::VectorTest => "vector_test",
             Entry::VectorContext => "vector_context",
             Entry::InstanceTrace => "instance_trace",
+            Entry::ClusterFlood => "cluster_flood",
+            Entry::ObjectVisit => "object_visit",
             Entry::MoppBox => "mopp_box",
         }
     }
@@ -80,6 +89,8 @@ impl Entry {
             Entry::VectorTest => 0x001d_e630,
             Entry::VectorContext => 0x001d_e6d0,
             Entry::InstanceTrace => 0x0024_4980,
+            Entry::ClusterFlood => 0x0014_a5b0,
+            Entry::ObjectVisit => 0x000b_b050,
             Entry::MoppBox => 0x0030_0150,
         }
     }
@@ -189,6 +200,9 @@ struct Inner {
     built: u64,
     structure: Option<Structure>,
     cluster_source: Option<LeafTable>,
+    /// The active structure's portal graph and the version its provider
+    /// witnessed for every byte it was decoded from.
+    topology: Option<(TopologyKey, TableVersion, Arc<Topology>)>,
     scalar_rings: bool,
     ring_fallbacks: u64,
     cluster_budget_reads: u64,
@@ -219,7 +233,16 @@ impl Inner {
     }
 
     fn array_bytes(&self) -> u64 {
-        self.bytes + self.mopp_bytes + self.structure.as_ref().map_or(0, |s| s.footprint() as u64)
+        self.bytes
+            + self.mopp_bytes
+            + self.structure.as_ref().map_or(0, |s| s.footprint() as u64)
+            + self.topology_bytes()
+    }
+
+    fn topology_bytes(&self) -> u64 {
+        self.topology
+            .as_ref()
+            .map_or(0, |(_, _, t)| t.footprint() as u64)
     }
 
     fn metadata_bytes(&self) -> u64 {
@@ -263,6 +286,7 @@ impl Inner {
         if self.resident() + essential > limit {
             self.structure = None;
             self.cluster_source = None;
+            self.topology = None;
         }
         let available = limit
             .checked_sub(self.resident() + essential)
@@ -285,11 +309,16 @@ impl Inner {
     fn flush(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.scalar_rings = false;
-        if !self.bsps.is_empty() || self.structure.is_some() || !self.mopps.is_empty() {
+        if !self.bsps.is_empty()
+            || self.structure.is_some()
+            || self.topology.is_some()
+            || !self.mopps.is_empty()
+        {
             self.flushes += 1;
         }
         self.structure = None;
         self.cluster_source = None;
+        self.topology = None;
         self.bsps.clear();
         self.built = 0;
         self.bytes = 0;
@@ -453,6 +482,41 @@ impl CollisionWorld {
             }
         }
         built
+    }
+
+    /// The portal graph decoded for `key`, when the provider still vouches
+    /// for `version` (it saw no write to any source span since).
+    pub fn cached_topology(&self, key: TopologyKey, version: TableVersion) -> Option<Arc<Topology>> {
+        let epoch = self.epoch.get();
+        let mut inner = self.lock();
+        let memory = inner.memory;
+        inner.select(epoch, memory);
+        match &inner.topology {
+            Some((k, v, t)) if (*k, *v) == (key, version) => Some(t.clone()),
+            _ => None,
+        }
+    }
+
+    /// Keep a freshly decoded portal graph when the provider could watch
+    /// all of its sources and the budget has room; return it either way.
+    /// One graph is kept at a time: the active structure's.
+    pub fn keep_topology(
+        &self,
+        version: Option<TableVersion>,
+        topology: Topology,
+    ) -> Arc<Topology> {
+        let topology = Arc::new(topology);
+        let epoch = self.epoch.get();
+        let mut inner = self.lock();
+        let memory = inner.memory;
+        inner.select(epoch, memory);
+        inner.topology = None;
+        if let Some(version) = version
+            && inner.resident() + topology.footprint() as u64 <= self.budget
+        {
+            inner.topology = Some((topology.key(), version, topology.clone()));
+        }
+        topology
     }
 
     /// The decoded MOPP program at code object `code`, decoding it the
