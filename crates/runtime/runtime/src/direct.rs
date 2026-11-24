@@ -282,6 +282,7 @@ impl Live {
 /// block, or null while disabled).
 pub(crate) struct Direct {
     owned: NonNull<DirectState>,
+    configured_cap: u32,
     /// The frames below this are a host-call thunk's caller's, already in
     /// the shadow stack: a runner inside the thunk replays and drops only
     /// those above it. 0 outside a thunk.
@@ -320,7 +321,7 @@ impl Direct {
         let mut state: Box<DirectState> = unsafe { Box::new_zeroed().assume_init() };
         state.cap = DEFAULT_DEPTH;
         let owned = NonNull::from(Box::leak(state));
-        let mut d = Self { owned, floor: 0 };
+        let mut d = Self { owned, configured_cap: DEFAULT_DEPTH, floor: 0 };
         if let Some(live) = runtime.live() {
             d.install(live);
         }
@@ -339,6 +340,7 @@ impl Direct {
     /// Reset invocation state, keeping the entry table.
     pub(crate) fn restart(&mut self) {
         self.floor = 0;
+        self.configured_cap = DEFAULT_DEPTH;
         let s = self.state();
         s.budget = 0;
         s.depth = 0;
@@ -437,6 +439,11 @@ fn host_call<const DIAG: bool>(cpu: &mut CpuAbi, ctx: &mut ExecCtx, target: u32)
     let out = match step::<false, DIAG, true>(cpu, ctx, transfer, (0, 0), &mut remaining, &mut diag) {
         Step::Next(t) | Step::Done(t) => t,
     };
+    // The observer can have opened inside this thunk. Its generated
+    // caller already entered directly and may take this RETURN inline.
+    if matches!(out.kind, abi::CALL | abi::JUMP | abi::RETURN) {
+        ctx.observe_transfer(cpu, out);
+    }
     // Will a caller above the floor continue inline with `out`? The
     // generated callers make the same test (h2_direct_back): a JUMP's
     // caller hands up, a CALL's continues on a plain return to its
@@ -484,7 +491,15 @@ impl ExecCtx {
     /// Cap direct-call nesting at `depth` (at most [`MAX_DEPTH`]; default
     /// [`DEFAULT_DEPTH`]). A call past it goes through the runner.
     pub fn set_direct_call_depth(&mut self, depth: u32) {
-        self.direct.state().cap = depth.min(MAX_DEPTH);
+        self.direct.configured_cap = depth.min(MAX_DEPTH);
+        self.update_observed_depth();
+    }
+
+    /// New direct edges stay with the runner while a guest return is
+    /// observed. The configured cap also survives a change made mid-call.
+    pub(crate) fn update_observed_depth(&mut self) {
+        let cap = if self.return_observers.is_empty() { self.direct.configured_cap } else { 0 };
+        self.direct.state().cap = cap;
     }
     /// About to invoke a native handler from Rust: nothing lends it a view,
     /// whatever a direct call into a handler that does not take one left.
@@ -589,6 +604,45 @@ mod tests {
             std::ptr::null(),
             (0x1000, 0x2001),
         )))
+    }
+
+    #[test]
+    fn the_thunk_observes_a_return_before_its_generated_caller_resumes_inline() {
+        use crate::{Guest, Runtime, guest::Permissions};
+        use std::sync::Arc;
+        const TARGET: u32 = 0x1000;
+        const RESUME: u32 = 0x1004;
+        const SLOT: u32 = 0x2000;
+
+        let seen = Arc::new(AtomicUsize::new(0));
+        let record = Arc::clone(&seen);
+        let mut d = Dispatch::default();
+        d.register_override(TARGET, "observe", move |c, ctx, _| {
+            let record = Arc::clone(&record);
+            assert!(ctx.observe_guest_return(c, 8, move |c, _| {
+                assert_eq!(c.esp, SLOT + 12);
+                record.fetch_add(1, Ordering::Relaxed);
+            }));
+            assert_eq!(ctx.direct.state().cap, 0);
+            ctx.set_direct_call_depth(7);
+            assert_eq!(ctx.direct.state().cap, 0);
+            ctx.memory().ret(c, 8)
+        });
+        let rt = Runtime::new(Guest::new(), d);
+        rt.memory().map_zeroed(TARGET, 0x1000, Permissions::RX).unwrap();
+        rt.memory().map_zeroed(SLOT, 0x1000, Permissions::RW).unwrap();
+        rt.memory().set_u32(SLOT, RESUME).unwrap();
+        let mut ctx = ExecCtx::new(rt, 1);
+        let mut c = CpuAbi { esp: SLOT, ..CpuAbi::default() };
+        let s = ctx.direct.state();
+        s.budget = 80;
+        s.depth = 1;
+        s.frames[0] = Frame { kind: abi::CALL, target: TARGET, resume: RESUME, slot: SLOT };
+        let returned = host_call::<false>(&mut c, &mut ctx, TARGET);
+        assert_eq!(returned, TransferAbi::ret(RESUME));
+        assert_eq!(ctx.direct.state().depth, 1, "C catches the return inline");
+        assert_eq!(ctx.direct.state().cap, 7);
+        assert_eq!(seen.load(Ordering::Relaxed), 1);
     }
 
     #[test]

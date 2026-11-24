@@ -55,6 +55,9 @@ impl Runner {
             }
         });
         ctx.set_direct_budget(outer);
+        if result.kind == abi::FAULT {
+            ctx.clear_return_observers();
+        }
         ctx.census_run_end(&result);
         result
     }
@@ -76,6 +79,9 @@ impl Runner {
             self.run_inner::<true, false>(cpu, ctx, transfer, scope)
         };
         ctx.set_direct_budget(outer);
+        if result.kind == abi::FAULT {
+            ctx.clear_return_observers();
+        }
         ctx.census_run_end(&result);
         result
     }
@@ -142,6 +148,9 @@ impl Runner {
             if !valid {
                 return TransferAbi::fault(ctx.emit(Event::InvalidTransfer));
             }
+            // Inspect returns before an interrupt pushes its own frame or
+            // a preemption lets another guest thread change the result.
+            ctx.observe_transfer(cpu, transfer);
             // Safe point: the last handler has returned and CPU state is
             // canonical. The wake bits are taken before the queue is looked
             // at, so a raise in between is never lost (preempt.rs). A due
