@@ -24,10 +24,7 @@
 //! [`View`] is what the HUD shows; the game (`game::firefight::hud`) makes
 //! it from the mode blob alone, so a client draws what the host draws.
 
-use crate::model::{
-    Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Origin, PILL_BODY, PILL_END,
-    PillPart, Place, Pulse, Style, Value, Values,
-};
+use crate::model::{Describe, Hud, Kind, PILL_BODY, PILL_END, Pulse, Style, Value, Values};
 
 pub const NAME: &str = "firefight";
 
@@ -189,67 +186,9 @@ pub fn count_text(n: u16) -> String {
     n.min(COUNT_MAX).to_string()
 }
 
-/// A place in the grenade row, `dx` right of `origin`, in every screen
-/// mode the row has.
-const fn row(origin: Origin, dx: i16) -> Place {
-    Place::new(Anchor::TopLeft, (dx, 0))
-        .split((dx, 0), (dx, 0))
-        .from(origin)
-}
-
-/// The channels' place: the game places them, in every screen mode.
-const EVERY_MODE: Place = Place::GAME.split((0, 0), (0, 0));
-
-/// A pill of two parts and its count, `dx` right of the grenade row's
-/// next pill.
-fn pill(pill: &'static str, end: &'static str, count: &'static str, dx: i16) -> [Element; 3] {
-    [
-        Element::icon(
-            pill,
-            Art::GrenadePill(PillPart::Body),
-            row(Origin::NextGrenadePill, dx),
-        ),
-        Element::icon(
-            end,
-            Art::GrenadePill(PillPart::End),
-            row(Origin::NextGrenadePill, dx + PILL_BODY),
-        ),
-        // Where a pill's count sits, as the grenade counts.
-        Element::text(
-            count,
-            Font::Lcd,
-            Justify::Centre,
-            COUNT_LONGEST,
-            row(Origin::NextGrenadeCount, dx),
-        )
-        .over(pill),
-    ]
-}
-
 /// The elements, in draw order ([`IDS`]).
 pub fn hud() -> Hud {
-    let mut banner = Element::channel(
-        BANNER,
-        Kind::Banner {
-            longest: BANNER_LONGEST,
-        },
-    );
-    banner.at = EVERY_MODE;
-    let mut note = Element::channel(
-        NOTE,
-        Kind::Message {
-            longest: NOTE_LONGEST,
-        },
-    );
-    note.at = EVERY_MODE;
-    let mut elements = vec![banner];
-    elements.extend(pill(LIVES_PILL, LIVES_END, LIVES_COUNT, 0));
-    elements.extend(pill(ENEMIES_PILL, ENEMIES_END, ENEMIES_COUNT, PILL_STEP));
-    elements.push(note);
-    Hud {
-        name: NAME,
-        elements,
-    }
+    crate::data::builtin(NAME)
 }
 
 /// Every element hidden: no match runs.
@@ -463,6 +402,7 @@ impl Describe for Firefight {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Origin;
     use crate::model::{BANNER_UNITS, banner_fault, message_fault};
 
     fn view(stage: Stage) -> View {

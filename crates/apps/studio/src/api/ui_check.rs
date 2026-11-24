@@ -273,7 +273,7 @@ pub fn hud_check(app: &mut App, target: Option<&str>) -> Result<Vec<Finding>, St
 /// it); each check the source could not run a note.
 pub fn hud_kit_check(_app: &mut App, target: Option<&str>) -> Result<Vec<Finding>, String> {
     use hud_kit::Describe;
-    let all = hud_kit::huds::all();
+    let all = hud_kit::views::all();
     let ds: Vec<&dyn Describe> = all
         .iter()
         .map(|d| d.as_ref())

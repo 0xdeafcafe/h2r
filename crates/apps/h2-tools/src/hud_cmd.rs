@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use hud_kit::check::{self, Check, Report};
 use hud_kit::preview::{self, mode_name, parse_mode};
-use hud_kit::{Describe, Source, huds};
+use hud_kit::{Describe, Source, views};
 
 /// The map the disc source draws from by default (a multiplayer map with
 /// the Master Chief's HUD).
@@ -139,7 +139,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
 }
 
 fn list() {
-    for d in huds::previews() {
+    for d in views::previews() {
         let names: Vec<_> = d.states().into_iter().map(|s| s.0).collect();
         println!("{}: {}", d.hud().name, names.join(", "));
     }
@@ -153,8 +153,8 @@ fn preview_cmd(o: Opts) -> Result<()> {
         list();
         return Ok(());
     }
-    let d: Box<dyn Describe> = huds::previews().into_iter().find(|d| d.hud().name == name).with_context(|| {
-        let names: Vec<_> = huds::previews().iter().map(|d| d.hud().name).collect();
+    let d: Box<dyn Describe> = views::previews().into_iter().find(|d| d.hud().name == name).with_context(|| {
+        let names: Vec<_> = views::previews().iter().map(|d| d.hud().name).collect();
         format!("no HUD {name:?}; one of {names:?}")
     })?;
     let out = o
@@ -211,7 +211,7 @@ fn sheet_cmd(o: Opts) -> Result<()> {
         .context("--out DIR is required (outside the Git checkout)")?;
     preview::guard(&out)?;
     let mut src = source(&o)?;
-    let all = huds::all();
+    let all = views::all();
     let ds: Vec<&dyn Describe> = all.iter().map(|d| d.as_ref()).collect();
     let modes = hud_kit::Mode::ALL;
     let r = check::all(&mut src, &ds, &modes)?;

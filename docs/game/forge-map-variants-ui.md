@@ -1,7 +1,7 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
 Status: Design, slices K5, H1, H3 and S1 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring, hold, zone, refusal or budget feed yet (below). The Properties page's rows are the doc's `props:` block (S1); the rows of the other slices are not built. Everything else named here as new is not built.
-Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, huds/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime), `crates/extensions/game/src/forge_screens/props.rs` (the Properties rows). Tests: named per slice below.
+Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, views/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime), `crates/extensions/game/src/forge_screens/props.rs` (the Properties rows). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 How a monitor sees and edits the things of
@@ -130,7 +130,8 @@ nudge and nothing else.
 ### The readout
 
 A HUD kit `Hud` named `forge-readout`
-(`crates/rewrites/hud-kit-core/src/huds/forge_readout.rs`),
+(`crates/rewrites/hud-kit-core/src/views/forge_readout.rs` for its states,
+`content/forge/huds/forge-readout.hud.yaml` for its elements),
 beside the monitor's `forge` HUD
 ([forge-firefight-ui.md](forge-firefight-ui.md), "The monitor HUD").
 It copies the superbounce readout's place and build: three rows of
@@ -361,8 +362,8 @@ they start with `assets/` or `docs/`.
 | # | Slice | Owns | Tests | Done when |
 |---|---|---|---|---|
 | **K5** | World marks: `Shape::Line`, `Style::Team`, `Describe::never_with`. The team colour's source is traced first and written into hud-kit.md, "Colours" | `rewrites/hud-kit-core/src/{world.rs, model.rs, tests.rs}`, `tools/hud-kit/src/{check.rs, preview.rs, tests.rs}`, `extensions/game/src/hud_kit_world.rs`, `docs/game/hud-kit.md` | `world::edges` of a line is one segment; the world check refuses `Team` off a world mark; two HUDs that declare each other are not compared by `own`; the preview draws both | the synthetic sheet passes |
-| **H1** | The readout's description: elements, `View`, `values`, the states and their sample poses | `rewrites/hud-kit-core/src/huds/{forge_readout.rs (new), mod.rs}`, `rewrites/hud-kit-core/src/tests.rs` | every state passes every check on the synthetic source; a table of views and their three texts; no state's text is wider than its `longest`; an overrun drops the last fact whole | `h2 hud preview forge-readout --state all --synthetic` writes every state |
-| **H2** | `forge-all`: the moments of an edit, both HUDs in one frame | `rewrites/hud-kit-core/src/huds/{forge_all.rs (new), mod.rs}` | each moment names a state of each HUD that exists; the sheet passes | `h2 hud preview forge-all --synthetic` writes the moments. Needs U3 |
+| **H1** | The readout's description: elements, `View`, `values`, the states and their sample poses | `rewrites/hud-kit-core/src/views/{forge_readout.rs (new), mod.rs}`, `rewrites/hud-kit-core/src/tests.rs` | every state passes every check on the synthetic source; a table of views and their three texts; no state's text is wider than its `longest`; an overrun drops the last fact whole | `h2 hud preview forge-readout --state all --synthetic` writes every state |
+| **H2** | `forge-all`: the moments of an edit, both HUDs in one frame | `rewrites/hud-kit-core/src/views/{forge_all.rs (new), mod.rs}` | each moment names a state of each HUD that exists; the sheet passes | `h2 hud preview forge-all --synthetic` writes the moments. Needs U3 |
 | **H3** | The runtime: register after the `forge` HUD, feed the view, choose the near pool, set the poses | `extensions/game/src/forge_readout.rs` (new), `extensions/game/src/forge_glue.rs` | a table from `Facts` to `View`; the twelve nearest of thirty things, by distance then identity; a held thing's `under` and `from` poses; with the monitor off every element is hidden | tests pass. Needs H1, M5, M7 |
 | **S1** | Properties from its doc: the row keys, the binder, the page's states, `sheet::PROPERTIES` removed | `assets/ui/screens/forge.properties.yaml`, `extensions/game/src/ui_kit/data.rs`, `extensions/game/src/forge_screens/{props.rs (new), sheet.rs, pages.rs, tests.rs}` | the doc loads and round-trips through `data::to_yaml`; an unknown `prop` is a `DataError` naming the row; a `Page` table a kind; a property the map lacks has no row; the content check passes in every state | `h2 ui preview forge.properties --state all` writes a state a kind. Needs M6 |
 | **S2** | The Game types dialog | `assets/ui/screens/forge.games.yaml`, `extensions/game/src/forge_screens/games.rs` (new), one line of `ui_kit/screens.rs` | a `Page` table: ticks, All game types, Done writes one step, five engines show the refusal as the status line and write nothing | preview in every state. Needs D2, S1 |
@@ -385,7 +386,7 @@ they land one after another.
 - **Code**: world marks, their shapes, styles and check,
   `crates/rewrites/hud-kit-core/src/world.rs` and
   `crates/tools/hud-kit/src/check.rs`; the superbounce readout,
-  `huds/superbounce_readout.rs` and `huds/superbounce_guide.rs`.
+  `views/superbounce_readout.rs` and `views/superbounce_guide.rs`.
 - **Design**: the readout's rows, the mark pool, the row keys, the
   save and rename flows.
 

@@ -230,7 +230,7 @@ fn a_suicide_costs_a_point_with_the_option_on() {
 /// One tick's medal award for player `slot`: a bounce off `spot` at
 /// chain count `chain`, or a Bounced with none.
 fn award(slot: u8, spot: Option<u32>, chain: u32) -> crate::superbounce_chain::Award {
-    use hud_kit_core::huds::superbounce::Medal;
+    use hud_kit_core::views::superbounce::Medal;
     crate::superbounce_chain::Award {
         seq: 1,
         slot,
@@ -305,7 +305,7 @@ fn a_bounce_reaches_on_bounce_and_scores_at_the_next_tick_boundary() {
 /// single 2, a Bounced -1.
 #[test]
 fn a_bounce_carries_its_chain_and_a_bounced_reaches_on_bounced() {
-    use hud_kit_core::huds::superbounce::Medal;
+    use hud_kit_core::views::superbounce::Medal;
     let ir = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
     let id = ir.id();
     let store = Local::default();

@@ -1,0 +1,113 @@
+# The superbounce readout (docs/game/hud-kit.md, "The superbounce readout"):
+# the fall bar, the charge segments round the motion tracker, the rows of
+# text beside them, the navpoints and the approach guide's world marks.
+# Elements in draw order. Rows are at x 101 from the frame's bottom-left
+# corner: 12 right of the segments' right side (screen x 137).
+name: superbounce-readout
+elements:
+  # The bar: the battery strip's last 64 columns, 6 under its row's top so
+  # it sits on the text's middle.
+  - id: sbr.fall
+    kind: meter
+    art: {type: strip-meter-end, columns: 64}
+    at: {anchor: bottom-left, full: [101, -41]}
+  # The nine segments, in fill order: down the left side, along the bottom
+  # left to right, up the right side. Each is the picture of one arc
+  # (font::ring), 7 pictures from U+E2C0 + 7 per segment, at its box from
+  # the motion tracker's rim (47, 360); `outside` is how far the left side
+  # and the bottom sit outside the frame, where the rim is.
+  - id: sbr.seg.1
+    kind: gauge
+    glyphs: {first: 58048, steps: 6, size: [6, 16]}
+    at: {anchor: bottom-left, full: [-8, -60]}
+    outside: 8
+  - id: sbr.seg.2
+    kind: gauge
+    glyphs: {first: 58055, steps: 6, size: [7, 16]}
+    at: {anchor: bottom-left, full: [-8, -40]}
+    outside: 8
+  - id: sbr.seg.3
+    kind: gauge
+    glyphs: {first: 58062, steps: 6, size: [12, 15]}
+    at: {anchor: bottom-left, full: [-3, -22]}
+    outside: 8
+  - id: sbr.seg.4
+    kind: gauge
+    glyphs: {first: 58069, steps: 6, size: [15, 10]}
+    at: {anchor: bottom-left, full: [14, -5]}
+    outside: 8
+  - id: sbr.seg.5
+    kind: gauge
+    glyphs: {first: 58076, steps: 6, size: [17, 4]}
+    at: {anchor: bottom-left, full: [32, 2]}
+    outside: 8
+  - id: sbr.seg.6
+    kind: gauge
+    glyphs: {first: 58083, steps: 6, size: [15, 10]}
+    at: {anchor: bottom-left, full: [52, -5]}
+    outside: 8
+  - id: sbr.seg.7
+    kind: gauge
+    glyphs: {first: 58090, steps: 6, size: [12, 15]}
+    at: {anchor: bottom-left, full: [72, -22]}
+    outside: 8
+  - id: sbr.seg.8
+    kind: gauge
+    glyphs: {first: 58097, steps: 6, size: [7, 16]}
+    at: {anchor: bottom-left, full: [82, -40]}
+    outside: 8
+  - id: sbr.seg.9
+    kind: gauge
+    glyphs: {first: 58104, steps: 6, size: [6, 16]}
+    at: {anchor: bottom-left, full: [83, -60]}
+    outside: 8
+  - id: sbr.speed
+    kind: text
+    font: hud
+    justify: start
+    longest: "\uE2B1 88.8  \uE2B4 88.8 m/s"
+    at: {anchor: bottom-left, full: [101, -68]}
+  - id: sbr.steer
+    kind: text
+    font: hud
+    justify: start
+    longest: "Out of reach"
+    at: {anchor: bottom-left, full: [171, -47]}
+  - id: sbr.info
+    kind: text
+    font: hud
+    justify: start
+    longest: "No bounce: on seam at 88.8 m/s"
+    at: {anchor: bottom-left, full: [101, -26]}
+  - id: sbr.kinds
+    kind: text
+    font: hud
+    justify: start
+    longest: "Targets: Common (888)  \uE105\uE105"
+    at: {anchor: bottom-left, full: [101, -118]}
+  - id: sbr.tag
+    kind: navpoint
+    longest: "999"
+  - id: sbr.target.1
+    kind: navpoint
+    longest: "999"
+  - id: sbr.target.2
+    kind: navpoint
+    longest: "999"
+  # The approach guide: world marks, fullscreen only.
+  - id: sbr.guide.box
+    kind: world-mark
+    shape: bracket
+    longest: "Jump in 9.9 s"
+  - id: sbr.guide.pipper
+    kind: world-mark
+    shape: pipper
+  - id: sbr.guide.ticks
+    kind: world-mark
+    shape: ticks
+  - id: sbr.guide.drift
+    kind: world-mark
+    shape: arrow
+  - id: sbr.guide.takeoff
+    kind: world-mark
+    shape: bar

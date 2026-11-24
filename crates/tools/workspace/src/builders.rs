@@ -27,7 +27,7 @@ pub struct Builder {
     pub check: fn(&Job<'_>) -> Result<(), Failure>,
 }
 
-static REGISTRY: [Builder; 3] = [
+static REGISTRY: [Builder; 4] = [
     Builder {
         kind: Kind::Tag,
         name: "tag",
@@ -46,6 +46,12 @@ static REGISTRY: [Builder; 3] = [
         apply: crate::bitmap::apply,
         check: crate::bitmap::check,
     },
+    Builder {
+        kind: Kind::Hud,
+        name: "hud",
+        apply: crate::hud::apply,
+        check: crate::hud::check,
+    },
 ];
 
 /// Every builder this build has. The other kinds of "Contents" are named
@@ -57,4 +63,12 @@ pub fn registry() -> &'static [Builder] {
 /// The builder for `kind`.
 pub fn builder(kind: Kind) -> Option<&'static Builder> {
     REGISTRY.iter().find(|b| b.kind == kind)
+}
+
+/// Whether an item of `kind` changes the map it is built on. A `hud` item
+/// does not: the game compiles its records at install, so a package of
+/// nothing else leaves every map as it was and the rewrite serves none
+/// of them anew.
+pub fn changes_map(kind: Kind) -> bool {
+    kind != Kind::Hud
 }

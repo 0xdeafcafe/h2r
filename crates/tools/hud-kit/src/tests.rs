@@ -11,9 +11,9 @@ use scenario_edit::MapSource;
 
 use crate::check::{self, Check};
 use crate::compile::AsHudEdit;
-use crate::huds::pill_block::{self, PillBlock};
-use crate::huds::superbounce::{self, Superbounce};
-use crate::huds::superbounce_segments as segs;
+use crate::views::pill_block::{self, PillBlock};
+use crate::views::superbounce::{self, Superbounce};
+use crate::views::superbounce_segments as segs;
 use crate::model::*;
 use crate::preview;
 use crate::templates;
@@ -207,7 +207,7 @@ fn templates_resolve_on_the_hud_editors_fixture_map() {
 /// of the other, and the readout draws fullscreen only, bottom left.
 #[test]
 fn the_readout_passes_beside_the_superbounce_hud() {
-    use crate::huds::superbounce_readout::{self as readout, Readout};
+    use crate::views::superbounce_readout::{self as readout, Readout};
     let mut src = synthetic();
     let r = check::all(&mut src, &[&Superbounce, &Readout], &Mode::ALL).unwrap();
     assert!(r.findings.is_empty(), "{:#?}", r.findings);
@@ -281,7 +281,7 @@ fn the_readout_passes_beside_the_superbounce_hud() {
 /// split frame draws none of its widgets.
 #[test]
 fn the_combined_preview_draws_no_part_of_the_block_alone() {
-    use crate::huds::superbounce_all::All;
+    use crate::views::superbounce_all::All;
     let mut src = synthetic();
     let r = check::all(&mut src, &[&All], &Mode::ALL).unwrap();
     let modes: Vec<_> = r.of(Check::Modes).collect();
@@ -309,7 +309,7 @@ fn the_combined_preview_draws_no_part_of_the_block_alone() {
 /// apart: neither's arrow, marker and number is over the other's.
 #[test]
 fn a_huds_navpoints_draw_at_samples_of_their_own() {
-    use crate::huds::superbounce_readout::{self as readout, Readout};
+    use crate::views::superbounce_readout::{self as readout, Readout};
     for (i, a) in preview::NAVPOINT_SAMPLES.iter().enumerate() {
         for b in &preview::NAVPOINT_SAMPLES[i + 1..] {
             assert!((a[0] - b[0]).abs() >= 0.1, "{a:?} {b:?}");
@@ -502,7 +502,7 @@ fn the_json_rectangles_are_the_compiled_bytes() {
     assert_eq!(compared, states, "the arming bar in every state");
 }
 
-/// The kit's pill block (`huds::pill_block`) on the synthetic map:
+/// The kit's pill block (`views::pill_block`) on the synthetic map:
 /// fullscreen the pill is beside the tracker, cut from the frag pill
 /// (the body its first 20 pixels, the end its last 7 against the body,
 /// the panel's height) with its icon where a pill's count is; in split
@@ -585,7 +585,7 @@ fn the_pill_block_is_beside_the_tracker_and_in_the_grenade_row() {
 /// as the stage says.
 #[test]
 fn the_charge_segments_draw_round_the_tracker() {
-    use crate::huds::superbounce_readout::Readout;
+    use crate::views::superbounce_readout::Readout;
     assert_eq!(
         segs::TRACKER.map(i32::from),
         crate::rects::TRACKER.pixels(),
@@ -1346,8 +1346,8 @@ fn the_world_check_fires_on_marks_built_to_break_it() {
 /// a caught fall it is inside, the box is in the go green and says so.
 #[test]
 fn the_approach_guide_draws_in_its_moments() {
-    use crate::huds::superbounce_guide as guide;
-    use crate::huds::superbounce_readout::{self as readout, Readout};
+    use crate::views::superbounce_guide as guide;
+    use crate::views::superbounce_readout::{self as readout, Readout};
     let mut src = synthetic();
     let r = check::hud(&mut src, &Readout, &Mode::ALL).unwrap();
     assert!(r.findings.is_empty(), "{:#?}", r.findings);
@@ -1702,7 +1702,7 @@ fn the_banner_is_drawn_centred_above_the_frames_bottom() {
 /// the lives pill, and the banner is the wave's.
 #[test]
 fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
-    use crate::huds::firefight::{self as ff, Firefight};
+    use crate::views::firefight::{self as ff, Firefight};
     let mut src = synthetic();
     let r = check::all(&mut src, &[&Firefight], &Mode::ALL).unwrap();
     assert!(r.findings.is_empty(), "{:#?}", r.findings);

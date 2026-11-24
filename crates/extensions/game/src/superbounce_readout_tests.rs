@@ -4,7 +4,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
-use hud_kit_core::huds::superbounce_readout::{
+use hud_kit_core::views::superbounce_readout::{
     FALL, INFO, SPEED, STEER, TAG, TARGET_1, TARGET_2, arrow,
 };
 use superbounce::{Kind, Vec3};
@@ -86,7 +86,7 @@ fn close(a: f32, b: f32) -> bool {
 /// same count, the same step for an angle.
 #[test]
 fn the_readouts_arrows_are_the_fonts() {
-    use hud_kit_core::huds::superbounce_readout::{ARROW_UP, ARROWS};
+    use hud_kit_core::views::superbounce_readout::{ARROW_UP, ARROWS};
     assert_eq!(ARROW_UP as u32, u32::from(font::arrows::FIRST));
     assert_eq!(ARROWS, u32::from(font::arrows::COUNT));
     for k in -16..=16 {
@@ -813,7 +813,7 @@ fn the_line_up_is_to_the_landing_point_and_wants_the_seams_drift() {
 #[test]
 fn the_approach_guide_is_the_states_with_its_option() {
     use crate::superbounce_guide::{Body, guide};
-    use hud_kit_core::huds::superbounce_guide::{BOX, Call, DRIFT, MARKS, PIPPER, TAKEOFF, TICKS};
+    use hud_kit_core::views::superbounce_guide::{BOX, Call, DRIFT, MARKS, PIPPER, TAKEOFF, TICKS};
     use hud_kit_core::model::Style;
     let spot = Spot {
         drift: [1.0, 0.0],
@@ -904,7 +904,7 @@ fn the_approach_guide_is_the_states_with_its_option() {
 #[test]
 fn the_guides_verdict_has_no_percentage() {
     use crate::superbounce_guide::{Body, guide};
-    use hud_kit_core::huds::superbounce_guide::{BOX, Call};
+    use hud_kit_core::views::superbounce_guide::{BOX, Call};
     let scan = Spot {
         drift: [1.0, 0.0],
         ..seam()
@@ -974,7 +974,7 @@ fn the_guides_verdict_has_no_percentage() {
 #[test]
 fn the_charge_segments_are_the_modes_charge() {
     use crate::superbounce_mode::{Charge, ChargePhase};
-    use hud_kit_core::huds::superbounce_segments::{IDS, Stage};
+    use hud_kit_core::views::superbounce_segments::{IDS, Stage};
     let charge = |phase, fill| {
         Some(Charge {
             phase,

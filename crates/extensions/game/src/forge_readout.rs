@@ -27,7 +27,7 @@
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use forge::{Endpoint, Thing as Entry, ThingKind, Value as Field};
-use hud_kit_core::huds::forge_readout::{
+use hud_kit_core::views::forge_readout::{
     self as fr, Budget, Hold, NEAR, NEARS, Near, SEL_MIN, Source, Target, Thing, UNDER_MIN, View,
     ZONES, zone_edges,
 };

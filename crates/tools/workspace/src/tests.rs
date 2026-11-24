@@ -392,7 +392,7 @@ fn a_kind_with_no_builder_stops_by_name() {
     assert!(err.why.contains("no builder"), "{err}");
     assert!(check_package(&p)[0].what.contains("no builder"));
     let kinds: Vec<Kind> = registry().iter().map(|b| b.kind).collect();
-    assert_eq!(kinds, vec![Kind::Tag, Kind::Edits, Kind::Bitmap]);
+    assert_eq!(kinds, vec![Kind::Tag, Kind::Edits, Kind::Bitmap, Kind::Hud]);
 }
 
 // ---------------------------------------------------------------- bitmap
@@ -688,4 +688,89 @@ fn flags_enums_and_lists_are_set_by_name_or_number() {
     let text = format!("- tag: 'jpt!:{A}'\n  set:\n    - {{path: radius, value: [1.5]}}\n");
     let err = build(&mut base(), &[edits("e", &[], &text)], &target(), None).unwrap_err();
     assert!(err.why.contains("where the field has 2"), "{err}");
+}
+
+// ------------------------------------------------------------------- hud
+
+const HUD_YAML: &str = "name: invented\nelements:\n  - {id: i.line, kind: prompt, longest: Hello}\n  - id: i.bar\n    kind: meter\n    art: {type: strip-meter-end, columns: 9}\n    at: {anchor: bottom-left, full: [4, -8]}\n";
+
+#[test]
+fn a_hud_item_reads_and_changes_no_tag() {
+    let p = pkg(
+        "h",
+        &[],
+        &[("hud", "i.hud.yaml", None, "all")],
+        &[("i.hud.yaml", HUD_YAML.as_bytes())],
+    );
+    assert_eq!(check_package(&p), vec![]);
+    let mut set = base();
+    let report = build(&mut set, &[p.clone()], &target(), None).unwrap();
+    assert!(report.added.is_empty() && report.changed.is_empty());
+    assert_eq!(report.packages, vec![("h".to_owned(), 1)]);
+    let read = huds(&[p]);
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].0, "h");
+    assert_eq!(read[0].1.name, "invented");
+    assert_eq!(read[0].1.elements.len(), 2);
+}
+
+#[test]
+fn a_bad_hud_stops_by_name_with_its_line() {
+    let bad = "name: invented\nelements:\n  - {id: i.line, kind: prompt}\n";
+    let p = pkg(
+        "h",
+        &[],
+        &[("hud", "i.hud.yaml", None, "all")],
+        &[("i.hud.yaml", bad.as_bytes())],
+    );
+    let found = check_package(&p);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].what.starts_with("hud: "), "{:?}", found[0]);
+    assert!(found[0].what.contains("needs `longest`"), "{:?}", found[0]);
+    let err = build(&mut base(), &[p.clone()], &target(), None).unwrap_err();
+    assert_eq!(err.kind, Kind::Hud);
+    assert!(err.why.contains("needs `longest`"), "{err}");
+    assert!(huds(&[p]).is_empty());
+    let tagged = pkg(
+        "t",
+        &[],
+        &[("hud", "i.hud.yaml", Some(C), "all")],
+        &[("i.hud.yaml", HUD_YAML.as_bytes())],
+    );
+    assert!(check_package(&tagged)[0].what.contains("adds no tag"));
+}
+
+#[test]
+fn the_first_party_huds_read() {
+    // The packages as the repository holds them: every `hud` item reads.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../content");
+    let mut seen = Vec::new();
+    for id in ["superbounce", "forge", "modes"] {
+        let dir = root.join(id);
+        let mut files = BTreeMap::new();
+        for rel in ["package.toml"].into_iter().chain(match id {
+            "superbounce" => vec![
+                "huds/superbounce.hud.yaml",
+                "huds/superbounce-readout.hud.yaml",
+                "huds/pill-block.hud.yaml",
+            ],
+            "forge" => vec!["huds/forge-readout.hud.yaml"],
+            _ => vec!["huds/firefight.hud.yaml"],
+        }) {
+            files.insert(rel.to_owned(), std::fs::read(dir.join(rel)).unwrap());
+        }
+        let loaded = Loaded::from_files(&format!("content/{id}"), &files).unwrap();
+        assert_eq!(check_package(&loaded), vec![], "{id}");
+        seen.extend(huds(&[loaded]).into_iter().map(|(_, h)| h.name));
+    }
+    assert_eq!(
+        seen,
+        [
+            "superbounce",
+            "superbounce-readout",
+            "pill-block",
+            "forge-readout",
+            "firefight"
+        ]
+    );
 }

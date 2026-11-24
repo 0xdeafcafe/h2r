@@ -341,3 +341,20 @@ fn the_list_has_each_package_and_each_map_read() {
     assert_eq!(v["maps"]["tiny"]["packages"], serde_json::json!(["c"]));
     assert_eq!(v["maps"]["tiny"]["builds"], 1);
 }
+
+#[test]
+fn a_package_of_huds_leaves_every_map_alone() {
+    let original = base_map();
+    let huds = pkg(
+        "h",
+        &[],
+        &[("hud", "i.hud.yaml", None, "all")],
+        &[(
+            "i.hud.yaml",
+            b"name: invented\nelements:\n  - {id: i.line, kind: prompt, longest: Hello}\n",
+        )],
+    );
+    let mut rw = PackageRewrite::new(vec![huds]);
+    assert!(rw.is_empty());
+    assert!(rw.rebuild("tiny", &original).unwrap().is_none());
+}

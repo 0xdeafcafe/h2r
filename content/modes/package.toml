@@ -1,0 +1,9 @@
+[package]
+format = 1
+id = "modes"
+name = "Modes"
+description = "The HUDs of our game modes: Firefight's banner, lives and enemies pills and notifications."
+
+[[item]]
+kind = "hud"
+source = "huds/firefight.hud.yaml"

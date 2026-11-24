@@ -1,7 +1,7 @@
 //! The chain's rule on lists of ticks: bounces in a row, what ends a
 //! chain, the medals at each count, Bounced, and the bots.
 
-use hud_kit_core::huds::superbounce::Medal::*;
+use hud_kit_core::views::superbounce::Medal::*;
 use superbounce::Kind;
 
 use super::*;

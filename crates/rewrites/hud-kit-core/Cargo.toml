@@ -19,6 +19,9 @@ tags.workspace = true
 assets.workspace = true
 # The pictures a gauge draws (`font::ring`): the charge ring's arcs.
 font = { path = "../../formats/font" }
+# A HUD as data: the YAML of a package's `hud` item.
+serde.workspace = true
+serde_yaml_ng.workspace = true
 
 [lints]
 workspace = true

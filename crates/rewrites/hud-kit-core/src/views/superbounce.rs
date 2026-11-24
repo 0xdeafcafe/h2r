@@ -29,7 +29,7 @@
 //! ([`super::superbounce_segments`]); [`Charge`] and [`Phase`] are what
 //! they read.
 
-use crate::model::{Anchor, Art, Describe, Element, Hud, HudRef, Kind, Place, Value, Values};
+use crate::model::{Describe, Hud, Value, Values};
 use crate::motion::Motion;
 
 pub const NAME: &str = "superbounce";
@@ -469,58 +469,7 @@ pub fn distance_text(m: f32) -> String {
 
 /// The elements, in draw order.
 pub fn hud() -> Hud {
-    Hud {
-        name: NAME,
-        elements: vec![
-            // Assault's arming bar, at the bottom left fullscreen and
-            // where split screen has room; it gives way to retail's own
-            // in an Assault game.
-            Element::meter(
-                ARM,
-                Art::Widget {
-                    hud: HudRef::Named(ARM_HUD),
-                    name: ARM_WIDGET,
-                },
-                Place::new(Anchor::TopLeft, ARM_FULL)
-                    .split(ARM_SPLIT, ARM_QUARTER)
-                    .registered([0.5, 0.5]),
-            )
-            .hidden_on_d(ASSAULT_ARMING_D),
-            Element::channel(
-                PROMPT,
-                Kind::Prompt {
-                    longest: PROMPT_LONGEST,
-                },
-            ),
-            Element::channel(
-                MESSAGE,
-                Kind::Message {
-                    longest: MESSAGE_LONGEST,
-                },
-            ),
-            Element::channel(
-                MEDAL,
-                Kind::Message {
-                    longest: MEDAL_LONGEST,
-                },
-            ),
-            Element {
-                at: Place::GAME.split((0, 0), (0, 0)),
-                ..Element::channel(
-                    NAVPOINT,
-                    Kind::Navpoint {
-                        longest: DISTANCE_LONGEST,
-                    },
-                )
-            },
-            Element::channel(
-                TUTORIAL,
-                Kind::Training {
-                    longest: TUTORIAL_TEXT[2],
-                },
-            ),
-        ],
-    }
+    crate::data::builtin(NAME)
 }
 
 /// The values for `v`: every element of [`hud`], once.
@@ -803,6 +752,7 @@ impl Tutorial {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Anchor, Art, HudRef, Kind};
     use crate::model::Style;
 
     fn state(name: &str) -> Values {
@@ -1051,8 +1001,8 @@ mod tests {
     /// row.
     #[test]
     fn the_arming_bar_is_over_the_readouts_rows_and_the_segments() {
-        use crate::huds::superbounce_readout::SPEED_UP;
-        use crate::huds::superbounce_segments as segs;
+        use crate::views::superbounce_readout::SPEED_UP;
+        use crate::views::superbounce_segments as segs;
         let h = hud();
         assert!(!h.uses_grenade_row());
         let widgets: Vec<_> = h.elements.iter().filter(|e| !e.kind.is_channel()).map(|e| e.id).collect();

@@ -20,7 +20,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use engine::GuestMemory;
 use engine::handle::DatumHandle;
-use hud_kit_core::huds::superbounce::Medal;
+use hud_kit_core::views::superbounce::Medal;
 use pogo::Style;
 use pogo::placed::Placed;
 

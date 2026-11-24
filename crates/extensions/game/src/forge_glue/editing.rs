@@ -1321,6 +1321,6 @@ fn forge_readout_hold(
     snap: Option<f32>,
     local: bool,
     from: Option<[f32; 3]>,
-) -> hud_kit_core::huds::forge_readout::Hold {
+) -> hud_kit_core::views::forge_readout::Hold {
     crate::forge_readout::hold(at, height, snap, local, from)
 }

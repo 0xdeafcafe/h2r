@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::{GuestMemory, MemFault};
 
-use hud_kit_core::huds::superbounce::{
+use hud_kit_core::views::superbounce::{
     self as sb, Arm, ArmTrack, Change, Charge, Lost, Medal, Note, Phase, Scan, Superbounce, Target,
     Tutorial, Verb, View, Watch, arm_for,
 };

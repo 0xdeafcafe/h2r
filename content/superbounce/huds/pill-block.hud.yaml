@@ -1,0 +1,27 @@
+# The kit's pill block: a pill cut from the frag pill's art, a charge strip
+# under it and a chevron in it. Fullscreen it is at screen (138, 376); in
+# half and quarter screen it is the grenade row's next pill.
+name: pill-block
+elements:
+  - id: pb.pill
+    kind: icon
+    art: {type: grenade-pill, part: body}
+    at: {anchor: top-left, full: [90, 340], half: [0, 0], quarter: [0, 0], split_origin: next-grenade-pill}
+  # The right end, against the body's right edge.
+  - id: pb.pill.end
+    kind: icon
+    art: {type: grenade-pill, part: end}
+    at: {anchor: top-left, full: [110, 340], half: [20, 0], quarter: [20, 0], split_origin: next-grenade-pill}
+  # Under the pill, as wide as it, in every mode the pill has.
+  - id: pb.charge
+    kind: meter
+    art: {type: strip-meter-end, columns: 27}
+    at: {anchor: top-left, full: [90, 361], half: [0, 21], quarter: [0, 21], split_origin: next-grenade-pill}
+  # Centred where a pill's count is, as the counts are.
+  - id: pb.pill.icon
+    kind: text
+    font: hud
+    justify: centre
+    longest: "^"
+    at: {anchor: top-left, full: [102, 339], half: [0, 0], quarter: [0, 0], split_origin: next-grenade-count}
+    over: pb.pill

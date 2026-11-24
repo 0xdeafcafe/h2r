@@ -101,7 +101,7 @@ pub struct Options {
     /// ([`crate::superbounce_guide`]).
     pub approach_guide: bool,
     /// The charge segments round the motion tracker
-    /// (`hud_kit_core::huds::superbounce_segments`).
+    /// (`hud_kit_core::views::superbounce_segments`).
     pub charge_segments: bool,
     /// Players spawn with the Pogo Stick as the secondary weapon
     /// ([`crate::pogo_loadout`]).

@@ -38,7 +38,7 @@
 
 use font::ring;
 
-use crate::model::{Anchor, Element, Glyphs, Place, Pulse, Style, Value, Values};
+use crate::model::{Glyphs, Pulse, Style, Value, Values};
 use crate::motion::Motion;
 
 use super::superbounce::{Charge, LOW_CHARGE, Phase};
@@ -218,20 +218,6 @@ pub fn value(index: usize, s: &Segments) -> Value {
 }
 
 /// The segments' elements, in fill order.
-pub fn elements() -> Vec<Element> {
-    IDS.iter()
-        .zip(AT)
-        .enumerate()
-        .map(|(i, (id, (x, y)))| {
-            Element::gauge(
-                id,
-                glyphs(i),
-                Place::new(Anchor::BottomLeft, (x - CORNER.0, y - CORNER.1)),
-            )
-            .outside(OUTSIDE)
-        })
-        .collect()
-}
 
 /// Sets the nine segments' values for `s` (`None`: all hidden).
 pub fn set_values(out: &mut Values, s: Option<&Segments>) {
@@ -259,7 +245,7 @@ pub fn samples() -> Vec<(&'static str, Option<Charge>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Kind;
+    use crate::model::{Anchor, Kind};
 
     fn fills(s: &Segments) -> [f32; SEGMENTS] {
         std::array::from_fn(|i| value(i, s).fill)
@@ -400,9 +386,14 @@ mod tests {
             }
         }
         assert_eq!((OUTSIDE, RIGHT_EDGE), (8, 137));
-        // The elements: gauges of the arcs' pictures, from the frame's
-        // bottom-left corner, fullscreen only, let outside the frame.
-        let e = elements();
+        // The elements (the readout's YAML): gauges of the arcs' pictures,
+        // from the frame's bottom-left corner, fullscreen only, let outside
+        // the frame.
+        let e: Vec<_> = crate::views::superbounce_readout::hud()
+            .elements
+            .into_iter()
+            .filter(|e| e.id.starts_with("sbr.seg."))
+            .collect();
         assert_eq!(e.iter().map(|e| e.id).collect::<Vec<_>>(), IDS);
         for (i, (e, (x, y))) in e.iter().zip(AT).enumerate() {
             assert_eq!(e.at.anchor, Anchor::BottomLeft);

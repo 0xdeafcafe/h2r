@@ -463,7 +463,7 @@ pub fn practice_event(e: &bots::mind::PracticeEvent) -> (u32, sim_bench::bounce:
 /// award's slot), its game tick and the event. A Bounced award ends a
 /// chain; every other is a bounce `chain` into its chain.
 pub fn award_event(a: &crate::superbounce_chain::Award) -> (u8, u32, sim_bench::bounce::Event) {
-    use hud_kit_core::huds::superbounce::Medal;
+    use hud_kit_core::views::superbounce::Medal;
     let e = if a.medals.contains(&Medal::Bounced) {
         sim_bench::bounce::Event::Bounced { chain: a.chain }
     } else {
@@ -2154,7 +2154,7 @@ mod tests {
     #[test]
     fn practice_events_and_awards_reach_the_bounce_tally() {
         use bots::mind::PracticeEvent as P;
-        use hud_kit_core::huds::superbounce::Medal;
+        use hud_kit_core::views::superbounce::Medal;
         use sim_bench::bounce::Event;
         let site = [1.0, 2.0, 3.0];
         assert_eq!(

@@ -456,7 +456,7 @@ pub fn options_reply(o: crate::superbounce_options::Options) -> agent_proto::sup
 
 /// `superbounce.state`'s `guide` for `g`.
 pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbounce::Guide {
-    use hud_kit_core::huds::superbounce_guide::Call;
+    use hud_kit_core::views::superbounce_guide::Call;
     let v3 = |v: Vec3| v.map(f64::from);
     agent_proto::superbounce::Guide {
         seam: v3(g.seam.point),
@@ -555,7 +555,7 @@ pub fn navpoint(
 /// `superbounce.state`'s `medals` for `m`.
 pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
     use agent_proto::superbounce as wire;
-    let ids = |medals: &[hud_kit_core::huds::superbounce::Medal]| {
+    let ids = |medals: &[hud_kit_core::views::superbounce::Medal]| {
         medals.iter().map(|m| m.id().to_owned()).collect()
     };
     wire::Medals {

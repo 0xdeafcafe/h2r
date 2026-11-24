@@ -29,8 +29,8 @@
 //! (`game::superbounce_readout`) and for the preview's samples
 //! ([`samples`]) alike.
 
-use crate::model::{Element, Kind, Style, Value, Values};
-use crate::world::{Pose, Shape, Vec3, unit};
+use crate::model::{Style, Value, Values};
+use crate::world::{Pose, Vec3, unit};
 
 pub const BOX: &str = "sbr.guide.box";
 pub const PIPPER: &str = "sbr.guide.pipper";
@@ -255,16 +255,6 @@ pub fn poses(l: &Layout) -> Vec<(&'static str, Pose)> {
 }
 
 /// The guide's elements: world marks, fullscreen only as the readout is.
-pub fn elements() -> Vec<Element> {
-    let mark = |id, shape, longest| Element::channel(id, Kind::WorldMark { shape, longest });
-    vec![
-        mark(BOX, Shape::Bracket, BOX_LONGEST),
-        mark(PIPPER, Shape::Pipper, ""),
-        mark(TICKS, Shape::Ticks, ""),
-        mark(DRIFT, Shape::Arrow, ""),
-        mark(TAKEOFF, Shape::Bar, ""),
-    ]
-}
 
 /// The box's label, the one verdict: before the jump the cue (`cue`,
 /// [`cue_text`]), `Jump in 0.7 s`; in a fall the call, `Will bounce` or
@@ -440,6 +430,7 @@ pub fn samples() -> Vec<(&'static str, Guide, Layout)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::Shape;
     use crate::world::edges;
 
     fn layout(impact: Option<[f32; 2]>) -> Layout {

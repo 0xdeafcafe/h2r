@@ -172,7 +172,7 @@ mod tests {
     /// fall the call, with no percentage.
     #[test]
     fn the_guides_moments_pose_their_marks() {
-        use crate::huds::superbounce_guide as guide;
+        use crate::views::superbounce_guide as guide;
         let with: Vec<_> = MOMENTS
             .iter()
             .filter(|(name, _, _)| !All.world(name).is_empty())
@@ -233,7 +233,7 @@ mod tests {
         let (st, lit) = stage("23-primed-ending").unwrap();
         assert_eq!(st, Stage::Primed);
         assert!((6.0..6.1).contains(&lit), "{lit}");
-        assert!(lit < 9.0 && lit > 9.0 * crate::huds::superbounce::LOW_CHARGE);
+        assert!(lit < 9.0 && lit > 9.0 * crate::views::superbounce::LOW_CHARGE);
         assert_eq!(stage("3-primed-targets"), Some((Stage::Primed, 9.0)));
         assert_eq!(stage("5-charge-draining"), Some((Stage::Warning, 2.25)));
         assert_eq!(stage("24-charge-warning"), Some((Stage::Warning, 4.5)));
