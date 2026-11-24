@@ -306,18 +306,23 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     // (crates/runtime/vfs/src/sim_store.rs).
     // Store maps (`store-maps`, docs/engine/asset-store.md) replace the
     // disc's map files under everything else: the disc's are never read
-    // (crates/runtime/vfs/src/store_map.rs).
+    // (crates/runtime/vfs/src/store_map.rs). A level with packages over it
+    // is served from its image (`cfg.store_levels`).
+    let levels = cfg.store_levels.clone();
     match (cfg.store_maps.clone(), cfg.sim_store.clone()) {
         (Some(root), Some(dir)) => over_disc(
             cfg,
-            vfs::SimStoreBackend::new(vfs::StoreMapBackend::new(dvd, root), dir),
+            vfs::SimStoreBackend::new(
+                vfs::StoreMapBackend::new(dvd, root).with_levels(levels),
+                dir,
+            ),
             fonts,
             maps,
             campaign_maps,
         ),
         (Some(root), None) => over_disc(
             cfg,
-            vfs::StoreMapBackend::new(dvd, root),
+            vfs::StoreMapBackend::new(dvd, root).with_levels(levels),
             fonts,
             maps,
             campaign_maps,

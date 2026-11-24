@@ -5587,9 +5587,10 @@ game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
   this set (an unsigned package with a `sim` item, named), or `null`.
 - `maps`: by map name, each map the rewrite was asked for: `scope` (its
   header's class), `packages` applied in order, `held` (packages whose
-  tags the map has already, left out), `key` (the cache key), `hits` and
-  `builds`, `added` and `changed` tag counts, and `error` when the map
-  was served without its packages.
+  tags the map has already, left out), `key` (the cache key; with
+  `store-maps`, the level's `LevelId`, empty for a level with nothing
+  over it), `hits` and `builds`, `added` and `changed` tag counts, and
+  `error` when the map was served without its packages.
 
 ```sh
 h2 agent packages.list
@@ -5606,7 +5607,7 @@ disc. Registered by `crates/apps/boot/src/store_status.rs`; the maps are
 
 | Method | Access | Params and result |
 |---|---|---|
-| `store.status` | read | `{}` → `{root, exists, served, maps, stale, broken}` |
+| `store.status` | read | `{}` → `{root, exists, served, maps, stale, broken, images}` |
 
 - `root`: the store's directory; `exists`: whether it is a tag
   repository.
@@ -5618,6 +5619,10 @@ disc. Registered by `crates/apps/boot/src/store_status.rs`; the maps are
 - `stale`: maps `extract.toml` records with no skeleton or extent table
   (`h2 tags extract --update` takes them again).
 - `broken`: maps whose extent table does not read, with `why`.
+- `images`: the level images under `<data>/store/images`
+  (`workspace::level`): `level_id`, `length` and `sha256` of the map file
+  each gives, `disk_bytes` (the image and its table), `extents` and
+  `extent_bytes`.
 
 ```sh
 h2 agent store.status

@@ -1,7 +1,7 @@
 # The asset store: levels assembled from shared assets
 
-Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"), and so are slices AS1 and AS2: the skeleton and extent table, `h2 tags reassemble`, and the store-backed map file behind `store-maps`, proven on invented maps; their disc runs are not done ("Not verified"). Level images, mod patches and `LevelId` are not built. "Decisions" lists the owner's choices.
-Code: `crates/formats/tags/src/repo` (the store's files and extraction; `repo/skeleton.rs` the skeleton, the extent table and `StoreFile`), `crates/runtime/vfs/src/store_map.rs` (the map file served from the store), `crates/apps/boot/src/store_status.rs` (`store.status`), `crates/tools/workspace/src/level.rs` (new: level manifests and images), `crates/formats/content/src/package/` (packages and mods), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
+Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"), and so are slices AS1, AS2 and AS4: the skeleton and extent table, `h2 tags reassemble`, the store-backed map file behind `store-maps`, and level images kept by `LevelId`, proven on invented maps; their disc runs are not done ("Not verified"). Mod patches and normal forms are not built. "Decisions" lists the owner's choices.
+Code: `crates/formats/tags/src/repo` (the store's files and extraction; `repo/skeleton.rs` the skeleton, the extent table and `StoreFile`), `crates/runtime/vfs/src/store_map.rs` (the map file served from the store), `crates/apps/boot/src/store_status.rs` (`store.status`), `crates/tools/workspace/src/level.rs` (level images), `crates/formats/content/src/id.rs` (`LevelId`), `crates/formats/content/src/package/` (packages and mods), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
 Switch: `store-maps` (`H2_FEATURES`, off until slice AS2 is accepted; [switches.md](../runtime/switches.md)).
 
 Every tag of every map on the user's discs is extracted once into one
@@ -34,10 +34,12 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 | A level's identity on Live and in a film | `content::MapId`, the content set of `PackageId`s, a film's `DESC` map digest ([maps.md](../game/maps.md), [film-format.md](../game/film-format.md)) | built, the content set's session check is PK14 |
 | A map given back from the store byte for byte | `maps/<map>.skel` and `.extents`, `tags::repo::StoreFile`, `TagRepo::check_reassembly` at extraction, `h2 tags reassemble` ([tag-repo.md](../formats/tag-repo.md)) | built (AS1); not run on the disc |
 | The disc's maps served from the store | `vfs::store_map::StoreMapBackend` under `store-maps`, `store.status` | built (AS2); no boot from the store yet |
+| A layered level as an image kept by its `LevelId` | `workspace::level::{assemble, StoreLevels}`, `content::LevelId`, `StoreMapBackend::with_levels`, `<data>/store/images/` | built (AS4); not run on the disc |
 
 What is missing: the level tags (`sbsp`, `ltmp`, `scnr`) are lossy in
 the store, so a retail level is its skeleton and cannot be rebuilt from
-tags; packages still reach the game as whole-map caches; an asset's
+tags; with `store-maps` off, packages still reach the game as
+whole-map caches; an asset's
 identity differs between maps for reasons that are not content (a
 sound's indices into its map's sound table); and a mod can only add tags
 or set fields.
@@ -214,34 +216,54 @@ that changes while the game runs is a changed map (`map_changed`),
 served anew from its next open with no handle on the old one.
 
 **A level with layers** (a package item whose `maps` takes it) gets an
-image from `workspace::level::assemble` (new):
+image from `workspace::level::assemble`:
 
-1. Resolve the layers for the level: the store read for that map, then
-   each package of the set in load order ("Mods and packages").
-2. If the image cache holds the level's `LevelId` ("Identity"), use it.
-3. Otherwise run the built per-map build (`workspace::build_map`) on
-   the skeleton as a decomposed map: every tag pinned
-   (`TagSet::from_map`), the tags the layers change replaced, new tags
-   added, the per-map couplings merged (the sound table, the low-detail
-   ranges). Raw resources stay names: a new or changed resource is
-   stored in `raw/` by hash and gets an extent past the end of the
-   file; nothing already in the store is rewritten.
-4. Write `<LevelId>.img` and `<LevelId>.extents`. The header checksum
-   covers the logical file and is made from a checksum kept per raw
-   file, so the build reads no raw bytes (**S**: that the retail
-   checksum composes over extents at their alignment; AS4 proves it on
-   invented maps and against the disc's own header values).
+1. Resolve the layers for the level: the packages of the set, in load
+   order, with an item for it, chosen as the rewrite chooses them
+   (`rewrite::applied_to`: a package whose added tags the level holds
+   already is left out). With none, the level is its skeleton, as above,
+   and its identity the retail `MapId`.
+2. If `<data>/store/images/` holds the level's `LevelId` ("Identity"),
+   use it.
+3. Otherwise run the built per-map build (`workspace::build_map_laid_out`,
+   the same path as `build_map`) on the map the store gives back: every
+   tag pinned (`TagSet::from_map`), the tags the layers change replaced,
+   new tags added. The builder writes the header checksum over the whole
+   file. A build over the tag memory bound is refused
+   (`level::check_tag_memory`, below).
+4. Split the result (`level::split`): a range equal to one of the base's
+   extents at the same offset stays that extent and names the raw file
+   the store has; a raw resource the build placed is stored in `raw/` by
+   hash, once, and named the same way; every other byte is the image's
+   skeleton. Write `<LevelId>.img` (a skeleton file) and then
+   `<LevelId>.extents`, the table that vouches for it, so a stopped write
+   is built again.
 
 This is what `PackageRewrite` does on first read of a map, less the
-copy of the map's raw region and the whole-map cache file.
+whole-map cache file: the image keeps the skeleton part only, and the
+raw region is not stored again. The build still reads the level's bytes
+once from the store; a build of the metadata alone, with the checksum
+made from a checksum kept per raw file, is later work (**S**: that the
+retail checksum composes over extents at their alignment).
+
+With `store-maps` on, the boot gives `workspace::level::StoreLevels` to
+the VFS (`vfs::Config::store_levels`). `StoreMapBackend` asks it for each
+level as it is first opened and serves the image through `StoreFile`
+over the store's `raw/`, as it serves a retail level; a level whose image
+cannot be made is served as the store has it, with a line on stderr and
+the reason in `packages.list`. `PackageRewrite` is then
+`levels_from_store`: it rebuilds no map and still runs the kits and the
+observers. With `store-maps` off, `PackageRewrite` and its whole-map
+cache serve the set; they go when the store is the default.
 
 - **Load time.** A cached image costs nothing extra: the guest's copy
   into its slot paces the load, as it does for a disc map
   ([cache-slots.md](../runtime/cache-slots.md), "Copy speed on the
-  loading screen"). A missing image costs one `onto` build of the
-  level's metadata, which runs at prepare (`boot::packages::prepare_maps`)
-  for the maps of the current set, not on the loading screen. The
-  build's incremental cache ([tag-workspace.md](../editor/tag-workspace.md),
+  loading screen"). A missing image costs one build of the level at its
+  first open (`StoreLevels`), as a `PackageRewrite` cache miss does.
+  Building at prepare (`boot::packages::prepare_maps`) for the maps of
+  the current set, off the loading screen, is later work. The build's
+  incremental cache ([tag-workspace.md](../editor/tag-workspace.md),
   "Build speed") keeps a one-asset change to the rebuilt tag and the
   address pass.
 - **BSP switching.** BSP regions are in the image at the offsets the
@@ -262,9 +284,14 @@ copy of the map's raw region and the whole-map cache file.
   moved is dropped from its slot by `map_slots` through
   `Vfs::map_changed`, as a changed package map is.
 - **Tag memory.** A level's metadata must fit the guest's tag memory.
-  `TagSet::check_tag_memory` refuses an image over the retail bound for
-  its type and names the assets that grew it
+  `level::check_tag_memory` refuses an image over the retail bound for
+  its type (or the base's own total, when that is larger) and names the
+  tags the packages added and changed
   ([scenario-editor.md](../editor/scenario-editor.md), section 6).
+- **The cap.** After a build, `level::trim` keeps `<data>/store/images/`
+  under 4 GiB (`DEFAULT_IMAGE_CAP`), least recently used first (a hit
+  renews the table's modification time), sparing the images the boot
+  serves.
 - **Levels built whole.** A level of ours (the stage, a converted Halo 1
   map) has no skeleton: its image is a `fresh` build from the manifest's
   closure. A retail level builds that way once its level tags extract
@@ -382,9 +409,15 @@ each multiplayer map.
  "packages": ["<PackageId>", ...]}
 ```
 
-`assets` is the manifest after layering, sorted by key; `packages` is
-the ordered content set for the level; `builders` is
-`workspace::BUILDERS_VERSION`. Assembly is deterministic, so two
+`content::LevelId` makes it from `content::LevelInputs`;
+`workspace::level::level_id` fills them. `packages` is the ordered list
+of packages laid over the level; `builders` is
+`workspace::BUILDERS_VERSION`; `skeleton` is the SHA-256 of the map file
+the store's skeleton gives back. `assets` is the manifest after
+layering, sorted by key. For a level with a skeleton the skeleton's hash
+stands for every asset the store gives it, and the packages' ids for
+what they add and change, so `assets` is empty; it lists asset hashes
+once the catalogue gives them without reading each tag (AS5). Assembly is deterministic, so two
 machines with the same `LevelId` hold the same image bytes
 (**Test**, as `workspace::cache_key`'s builds are; across platforms it
 is **S**, slice AS8's test). A level with nothing over it also has a
@@ -437,8 +470,8 @@ is **S**, slice AS8's test). A level with nothing over it also has a
 |---|---|---|
 | `h2 build`, `h2 play`, `h2 run`, `h2 serve`, Studio | `tags::repo::extract::update`, then `store::catalogue::write` | the plan, the extraction, the catalogue |
 | The VFS | `vfs::store_map::StoreMapBackend` over `StoreFile::{len, read_at}` | a level's bytes from an image or a skeleton and the raw files |
-| `boot::packages::prepare_maps`, Studio's `package.build` | `workspace::level::assemble(store, set, level) -> Level {id, image, extents, report}` | the image for a level under a set |
-| The game's agent API | `packages.list`, `store.status` (built): the store's path, whether its maps are served, each map's length, SHA-256, skeleton size and extents, what is stale; images with AS4 | read |
+| `StoreLevels` (the VFS's, at a level's first open); Studio's `package.build` (later) | `workspace::level::assemble(store, images, packages, level) -> Level {id, map_id, image, packages, held, report}` | the image for a level under a set |
+| The game's agent API | `packages.list`, `store.status` (built): the store's path, whether its maps are served, each map's length, SHA-256, skeleton size and extents, what is stale, and the level images | read |
 | Studio's API | `workspace.status`, `workspace.extract`, `workspace.prune` (built); `asset.fork`, `asset.revert`, `package.diff`, `package.import` (new) | above |
 | `h2 tags` | `extract --update`, `reassemble MAP --out FILE`, `reassemble --all [--compare DISC]` (built), `level <map> [--set FILE]` (new) | the coordinator's and CI's entry |
 
@@ -486,7 +519,9 @@ is **S**, slice AS8's test). A level with nothing over it also has a
    The guest's slot copy reads them in file order; whether opening them
    is slower than one contiguous read is measured in AS2, and a pack
    file per level is the answer if it is.
-7. **The checksum over extents** (step 4 of assembly) is supposed.
+7. **The checksum over extents** is supposed. An image is built from
+   the whole map, so the builder's checksum holds; a build of the
+   metadata alone needs it.
 8. **A wrong store.** A store extracted from a damaged or patched image
    makes a level no peer shares. `LevelId` catches it at the join and
    the mismatch names the assets.
@@ -527,7 +562,10 @@ them. Tests are headless on invented maps unless marked disc
 | AS14 (later) | **Retail levels built whole.** With W10, a retail level assembles `fresh` and its skeleton is dropped | W10 | as W10 | as W10 | a retail level with no skeleton loads |
 | AS15 (later, **E first**) | **No slot copy.** The guest's slot answered as warm and its reads routed to the store file | AS2; a read of the status and resource-read functions | `crates/extensions/game/src/map_copy.rs` | the kernel cache-slot test with the route on | a level load copies nothing and `<data>/disk/` shrinks |
 
-AS1 and AS2 are built; their disc checks are the coordinator's (above).
+AS1, AS2 and AS4 are built; their disc checks are the coordinator's
+(above). AS4's build reads the level whole and builds at first open, and
+`PackageRewrite` with `<data>/packages/cache/` stays for `store-maps`
+off.
 AS1, AS3 and AS5 run together; AS2 follows AS1; AS4 follows AS2; AS6,
 AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
 
@@ -589,8 +627,14 @@ AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
   invented maps back byte for byte at every offset class (**Test**,
   `crates/formats/tags/src/repo/tests.rs`,
   `crates/runtime/vfs/tests/store_map.rs`).
-- `LevelId`, the conflict table, `from`, `replaces`, `tag-delta` and the
-  image are **Design**.
+- `LevelId` gives fixed ids for invented inputs and moves with each
+  input; a level image reads back equal to `build_map`'s map byte for
+  byte and names the base's raw file where the bytes are unchanged; a
+  set change gives another id and the first image is still a hit
+  (**Test**, `crates/formats/content/src/id.rs`,
+  `crates/tools/workspace/src/level_tests.rs`,
+  `crates/runtime/vfs/tests/store_map.rs`).
+- The conflict table, `from`, `replaces` and `tag-delta` are **Design**.
 
 ## Not verified
 
@@ -598,6 +642,8 @@ AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
   boots and plays under `store-maps` with a film digest equal to the
   disc run's (AS1 and AS2's acceptance).
 - That the header checksum of a level can be made from per-file sums.
+- That a multiplayer level with the Pogo loads from an image under
+  `store-maps` (AS4's acceptance).
 - That the guest's slot copy through thousands of small files is as
   fast as from one file.
 - How much room the engine's own tag memory bound leaves past the

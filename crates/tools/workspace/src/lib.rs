@@ -34,6 +34,9 @@
 //!   `set.toml` and the game's features; [`PackageRewrite`] serves each map
 //!   the game reads with the set applied, cached under
 //!   `<data>/packages/cache/`.
+//! - [`level`]: a level of the tag store with the set laid over it, built
+//!   once into an image under `<data>/store/images/` and kept by its
+//!   `LevelId` (docs/engine/asset-store.md, "Runtime assembly").
 //!
 //! Nothing here reads a disc: the base map is the caller's (the VFS's, for
 //! the rewrite), and the tests build their own.
@@ -50,6 +53,7 @@ mod hud;
 pub mod import;
 pub mod kits;
 mod layer;
+pub mod level;
 mod load;
 mod maps;
 mod model;
@@ -72,6 +76,8 @@ mod modes_tests;
 mod maps_tests;
 #[cfg(test)]
 mod kit_tests;
+#[cfg(test)]
+mod level_tests;
 #[cfg(test)]
 mod pogo_tests;
 #[cfg(test)]
@@ -110,7 +116,7 @@ pub use maps::{
     held_in, prepare, restrict, without_taken,
     write as write_map_package,
 };
-pub use onto::{build_map, scope_of, scope_of_bytes};
+pub use onto::{BuiltMap, build_map, build_map_laid_out, scope_of, scope_of_bytes};
 pub use recipe::{TestMap, records_edits, scenario_edits, test_map_package};
 pub use rewrite::{FontObserver, KitInputs, Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
 pub use tagitem::group_of_source;

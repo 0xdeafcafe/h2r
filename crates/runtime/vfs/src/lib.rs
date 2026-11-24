@@ -109,6 +109,10 @@ pub struct Config {
     /// never read; a map the store lacks is a named error. `None` serves
     /// the disc's maps.
     pub store_maps: Option<PathBuf>,
+    /// With [`Config::store_maps`]: the images of the levels the game's
+    /// packages are laid over ([`store_map::Levels`]); `None` serves every
+    /// level as the store has it.
+    pub store_levels: Option<store_map::SharedLevels>,
     /// Seed directories for the cache volume N: ([`Vfs::seed_device`]).
     /// Each holds `disk/` (root files) and `metadata/` (their records, laid
     /// out as [`HostBackend`] stores them). Straight after the boot formats
@@ -136,6 +140,7 @@ impl Config {
             server_maps: None,
             sim_store: None,
             store_maps: None,
+            store_levels: None,
             cache_seed: Vec::new(),
         }
     }
