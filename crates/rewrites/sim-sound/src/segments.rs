@@ -25,18 +25,6 @@ impl RequestMode {
     }
 }
 
-/// Find the first occupied slot in the current allocation word at or after
-/// `start`. The allocation high-water mark also bounds the final word.
-pub fn next_in_word(word: u32, start: u32, limit: u32) -> Option<u32> {
-    let offset = start & 31;
-    let remaining = word >> offset;
-    if remaining == 0 {
-        return None;
-    }
-    let slot = start + remaining.trailing_zeros();
-    (slot < limit).then_some(slot)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,19 +37,6 @@ mod tests {
             let expected = if mode == 0 { 1 } else { mode };
             assert_eq!(RequestMode(mode).for_existing(0x10), RequestMode(expected));
             assert_eq!(RequestMode(mode).for_existing(0x01), RequestMode(mode));
-        }
-    }
-
-    #[test]
-    fn bitmap_search_agrees_with_ordered_slot_tests() {
-        for word in [0, 1, u32::MAX, 0x8000_0002, 0x1049_0484] {
-            for start in 32..64 {
-                for limit in start..=65 {
-                    let expected = (start..limit.min(64))
-                        .find(|slot| word & (1 << (slot % 32)) != 0);
-                    assert_eq!(next_in_word(word, start, limit), expected);
-                }
-            }
         }
     }
 }
