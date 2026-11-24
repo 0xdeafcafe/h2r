@@ -27,7 +27,7 @@ fn labels(thing: &Thing) -> Vec<String> {
 fn the_rows_of_a_kind_are_the_docs_in_its_order() {
     assert_eq!(
         labels(&thing(BlockKind::Scenery, ThingKind::Object, &[])),
-        ["Coordinates...", "Heading"]
+        ["Coordinates...", "Heading", "Reset orientation"]
     );
     assert_eq!(
         labels(&thing(
@@ -35,7 +35,7 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::StartingPoint,
             &[("team", 1)]
         )),
-        ["Coordinates...", "Heading", "Team"]
+        ["Coordinates...", "Heading", "Team", "Reset orientation"]
     );
     assert_eq!(
         labels(&thing(
@@ -43,7 +43,14 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::Goal,
             &[("type", 0), ("team", 0), ("identifier", 0)]
         )),
-        ["Coordinates...", "Heading", "Team", "Role", "Order"]
+        [
+            "Coordinates...",
+            "Heading",
+            "Team",
+            "Role",
+            "Order",
+            "Reset orientation"
+        ]
     );
     assert_eq!(
         labels(&thing(
@@ -51,7 +58,12 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::ItemSpawner,
             &[("respawn time", 30)]
         )),
-        ["Coordinates...", "Heading", "Respawn time"]
+        [
+            "Coordinates...",
+            "Heading",
+            "Respawn time",
+            "Reset orientation"
+        ]
     );
     // A teleporter has no row of its own yet.
     assert_eq!(
@@ -60,7 +72,7 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::Teleporter,
             &[("type", 7)]
         )),
-        ["Coordinates...", "Heading"]
+        ["Coordinates...", "Heading", "Reset orientation"]
     );
 }
 
@@ -73,7 +85,7 @@ fn a_property_the_thing_lacks_has_no_row() {
             ThingKind::StartingPoint,
             &[]
         )),
-        ["Coordinates...", "Heading"]
+        ["Coordinates...", "Heading", "Reset orientation"]
     );
     assert_eq!(
         labels(&thing(
@@ -81,7 +93,13 @@ fn a_property_the_thing_lacks_has_no_row() {
             ThingKind::Goal,
             &[("type", 0), ("team", 0)]
         )),
-        ["Coordinates...", "Heading", "Team", "Role"]
+        [
+            "Coordinates...",
+            "Heading",
+            "Team",
+            "Role",
+            "Reset orientation"
+        ]
     );
 }
 
@@ -138,31 +156,56 @@ fn every_row_of_the_shipped_doc_binds() {
     // Each kind's every row of the doc is made: none is dropped for a
     // property the binder cannot bind.
     let d = doc();
-    for (block, kind, fields) in [
-        (BlockKind::Scenery, ThingKind::Object, &[][..]),
+    let tagged = |block, kind| Thing {
+        fields: vec![(
+            "palette index",
+            forge::Value::Tag(Some(forge::TagKey {
+                group: "bloc".into(),
+                path: r"fixture\cube".into(),
+            })),
+        )],
+        ..sample_thing(block, kind)
+    };
+    for (_, kind, t) in [
+        (
+            BlockKind::Scenery,
+            ThingKind::Object,
+            tagged(BlockKind::Scenery, ThingKind::Object),
+        ),
         (
             BlockKind::StartingLocations,
             ThingKind::StartingPoint,
-            &[("team", 0)][..],
+            thing(
+                BlockKind::StartingLocations,
+                ThingKind::StartingPoint,
+                &[("team", 0)],
+            ),
         ),
         (
             BlockKind::NetgameFlags,
             ThingKind::Goal,
-            &[("type", 0), ("team", 0), ("identifier", 0)][..],
+            thing(
+                BlockKind::NetgameFlags,
+                ThingKind::Goal,
+                &[("type", 0), ("team", 0), ("identifier", 0)],
+            ),
         ),
         (
             BlockKind::NetgameEquipment,
             ThingKind::ItemSpawner,
-            &[
-                ("respawn time", 0),
-                ("game type 1", 2),
-                ("game type 2", 2),
-                ("game type 3", 2),
-                ("game type 4", 2),
-            ][..],
+            thing(
+                BlockKind::NetgameEquipment,
+                ThingKind::ItemSpawner,
+                &[
+                    ("respawn time", 0),
+                    ("game type 1", 2),
+                    ("game type 2", 2),
+                    ("game type 3", 2),
+                    ("game type 4", 2),
+                ],
+            ),
         ),
     ] {
-        let t = thing(block, kind, fields);
         let wanted = d.props.values().filter(|p| is_for(p, kind)).count();
         // With a label and objects to save, every row of the doc binds.
         let all = Extras {
@@ -194,7 +237,13 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
     );
     assert_eq!(
         labels(&spawner),
-        ["Coordinates...", "Heading", "Respawn time", "Game types..."]
+        [
+            "Coordinates...",
+            "Heading",
+            "Respawn time",
+            "Game types...",
+            "Reset orientation"
+        ]
     );
     let rows = rows(&doc(), &spawner, 0.0);
     let Act::Dialog(dialog) = &rows[3].act else {
@@ -212,7 +261,15 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
         ThingKind::ItemSpawner,
         &slots(99),
     );
-    assert_eq!(labels(&odd), ["Coordinates...", "Heading", "Respawn time"]);
+    assert_eq!(
+        labels(&odd),
+        [
+            "Coordinates...",
+            "Heading",
+            "Respawn time",
+            "Reset orientation"
+        ]
+    );
     // Only a spawner has the row.
     assert!(
         !labels(&thing(BlockKind::Scenery, ThingKind::Object, &[]))
@@ -236,7 +293,7 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
     };
     assert_eq!(
         labels_with(&object, &plain),
-        ["Coordinates...", "Heading", "Label"]
+        ["Coordinates...", "Heading", "Label", "Reset orientation"]
     );
     let savable = Extras {
         savable: 3,
@@ -244,7 +301,13 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
     };
     assert_eq!(
         labels_with(&object, &savable),
-        ["Coordinates...", "Heading", "Label", "Save as prefab"]
+        [
+            "Coordinates...",
+            "Heading",
+            "Label",
+            "Save as prefab",
+            "Reset orientation"
+        ]
     );
     let labelled = Extras {
         label: Some(("hill".into(), None)),
@@ -258,7 +321,8 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
             "Label",
             "Label number",
             "Clear label",
-            "Save as prefab"
+            "Save as prefab",
+            "Reset orientation"
         ]
     );
     // Only an object is saved as a prefab; any thing is labelled.
@@ -270,7 +334,10 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
     assert!(!labels_with(&goal, &labelled).contains(&"Save as prefab".to_string()));
     assert!(labels_with(&goal, &labelled).contains(&"Label".to_string()));
     // The default has none of them.
-    assert_eq!(labels(&object), ["Coordinates...", "Heading"]);
+    assert_eq!(
+        labels(&object),
+        ["Coordinates...", "Heading", "Reset orientation"]
+    );
 }
 
 #[test]
@@ -314,4 +381,75 @@ fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
     };
     let rows = rows_with(&doc(), &object, 0.0, &none);
     assert_eq!(rows[2].value.as_deref(), Some("None"));
+}
+
+fn object_with_tag() -> Thing {
+    Thing {
+        fields: vec![(
+            "palette index",
+            Value::Tag(Some(forge::TagKey {
+                group: "bloc".into(),
+                path: r"fixture\cube".into(),
+            })),
+        )],
+        ..sample_thing(BlockKind::Scenery, ThingKind::Object)
+    }
+}
+
+#[test]
+fn reset_orientation_is_an_act_for_every_kind_with_a_turn_field() {
+    let d = doc();
+    for (block, kind) in [
+        (BlockKind::Scenery, ThingKind::Object),
+        (BlockKind::StartingLocations, ThingKind::StartingPoint),
+        (BlockKind::NetgameFlags, ThingKind::Goal),
+        (BlockKind::NetgameEquipment, ThingKind::ItemSpawner),
+    ] {
+        let t = thing(block, kind, &[]);
+        let row = rows(&d, &t, 0.0)
+            .into_iter()
+            .find(|r| r.label == "Reset orientation")
+            .unwrap_or_else(|| panic!("{kind:?} has the row"));
+        assert_eq!(row.act, Act::Choose(Choice::ResetOrientation), "{kind:?}");
+    }
+}
+
+#[test]
+fn duplicate_is_an_act_on_a_placed_object_only() {
+    let d = doc();
+    let own = object_with_tag();
+    let row = rows(&d, &own, 0.0)
+        .into_iter()
+        .find(|r| r.label == "Duplicate")
+        .expect("an own object has the row");
+    assert_eq!(row.act, Act::Choose(Choice::Duplicate(own.id)));
+    // An added one has it too, with its own endpoint.
+    let added = Thing {
+        id: forge::Endpoint::Added(forge::OpId(4)),
+        own: false,
+        ..own.clone()
+    };
+    let row = rows(&d, &added, 0.0)
+        .into_iter()
+        .find(|r| r.label == "Duplicate")
+        .expect("an added object has the row");
+    assert_eq!(row.act, Act::Choose(Choice::Duplicate(added.id)));
+    // The kinds that need the kit have none until slice P2, and neither has
+    // the ghost of an object being placed, which names no thing.
+    for (block, kind) in [
+        (BlockKind::NetgameEquipment, ThingKind::ItemSpawner),
+        (BlockKind::StartingLocations, ThingKind::StartingPoint),
+        (BlockKind::NetgameFlags, ThingKind::Goal),
+        (BlockKind::NetgameFlags, ThingKind::Teleporter),
+    ] {
+        assert!(
+            !labels(&thing(block, kind, &[])).contains(&"Duplicate".to_string()),
+            "{kind:?}"
+        );
+    }
+    assert!(
+        !labels(&thing(BlockKind::Scenery, ThingKind::Object, &[]))
+            .contains(&"Duplicate".to_string()),
+        "a thing with no palette tag is the ghost of one being placed"
+    );
 }

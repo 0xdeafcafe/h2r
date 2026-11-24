@@ -85,3 +85,14 @@ props:
     on: [object]
     prop: prefab
     open: keyboard
+  prop.12:
+    text: "Reset orientation"
+    help: "Pitch and roll to zero, and the yaw to the rotation snap."
+    prop: "reset orientation"
+    open: act
+  prop.13:
+    text: "Duplicate"
+    help: "Make a copy of this object and hold it."
+    on: [object]
+    prop: duplicate
+    open: act

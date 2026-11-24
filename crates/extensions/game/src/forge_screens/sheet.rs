@@ -334,6 +334,12 @@ pub enum Choice {
     LockGroup(forge::OpId, bool),
     /// **Clear label**: take the label off a thing.
     ClearLabel(forge::Endpoint),
+    /// **Reset orientation**: pitch and roll to zero, the yaw to the
+    /// rotation snap (docs/game/forge-map-variants-ui.md, "The Properties
+    /// page").
+    ResetOrientation,
+    /// **Duplicate** the object and hold the copy.
+    Duplicate(forge::Endpoint),
     /// Place prefab `i` (the object menu's Prefabs row) in front of the
     /// monitor.
     PlacePrefab(usize),
