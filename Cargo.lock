@@ -208,6 +208,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "anim-edit"
+version = "0.1.0"
+dependencies = [
+ "tags",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7067,6 +7074,7 @@ dependencies = [
  "ab_glyph",
  "agent",
  "agent-proto",
+ "anim-edit",
  "anyhow",
  "app-icon",
  "assets",

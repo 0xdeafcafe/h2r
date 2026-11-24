@@ -41,6 +41,7 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
+        "//crates/extensions/game:game",
         "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/tags:tags",
@@ -68,6 +69,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/extensions/game:game",
         "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/tags:tags",

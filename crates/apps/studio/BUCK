@@ -18,6 +18,7 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
+        "//:content",
     ],
 )
 
@@ -25,6 +26,7 @@ crate_tree(
     name = "test-tree",
     files = [
         ":all",
+        "//:content",
     ],
 )
 
@@ -64,6 +66,7 @@ workspace_library(
         "//crates/platform/mem-watch:mem-watch",
         "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
+        "//crates/tools/anim-edit:anim-edit",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
         "//crates/tools/geometry-edit:geometry-edit",
@@ -137,6 +140,7 @@ workspace_test(
         "//crates/platform/mem-watch:mem-watch",
         "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
+        "//crates/tools/anim-edit:anim-edit",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
         "//crates/tools/geometry-edit:geometry-edit",
@@ -210,6 +214,7 @@ workspace_binary(
         "//crates/platform/mem-watch:mem-watch",
         "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
+        "//crates/tools/anim-edit:anim-edit",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
         "//crates/tools/geometry-edit:geometry-edit",
@@ -284,6 +289,7 @@ workspace_test(
         "//crates/platform/mem-watch:mem-watch",
         "//crates/platform/wma:wma",
         "//crates/runtime/vfs:vfs",
+        "//crates/tools/anim-edit:anim-edit",
         "//crates/tools/bitmap-edit:bitmap-edit",
         "//crates/tools/editor-core:editor-core",
         "//crates/tools/geometry-edit:geometry-edit",
