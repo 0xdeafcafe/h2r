@@ -594,7 +594,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `tag.fields` (extended) | as tag-editing.md | a row with a field view gains `view: {kind, form?}`; a colour row gains `colour: {hex, rgba, intensity?}`; a function row gains `function: {type, ranged, range, length}` |
 | `tag.set` (extended) | a colour row's `value` may be `"#aarrggbb"` or `{rgba, intensity?}` | as built |
 | `tag.colours` | `{tag}` | every colour row of the tag: `{path, label, form, hex}` |
-| `function.read` | `{tag, path}` | `{type, ranged, sub_types, range, sets: [...], editable, read_only}` |
+| `function.read` | `{tag, path}` | `{type, ranged, sub_types, range, length, sets: [...], editable, read_only}` |
 | `function.set` | `{tag, path, type?, ranged?, range?, sets?}` | the new `function.read`; one undo step; refusals as "Curves" |
 | `function.sample` | `{tag, path, inputs: [x], range_input?}` | `{outputs}` from `Function::evaluate` |
 | `shader.read` | `{tag}` | `{template, lod, bitmaps, colours, vectors, animations, used_by, names_known, refusals}` |
