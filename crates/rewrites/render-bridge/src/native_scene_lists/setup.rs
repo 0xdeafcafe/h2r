@@ -191,25 +191,7 @@ pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi, scale: f32) -> (SceneList
     (SceneList::ObjectSetup, setup(m, cpu, scale))
 }
 
-fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
-    fp_supported(cpu)?;
-    if cpu.x87.control != 0x027f || cpu.x87.tag != 0xffff {
-        return Err(Refusal::Unsupported);
-    }
-    let vis = cpu.esi;
-    let kind = m.u32(at(vis, VIEW_KIND)?)?;
-    if !matches!((vis, kind), (MAIN_VIS, 0) | (LIGHT_VIS, 1 | 2)) {
-        return Err(Refusal::Unsupported);
-    }
-    let list_addr = ptr(m, at(vis, 0x14)?)?;
-    let list = List::read(m, list_addr)?;
-    let index = u32::from(stack(m, cpu, 4)? as u16);
-    if index as usize >= list.count {
-        return Err(Refusal::Layout);
-    }
-    let handle = m.u32(at(list.column(m, 0xc)?, index * 4)?)?;
-    let objects = Pool::read(m, ptr(m, OBJECTS)?, 12)?;
-    let body = objects.body(m, handle)?;
+fn projected(m: &dyn GuestMemory, body: u32) -> Result<([f32; 3], f32, f32, f32)> {
     let [px, py, pz] = m.vec3(at(body, 0x30)?)?;
     let radius = m.f32(at(body, 0x3c)?)?;
     let [x, y, z, w] = PROJECTION_DEPTH;
@@ -234,6 +216,30 @@ fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
         return Err(Refusal::Unsupported);
     }
 
+    Ok(([px, py, pz], radius, pixel_size, distance))
+}
+
+fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
+    fp_supported(cpu)?;
+    if cpu.x87.control != 0x027f || cpu.x87.tag != 0xffff {
+        return Err(Refusal::Unsupported);
+    }
+    let vis = cpu.esi;
+    let kind = m.u32(at(vis, VIEW_KIND)?)?;
+    if !matches!((vis, kind), (MAIN_VIS, 0) | (LIGHT_VIS, 1 | 2)) {
+        return Err(Refusal::Unsupported);
+    }
+    let list_addr = ptr(m, at(vis, 0x14)?)?;
+    let list = List::read(m, list_addr)?;
+    let index = u32::from(stack(m, cpu, 4)? as u16);
+    if index as usize >= list.count {
+        return Err(Refusal::Layout);
+    }
+    let handle = m.u32(at(list.column(m, 0xc)?, index * 4)?)?;
+    let objects = Pool::read(m, ptr(m, OBJECTS)?, 12)?;
+    let body = objects.body(m, handle)?;
+    let (centre, radius, pixel_size, distance) = projected(m, body)?;
+
     let tags = ptr(m, TAGS)?;
     let (opacity, _) = lod_bytes(m, tags, handle, body, distance, radius)?;
     let row_flags = m.u16(at(list.column(m, 8)?, index * 2)?)?;
@@ -255,7 +261,7 @@ fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
     };
     let mode = if mask == u16::MAX { 1 } else { 0x40 };
     let mut state = ObjectState {
-        centre: [px, py, pz],
+        centre,
         radius,
         pixels: pixel_size,
         distance,
@@ -308,6 +314,79 @@ fn mark_no_draw(m: &mut Staged<'_>, column: u32, index: u32) -> Result<u32> {
     let flags = m.u8(address)?;
     m.set_u8(address, flags | 1)?;
     Ok(address)
+}
+
+/// Layer-3 section inputs selected on a private overlay of the game's
+/// current state. The overlay owns every palette, cache and record write.
+pub struct DisplaySection {
+    pub section: u16,
+    pub implementation: usize,
+    pub rows: Vec<frame_scene::Row>,
+}
+
+/// Produce an ordinary third-person object's records without publishing
+/// any renderer, resource, lighting, animation or simulation state.
+pub fn display_model(m: &dyn GuestMemory, handle: u32) -> Option<(frame_scene::ObjectFrame, u32, Vec<DisplaySection>)> {
+    display_model_inner(m, handle).ok()
+}
+
+fn display_model_inner(m: &dyn GuestMemory, handle: u32) -> Result<(frame_scene::ObjectFrame, u32, Vec<DisplaySection>)> {
+    let objects = Pool::read(m, ptr(m, OBJECTS)?, 12)?;
+    let body = objects.body(m, handle)?;
+    let (centre, radius, pixels, distance) = projected(m, body)?;
+    let scene = Scene {
+        tags: ptr(m, TAGS)?, objects, frame: m.u32(FRAME)?, vis: MAIN_VIS,
+        kind: 0, retry: false, lod_scale: 1.0,
+    };
+    let (opacity, _) = lod_bytes(m, scene.tags, handle, body, distance, radius)?;
+    // The display gather supplies the object set, without the optional
+    // secondary clipping plane, restriction list, or cluster subpart mask.
+    if opacity != u8::MAX || m.u32(at(body, 0x14)?)? != NONE
+        || m.u32(at(MAIN_VIS, VIS_FLAGS)?)? & 0x201 != 0
+        || m.u8(at(body, 7)?)? & 0x80 != 0
+    {
+        return Err(Refusal::ObjectModel);
+    }
+    let state = ObjectState {
+        centre, radius, pixels, distance, opacity, lock_pose: false,
+        flags: section_flags(m, MAIN_VIS, scene.tags, 0xf000)?, mode: 1 | 0x208, clip_mask: u16::MAX,
+        group: 31, group_cookie: NONE, group_counter: 0, attachment: NONE,
+        mirror_alpha: 0., effect_alpha: 0., group_depth: 0., mirror_mode: false,
+    };
+    let mut overlay = Staged::new(m);
+    let prepared = sections::prepare(&mut overlay, scene, handle, state)?;
+    let [model] = prepared.models.as_slice() else { return Err(Refusal::ObjectModel) };
+    if prepared.first_person || prepared.overlay.is_some() || prepared.function_overlay.is_some()
+        || prepared.variant_overlays.iter().any(Option::is_some)
+    {
+        return Err(Refusal::ObjectModel);
+    }
+    // These scratch records are private; a full guest list cannot stop a
+    // fresh display record. The palette still respects the live model cache.
+    overlay.set_u32(records::COUNT, 0)?;
+    overlay.set_u32(records::CURRENT_VIS, MAIN_VIS)?;
+    Walk { scene, ancestors: Vec::new() }.emit(&mut overlay, &prepared, state, true)?;
+    let count = overlay.u32(records::COUNT)?;
+    let read = crate::native_world::Mem(&mut overlay);
+    use scene_extract::layout::object_lighting::LightingRead;
+    let mut frame = native_render::objects::read_object(&read, handle).ok_or(Refusal::ObjectModel)?;
+    frame.lighting = Some(frame_scene::Lighting::read(&read, model.lighting).ok_or(Refusal::Lighting)?);
+    let mut sections = Vec::new();
+    for i in 0..count {
+        use native_render::{camera::GuestRead, object_nodes, skip};
+        let addr = skip::RENDER_RECORDS + i * skip::RENDER_RECORD_SIZE;
+        let word = read.read_u32(addr).ok_or(Refusal::Layout)?;
+        if word & (native_render::object_walk::RECORD_AUX_STATE | native_render::object_walk::RECORD_STENCIL_MARK) != 0 {
+            return Err(Refusal::Unsupported);
+        }
+        let key = read.read_u32(addr + object_nodes::RECORD_KEY).ok_or(Refusal::Layout)?;
+        sections.push(DisplaySection {
+            section: ((key >> 9) & 0x1ff) as u16,
+            implementation: object_nodes::record_implementation(word),
+            rows: object_nodes::node_rows(&read, addr).map_err(|_| Refusal::Palette)?,
+        });
+    }
+    Ok((frame, model.datum, sections))
 }
 
 struct Walk {
@@ -672,6 +751,23 @@ mod setup_tests {
         for write in out.writes {
             mem.write(write.addr, write.bytes.slice()).unwrap();
         }
+    }
+
+    #[test]
+    fn private_sections_use_the_current_permutation_and_leave_the_record_list_untouched() {
+        let (mut m, _) = fixture();
+        let (_, _, sections) = display_model(&m, ROOT_HANDLE).unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].section, 1);
+        assert_eq!(sections[0].rows.len(), 3);
+        assert_eq!(sections[0].rows[0], [1., 0., 0., 0.]);
+        assert_eq!(m.u32(RECORD_COUNT).unwrap(), 0);
+        assert_eq!(m.u32(NODE_BLOCKS - 4).unwrap(), 0);
+        assert_eq!(m.u32(CACHE_ENTRIES + 0x4c).unwrap(), NONE);
+        m.put_u8(ROOT + 4, 1);
+        assert!(display_model(&m, ROOT_HANDLE).is_none());
+        m.put_u8(ROOT + 4, 0).put_u8(OBJECT_SLOTS + 2, 0x10);
+        assert!(display_model(&m, ROOT_HANDLE).is_none());
     }
 
     #[test]

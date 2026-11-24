@@ -68,7 +68,7 @@ impl PartRange {
 }
 
 struct ModelCoverage {
-    display: Option<display::RigidParts>,
+    display_parts: HashMap<u16, Vec<(u8, u32)>>,
     nodes: usize,
     assets: Arc<palette::GpuAssets>,
     all_parts: bool,
@@ -1257,8 +1257,18 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage, R
         })
     });
     let assets = Arc::new(palette::GpuAssets::default());
-    let display = all_parts.then(|| display::RigidParts::from_model(&geo, &lit, &required_masks)).flatten();
-    let cover = ModelCoverage { display, nodes: geo.nodes.len(), assets, all_parts, ranges };
+    // A display-only record has a selected section but no sorted item list.
+    // Require coverage of every drawn part before admitting that section.
+    let mut display_parts = HashMap::new();
+    for (i, s) in geo.sections.iter().enumerate() {
+        let Ok(section) = u16::try_from(i) else { continue };
+        let keys = lit.parts.iter().filter(|p| p.section == section)
+            .map(|p| (p.part, p.shader_tag)).collect::<Vec<_>>();
+        if !keys.is_empty() && s.geometry.parts.iter().filter(|p| p.is_drawn()).count() == keys.len() {
+            display_parts.insert(section, keys);
+        }
+    }
+    let cover = ModelCoverage { display_parts, nodes: geo.nodes.len(), assets, all_parts, ranges };
     let cpu = CpuModel { lit, normalization: o.normalization.clone().flatten() };
     Ok((cpu, cover, geo))
 }

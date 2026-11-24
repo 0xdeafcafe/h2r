@@ -27,14 +27,15 @@ mesh streams and node rows, evaluate shader parameters, set render
 state, or issue any D3D draw for that part.
 
 The display gather supplies additional object handles for the wider view.
-At the scene's layer-3 call, `native_objects_glue/display.rs` draws a
-resident rigid model when its permutations and detail levels select one
-section per region, its sections specify an unambiguous node, and each
-opaque part has one supported material implementation. The supplement
-takes its pose and lighting from the live object and its inverse bind
-from the model. Its packets go to the display attachments only. Skinned
-models and models that need runtime part selection require the guest
-render records and can still disappear at the sides in exact mode.
+At the scene's layer-3 call, `native_scene_lists::display_model` runs
+section selection, lighting, palette construction and record emission
+against a private overlay of guest memory. The display uses the record's
+chosen permutation, LOD, implementation and skinning rows. Hidden objects
+and the first-person owner are suppressed. `native_objects_glue/display.rs`
+submits resident opaque parts only to the display attachments. An object
+whose setup needs an animation update, effect overlay or attachment walk,
+or whose selected section has an unsupported material, can still be
+absent at the sides in protected sessions.
 
 The stack holds the remaining entry count at handler ESP + `0x28`, with
 the array immediately after it. The entry contains its item index, the

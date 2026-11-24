@@ -8,6 +8,7 @@ mod objects;
 mod object_lod;
 mod records;
 mod setup;
+pub use setup::{DisplaySection, display_model};
 mod transparents;
 
 use std::collections::HashMap;

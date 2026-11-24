@@ -5,9 +5,9 @@ use super::objects::{ACTIVE_BSP, LIGHT_VIS, MAIN_VIS, VIEW_KIND};
 use super::*;
 use native_render::skip::{RENDER_RECORD_SIZE, RENDER_RECORDS};
 
-const COUNT: u32 = 0x004c_0b78;
+pub(super) const COUNT: u32 = 0x004c_0b78;
 const MAIN_COUNT: u32 = 0x004c_0b7c;
-const CURRENT_VIS: u32 = 0x004c_0b80;
+pub(super) const CURRENT_VIS: u32 = 0x004c_0b80;
 const PIXEL_SIZES: u32 = 0x004c_0b84;
 const ATTACHMENTS: u32 = 0x004c_0ed6;
 const ATTACHMENT_DATA: u32 = 0x004c_1228;
