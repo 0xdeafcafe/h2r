@@ -1,7 +1,7 @@
 //! Individual HUD draws after the guest has installed the widget shader.
 //! The draw snapshot pins the sampled image, including the changing glyph cache.
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use d3d::backend::{ExternalAttachments, ExternalEncoded};
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPassRequest, ExternalPlan};
@@ -13,8 +13,8 @@ use frame_scene::{
 use gfx::state::{
     BlendFactor, CompareFunc, CullMode, DepthBufferMode, FillMode, TextureAddress, TextureFilter,
 };
-use native_render::overlay::{NoGlyphs, OverlayPlan};
-use native_render::ui_gpu::{OverlayGpu, OverlayTextures};
+use native_render::overlay::{NoGlyphs, OverlayAssets, OverlayPlan};
+use native_render::ui_gpu::{OverlayGpu, OverlayResidency, OverlayTextures};
 use render_bridge::native_hud::{HudTagQuad, HudVertices};
 use timeline::native::Stage;
 
@@ -395,6 +395,98 @@ impl ExternalPass for WidgetPass {
             timeline::native::Ui::OverlayHudTagRecorded.count();
         }
         Some(result)
+    }
+}
+
+/// The map whose overlay assets are held, and the assets: one generation a
+/// map, so the resident textures are not replaced between passes.
+#[derive(Default)]
+struct Slot {
+    map: Option<(String, u64)>,
+    assets: Arc<Mutex<OverlayAssets>>,
+}
+
+static SLOT: LazyLock<Mutex<Slot>> = LazyLock::new(Mutex::default);
+
+/// The map's overlay assets, shared by the menus' passes; `None` with no
+/// map loaded.
+pub fn assets(mem: &dyn GuestMemory) -> Option<Arc<Mutex<OverlayAssets>>> {
+    let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty())?;
+    let generation = render_bridge::native_map_work::generation();
+    let mut slot = SLOT.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.map.as_ref().is_none_or(|(n, g)| *n != name || *g != generation) {
+        slot.map = Some((name, generation));
+        slot.assets = Arc::new(Mutex::new(OverlayAssets { generation, ..OverlayAssets::default() }));
+    }
+    Some(slot.assets.clone())
+}
+
+/// Places a pass drawing `overlay` from `assets` at this point in the
+/// frame: whether the device took it.
+pub fn place<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    overlay: Arc<Overlay>,
+    assets: Arc<Mutex<OverlayAssets>>,
+) -> bool {
+    let pass = OverlayPass { overlay, assets };
+    device.lock().ok().is_some_and(|mut d| {
+        matches!(
+            d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
+            Ok(true)
+        )
+    })
+}
+
+/// A run of menu widgets (`render_bridge::native_hud::ui_overlay`), drawn
+/// from the overlay at this point in the frame with the map's assets:
+/// whether it was placed.
+pub fn place_menu<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    part: &Overlay,
+) -> bool {
+    let Some(assets) = assets(mem) else { return false };
+    place(device, mem, Arc::new(part.clone()), assets)
+}
+
+/// The renderer's overlay programs and resident textures, on the device
+/// last drawn with.
+static RENDERER: LazyLock<Mutex<Option<(wgpu::Device, OverlayGpu, OverlayResidency)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// An overlay's items, drawn where the pass was placed in the frame.
+struct OverlayPass {
+    overlay: Arc<Overlay>,
+    assets: Arc<Mutex<OverlayAssets>>,
+}
+
+impl d3d::ExternalPass for OverlayPass {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: false }
+    }
+
+    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
+        let mut r = RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        if r.as_ref().is_none_or(|(d, _, _)| d != t.device) {
+            *r = Some((t.device.clone(), OverlayGpu::new(t.device, t.queue), OverlayResidency::default()));
+        }
+        let Some((_, gpu, residency)) = r.as_mut() else { return };
+        let assets = self.assets.lock().unwrap_or_else(|e| e.into_inner());
+        residency.sync(t.device, t.queue, &assets);
+        let size = t.color.texture().size();
+        let plan = OverlayPlan::new(&self.overlay, [size.width, size.height], &assets.glyphs);
+        drop(assets);
+        if let Ok((encoded, stats)) = gpu.prepare(t.device, t.color, &plan, residency) {
+            (encoded.commands)(&mut *t.encoder);
+            if t.copy == d3d::TargetCopy::Display {
+                native_render::ui_gpu::count_overlay(&stats);
+            }
+        }
     }
 }
 

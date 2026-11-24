@@ -402,6 +402,15 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::skulls_model::gpu::replace_widget(&self.device, mem, widget)
     }
 
+    fn ui_overlay(&self, _mem: &mut dyn GuestMemory) -> Option<bool> {
+        // The UI scope's order must hold for a pass placed in it.
+        Some(self.permits_draw())
+    }
+
+    fn ui_pass(&self, mem: &mut dyn GuestMemory, part: &frame_scene::Overlay) -> bool {
+        self.permits_draw() && crate::hud_overlay::place_menu(&self.device, mem, part)
+    }
+
     fn enter_ui(&self, mem: &mut dyn GuestMemory, kind: UiScope, stack: u32, eligible: bool) {
         let Ok(mut device) = self.device.lock() else {
             Ui::Order.count();
