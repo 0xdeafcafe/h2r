@@ -331,7 +331,7 @@ fn a_sidecar_beside_the_wav_names_the_class() {
     // A class that is not one is refused by the static check, by name.
     let found = check_package(&with("class: nonsense\n"));
     assert!(found[0].what.contains("class"), "{found:?}");
-    assert!(found[0].what.contains("a.sound.yaml"), "{found:?}");
+    assert!(found[0].what.contains("nonsense"), "{found:?}");
 }
 
 #[test]

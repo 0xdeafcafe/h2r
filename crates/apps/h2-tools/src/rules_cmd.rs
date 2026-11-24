@@ -1146,8 +1146,8 @@ settings {
 
     #[test]
     fn a_script_reads_the_files_beside_it() {
-        let main = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { score(k, bonus()) }\n";
-        let one = "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { score(k, bonus()) }\n";
+        let main = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
+        let one = "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
         let dir = std::env::temp_dir().join(format!("h2-rules-use-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let label = dir.join("main.rules").display().to_string();

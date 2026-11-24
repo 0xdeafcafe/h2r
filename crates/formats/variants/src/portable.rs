@@ -1710,8 +1710,8 @@ settings {
 
     #[test]
     fn a_script_of_several_files_travels_as_all_of_them() {
-        let main = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { score(k, bonus()) }\n";
-        let one = "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { score(k, bonus()) }\n";
+        let main = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
+        let one = "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
         let mods: BTreeMap<String, String> =
             [("waves.rules".to_string(), "const base = 2\nfn bonus() -> int = base + 1\n".to_string())].into();
         let attach = Attach::from_files(main, &mods).unwrap();

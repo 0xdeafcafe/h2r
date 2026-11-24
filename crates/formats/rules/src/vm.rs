@@ -2273,8 +2273,13 @@ mod tests {
         let bytes = ext().encode();
         // The spawn rules sit before the held counters: team 0's kind byte
         // is the first of them.
-        let shown = 1 + 2 * (4 + 1);
-        let held = shown + 1 + 2 * (4 + 4 * MAX_TEAMS);
+        // After the spawn rules and bodies come the held counters, the
+        // shown zones, the show state and the movers (36 bytes each).
+        let e = ext();
+        let held = 1 + 2 * (4 + 4 * MAX_TEAMS)
+            + (1 + 2 * (4 + 1))
+            + (1 + e.show.encode().len())
+            + (1 + 36 * e.movers.len());
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");

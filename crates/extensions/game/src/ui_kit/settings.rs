@@ -65,6 +65,7 @@ pub const NOT_SHARED: &[(&str, &str)] = &[
     ("skulls.h1", "a level select page with the focused skull's picture"),
     ("skulls.mp", "a level select page with the focused skull's picture"),
     ("forge.properties", "an object's properties on the in-game Controller Settings host"),
+    ("forge.games", "a tick list: several game types are on at once, so no row is a one-of choice"),
     ("forge.settings", "a Forge tool page on the in-game Controller Settings host"),
     ("kit.choices", "the kit's list example on the level select's layout"),
     ("kit.example", "the kit's first example, every row kind on the Controls list"),

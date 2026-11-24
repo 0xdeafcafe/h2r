@@ -103,8 +103,11 @@ fn fades_gain_and_normalise_apply() {
         json!({"package": "mine", "source": SRC, "op": "clear"}),
     );
     assert_eq!(v["count"], 0);
+    // The bare ramp is slow, so the K-weighting's high pass leaves it under
+    // the meter's -70 LUFS gate; lift it first so it reads as a signal.
+    edit(&mut api, &mut app, json!({"op": "gain", "db": 25}));
     let v = edit(&mut api, &mut app, json!({"op": "normalise", "lufs": -30}));
-    assert_eq!(v["edits"][0], json!({"op": "normalise", "lufs": -30.0, "ceiling_dbfs": -1.0}));
+    assert_eq!(v["edits"][1], json!({"op": "normalise", "lufs": -30.0, "ceiling_dbfs": -1.0}));
     let lufs = v["render"]["lufs"].as_f64().unwrap();
     assert!((lufs - -30.0).abs() <= 0.1, "{v}");
 }
