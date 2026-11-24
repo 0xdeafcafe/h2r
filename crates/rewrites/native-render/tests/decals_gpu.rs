@@ -1,10 +1,11 @@
 //! Synthetic only. The coordinator runs this; no retail assets or game.
 #![cfg(feature = "gpu")]
+use d3d::TargetCopy;
 use gfx::state::{ColorWriteMask, DepthBufferMode, RenderState, TextureStageState};
 use native_render::decal::{Mode, Vertex};
 use native_render::decal_gpu::{
-    ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ShaderSnapshot,
-    StageExtras,
+    ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ReferenceCopy,
+    ShaderSnapshot, StageExtras,
 };
 use shaders::psh;
 use shaders::vsh::encode::{program, Inst, Operand as O};
@@ -60,6 +61,7 @@ fn decal(x: f32, rgb: [f32; 3], textured: bool) -> Prepared {
             microcode: program(&insts),
             provided_inputs: 1 | (1 << packed_register),
             vertex,
+            w_buffered: false,
             integer_depth: true,
             tex_scale: None,
         },
@@ -67,6 +69,7 @@ fn decal(x: f32, rgb: [f32; 3], textured: bool) -> Prepared {
             ClipRect { x: 0, y: 0, width: 24, height: SIZE },
             ClipRect { x: 40, y: 0, width: 24, height: SIZE },
         ],
+        reference: None,
     }
 }
 
@@ -114,6 +117,7 @@ fn frame(
     pool: &gfx::ring::UploadPool,
     scene: &[(Prepared, Option<wgpu::TextureView>)],
     packets: bool,
+    copy: TargetCopy,
 ) -> Vec<u8> {
     let (color, depth) = (attachment(ctx, COLOR), attachment(ctx, DEPTH));
     let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
@@ -139,6 +143,7 @@ fn frame(
     if packets {
         let mut draws = Vec::new();
         for (prepared, texture) in scene {
+            let clip = DecalClip { w_buffered: Some(prepared.shader.w_buffered), ..CLIP };
             let target = PacketTarget {
                 color_format: COLOR,
                 depth_format: DEPTH,
@@ -146,9 +151,10 @@ fn frame(
                 size: (SIZE, SIZE),
                 z_scale: 1.,
                 stage0: texture.as_ref(),
+                copy,
             };
             let (packet, discards) = cache
-                .draws(&ctx.device, &ctx.queue, &arena, prepared, CLIP, &target)
+                .draws(&ctx.device, &ctx.queue, &arena, prepared, clip, &target)
                 .unwrap()
                 .expect("something to draw");
             assert!(!discards);
@@ -168,6 +174,7 @@ fn frame(
         ctx.queue.submit(front.into_iter().chain([encoder.finish()]));
     } else {
         for (prepared, texture) in scene {
+            let clip = DecalClip { w_buffered: Some(prepared.shader.w_buffered), ..CLIP };
             let mut gpu = DecalGpu::new(&ctx.device, prepared).unwrap();
             let mut target = DecalTarget {
                 device: &ctx.device,
@@ -182,8 +189,9 @@ fn frame(
                 guest_size: (SIZE, SIZE),
                 size: (SIZE, SIZE),
                 stages: [texture.as_ref(), None, None, None],
+                copy,
             };
-            assert!(gpu.encode(&mut target, CLIP));
+            assert!(gpu.encode(&mut target, clip));
         }
         ctx.queue.submit([encoder.finish()]);
     }
@@ -208,8 +216,8 @@ fn packets_draw_what_the_decal_pass_draws() {
     let mut cache = DecalCache::default();
     let pool = gfx::ring::UploadPool::default();
     let scene = scene(&ctx);
-    let old = frame(&ctx, &mut cache, &pool, &scene, false);
-    let new = frame(&ctx, &mut cache, &pool, &scene, true);
+    let old = frame(&ctx, &mut cache, &pool, &scene, false, TargetCopy::Display);
+    let new = frame(&ctx, &mut cache, &pool, &scene, true, TargetCopy::Display);
     assert_eq!(old, new, "the packets draw the same pixels");
     let px = |x: u32| {
         let i = ((32 * SIZE + x) * 4) as usize;
@@ -218,6 +226,110 @@ fn packets_draw_what_the_decal_pass_draws() {
     assert_eq!(px(10)[0], 255, "red where only the first decal reaches");
     assert_eq!(px(30), [0, 0, 0, 255], "between the clips");
     assert_eq!(px(50), [255, 128, 0, 255], "the textured decal draws its texture");
+}
+
+#[test]
+fn stage_zero_samples_a_live_arbitrary_border_colour() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let mut cache = DecalCache::default();
+    let pool = gfx::ring::UploadPool::default();
+    let mut prepared = decal(4., [1., 1., 1.], true);
+    prepared.shader.stages[0].address_u = gfx::state::TextureAddress::Border;
+    prepared.shader.stages[0].border_color = 0xff20_40c0;
+    prepared.shader.vertex.constants[21][0] = -0.5;
+    let texture = solid_view(&ctx, [255, 128, 0, 255]);
+    let mut scene = [(prepared, Some(texture))];
+    let i = ((32 * SIZE + 10) * 4) as usize;
+    for packets in [false, true] {
+        let pixels = frame(&ctx, &mut cache, &pool, &scene, packets, TargetCopy::Display);
+        assert_eq!(&pixels[i..i + 4], &[32, 64, 192, 255]);
+    }
+    let created = cache.created();
+    scene[0].0.shader.stages[0].border_color = 0xff80_2104;
+    let pixels = frame(&ctx, &mut cache, &pool, &scene, true, TargetCopy::Display);
+    assert_eq!(&pixels[i..i + 4], &[128, 33, 4, 255]);
+    assert_eq!(cache.created(), created, "border colour is a uniform");
+    scene[0].0.shader.vertex.constants[21][0] = 0.5;
+    let pixels = frame(&ctx, &mut cache, &pool, &scene, true, TargetCopy::Display);
+    assert_eq!(&pixels[i..i + 4], &[255, 128, 0, 255]);
+}
+
+#[test]
+fn constant_bias_offsets_w_before_the_depth_test() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let mut cache = DecalCache::default();
+    let pool = gfx::ring::UploadPool::default();
+    let make = |color, w| {
+        let mut prepared = decal(4., color, false);
+        prepared.shader.w_buffered = true;
+        prepared.shader.integer_depth = false;
+        prepared.shader.render.depth_mode = DepthBufferMode::W;
+        prepared.shader.render.depth_func = gfx::state::CompareFunc::Less;
+        prepared.shader.render.depth_write = true;
+        prepared.shader.vertex.constants[21][3] = w;
+        prepared.shader.microcode = program(&[
+            Inst::mac(vsh::MacOp::Mov, Some(O::v(0)), None, None)
+                .to_out(false, vsh::OutReg::Pos, 14),
+            Inst::mac(vsh::MacOp::Mov, Some(O::c(21)), None, None)
+                .to_out(false, vsh::OutReg::Pos, 1),
+            Inst::mac(vsh::MacOp::Mov, Some(O::v(9)), None, None)
+                .to_out(false, vsh::OutReg::D0, 15),
+        ]);
+        prepared
+    };
+    let first = make([1., 0., 0.], 0.6);
+    let mut second = make([0., 1., 0.], 0.8);
+    second.shader.render.depth_bias = -0.4;
+    let mut scene = [(first, None), (second, None)];
+    let i = ((32 * SIZE + 10) * 4) as usize;
+    for (offset, expected) in [(false, [255, 0, 0, 255]), (true, [0, 255, 0, 255])] {
+        scene[1].0.shader.render.solid_offset_enable = offset;
+        for packets in [false, true] {
+            let pixels = frame(&ctx, &mut cache, &pool, &scene, packets, TargetCopy::Display);
+            assert_eq!(&pixels[i..i + 4], &expected);
+        }
+    }
+}
+
+#[test]
+fn reference_and_display_draw_their_own_constants_and_scissors() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let mut cache = DecalCache::default();
+    let pool = gfx::ring::UploadPool::default();
+    let mut prepared = decal(4., [1., 0., 0.], false);
+    prepared.shader.microcode = program(&[
+        Inst::mac(vsh::MacOp::Add, Some(O::v(0)), None, Some(O::c(21)))
+            .to_out(false, vsh::OutReg::Pos, 15),
+        Inst::mac(vsh::MacOp::Mov, Some(O::v(9)), None, None)
+            .to_out(false, vsh::OutReg::D0, 15),
+    ]);
+    prepared.reference = Some(ReferenceCopy {
+        constants: prepared.shader.vertex.constants.into(),
+        clips: prepared.clips.clone(),
+    });
+    prepared.shader.vertex.constants[21][0] = 12.;
+    prepared.shader.vertex.ui_transform[2] = 8.;
+    prepared.clips = vec![
+        ClipRect { x: 8, y: 0, width: 24, height: SIZE },
+        ClipRect { x: 48, y: 0, width: 16, height: SIZE },
+    ];
+    let scene = [(prepared, None)];
+    for packets in [false, true] {
+        let reference = frame(&ctx, &mut cache, &pool, &scene, packets, TargetCopy::Reference);
+        let display = frame(&ctx, &mut cache, &pool, &scene, packets, TargetCopy::Display);
+        let reds = |image: &[u8]| [12, 20, 28, 40, 54].map(|x| image[(32 * SIZE as usize + x) * 4]);
+        assert_eq!(reds(&reference), [255, 255, 0, 255, 0]);
+        assert_eq!(reds(&display), [0, 0, 255, 0, 255]);
+    }
 }
 
 #[test]
@@ -230,11 +342,11 @@ fn a_second_identical_frame_creates_no_programs_pipelines_groups_or_buffers() {
     let pool = gfx::ring::UploadPool::default();
     let scene = scene(&ctx);
     let start = gfx::churn::snapshot();
-    let first = frame(&ctx, &mut cache, &pool, &scene, true);
+    let first = frame(&ctx, &mut cache, &pool, &scene, true, TargetCopy::Display);
     let (created, churn) = (cache.created(), gfx::churn::snapshot());
     let first_spent = churn - start;
     assert!(created.programs == 2 && created.pipelines == 2 && created.texture_groups == 1);
-    let second = frame(&ctx, &mut cache, &pool, &scene, true);
+    let second = frame(&ctx, &mut cache, &pool, &scene, true, TargetCopy::Display);
     assert_eq!(cache.created(), created, "nothing cached is made again");
     let spent = gfx::churn::snapshot() - churn;
     // `frame` reads its colour back, and the readback's staging buffer is
@@ -262,6 +374,7 @@ fn a_draw_clipped_away_entirely_is_left_to_the_isolated_recording() {
         size: (SIZE, SIZE),
         z_scale: 1.,
         stage0: None,
+        copy: TargetCopy::Display,
     };
     assert!(matches!(cache.draws(&ctx.device, &ctx.queue, &arena, &prepared, CLIP, &target), Ok(None)));
     let wrong_mode = DecalClip { w_buffered: Some(true), ..CLIP };
@@ -285,6 +398,7 @@ fn textured_packet(
         size: (SIZE, SIZE),
         z_scale: 1.,
         stage0: Some(view),
+        copy: TargetCopy::Display,
     };
     let prepared = decal(20., [1., 1., 1.], true);
     assert!(matches!(

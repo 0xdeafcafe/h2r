@@ -135,9 +135,9 @@ the device's ordered state at the callback. The native path admits only a
 resolved disabled stencil state; enabled or unreadable stencil stays
 on D3D.
 
-The observers scope the current mode and outer-list entry. With the walk
-disabled, the replacement point is the ordered
-`d3d::DrawAdmission` at each resolved `D3DDevice_DrawVertices`. That snapshot
+The observers scope the current mode and outer-list entry. The replacement
+point is the ordered `d3d::DrawAdmission` at each resolved
+`D3DDevice_DrawVertices`. That snapshot
 contains the exact declaration, streams, shader inputs, state, textures,
 viewport and scissors. The guest callback still binds textures, writes every
 duplicate marker and runs the wrapper's final solid-offset reset.
@@ -146,21 +146,28 @@ duplicate marker and runs the wrapper's final solid-offset reset.
 
 The implementation is split into `native-render/src/decal.rs` (shared mode, vertex
 and quad rules), `native-render/src/decal_gpu.rs` (translation and encoding),
-`feature/src/native_decals.rs` (callback scope and tallies), and
-`boot/src/native_decals_glue.rs` (resolved-draw admission).
+`render-bridge/src/native_decals.rs` (callback scope and tallies), and
+`game/src/native_decals_glue.rs` (resolved-draw admission).
 
 All seven mode positions and their depth, bias and blend configurations are
 implemented. The actual vertex program, all 192 vertex constants and all 16
 attribute defaults, and the live 60-word combiner (including `PSTEXTUREMODES`
 and the final-combiner latch) come from the resolved draw and are translated
 with the shared NV2A compiler. Records and quad lists retain their order.
-Each target copy gets its own immutable uniforms.
+The reference copy uses the original constants and guest scissors. The
+display copy uses the display lens or UI fit and its matching scissors.
+Both copies use immutable uniforms.
 
-Admission requires resolved disabled stencil, the mode's exact
-depth/bias/blend/colour state, and an explicit final combiner that does not
-consume fog, the eye or a bump environment. Border samplers, two-sided
-lighting, polygon stipple, non-zero `ZBIAS`, additional supplied vertex inputs,
-and non-2D or depth-format stage-0 textures are refused. Only unsupplied `v10`
+Admission requires disabled stencil, supported fill, blend and colour
+state, and an explicit final combiner without fog, eye or bump inputs.
+The NV2A's resolved z-perspective state selects W clipping. When the draw
+uses W depth, the fragment shader applies the live constant and slope
+offsets before storing or comparing W. The stage-0 sampler uses hardware
+border addressing for supported preset colours and the shared NV2A shader
+border path for other colours or devices. As in D3D, shader borders
+approximate linear filtering at the boundary.
+Two-sided lighting, polygon stipple, additional supplied vertex inputs
+and non-2D or depth-format stage-0 textures stay on D3D. Only unsupplied `v10`
 and `v11` defaults are accepted beyond the position and packed fields. Declaration refusals include the resolved layouts and bound strides.
 
 The handoff supplies the resident stage views directly; there is no custom
@@ -171,15 +178,18 @@ sealed, so a late refusal cannot leave the decal undrawn. The wgpu viewport is
 target-wide, as in D3D; the resolved clip and disjoint scissor rectangles do
 the clipping at each copy's scale.
 
-### Per-record scene walk
+### Per-record submission
 
-After duplicate marking and bitmap and default-register setup, the hook
-at `0x00044161` reads the record's live allocation and quad count. It
-resolves the same array and native material and reserves that record on
-all copies. Success resumes at `0x00044195`, immediately after the guest's
-array-draw entry. Refusal runs the original submission for that record.
-The callback owns the traversal and changes to the next texture in both
-cases. It clears its admission scope at `0x000441aa`.
+The callback issues one array draw after duplicate marking and bitmap
+and default-register setup. The ordered admission resolves that draw
+once. If the native packet cannot be recorded on every participating copy,
+the backend uses the resolved D3D packet. The callback continues at the
+ordinary draw return `0x00044195` and clears its admission scope at
+`0x000441aa`.
+
+The guest owns decal allocation and retirement. The log reports draws
+between completed presents alongside live decal pool occupancy and
+separately labelled process totals.
 
 ## Not verified
 

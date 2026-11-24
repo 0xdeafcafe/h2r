@@ -1608,7 +1608,7 @@ pub fn sharp_shadow_stages(shadow: &[Option<Shadow>; 4]) -> u8 {
 /// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage
 /// reads signed channels, uses a non-preset colour, or the host cannot
 /// clamp to border. The shader path approximates linear filtering at edges.
-fn shader_border(s: &TextureStageState, sign: u8, clamp_to_border: bool) -> u8 {
+pub fn shader_border(s: &TextureStageState, sign: u8, clamp_to_border: bool) -> u8 {
     if sign == 0 && clamp_to_border && matches!(s.border_color, 0 | 0xff00_0000 | 0xffff_ffff) {
         return 0;
     }
@@ -1936,6 +1936,28 @@ fn module(device: &wgpu::Device, source: String) -> wgpu::ShaderModule {
         label: Some("nv2a program"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     })
+}
+
+/// Sampler paired with the border-axis mask from [`shader_border`].
+pub fn sampler_key(
+    stage: &TextureStageState,
+    caps: gfx::translate::Capabilities,
+    shader_border: u8,
+) -> SamplerKey {
+    let mut key = SamplerKey::from_stage(stage, caps);
+    if shader_border != 0 {
+        // The shader supplies the border; the sampler clamps.
+        for (axis, mode) in [&mut key.address_u, &mut key.address_v, &mut key.address_w]
+            .into_iter()
+            .enumerate()
+        {
+            if shader_border >> axis & 1 != 0 {
+                *mode = wgpu::AddressMode::ClampToEdge;
+            }
+        }
+        key.border = None;
+    }
+    key
 }
 
 /// A translated program, before it has a module.

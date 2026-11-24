@@ -115,22 +115,7 @@ pub fn resolve(
             pu.tex_scale[n] = [1.0 / w, 1.0 / h, 1.0, 1.0];
         }
     }
-    let samplers: [SamplerKey; 4] = std::array::from_fn(|n| {
-        let mut k = SamplerKey::from_stage(&draw.state.stages[n], caps);
-        if border[n] != 0 {
-            // The shader supplies the border; the sampler clamps.
-            for (axis, mode) in [&mut k.address_u, &mut k.address_v, &mut k.address_w]
-                .into_iter()
-                .enumerate()
-            {
-                if border[n] >> axis & 1 != 0 {
-                    *mode = wgpu::AddressMode::ClampToEdge;
-                }
-            }
-            k.border = None;
-        }
-        k
-    });
+    let samplers = draw::samplers(draw, border, caps);
     Ok(ResolvedProgram {
         words,
         pixel: def,
