@@ -13,12 +13,15 @@ use frame_scene::{
 use gfx::state::{
     BlendFactor, CompareFunc, CullMode, DepthBufferMode, FillMode, TextureAddress, TextureFilter,
 };
-use native_render::overlay::{NoGlyphs, OverlayAssets, OverlayPlan};
+use hud_edit::render::Art;
+use map::TagId;
+use native_render::overlay::{NoGlyphs, OverlayAssets, OverlayImage, OverlayPlan};
 use native_render::ui_gpu::{OverlayGpu, OverlayResidency, OverlayTextures};
 use render_bridge::native_hud::{HudTagQuad, HudVertices};
 use timeline::native::Stage;
 
 use crate::native_lights_glue::DeviceMemory;
+use crate::native_map::NativeMap;
 
 pub fn draw_tag_quad<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
@@ -398,11 +401,20 @@ impl ExternalPass for WidgetPass {
     }
 }
 
-/// The map whose overlay assets are held, and the assets: one generation a
-/// map, so the resident textures are not replaced between passes.
+/// A map read for the menus' bitmap images: the map and its decoded
+/// bitmaps.
+struct MenuArt {
+    map: NativeMap,
+    art: Art,
+}
+
+/// The map whose overlay assets are held, the assets (one generation a
+/// map, so the resident textures are not replaced between passes), and the
+/// map read for the menus' images once it has loaded.
 #[derive(Default)]
 struct Slot {
     map: Option<(String, u64)>,
+    art: Option<Arc<Mutex<MenuArt>>>,
     assets: Arc<Mutex<OverlayAssets>>,
 }
 
@@ -411,14 +423,58 @@ static SLOT: LazyLock<Mutex<Slot>> = LazyLock::new(Mutex::default);
 /// The map's overlay assets, shared by the menus' passes; `None` with no
 /// map loaded.
 pub fn assets(mem: &dyn GuestMemory) -> Option<Arc<Mutex<OverlayAssets>>> {
+    slot(mem).map(|(_, assets)| assets)
+}
+
+/// The slot for the loaded map: its read for the menus' images, once
+/// loaded, and its overlay assets; starts the read at the first ask on a
+/// map; `None` with no map loaded.
+fn slot(mem: &dyn GuestMemory) -> Option<(Option<Arc<Mutex<MenuArt>>>, Arc<Mutex<OverlayAssets>>)> {
     let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty())?;
     let generation = render_bridge::native_map_work::generation();
     let mut slot = SLOT.lock().unwrap_or_else(|e| e.into_inner());
     if slot.map.as_ref().is_none_or(|(n, g)| *n != name || *g != generation) {
-        slot.map = Some((name, generation));
+        slot.map = Some((name.clone(), generation));
+        slot.art = None;
         slot.assets = Arc::new(Mutex::new(OverlayAssets { generation, ..OverlayAssets::default() }));
+        spawn_load(name, generation);
     }
-    Some(slot.assets.clone())
+    Some((slot.art.clone(), slot.assets.clone()))
+}
+
+/// Reads map `name` off the game thread for the menus' images.
+fn spawn_load(name: String, generation: u64) {
+    let spawned = std::thread::Builder::new().name("menu overlay load".into()).spawn(move || {
+        let art = match crate::native_map::open(&name) {
+            Ok((map, files)) => MenuArt { map, art: Art::new(files) },
+            Err(e) => {
+                eprintln!("menu overlay: {name}: the map did not open ({e}); the game draws its bitmaps");
+                return;
+            }
+        };
+        let mut slot = SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.map.as_ref().is_some_and(|(n, g)| *n == name && *g == generation) {
+            slot.art = Some(Arc::new(Mutex::new(art)));
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("menu overlay: {e}: the map did not open; the game draws its bitmaps");
+    }
+}
+
+/// Decodes the images `part`'s quads name into `assets`: whether each did.
+fn decode_images(a: &mut MenuArt, part: &Overlay, assets: &mut OverlayAssets) -> bool {
+    for item in &part.items {
+        let OverlayTexture::Bitmap { tag, image } = item.material.texture else { continue };
+        if assets.images.contains_key(&(tag, image)) {
+            continue;
+        }
+        let Ok((width, height, rgba)) = a.art.image(&mut a.map, TagId(tag), usize::from(image)) else {
+            return false;
+        };
+        assets.images.insert((tag, image), OverlayImage { width, height, rgba: rgba.into() });
+    }
+    true
 }
 
 /// Places a pass drawing `overlay` from `assets` at this point in the
@@ -440,13 +496,23 @@ pub fn place<B: d3d::Backend + Send + 'static>(
 
 /// A run of menu widgets (`render_bridge::native_hud::ui_overlay`), drawn
 /// from the overlay at this point in the frame with the map's assets:
-/// whether it was placed.
+/// whether it was placed. The bitmap images its quads name are decoded
+/// first, from the map read for the menus; while that loads, or when an
+/// image does not decode, the run is not placed and the game draws it.
 pub fn place_menu<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     part: &Overlay,
 ) -> bool {
-    let Some(assets) = assets(mem) else { return false };
+    let Some((art, assets)) = slot(mem) else { return false };
+    let bitmaps = part.items.iter().any(|i| matches!(i.material.texture, OverlayTexture::Bitmap { .. }));
+    if bitmaps {
+        let Some(art) = art else { return false };
+        let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
+        if !decode_images(&mut a, part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
+            return false;
+        }
+    }
     place(device, mem, Arc::new(part.clone()), assets)
 }
 

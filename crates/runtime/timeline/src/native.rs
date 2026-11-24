@@ -586,7 +586,9 @@ const UI_COLUMNS: [&str; Ui::OverlayMenuRefusedPass as usize + 1] = [
     "overlay_menu_mismatch",
     "overlay_menu_refused_frame",
     "overlay_menu_refused_mismatched",
-    "overlay_menu_refused_bitmap",
+    "overlay_menu_refused_bitmap_meter",
+    "overlay_menu_refused_bitmap_scroll",
+    "overlay_menu_refused_bitmap_state",
     "overlay_menu_refused_shader",
     "overlay_menu_refused_text",
     "overlay_menu_refused_model",
@@ -709,10 +711,16 @@ pub enum Ui {
     /// full screen; a screen that mismatched before.
     OverlayMenuRefusedFrame,
     OverlayMenuRefusedMismatched,
-    /// Drawn widgets the game keeps, by the draw not read yet: a bitmap,
-    /// a shader bitmap, text, a model scene, another draw (a list's, a
-    /// button's); one that did not read; one the overlay refused.
-    OverlayMenuRefusedBitmap,
+    /// Drawn bitmap widgets the game keeps: a meter; a scrolling bitmap;
+    /// one whose state the overlay does not draw as the game does (the
+    /// debug labels on, an image set from elsewhere, a texture not
+    /// resident, a tint constant not white).
+    OverlayMenuRefusedBitmapMeter,
+    OverlayMenuRefusedBitmapScroll,
+    OverlayMenuRefusedBitmapState,
+    /// Drawn widgets the game keeps, by the draw not read yet: a shader
+    /// bitmap, text, a model scene, another draw (a list's, a button's);
+    /// one that did not read; one the overlay refused.
     OverlayMenuRefusedShader,
     OverlayMenuRefusedText,
     OverlayMenuRefusedModel,
