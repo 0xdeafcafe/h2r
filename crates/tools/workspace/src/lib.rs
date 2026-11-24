@@ -39,6 +39,9 @@
 //! - [`convert`]: `convert` items run with the converters the caller
 //!   has (the Halo 1 import, the Map Pack install), each map stamped under
 //!   `<data>/packages/stamps/` ([`convert`](mod@crate::convert) module docs).
+//! - [`converted`]: a converter's output map kept in the tag store as a level
+//!   of its own (`converted::store_converted`; docs/engine/asset-store.md,
+//!   slice AS10).
 //! - [`build_map`]: [`build`] on a map file's bytes, laid out again.
 //! - [`GameSet`]: the game's packages, baked then `<data>/packages/`, under
 //!   `set.toml` and the game's features; [`PackageRewrite`] serves each map
@@ -56,6 +59,7 @@ mod bitmap;
 mod build;
 mod builders;
 mod convert;
+pub mod converted;
 pub mod delta;
 mod edit;
 mod firefight_sets;
@@ -80,6 +84,8 @@ mod unpin;
 
 #[cfg(test)]
 mod convert_tests;
+#[cfg(test)]
+mod converted_tests;
 #[cfg(test)]
 mod import_tests;
 #[cfg(test)]

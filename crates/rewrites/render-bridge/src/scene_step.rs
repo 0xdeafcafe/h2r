@@ -113,6 +113,8 @@ struct Step {
     /// The object shadow drawing is the open view's last: its groups may
     /// follow.
     shadow_open: bool,
+    /// The structure's portal graph for the Rust visibility, decoded once.
+    visibility: scene_extract::visibility::GraphCache,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -155,6 +157,72 @@ static POST_EFFECTS: AtomicU64 = AtomicU64::new(0);
 /// Post callees' calls with no `render_screen_effects` of their view in
 /// the scene.
 static POST_UNPLACED: AtomicU64 = AtomicU64::new(0);
+/// The Rust visibility beside the guest's (docs/graphics/native-visibility.md):
+/// game views compared, equal, differing (and by what), declined by
+/// reason, taken, and the time spent.
+static VISIBILITY_CHECKED: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_EQUAL: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_DIFFER: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_CLUSTERS_DIFFER: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_OBJECTS_DIFFER: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_TAKEN: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_NS: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_DECLINED: [AtomicU64; scene_extract::visibility::Decline::ALL.len()] =
+    [const { AtomicU64::new(0) }; scene_extract::visibility::Decline::ALL.len()];
+/// `render.scene`'s counter of each decline, in `Decline::ALL`'s order.
+const VISIBILITY_DECLINED_NAMES: [&str; scene_extract::visibility::Decline::ALL.len()] = [
+    "scene_visibility_declined_unread",
+    "scene_visibility_declined_layout",
+    "scene_visibility_declined_mode",
+    "scene_visibility_declined_frusta",
+    "scene_visibility_declined_overflow",
+    "scene_visibility_declined_camera",
+    "scene_visibility_declined_not_main",
+];
+/// The first view since the map loaded whose Rust sets differed from the
+/// guest's, and how.
+static VISIBILITY_FIRST_MISMATCH: Mutex<Option<String>> = Mutex::new(None);
+/// The main view's records built in Rust beside the guest's
+/// (`visibility::view`): views compared, equal, differing, declined by
+/// reason, and the first difference since the map loaded.
+static VIEW_RECORD_CHECKED: AtomicU64 = AtomicU64::new(0);
+static VIEW_RECORD_EQUAL: AtomicU64 = AtomicU64::new(0);
+static VIEW_RECORD_DIFFER: AtomicU64 = AtomicU64::new(0);
+static VIEW_RECORD_DECLINED: [AtomicU64; scene_extract::visibility::view::Decline::ALL.len()] =
+    [const { AtomicU64::new(0) }; scene_extract::visibility::view::Decline::ALL.len()];
+/// `render.scene`'s counter of each view record decline, in
+/// `view::Decline::ALL`'s order.
+const VIEW_RECORD_DECLINED_NAMES: [&str; scene_extract::visibility::view::Decline::ALL.len()] = [
+    "scene_view_record_declined_unread",
+    "scene_view_record_declined_layout",
+    "scene_view_record_declined_cinematic",
+    "scene_view_record_declined_no_observer",
+    "scene_view_record_declined_override",
+];
+static VIEW_RECORD_FIRST_MISMATCH: Mutex<Option<String>> = Mutex::new(None);
+/// The light views' Rust visibility beside the guest's
+/// (`visibility::light`): lights compared at their passes' entry, equal,
+/// differing, declined by reason, and the time spent. A differential only.
+static LIGHT_VISIBILITY_CHECKED: AtomicU64 = AtomicU64::new(0);
+static LIGHT_VISIBILITY_EQUAL: AtomicU64 = AtomicU64::new(0);
+static LIGHT_VISIBILITY_DIFFER: AtomicU64 = AtomicU64::new(0);
+static LIGHT_VISIBILITY_NS: AtomicU64 = AtomicU64::new(0);
+static LIGHT_VISIBILITY_DECLINED: [AtomicU64; scene_extract::visibility::Decline::ALL.len()] =
+    [const { AtomicU64::new(0) }; scene_extract::visibility::Decline::ALL.len()];
+/// `render.scene`'s counter of each light view decline, in
+/// `Decline::ALL`'s order.
+const LIGHT_VISIBILITY_DECLINED_NAMES: [&str; scene_extract::visibility::Decline::ALL.len()] = [
+    "scene_light_visibility_declined_unread",
+    "scene_light_visibility_declined_layout",
+    "scene_light_visibility_declined_mode",
+    "scene_light_visibility_declined_frusta",
+    "scene_light_visibility_declined_overflow",
+    "scene_light_visibility_declined_camera",
+    "scene_light_visibility_declined_not_main",
+];
+/// The first light since the map loaded whose Rust sets differed from its
+/// guest lists, and how.
+static LIGHT_VISIBILITY_FIRST_MISMATCH: Mutex<Option<String>> = Mutex::new(None);
 static LIGHT_ENTRY_REMAINDER: [AtomicU64; Cause::ALL.len()] =
     [const { AtomicU64::new(0) }; Cause::ALL.len()];
 /// `render.scene`'s counter of each [`Cause`], in [`Cause::ALL`]'s order.
@@ -288,6 +356,8 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                 .and_then(|()| step.builder.set_world(extract::world(&m)))
                 .and_then(|()| {
                     if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
+                        let lens = view_record_arm(&m, &camera, key);
+                        let gather = visibility_arm(&m, &lens, key, &mut step.visibility, gather);
                         step.builder.set_cluster_gather(gather)?;
                     }
                     Ok(())
@@ -393,6 +463,7 @@ fn decorators(mem: &dyn GuestMemory) {
 /// A light of the open view at its passes' entry, with its steps.
 /// Opens the view first when none is.
 pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
+    light_visibility_arm(mem, light.handle);
     if view(mem).is_none() {
         return;
     }
@@ -1042,11 +1113,209 @@ pub fn forget() {
     with_step(|step| {
         step.presentation = None;
         PRESENT_READY.store(false, Ordering::Release);
+        step.visibility.forget();
     });
+    *VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *LIGHT_VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *VIEW_RECORD_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     crate::entry_census::forget();
     crate::residual_census::forget();
     crate::carried_slots::forget();
     crate::native_hud::ui_overlay::forget();
+}
+
+/// The Rust visibility beside the guest's for one game view
+/// (docs/graphics/native-visibility.md): computed, compared as sets with
+/// the guest's `gather`, counted, and returned in place of the guest's
+/// lists only when equal. A decline or a difference keeps the guest's.
+fn visibility_arm(
+    m: &Ro<'_>,
+    camera: &Camera,
+    key: ViewKey,
+    cache: &mut scene_extract::visibility::GraphCache,
+    gather: frame_scene::scene::ClusterGather,
+) -> frame_scene::scene::ClusterGather {
+    use scene_extract::visibility::{self, Decline};
+    let start = Instant::now();
+    let rust = visibility::compute(m, camera, cache, crate::native_map_work::generation());
+    VISIBILITY_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    let rust = match rust {
+        Ok(rust) => rust,
+        Err(why) => {
+            let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
+            VISIBILITY_DECLINED[i].fetch_add(1, Ordering::Relaxed);
+            return gather;
+        }
+    };
+    VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let (gather, parity) = visibility::arm(gather, rust);
+    if let Some(first) = parity.first {
+        VISIBILITY_DIFFER.fetch_add(1, Ordering::Relaxed);
+        if parity.clusters_guest_only + parity.clusters_rust_only != 0 {
+            VISIBILITY_CLUSTERS_DIFFER.fetch_add(1, Ordering::Relaxed);
+        }
+        if parity.objects_guest_only + parity.objects_rust_only != 0 {
+            VISIBILITY_OBJECTS_DIFFER.fetch_add(1, Ordering::Relaxed);
+        }
+        let mut slot = VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner());
+        slot.get_or_insert_with(|| {
+            format!(
+                "{key} frame {} tick {}: {first} ({} clusters and {} objects guest only, {} and {} rust only)",
+                m.read_u32(FRAME).unwrap_or(0),
+                tick(m),
+                parity.clusters_guest_only,
+                parity.objects_guest_only,
+                parity.clusters_rust_only,
+                parity.objects_rust_only,
+            )
+        });
+        return gather;
+    }
+    VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
+    if gather.source == frame_scene::VisibilitySource::Rust {
+        VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
+    }
+    gather
+}
+
+/// The main view's records in Rust beside the guest's
+/// (docs/graphics/native-visibility.md, "The view records"): built from
+/// the observer camera, compared field by field with the render camera
+/// `camera`, the start cluster and the mode, and counted. The visibility
+/// takes the Rust camera only when the whole record is equal; otherwise,
+/// and on a decline, the guest's.
+fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey) -> Camera {
+    use scene_extract::visibility::view::{self, Decline};
+    let (rust, guest) = match view::build(m, camera) {
+        Ok(pair) => pair,
+        Err(why) => {
+            let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
+            VIEW_RECORD_DECLINED[i].fetch_add(1, Ordering::Relaxed);
+            return *camera;
+        }
+    };
+    VIEW_RECORD_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let (lens, parity) = view::arm(&rust, &guest);
+    match parity.first {
+        None => {
+            VIEW_RECORD_EQUAL.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(first) => {
+            VIEW_RECORD_DIFFER.fetch_add(1, Ordering::Relaxed);
+            let mut slot = VIEW_RECORD_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner());
+            slot.get_or_insert_with(|| {
+                format!(
+                    "{key} frame {} tick {}: {first} ({} fields differ)",
+                    m.read_u32(FRAME).unwrap_or(0),
+                    tick(m),
+                    parity.differ,
+                )
+            });
+        }
+    }
+    lens
+}
+
+/// The first view since the map loaded whose Rust records differed from
+/// the guest's (`render.scene`'s `view_record_first_mismatch`).
+pub fn view_record_first_mismatch() -> Option<String> {
+    VIEW_RECORD_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The first view since the map loaded whose Rust visibility differed
+/// from the guest's (`render.scene`'s `visibility_first_mismatch`).
+pub fn visibility_first_mismatch() -> Option<String> {
+    VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The Rust visibility of the light `light` (its datum) beside its guest
+/// lists (docs/graphics/native-visibility.md): at its passes' entry the
+/// light's struct `0x0054aa68` holds what its gather `0x001320f0` listed,
+/// after the extra caster and before the next light's gather. Computed,
+/// compared as sets and counted; nothing goes into the scene.
+fn light_visibility_arm(mem: &dyn GuestMemory, light: u32) {
+    use scene_extract::visibility::{Decline, light as light_visibility};
+    if light == frame_scene::NO_DATUM {
+        return;
+    }
+    let m = Ro(mem);
+    let start = Instant::now();
+    let parity = with_step(|step| {
+        light_visibility::light_arm(
+            &m,
+            &mut step.visibility,
+            crate::native_map_work::generation(),
+            light,
+        )
+    });
+    LIGHT_VISIBILITY_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    let parity = match parity {
+        Ok(parity) => parity,
+        Err(why) => {
+            let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
+            LIGHT_VISIBILITY_DECLINED[i].fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+    LIGHT_VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
+    let Some(first) = parity.first else {
+        LIGHT_VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    LIGHT_VISIBILITY_DIFFER.fetch_add(1, Ordering::Relaxed);
+    let mut slot = LIGHT_VISIBILITY_FIRST_MISMATCH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    slot.get_or_insert_with(|| {
+        format!(
+            "light {light:#010x} frame {} tick {}: {first} ({} clusters and {} objects guest only, {} and {} rust only)",
+            m.read_u32(FRAME).unwrap_or(0),
+            tick(&m),
+            parity.clusters_guest_only,
+            parity.objects_guest_only,
+            parity.clusters_rust_only,
+            parity.objects_rust_only,
+        )
+    });
+}
+
+/// The first light since the map loaded whose Rust visibility differed
+/// from its guest lists.
+pub fn light_visibility_first_mismatch() -> Option<String> {
+    LIGHT_VISIBILITY_FIRST_MISMATCH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// The light views' counters, for `render.scene`.
+fn light_visibility_counters() -> impl Iterator<Item = (&'static str, u64)> {
+    [
+        (
+            "scene_light_visibility_checked",
+            LIGHT_VISIBILITY_CHECKED.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_light_visibility_equal",
+            LIGHT_VISIBILITY_EQUAL.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_light_visibility_differ",
+            LIGHT_VISIBILITY_DIFFER.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_light_visibility_ns",
+            LIGHT_VISIBILITY_NS.load(Ordering::Relaxed),
+        ),
+    ]
+    .into_iter()
+    .chain(
+        LIGHT_VISIBILITY_DECLINED_NAMES.into_iter().zip(
+            LIGHT_VISIBILITY_DECLINED
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed)),
+        ),
+    )
 }
 
 /// The scene sealed last.
@@ -1220,8 +1489,40 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_post_colour", POST_COLOUR.load(Ordering::Relaxed)),
         ("scene_post_effects", POST_EFFECTS.load(Ordering::Relaxed)),
         ("scene_post_unplaced", POST_UNPLACED.load(Ordering::Relaxed)),
+        ("scene_visibility_checked", VISIBILITY_CHECKED.load(Ordering::Relaxed)),
+        ("scene_visibility_equal", VISIBILITY_EQUAL.load(Ordering::Relaxed)),
+        ("scene_visibility_differ", VISIBILITY_DIFFER.load(Ordering::Relaxed)),
+        (
+            "scene_visibility_clusters_differ",
+            VISIBILITY_CLUSTERS_DIFFER.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_visibility_objects_differ",
+            VISIBILITY_OBJECTS_DIFFER.load(Ordering::Relaxed),
+        ),
+        ("scene_visibility_rust_taken", VISIBILITY_TAKEN.load(Ordering::Relaxed)),
+        ("scene_visibility_ns", VISIBILITY_NS.load(Ordering::Relaxed)),
     ]
     .into_iter()
+    .chain(
+        VISIBILITY_DECLINED_NAMES
+            .into_iter()
+            .zip(VISIBILITY_DECLINED.iter().map(|c| c.load(Ordering::Relaxed))),
+    )
+    .chain(light_visibility_counters())
+    .chain(
+        [
+            ("scene_view_record_checked", VIEW_RECORD_CHECKED.load(Ordering::Relaxed)),
+            ("scene_view_record_equal", VIEW_RECORD_EQUAL.load(Ordering::Relaxed)),
+            ("scene_view_record_differ", VIEW_RECORD_DIFFER.load(Ordering::Relaxed)),
+        ]
+        .into_iter()
+        .chain(
+            VIEW_RECORD_DECLINED_NAMES
+                .into_iter()
+                .zip(VIEW_RECORD_DECLINED.iter().map(|c| c.load(Ordering::Relaxed))),
+        ),
+    )
     .chain(crate::native_decorators::counters())
     .chain(crate::native_shadows::alone_counters())
     .chain(crate::native_shadows::filter_counters())

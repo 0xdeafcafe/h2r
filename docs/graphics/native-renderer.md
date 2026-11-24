@@ -259,8 +259,10 @@ the original entry with the incoming registers and memory. New resource
 I/O, synchronous waits, request reprioritization, resource relocation,
 live light-probe work, animated pose evaluation, and auxiliary model
 materials use that path. Portal traversal and dynamic light frustum
-setup (`0x000c1d90`) supply the inputs to the Rust gathers. Effect
-producers decide when effects are ready to queue.
+setup (`0x000c1d90`) supply the inputs to the Rust gathers. The main
+view's traversal and object set also run in Rust beside the guest's and
+are compared with them ([native-visibility.md](native-visibility.md)).
+Effect producers decide when effects are ready to queue.
 
 Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and
 the associated `_memory`, `_layout` or `_unsupported` reason. Object
@@ -393,8 +395,13 @@ grid used for object culling.
 
 With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The original GPU query supplies visibility feedback.
 
-**Residual geometry.** The sky model's indexed strip (`0x0004c976`) and
-standard layer-2 geometry at the main-scene and alternate-scene layer sites
+**Residual geometry.** Layer 2's items at the main scene's call
+(`0x0002c05b`) and the first person's (`0x00040284`) draw from the scene's
+plan as layers 1, 5, 7, 8 and 20 do (`frame-scene.layers`,
+`layer_pass::OVERLAY_LAYER`; [framescene.md](framescene.md), slice 4); its
+outcomes are `layer_plan_2_*` and `layer_plan_fp2_*` in `render.scene`.
+The sky model's indexed strip (`0x0004c976`) and the standard layer-2
+geometry the plan leaves at the main-scene and alternate-scene layer sites
 are admitted. Guest order, transforms, shader inputs and stencil setup stay.
 The pass records the full range on both live target copies before the device
 drops the D3D draw. Other layer-2 handlers and unknown callers stay on D3D.

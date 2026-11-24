@@ -12,7 +12,10 @@
 //! cold and warm, and compares the older per-function port where present.
 //! G and H compare like C and D, with their own dead stack; their third arm
 //! runs the lifted entry with one `sim_physics` port in place (the portal
-//! test under G, the visit itself for H).
+//! test under G, the visit itself for H). I (`mopp_ray`) runs the guest
+//! with the parity arm's observers and invented callbacks; the arm must
+//! match or say why it could not, and the collection must get the keys
+//! the native walk gives.
 #![cfg(feature = "differential")]
 
 mod common;
@@ -20,6 +23,8 @@ mod common;
 mod disc;
 #[path = "sim_collision_differential/mopp_box.rs"]
 mod mopp_box;
+#[path = "sim_collision_differential/mopp_ray.rs"]
+mod mopp_ray;
 
 use engine::sim_collision::{self as adapter, CollisionWorld, layout};
 use engine::{points, sim_native as sim};

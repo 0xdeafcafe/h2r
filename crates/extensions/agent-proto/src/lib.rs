@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod anim;
 pub mod audio;
 mod client;
 pub mod discover;

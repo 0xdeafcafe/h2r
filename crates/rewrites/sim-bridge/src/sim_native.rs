@@ -210,8 +210,9 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 
 /// Animation sampling and pose (docs/engine/sim-rewrite.md). The group
 /// owns the channel manager, graph resolve, stream, marker, unit pose, unit
-/// aim and first-person filter entries, and enables the first-person
-/// palette and filter kernels.
+/// aim and first-person filter entries, enables the first-person palette
+/// and filter kernels, and checks the graph walk `1dd1c0` against the
+/// guest at every call.
 pub const ANIM: &str = "sim.native.anim";
 
 pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
@@ -337,6 +338,26 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
             original(cpu, ctx, addr)
         })
         .context_only();
+    // The graph walk `1dd1c0` runs as its arm: the guest answers, and the
+    // Rust plan made at the entry is compared with what the guest left
+    // (docs/engine/skeleton-walk.md, "The graph walk `1dd1c0`").
+    let walk = &points::ANIM_GRAPH_MATRICES;
+    b.raw()
+        .before(walk, "plan the graph walk", |c| {
+            let thread = c.ctx.thread_id;
+            let mem = c.ctx.memory();
+            engine::sim_anim::graph_walk::arm_before(thread, c.cpu, &*mem);
+            Ok(hooks::Flow::Continue)
+        })
+        .optional();
+    b.raw()
+        .after(walk, "compare the graph walk with the guest", |c| {
+            let thread = c.ctx.thread_id;
+            let mem = c.ctx.memory();
+            engine::sim_anim::graph_walk::arm_after(thread, c.cpu, &*mem);
+            Ok(())
+        })
+        .optional();
     for (point, label) in ANIM_INVALIDATE {
         b.raw()
             .observe_before(point, label, |_| engine::sim_anim::invalidate());
@@ -347,7 +368,8 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
 /// simulation rewrite (docs/engine/collision-queries.md). It takes over
 /// point to leaf, the structure location and the MOPP box query. Vector
 /// and instance traces execute their original bodies while we measure
-/// their float environments.
+/// their float environments. The general MOPP ray runs its original too,
+/// with the native walk compared against it (`collision.stats` `ray`).
 pub const COLLISION: &str = "sim.native.collision";
 
 fn collision_on(switches: &hooks::Switches) -> bool {
@@ -381,13 +403,22 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 3] = [
 /// These entries have a contract and a precision census. The vector kernels
 /// still need transitive register liveness or exact scratch replay; the
 /// flood and the visit need their call-site scans. The flood's census also
-/// counts its own recursive entries.
-const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 5] = [
+/// counts its own recursive entries. The general MOPP ray's observer also
+/// opens its parity check.
+const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 6] = [
     (&points::COLLISION_VECTOR_TEST, Entry::VectorTest, "collision-vector-fp"),
     (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext, "collision-walk-fp"),
     (&points::COLLISION_INSTANCE_TRACE, Entry::InstanceTrace, "collision-instance-fp"),
     (&points::COLLISION_CLUSTER_FLOOD, Entry::ClusterFlood, "collision-flood-fp"),
     (&points::OBJECT_SPATIAL_VISIT, Entry::ObjectVisit, "collision-visit-fp"),
+    (&points::COLLISION_MOPP_RAY, Entry::MoppRay, "collision-ray-fp"),
+];
+
+/// The rest of the general MOPP ray's parity arm: each interpreter call,
+/// each key the instanced collection accepts, and the setup's return.
+const RAY_PARITY: [(&points::Point, &str); 2] = [
+    (&points::SIM_MOPP_RAY, "collision-ray-enter"),
+    (&points::COLLISION_INSTANCE_CHILD, "collision-ray-key"),
 ];
 
 /// Points after which the collision BSPs in guest memory may differ from
@@ -426,7 +457,35 @@ fn install_collision(b: &mut Builder) {
         b.raw()
             .observe_before(point, label, move |o| {
                 if o.addr == point.base {
-                    engine::sim_collision::WORLD.observe_environment(entry, o.cpu.mxcsr, o.cpu.x87.control);
+                    let world = &engine::sim_collision::WORLD;
+                    world.observe_environment(entry, o.cpu.mxcsr, o.cpu.x87.control);
+                    if entry == Entry::MoppRay {
+                        engine::sim_collision::mopp_ray::begin(o.cpu, &mut *o.guest(), world);
+                    }
+                }
+            })
+            .optional();
+    }
+    let ray = &points::COLLISION_MOPP_RAY;
+    b.raw()
+        .observe_after(ray, "collision-ray-end", move |o| {
+            if o.addr == ray.base {
+                let world = &engine::sim_collision::WORLD;
+                engine::sim_collision::mopp_ray::end(&*o.guest(), world);
+            }
+        })
+        .optional();
+    for (point, label) in RAY_PARITY {
+        b.raw()
+            .observe_before(point, label, move |o| {
+                if o.addr != point.base {
+                    return;
+                }
+                let g = o.guest();
+                if point.base == points::SIM_MOPP_RAY.base {
+                    engine::sim_collision::mopp_ray::enter(o.cpu, &*g);
+                } else {
+                    engine::sim_collision::mopp_ray::key(o.cpu, &*g);
                 }
             })
             .optional();
@@ -484,7 +543,12 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        assert_eq!(plan.chains.len(), 2 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
+        // The graph walk is checked, not replaced: the guest still answers.
+        let walk = &plan.chains[&points::ANIM_GRAPH_MATRICES.base];
+        assert!(walk.implement.is_none());
+        assert_eq!((walk.before.len(), walk.after.len()), (1, 1));
+        assert!(walk.before[0].optional && walk.after[0].optional);
+        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
         // The subsystem owns both shared points when their individual
@@ -501,7 +565,7 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        assert_eq!(plan.chains.len(), 2 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
+        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
 
         // The retired per-function switches are gone from the table.
         for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
@@ -673,13 +737,28 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert_eq!(chain.addr, entry.addr());
             assert!(chain.implement.is_none());
-            assert!(chain.shadow.is_none());
+            // Only the ray observes its return, through the shadow.
+            assert_eq!(chain.shadow.is_some(), entry == Entry::MoppRay);
             assert_eq!(chain.observe_before.len(), 1);
             assert!(chain.observe_before[0].optional);
         }
+        // The ray's parity arm only observes: its setup's return, each
+        // interpreter call and each instanced key.
+        let ray = &plan.chains[&points::COLLISION_MOPP_RAY.base];
+        assert_eq!(ray.observe_after.len(), 1);
+        assert!(ray.observe_after[0].optional);
+        for (point, label) in RAY_PARITY {
+            let chain = &plan.chains[&point.base];
+            assert!(chain.implement.is_none(), "{label}");
+            assert_eq!(chain.observe_before.len(), 1, "{label}");
+            assert!(chain.observe_before[0].optional, "{label}");
+        }
         assert_eq!(
             plan.chains.len(),
-            COLLISION_ENTRIES.len() + COLLISION_INVALIDATE.len() + COLLISION_OBSERVED.len()
+            COLLISION_ENTRIES.len()
+                + COLLISION_INVALIDATE.len()
+                + COLLISION_OBSERVED.len()
+                + RAY_PARITY.len()
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 

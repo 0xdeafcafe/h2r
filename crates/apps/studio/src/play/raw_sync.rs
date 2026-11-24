@@ -61,6 +61,8 @@ pub enum SectionKind {
     Cluster,
     InstanceDef,
     Mode,
+    /// A collision BSP: patched and grown in the tag blocks, never raw.
+    Coll,
 }
 
 /// A raw entry's owner: the record whose raw pointer locates the bytes
@@ -77,6 +79,7 @@ impl Owner {
             TargetKind::Cluster => SectionKind::Cluster,
             TargetKind::InstanceDef => SectionKind::InstanceDef,
             TargetKind::ModeSection => SectionKind::Mode,
+            TargetKind::Coll => SectionKind::Coll,
         };
         Owner::Section {
             tag: t.tag.0,
@@ -94,6 +97,7 @@ impl Owner {
             SectionKind::Cluster => TargetKind::Cluster,
             SectionKind::InstanceDef => TargetKind::InstanceDef,
             SectionKind::Mode => TargetKind::ModeSection,
+            SectionKind::Coll => TargetKind::Coll,
         };
         Some(Target::new(kind, TagId(tag), index))
     }
@@ -113,6 +117,7 @@ impl Owner {
                     SectionKind::Cluster => "cluster",
                     SectionKind::InstanceDef => "instance_def",
                     SectionKind::Mode => "mode",
+                    SectionKind::Coll => "coll",
                 };
                 json!({"section": {"tag": format!("{tag:#010x}"), "kind": kind, "index": index}})
             }
@@ -442,6 +447,14 @@ fn geometry_want(app: &mut App, want: &mut Want, live: bool) {
         .into_iter()
         .filter(|t| g.class(*t).is_some_and(|c| c != geometry_edit::WriteClass::Unchanged))
         .collect();
+    // A recompiled collision BSP grows blocks in the file; the game's copy
+    // is not patched half way, so the edit waits for a reload.
+    if let Some(t) = edited.iter().find(|t| t.kind == TargetKind::Coll) {
+        want.frozen.geometry = true;
+        let why = "a recompiled collision BSP takes effect on a reload";
+        want.rows.push(reload_row("geometry", t.tag, &t.id(), why));
+        return;
+    }
     let p = match g.changes() {
         Ok(p) => p,
         Err(e) => {

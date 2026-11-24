@@ -1,7 +1,7 @@
 //! Guest adapters for native point and location queries, the MOPP box
-//! query, and the differential BSP segment, cluster flood and object visit
-//! kernels. See
-//! docs/engine/collision-queries.md.
+//! query, the differential BSP segment, cluster flood and object visit
+//! kernels, and the general MOPP ray's parity arm (`mopp_ray`, observers
+//! only). See docs/engine/collision-queries.md.
 //!
 //! Each adapter reads the entry's arguments and the live guest words its
 //! query needs, runs the kernel against the decoded BSP, and only then
@@ -20,6 +20,7 @@ mod cluster;
 mod flood;
 pub mod layout;
 mod mopp_box;
+pub mod mopp_ray;
 mod point;
 mod preflight;
 mod sources;

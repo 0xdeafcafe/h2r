@@ -628,6 +628,19 @@ pub struct SceneReply {
     /// Activation of the requested level on a fresh level boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_activation: Option<SceneCensusActivation>,
+    /// The first view whose Rust visibility differed from the guest's, and
+    /// how (`scene_visibility_*` count them; docs/graphics/native-visibility.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_first_mismatch: Option<String>,
+    /// The first light whose Rust visibility differed from its guest lists
+    /// (`scene_light_visibility_*` count them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light_visibility_first_mismatch: Option<String>,
+    /// The first view whose Rust-built records (camera, projection, start
+    /// cluster, mode) differed from the guest's, and in which field
+    /// (`scene_view_record_*` count them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_record_first_mismatch: Option<String>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
@@ -786,6 +799,14 @@ pub struct SceneViewRecord {
     pub visibility_clusters: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structure_clusters: Option<u32>,
+    /// The game view's object list length, from the same gather.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_objects: Option<u32>,
+    /// Who computed the view's visible clusters and objects: `guest`, or
+    /// `rust` when the Rust visibility equalled the guest's for this view
+    /// (docs/graphics/native-visibility.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_source: Option<String>,
     pub instances: u32,
     pub parts: u32,
     pub rows: u32,

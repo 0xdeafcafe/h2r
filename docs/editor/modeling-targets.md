@@ -271,7 +271,9 @@ only (above). Rewriting bucket streams is deferred.
   every part as a strip, [sky.md](../halo1/sky.md)).
 - **LODs.** An edit changes one section. The others are stale, and the
   session offers **Use for lower LODs**
-  (`GeometrySession::set_use_for_lower_lods`, one undo step): in each
+  (`GeometrySession::set_use_for_lower_lods`, one undo step; the
+  section's checkbox in the window and `geometry.lower_lods` in the agent
+  API): in each
   permutation whose highest level naming the section is `k`, every
   present level below `k` is pointed at it, as fixed patches of the
   permutation's LOD indices (`+4`); a level that is -1 stays -1.
@@ -297,7 +299,9 @@ only (above). Rewriting bucket streams is deferred.
   `bsp_mopp` write them for converted objects). The object's small trees
   make this the compiler's first user. **From render** makes a
   collision mesh from a render section's faces, welded and joined into
-  convex polygons.
+  convex polygons. The session opens a BSP as `coll_bsp:<tag>:<n>`
+  (`geometry-edit/src/coll_target.rs`); modeling.md, "The collision
+  compiler", has its write.
 - **`phmo`.** Spheres, pills and boxes are edited as primitives, in
   place: radius, half extents, end points, the transform
   (`tags::collision::PhysicsModel`). A polyhedron's vertices move while

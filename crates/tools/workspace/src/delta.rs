@@ -185,8 +185,13 @@ fn walk(w: &mut Writer, set: &TagSet, block: &Block) -> Result<u32, String> {
     });
     let mut fixups = Vec::with_capacity(block.fixups.len());
     for f in &block.fixups {
-        let tag =
-            |w: &mut Writer, id: TagId| intern(&mut w.refs, &mut w.ref_at, reference(set, id));
+        let tag = |w: &mut Writer, id: TagId| {
+            let r = reference(set, id);
+            if let Ref::Name { path, .. } = &r {
+                intern(&mut w.strings, &mut w.string_at, path.clone());
+            }
+            intern(&mut w.refs, &mut w.ref_at, r)
+        };
         let (kind, a, b, c) = match &f.kind {
             FixupKind::Block { count, child } => (1, *count, walk(w, set, child)?, 0),
             FixupKind::Data(child) => (2, 0, walk(w, set, child)?, 0),

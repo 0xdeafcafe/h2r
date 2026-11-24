@@ -62,10 +62,6 @@ enum PogoStyle { unsc, covenant, forerunner }
 option pogo: bool = true "Pogo Stick" "Everyone spawns with a pogo stick as the secondary weapon, and rides it through a bounce"
 option pogo_style: PogoStyle = PogoStyle.unsc "Pogo style" "Which stick the game hands out: the UNSC field spring, the Covenant grav hopper or the Forerunner strut"
 
-// A launch over this (world units a second up) is a Monster Bounce: the
-// host's `superbounce_chain::MONSTER_VZ`.
-const monster_speed = 16.0
-
 player var bounces: int = 0
 // The place of the last bounce in its chain, kept after the chain ends.
 player var chain: int = 0
@@ -86,7 +82,8 @@ on launch(p, spot, speed) {
     p.bounces = p.bounces + 1
     if bounce_points > 0 {
         let points = bounce_points * min(p.chain, 6)
-        if speed > monster_speed and monster_double { score(p, points * 2) } else { score(p, points) }
+        // 16.0: the host's `superbounce_chain::MONSTER_VZ`, a Monster Bounce.
+        if speed > 16.0 and monster_double { score(p, points * 2) } else { score(p, points) }
     }
 }
 

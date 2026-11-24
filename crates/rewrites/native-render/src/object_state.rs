@@ -159,7 +159,7 @@ pub fn resolve_scene(own: &[RenderStateValue], entry: &EntryStates, compiled: Op
 }
 
 /// [`resolve_scene`] for an object's draw in a world layer other than 3
-/// (1, 5, 7, 8 and 20; `entry` the device at that layer call): its passes
+/// (`object_program_gpu::OBJECT_LAYERS`; `entry` the device at that layer call): its passes
 /// blend, so a blend its implementation sets, or the device's it
 /// inherits, is the draw's ([`DrawState::blend`]), every field the blend
 /// reads known.

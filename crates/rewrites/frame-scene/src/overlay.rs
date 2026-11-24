@@ -192,18 +192,27 @@ pub enum OverlayKind {
 }
 
 /// The blur under a dialog (`0x00235756` running the Kawase blur
-/// `0x000211a0`; docs/formats/ui.md, "What a screen, pane and widget
-/// are"): each step makes every pixel the mean of four bilinear taps at
-/// the corners of a square, tap
-/// `k` moved by `spread * tap` guest pixels, positive for `k & 1` in x and
-/// `k & 2` in y, negative otherwise. The sampler clamps at the target's
-/// edges. Both values are the guest's, read by the producer.
+/// `0x000211a0`; docs/graphics/native-post-hud.md, "The blur under a
+/// dialog"): each step makes every pixel a blend of four bilinear taps at
+/// the corners of a square, tap `k` moved by `spread * tap` guest pixels,
+/// positive for `k & 1` in x and `k & 2` in y, negative otherwise. The
+/// sampler clamps at the target's edges.
+///
+/// The step's combiner blends the taps in pairs, `t0` with `t1`, `t2` with
+/// `t3`, then the two results, each colour channel as
+/// `w * a + (1 - w) * b` with `w = 0.5 + 0.5 * pick * clamp(4 * (a - b),
+/// -1, 1)`: a `pick` of 0 is the plain mean, a larger one leans to the
+/// brighter tap. Alpha is the plain mean. All three values are the
+/// guest's, read by the producer.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OverlayBlur {
     /// The tap's offset over the spread.
     pub tap: f32,
     /// Each step's spread, in draw order; never empty.
     pub spreads: Vec<f32>,
+    /// The combiner's constant, 0 to 1 (`engine::glow::blur_combiner`'s
+    /// packed strength over 255); 0 for its plain form.
+    pub pick: f32,
 }
 
 /// A model widget's camera, in its scene's space.
@@ -503,6 +512,7 @@ impl Overlay {
         if blur.spreads.is_empty()
             || !blur.tap.is_finite()
             || blur.spreads.iter().any(|s| !s.is_finite() || *s < 0.0)
+            || !(0.0..=1.0).contains(&blur.pick)
         {
             return Err(OverlayError::Geometry);
         }
@@ -727,6 +737,12 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             floats(&mut *word, &[b.tap]);
             word(b.spreads.len() as u32);
             floats(&mut *word, &b.spreads);
+            // Only a leaning combiner adds words, so a plain mean hashes
+            // as before.
+            if b.pick != 0.0 {
+                word(0x201);
+                floats(&mut *word, &[b.pick]);
+            }
         }
         if let Some(m) = overlay.model_view_of(item) {
             let c = &m.camera;
@@ -835,7 +851,7 @@ mod tests {
         let mut o = Overlay::new([640, 480]);
         let all = ClipRect::full([640, 480]);
         o.push_fill(all, [0.0, 0.0, 640.0, 480.0], [0.0, 0.0, 0.0, 0.25], OverlayBlend::ALPHA).unwrap();
-        let blur = OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.5, 2.0] };
+        let blur = OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.5, 2.0], pick: 0.0 };
         assert_eq!(o.push_blur(all, blur.clone()), Ok(1));
         let viewport = ClipRect { x: 100, y: 80, width: 200, height: 150 };
         let view = OverlayModelView { camera: camera(), objects: vec![0xe000_0001, 0xe001_0002] };
@@ -861,15 +877,16 @@ mod tests {
     fn a_blur_needs_steps_and_a_model_view_a_finite_camera() {
         let mut o = Overlay::new([640, 480]);
         let all = ClipRect::full([640, 480]);
-        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![] }), Err(OverlayError::Geometry));
-        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![-1.0] }), Err(OverlayError::Geometry));
-        assert_eq!(o.push_blur(all, OverlayBlur { tap: f32::NAN, spreads: vec![1.0] }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![], pick: 0.0 }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![-1.0], pick: 0.0 }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: f32::NAN, spreads: vec![1.0], pick: 0.0 }), Err(OverlayError::Geometry));
+        assert_eq!(o.push_blur(all, OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 1.5 }), Err(OverlayError::Geometry), "a pick past 1");
         let mut bad = camera();
         bad.fov_y = f32::INFINITY;
         let view = OverlayModelView { camera: bad, objects: vec![] };
         assert_eq!(o.push_model_view(all, view), Err(OverlayError::Geometry));
         let off = ClipRect { x: 640, y: 0, width: 4, height: 4 };
-        assert_eq!(o.push_blur(off, OverlayBlur { tap: 0.5, spreads: vec![1.0] }), Err(OverlayError::Clip));
+        assert_eq!(o.push_blur(off, OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }), Err(OverlayError::Clip));
         assert!(o.is_empty() && o.blurs.is_empty() && o.model_views.is_empty(), "the list is left as it was");
     }
 
@@ -900,10 +917,13 @@ mod tests {
         assert_ne!(one, crate::summary_hash(&empty));
         scene.overlay.vertices[1].position[0] = 2.0;
         assert_ne!(crate::summary_hash(&scene), one, "a corner moved");
-        scene.overlay.push_blur(ClipRect::full([640, 480]), OverlayBlur { tap: 0.5, spreads: vec![1.0] }).unwrap();
+        scene.overlay.push_blur(ClipRect::full([640, 480]), OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();
         let blurred = crate::summary_hash(&scene);
         scene.overlay.blurs[0].spreads[0] = 1.25;
         assert_ne!(crate::summary_hash(&scene), blurred, "a blur's spread changed");
+        let spread = crate::summary_hash(&scene);
+        scene.overlay.blurs[0].pick = 0.25;
+        assert_ne!(crate::summary_hash(&scene), spread, "a blur's combiner changed");
         scene.clear();
         assert!(scene.overlay.is_empty() && scene.overlay.size == [0, 0]);
     }

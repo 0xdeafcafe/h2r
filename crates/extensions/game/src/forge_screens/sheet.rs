@@ -271,6 +271,8 @@ pub enum NumberField {
     Coordinate(Coordinate),
     Area(AreaField),
     RespawnTime,
+    /// An item entry's return time (its abandon limit).
+    ReturnTime,
     /// A thing's label text (the keyboard takes it as typed).
     Label,
     /// A thing's label number; empty takes the number off.
