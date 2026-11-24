@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn an_early_hit_avoids_unmapped_words_and_a_required_read_propagates_its_fault() {
         let mut probes = Vec::new();
-        let mut read = |at| {
+        let mut read = |at: u32| -> Result<u32, u32> {
             probes.push(at);
             match at >> 5 {
                 0 => Ok(0),
