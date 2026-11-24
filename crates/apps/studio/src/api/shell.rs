@@ -66,6 +66,23 @@ fn answer(app: &mut App, doc: Doc, log: Vec<String>) -> Reply {
 fn open(app: &mut App, p: &P) -> Reply {
     let discard = p.bool("discard")?;
     let mut log = Vec::new();
+    // An asset id: a voice opens its document, a tag in its editor.
+    if let Some(asset) = p.opt_str("asset")? {
+        let map = p.opt_str("map")?.map(str::to_owned);
+        log.extend(run(
+            app,
+            Action::OpenAsset {
+                asset: asset.to_owned(),
+                map,
+            },
+            discard,
+        )?);
+        app.sync_tabs();
+        let Some(shown) = app.front_doc() else {
+            return Err(err(code::REFUSED, format!("{asset} did not open")));
+        };
+        return answer(app, shown, log);
+    }
     if let Some(map) = p.opt_str("map")? {
         if app.loaded_map() != Some(map) || app.browsing().is_some() {
             log.extend(run(app, Action::SelectMap(map.to_owned()), discard)?);

@@ -195,6 +195,9 @@ impl App {
             Doc::Rules => Err(
                 "a script has no preview in the game: Reload into game sends it".into(),
             ),
+            Doc::Voice => Err(
+                "a voice has no preview in the game: a line previews as the sound it replaces".into(),
+            ),
             Doc::Variant | Doc::Playlists => Err(
                 "a variant or a playlist file has no preview in the game: Playtest runs it".into(),
             ),

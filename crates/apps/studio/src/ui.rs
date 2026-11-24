@@ -22,7 +22,7 @@ mod preview_switch;
 mod sound;
 pub(crate) mod sky;
 pub(crate) mod anim;
-mod announcer;
+mod voices;
 pub mod scripts;
 pub mod tags;
 mod ui_screens;
@@ -114,8 +114,8 @@ pub struct Studio {
     sound: sound::SoundUi,
     /// The Animation window over the Tags tool's selected `jmad`.
     anim: anim::AnimUi,
-    /// The Voices window (View > Voices): the announcer and the clones.
-    announcer: announcer::AnnouncerUi,
+    /// The voice document (`Doc::Voice`): the announcer and the clones.
+    voices: voices::VoicesUi,
     /// The tag workspace's start page and status-line bar
     /// (`app::workspace`).
     workspace: workspace::WorkspaceUi,
@@ -156,7 +156,7 @@ impl Studio {
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::new(),
             anim: anim::AnimUi::default(),
-            announcer: announcer::AnnouncerUi::default(),
+            voices: voices::VoicesUi::default(),
             workspace: workspace::WorkspaceUi::default(),
         }
     }
@@ -270,7 +270,7 @@ impl Studio {
         sound::window(ui, app, gpu, &mut self.sound);
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
-        announcer::window(ui, app, &mut self.announcer, self.dialogs);
+        voices::window(ui, app, &mut self.voices, self.dialogs);
         // The tag workspace's first-start page (a floating window; the
         // shell is another lane's).
         workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);
@@ -565,13 +565,6 @@ impl Studio {
             }
             menu_action(ui, app, MenuCommand::Overlay, None, app.overlay_shown(), actions);
             ui.separator();
-            if ui.menu_item_enabled_selected_no_shortcut(
-                format!("{} Voices", icon::SOUND),
-                self.announcer.open,
-                true,
-            ) {
-                self.announcer.open = !self.announcer.open;
-            }
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
             }

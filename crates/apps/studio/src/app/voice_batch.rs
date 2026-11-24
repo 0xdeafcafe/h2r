@@ -25,6 +25,18 @@ use crate::voice::{Engine, VoiceError};
 /// The most a text file imported into the batch may be.
 const MAX_IMPORT: u64 = 1 << 20;
 
+/// The columns a said line covers when it is drawn under an original on
+/// one time axis: the original (`axis_ms` long) fills `width` columns, so
+/// a line of `line_ms` covers its share of them, and a longer one is cut
+/// where the axis ends. The sound document's Lines pane draws with it.
+pub fn axis_columns(axis_ms: u64, line_ms: u64, width: usize) -> usize {
+    if axis_ms == 0 {
+        return 0;
+    }
+    let cols = (u128::from(line_ms) * width as u128 / u128::from(axis_ms)) as usize;
+    cols.min(width)
+}
+
 /// Where a row is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowState {

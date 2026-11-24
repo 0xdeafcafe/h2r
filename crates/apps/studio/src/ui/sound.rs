@@ -23,6 +23,11 @@
 //! at the playhead (the face preview, docs/editor/rich-editors.md, slice
 //! A3, [`crate::app::anim`]'s `face_pose`, which `sound.face` shares).
 //!
+//! Under the face, the **Lines** pane (`ui::voices::lines::sound_pane`)
+//! holds the batch's rows whose target is this sound: **New line** starts
+//! one, said by the voice the sound's path maps to, and the said line's
+//! waveform draws under the sound's own on the same axis.
+//!
 //! The window is one scrolling body. The waveform and the mouth track
 //! have heights of their own; they never take the leftover height.
 use std::sync::Arc;
@@ -134,7 +139,7 @@ pub fn row_text(row: &SoundRow) -> String {
 /// it, else the one selected there (a browsed map has no tabs). `None` for any
 /// other kind.
 pub fn target(app: &App) -> Option<(TagId, String)> {
-    if app.tool != ToolKind::Tags {
+    if app.tool != ToolKind::Tags || app.front_doc() == Some(Doc::Voice) {
         return None;
     }
     let id = app.front_tag_doc().or(app.shown_tags().selected)?;
@@ -152,17 +157,16 @@ pub fn window(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi) {
         .size([440.0, 380.0], Condition::FirstUseEver)
         .build(|| {
             ui.text(format!("{} {name}", icon::SOUND));
-            // The way from a sound to the voice that can say a new take
-            // of it (docs/editor/studio-flow.md, "Voices and the
-            // announcer").
-            if ui.button("New line in Voices##sound-voices") {
-                app.voices_line_for(&name);
-            }
-            ui.set_item_tooltip(
-                "Open Voices with a line that replaces this sound: type what is said, pick \
-                 the voice, say it, and keep it in the edit target package",
-            );
             body(ui, app, gpu, st, id, key);
+            // The sound's own lines: new takes the voice that says its
+            // path makes, under the sound's waveform on one axis
+            // (docs/editor/studio-flow.md, "Voices and the announcer").
+            let original = st
+                .clip
+                .as_ref()
+                .and_then(|c| c.1.as_ref().ok())
+                .map(|c| c.duration_ms());
+            super::voices::lines::sound_pane(ui, app, &name, original);
         });
 }
 
@@ -563,6 +567,29 @@ mod tests {
         // The map's own tab in front: the sound editor is not drawn.
         app.dispatch(Action::FocusDoc(Doc::Map));
         assert_eq!(target(&app), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A voice document in front draws no sound editor, though a sound is
+    /// still the Tags tool's selection; the sound's tab brings it back.
+    #[test]
+    fn a_voice_in_front_leaves_the_sound_editor_undrawn() {
+        let (mut app, dir) = open("voice-front");
+        app.dispatch(Action::OpenAsset {
+            asset: format!("tag:{SND}"),
+            map: None,
+        });
+        let Some(Doc::Tag(id)) = app.front_doc() else {
+            panic!("the sound has no tab: {:?}", app.tabs());
+        };
+        assert!(target(&app).is_some());
+        app.open_voice("cortana");
+        assert_eq!(app.front_doc(), Some(Doc::Voice));
+        assert_eq!(target(&app), None, "the voice is in front");
+        // Undo on the voice's tab says there is nothing of its own to take.
+        app.dispatch(Action::UndoDoc(Doc::Voice));
+        app.dispatch(Action::FocusDoc(Doc::Tag(id)));
+        assert_eq!(target(&app).map(|t| t.0), Some(id));
         let _ = std::fs::remove_dir_all(dir);
     }
 

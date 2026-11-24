@@ -286,3 +286,23 @@ fn a_bad_id_a_missing_package_and_an_item_past_the_end_are_refused() {
         assert_eq!(e.code, code, "{asset}: {}", e.message);
     }
 }
+
+#[test]
+fn a_voice_lists_the_dialogue_sounds_its_rules_pick() {
+    let (_t, mut app, mut api) = setup("links-voice");
+    let v = links(&mut api, &mut app, "voice:arbiter");
+    assert_eq!(
+        pairs(&v["used_by"]),
+        [("Sounds".to_owned(), LINE.to_owned())],
+        "{v}"
+    );
+    assert_eq!(v["editors"][0]["id"], "voices");
+    // The sound names its voice, and the voice opens as an asset id.
+    let sound = links(&mut api, &mut app, LINE);
+    assert!(has(&sound["uses"], "Voice", "voice:arbiter"), "{sound}");
+    // A voice that is no character is refused as a bad id.
+    let e = api
+        .call(&mut app, m::ASSET_LINKS, json!({ "asset": "voice:nobody" }))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS, "{}", e.message);
+}

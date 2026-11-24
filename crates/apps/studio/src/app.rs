@@ -333,10 +333,8 @@ pub enum Action {
     /// Show an editor's surface: the View menu's editors and a document
     /// brought forward.
     Show(Surface),
-    /// Bring the Voices window forward (`app::voices::Show`).
-    ShowVoices,
     /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
-    /// editor: on `map` (opened first when it is not the open one), else
+    /// editor, or a voice (`voice:<id>`) in the voice document: on `map` (opened first when it is not the open one), else
     /// on the open map (`app::assets`).
     OpenAsset { asset: String, map: Option<String> },
     /// Copy a browser row's tag into a local package, as `asset.copy`
@@ -546,7 +544,7 @@ impl Action {
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
             // The script's text stays in the editor when its tab closes.
-            Action::CloseDoc(Doc::Rules) => None,
+            Action::CloseDoc(Doc::Rules | Doc::Voice) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -1379,11 +1377,6 @@ impl App {
                 let tool = surface.tool();
                 self.set_tool(tool);
                 self.follow_tool(tool);
-            }
-            Action::ShowVoices => {
-                if self.voices.show.is_none() {
-                    self.voices.show = Some(voices::Show::Window);
-                }
             }
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {

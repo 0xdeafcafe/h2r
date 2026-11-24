@@ -35,6 +35,10 @@ fn list(app: &mut App, p: &P) -> Reply {
         text: p.opt_str("query")?.unwrap_or("").to_owned(),
         limit: p.opt_usize("limit")?.unwrap_or(DEFAULT_LIMIT),
     };
+    // The Voices kind lists voices, which are read from the data root.
+    if root == Root::Tags && assets::is_voices_kind(q.kind.as_deref()) {
+        return Ok(app.voice_asset_list(&q.text, q.limit));
+    }
     let set = assets::read_set(&app.data_root());
     assets::list(&app.tags_root(), &set, &q).map_err(|e| err(code::REFUSED, e))
 }
@@ -67,9 +71,7 @@ fn copy(app: &mut App, p: &P) -> Reply {
 
 fn links(app: &mut App, p: &P) -> Reply {
     let id = asset(p)?;
-    let set = assets::read_set(&app.data_root());
-    let l = crate::app::links::links(&app.tags_root(), &set, &id)
-        .map_err(|e| err(code::REFUSED, e))?;
+    let l = app.asset_links(&id).map_err(|e| err(code::REFUSED, e))?;
     Ok(l.json(p.str("asset")?))
 }
 

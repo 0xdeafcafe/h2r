@@ -162,7 +162,7 @@ dropped with it.
 | Method | Does |
 |---|---|
 | `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
-| `shell.open {tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; answers the `tab`, the `front` and the `log` |
+| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset); answers the `tab`, the `front` and the `log` |
 | `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
 | `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
 
@@ -210,9 +210,10 @@ The asset rows are what `asset.list` answers for the query — every tag
 of the tags tree, the set's packages and the items of each package that
 is on (`app::commands::palette_assets`), with no map open. The commands
 are the menus' own, one `Open editor: <name>` per editor of View >
-Editors, and `Open: Voices` (`Action::ShowVoices`).
+Editors. Voices are `voice` entries (`voice:<id>` assets of the **Voices**
+kind), which open the voice document.
 Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
-`map`, then the asset rows `tag`, `package`, `item`, then `placement`
+`map`, then the asset rows `tag`, `package`, `item`, `voice`, then `placement`
 and `command`. Each kind has at most 20 entries. `totals` counts all
 matches by kind before that cap. Each word of the query must match the
 commands' labels and details, and is the same search `asset.list` runs
@@ -1736,7 +1737,10 @@ the main file, and its `maps`). A tag a package adds is in the same list
 edit line of a package on touches has badge `edited by <package>` and
 the packages in `packages`. `kind` is one of `kinds` (Maps, Objects,
 Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs,
-Strings, Other) or a tag group; `map` keeps what that map's manifest
+Strings, Other, Voices) or a tag group; the kind `Voices` lists a
+`voice:<id>` row for each character and the announcer, with `state` (`no
+dataset`, `dataset`, `fine-tuned` or `announcer`), `minutes`,
+`pending_asr` and `tuned`; `map` keeps what that map's manifest
 holds, with the tags a package adds for it; every word of `query` must
 match the path, group, kind or a package id; `package` keeps what that
 package adds or edits. `root` `packages` lists the set (baked, then
