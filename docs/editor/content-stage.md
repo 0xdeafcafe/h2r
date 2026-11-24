@@ -57,6 +57,14 @@ report beside its receipt: the layout (every pad, camera and reference
 with its point), each kit's tags, costs and pad, and the build key.
 Nothing it writes is in a Git checkout.
 
+The stage is also a package, `content/stage/`: one `map` item whose
+`map.toml` repeats the project's mode, base, name, scenario and kits (a
+test holds the two equal). The game builds it at boot, with every other
+`map` item, through `stage_kit::fresh::StageFresh`
+([studio-redesign.md](studio-redesign.md), "Contents"), and leaves
+`<data>/maps/stage/` alone while the base map, the layout and
+`stage_kit::VERSION` are what built it.
+
 Until the workspace lands, the build is `stage_kit::map::build`, for the
 stage kit alone (`h2 tags build --project art/stage/project.toml`, from
 the disc's base map or a tag tree). It edits the base's scenario into

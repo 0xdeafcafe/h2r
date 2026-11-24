@@ -408,6 +408,8 @@ fn a_kind_with_no_builder_stops_by_name() {
             Kind::Rules,
             Kind::Variant,
             Kind::Playlist,
+            Kind::Map,
+            Kind::MapPatch,
         ]
     );
 }

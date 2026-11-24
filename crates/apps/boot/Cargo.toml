@@ -32,6 +32,8 @@ hs.workspace = true
 pogo-kit = { path = "../../tools/pogo-kit" }
 # The game's content packages and their one rewrite (packages.rs).
 workspace = { path = "../../tools/workspace" }
+# The stage, a baked package's `fresh` map (packages::prepare_maps).
+stage-kit = { path = "../../tools/stage-kit" }
 coop = { path = "../../live/coop" }
 map.workspace = true
 # What the Halo 1 converters write and the Halo 1 hooks read (h1_*.rs);

@@ -547,6 +547,20 @@ fn run_configured(
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
+    // The game's content packages: their per-map items through one rewrite,
+    // after the others, cached under <data>/packages/cache
+    // (docs/editor/studio-redesign.md, "How the game consumes packages").
+    // The pogo stick is the `pogo` package (content/pogo), on while the
+    // `pogo` feature is.
+    let content_packages = {
+        let switches = features.switches();
+        packages::at_boot(&opts.data_root, &|name| switches.feature(name, true))
+    };
+    // The maps those packages build (`map` and `map-patch` items) are written
+    // as map packages under <data>/maps before the content library reads
+    // that folder: a map built for the same inputs is left alone
+    // (docs/editor/studio-redesign.md, "How the game consumes packages").
+    packages::prepare_maps(&opts.data_root, &opts.disc, &content_packages.set.loaded());
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
@@ -620,15 +634,6 @@ fn run_configured(
     // The superbounce world labels keep the HUD font as the game reads it,
     // after the font rewrites (docs/game/superbounce.md, "Crouch spots in
     // the world").
-    // The game's content packages: their per-map items through one rewrite,
-    // after the others, cached under <data>/packages/cache
-    // (docs/editor/studio-redesign.md, "How the game consumes packages").
-    // The pogo stick is the `pogo` package (content/pogo), on while the
-    // `pogo` feature is.
-    let content_packages = {
-        let switches = features.switches();
-        packages::at_boot(&opts.data_root, &|name| switches.feature(name, true))
-    };
     let rewrites = Some(vfs::Chain(
         vfs::Chain(
             vfs::Chain(fonts, cards),

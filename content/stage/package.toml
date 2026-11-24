@@ -1,0 +1,17 @@
+[package]
+format = 1
+id = "stage"
+name = "Content stage"
+description = "Studio's test map: a floor marked in world units, scale and movement references, fixed cameras."
+
+[credit]
+authors = ["Alexander Forbes-Reed"]
+notes = "Original layout, geometry and textures, drawn in code."
+
+# The map is built on the user's machine from their disc's base map, at
+# prepare (workspace::prepare, stage_kit::fresh), and written to
+# <data>/maps/stage/. The layout is art/stage/stage.yaml.
+[[item]]
+kind = "map"
+source = "map.toml"
+maps = "all"

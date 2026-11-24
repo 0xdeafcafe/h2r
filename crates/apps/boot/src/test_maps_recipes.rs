@@ -2,12 +2,13 @@
 //! scenario editor and the Firefight kit (docs/game/test-maps.md). `game` may
 //! not use `tools`, so the composition root supplies this.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use agent_proto::test_maps::RecipeInfo;
 use game::test_maps::{BaseMap, Built, Recipes, Resolved};
-use scenario_edit::MapSource;
 use scenario_edit::recipe::{self, Builder, Fidelity, Recipe};
+use scenario_edit::{MapSource, Session};
 use serde_json::Value;
 
 /// Placement and Firefight test maps built from local disc data.
@@ -26,6 +27,49 @@ fn recipe_of(recipe: &Value, base: Option<&str>) -> Result<Recipe, String> {
         Some(b) => r.on_base(b.trim()).map_err(|e| e.to_string()),
         None => Ok(r),
     }
+}
+
+/// A placement recipe as a package (docs/editor/studio-redesign.md, "Each
+/// content path as a package"): the recipe runs on `base`, the base map's
+/// bytes, and the package is an `onto` map with the `edits` that make the
+/// same scenario, so the build that makes the map is the one the game runs
+/// ([`workspace::prepare`]). The Firefight probe is built by its kit, not
+/// by edits, and is refused.
+pub fn recipe_package(recipe: &Recipe, base: &[u8]) -> Result<workspace::Loaded, String> {
+    if recipe.builder != Builder::Placements {
+        return Err(format!(
+            "{}: only a placement recipe is a package; the Firefight probe is its kit's",
+            recipe.name
+        ));
+    }
+    let source = MapSource {
+        path: PathBuf::from(format!("{}.map", recipe.base)),
+        region: None,
+        bytes: Some(Arc::from(base)),
+        shared: None,
+    };
+    let mut s = Session::new();
+    s.build_scenes = false;
+    s.open_named(source.clone(), &recipe.base)
+        .map_err(|e| e.to_string())?;
+    recipe::build(&mut s, recipe).map_err(|e| e.to_string())?;
+    let scenario = s.scenario().ok_or("no map is open")?;
+    let after =
+        scenario_edit::package::edited_bytes(&source, scenario).map_err(|e| e.to_string())?;
+    let edits = workspace::scenario_edits(base, &after)
+        .map_err(|e| format!("{}: {e}", recipe.name))?
+        .ok_or_else(|| format!("{}: the recipe changes nothing", recipe.name))?;
+    let dir = recipe.package_dir();
+    workspace::test_map_package(
+        &workspace::TestMap {
+            id: &dir,
+            name: &dir,
+            base: &recipe.base,
+            title: &recipe.title,
+            purpose: &recipe.purpose,
+        },
+        &edits,
+    )
 }
 
 fn info(r: &Recipe) -> RecipeInfo {
@@ -127,6 +171,31 @@ mod tests {
         ] {
             assert!(r.resolve(&bad, base).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_placement_recipe_is_a_package_and_the_probe_is_not() {
+        let base = scenario_edit::fixture::fixture();
+        let r = Recipe::from_toml(
+            "name = \"two\"\ntitle = \"Two\"\npurpose = \"p\"\nbase = \"fixture\"\n\
+             fidelity = \"full\"\nanchor = { at = [0.0, 0.0, 0.0] }\n\
+             [[place]]\nblock = \"starting_locations\"\nat = [4.0, 0.0, 0.0]\nfloor = false\n\
+             [[place]]\nblock = \"starting_locations\"\nat = [8.0, 0.0, 0.0]\nfloor = false\n",
+        )
+        .unwrap();
+        let p = recipe_package(&r, &base).unwrap();
+        assert_eq!(p.package.manifest.package.id, "test-two");
+        let kinds: Vec<_> = p.package.manifest.items.iter().map(|i| i.kind).collect();
+        assert_eq!(
+            kinds,
+            [content::package::Kind::Map, content::package::Kind::Edits]
+        );
+        let probe = Recipe::from_toml(
+            "name = \"p\"\ntitle = \"P\"\npurpose = \"p\"\nbase = \"fixture\"\n\
+             fidelity = \"full\"\nbuilder = \"firefight-probe\"\n",
+        )
+        .unwrap();
+        assert!(recipe_package(&probe, &base).is_err());
     }
 
     #[test]
