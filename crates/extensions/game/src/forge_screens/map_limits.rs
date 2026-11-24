@@ -58,12 +58,12 @@ pub(super) fn sheet(usage: &Usage) -> Sheet {
                 .map(|((_, label), count)| (label, count)),
         )
         .map(|(label, count)| {
-            let value = match count {
-                Some((used, Some(limit))) => format!("{used} / {limit}"),
-                Some((used, None)) => used.to_string(),
-                None => "Unavailable".into(),
-            };
-            SheetRow::new(label, Act::Info).value(&value)
+            let row = SheetRow::new(label, Act::Info);
+            match count {
+                Some((used, Some(limit))) => row.value(&format!("{used} / {limit}")),
+                Some((used, None)) => row.value(&used.to_string()),
+                None => row.unavailable(),
+            }
         })
         .collect();
     Sheet {
@@ -79,6 +79,7 @@ pub(super) fn sheet(usage: &Usage) -> Sheet {
 mod tests {
     use super::*;
     use crate::forge_screens::{Facts, prepare, publish, screen};
+    use crate::ui_kit::spec::Describe;
     use engine::datum::layout::{ACTIVE_COUNT, MAXIMUM_COUNT};
     use engine::testing::FakeGuest;
     use guest_layout::global;
@@ -134,7 +135,8 @@ mod tests {
             ..Facts::default()
         });
         prepare(Kind::MapLimits).unwrap();
-        let reopened = screen(Kind::MapLimits).sheet();
-        assert_eq!(reopened.rows[0].value.as_deref(), Some("9 / 19"));
+        let reopened = screen(Kind::MapLimits);
+        assert_eq!(reopened.sheet().rows[0].value.as_deref(), Some("9 / 19"));
+        assert_eq!(reopened.spec().content.unavailable_values, ["row.4.value"]);
     }
 }

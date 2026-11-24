@@ -963,12 +963,14 @@ mod tests {
             if let Some(cap) = a.cap {
                 assert!(capability(cap, API_VERSION).is_some(), "{cap}");
             }
-            // A VM built-in is the VM's own, unless its game-side part is
-            // not built.
+            // The VM answers sees from a table populated by the named host
+            // trace. Other VM built-ins are internal or await game support.
             if a.status == Status::VmOnly {
                 assert_eq!(a.kind, Kind::VmOnly, "{}", a.name);
             }
-            if a.kind == Kind::VmOnly {
+            if a.id == id::SEES {
+                assert_eq!((a.kind, a.status), (Kind::VmOnly, Status::Named));
+            } else if a.kind == Kind::VmOnly {
                 assert!(matches!(a.status, Status::VmOnly | Status::NotBuilt), "{}", a.name);
             }
             assert!(a.kind != Kind::Read || a.cap.is_none());

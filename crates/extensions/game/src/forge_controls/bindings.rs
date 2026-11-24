@@ -189,7 +189,7 @@ pub const BINDINGS: &[Binding] = &[
     ),
     row(
         act(Action::Accept),
-        "Pick up, drop or place",
+        "Grab/drop/place",
         Pad::Tap(B::South),
         &[Key::Accept],
         "the left mouse button",

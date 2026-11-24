@@ -755,16 +755,17 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert_eq!(chain.addr, entry.addr());
             assert!(chain.implement.is_none());
-            // The two parity arms observe their returns through the shadow.
-            assert_eq!(chain.shadow.is_some(), matches!(entry, Entry::VectorTest | Entry::MoppRay));
-            assert_eq!(chain.observe_before.len(), 1);
-            assert!(chain.observe_before[0].optional);
+            // The vector test, outer BSP walk and MOPP ray compare guest
+            // returns through the shadow.
+            let compares_return = matches!(entry, Entry::VectorTest | Entry::VectorContext | Entry::MoppRay);
+            assert_eq!(chain.shadow.is_some(), compares_return, "{entry:?}");
+            assert_eq!(chain.observe_after.len(), compares_return as usize, "{entry:?}");
+            assert!(chain.observe_after.iter().all(|hook| hook.optional), "{entry:?}");
+            assert_eq!(chain.observe_before.len(), 1, "{entry:?}");
+            assert!(chain.observe_before[0].optional, "{entry:?}");
         }
-        // The ray's parity arm only observes: its setup's return, each
-        // interpreter call and each instanced key.
-        let ray = &plan.chains[&points::COLLISION_MOPP_RAY.base];
-        assert_eq!(ray.observe_after.len(), 1);
-        assert!(ray.observe_after[0].optional);
+        // The ray parity arm also observes each interpreter call and
+        // each instanced key.
         for (point, label) in RAY_PARITY {
             let chain = &plan.chains[&point.base];
             assert!(chain.implement.is_none(), "{label}");
