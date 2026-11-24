@@ -8,8 +8,8 @@
 //! (`h1campaign::recordings`): the initial unit control state in the
 //! layout of the control version, twelve bytes copied as they are, then
 //! events, each a header byte (low two bits the delay form, upper six the
-//! type) with its delay and payload. Read only: nothing here encodes a
-//! stream.
+//! type) with its delay and payload. [`crate::recording_edit`] encodes a
+//! stream and edits the block.
 
 use std::fmt;
 
@@ -271,10 +271,31 @@ fn invalid(why: impl Into<String>) -> crate::Error {
     crate::Error::Invalid(why.into())
 }
 
+/// The recordings block as the source holds it: where it is and each
+/// element's raw bytes, with the rows read from them. What
+/// [`crate::recording_edit::changes`] diffs an edited block against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Block {
+    /// Guest address of the scenario's `(count, address)` pair.
+    pub root: u32,
+    /// Guest address of the first element (0 when the block is empty).
+    pub address: u32,
+    /// Each element's `ELEMENT` bytes.
+    pub elements: Vec<Vec<u8>>,
+    pub rows: Vec<Recorded>,
+}
+
 /// Read the recordings block of the open map's scenario.
 pub fn read<R: std::io::Read + std::io::Seek>(
     map: &mut map::Map<R>,
 ) -> crate::Result<Vec<Recorded>> {
+    Ok(read_block(map)?.rows)
+}
+
+/// [`read`], with where the block is and its elements' raw bytes.
+pub fn read_block<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>,
+) -> crate::Result<Block> {
     let loc = map
         .scenario()
         .ok_or_else(|| invalid("map has no scenario"))?
@@ -284,7 +305,7 @@ pub fn read<R: std::io::Read + std::io::Seek>(
         return Err(invalid("scenario header is truncated"));
     }
     let header = map.read_file_range(loc.file_offset()?, (BLOCK + 8) as u64)?;
-    parse(&header, |address, len| {
+    parse(&header, loc.address + BLOCK as u32, |address, len| {
         let at = map.file_offset(address, len)?;
         Ok(map.read_file_range(at, len.into())?)
     })
@@ -293,10 +314,15 @@ pub fn read<R: std::io::Read + std::io::Seek>(
 /// Read the recordings block of a complete scnr payload whose guest base
 /// is `base`.
 pub fn decode(bytes: &[u8], base: u32) -> crate::Result<Vec<Recorded>> {
+    Ok(decode_block(bytes, base)?.rows)
+}
+
+/// [`decode`], with where the block is and its elements' raw bytes.
+pub fn decode_block(bytes: &[u8], base: u32) -> crate::Result<Block> {
     if bytes.len() < BLOCK + 8 {
         return Err(invalid("scenario header is truncated"));
     }
-    parse(bytes, |address, len| {
+    parse(bytes, base + BLOCK as u32, |address, len| {
         let at = address
             .checked_sub(base)
             .ok_or_else(|| invalid("recordings precede the scenario"))? as usize;
@@ -309,12 +335,18 @@ pub fn decode(bytes: &[u8], base: u32) -> crate::Result<Vec<Recorded>> {
 
 fn parse(
     header: &[u8],
+    root: u32,
     mut fetch: impl FnMut(u32, u32) -> crate::Result<Vec<u8>>,
-) -> crate::Result<Vec<Recorded>> {
+) -> crate::Result<Block> {
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
     let count = word(header, BLOCK) as usize;
     if count == 0 {
-        return Ok(Vec::new());
+        return Ok(Block {
+            root,
+            address: 0,
+            elements: Vec::new(),
+            rows: Vec::new(),
+        });
     }
     if count > MAX_RECORDINGS {
         return Err(invalid(format!(
@@ -327,6 +359,7 @@ fn parse(
     }
     let rows = fetch(address, (count * ELEMENT) as u32)?;
     let mut out = Vec::with_capacity(count);
+    let elements: Vec<Vec<u8>> = rows.chunks_exact(ELEMENT).map(<[u8]>::to_vec).collect();
     for (i, row) in rows.chunks_exact(ELEMENT).enumerate() {
         let end = row[..32].iter().position(|&c| c == 0).unwrap_or(32);
         let name = std::str::from_utf8(&row[..end])
@@ -351,7 +384,12 @@ fn parse(
             stream,
         });
     }
-    Ok(out)
+    Ok(Block {
+        root,
+        address,
+        elements,
+        rows: out,
+    })
 }
 
 /// What a field or a payload holds.
@@ -386,7 +424,7 @@ fn reals(b: &[u8]) -> Value {
 }
 
 /// The value of one initial-state field, `None` for padding.
-fn initial_value(field: Field, b: &[u8]) -> Option<Named> {
+pub(crate) fn initial_value(field: Field, b: &[u8]) -> Option<Named> {
     Some(match field {
         Field::AnimationState => ("animation_state", unsigned(b)),
         Field::AimingSpeed => ("aiming_speed", signed(b)),

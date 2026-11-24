@@ -118,6 +118,8 @@ pub struct ScriptsTool {
     pub state: Option<Result<Loaded, String>>,
     /// The map's recordings, read with the tables (`app::recordings`).
     pub recordings: Option<Result<Vec<super::recordings::Row>, String>>,
+    /// The recordings as edited, with their undo stack.
+    pub recording_doc: Option<super::recordings::Doc>,
     pub selected: Option<Item>,
     /// The script documentation listing to name builtins from.
     pub doc_path: Option<PathBuf>,
@@ -459,7 +461,11 @@ impl super::App {
         self.scripts.for_rev = Some(rev);
         self.scripts.selected = None;
         self.scripts.state = rev.map(|_| self.read_scripts());
-        self.scripts.recordings = rev.map(|_| self.read_recordings());
+        (self.scripts.recordings, self.scripts.recording_doc) = match rev.map(|_| self.read_recordings()) {
+            None => (None, None),
+            Some(Ok((rows, doc))) => (Some(Ok(rows)), Some(doc)),
+            Some(Err(e)) => (Some(Err(e)), None),
+        };
         match &self.scripts.state {
             Some(Err(e)) => {
                 let e = format!("scripts: {e}");

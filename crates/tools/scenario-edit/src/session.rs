@@ -963,6 +963,22 @@ impl Session {
         doc.scenario.set_tag_grown(grown)
     }
 
+    /// Replace the recordings block's writes (see
+    /// [`Scenario::set_recording_changes`]), which save with the map and
+    /// count toward [`Self::is_dirty`]. A grown stream is refused while
+    /// growth is off.
+    pub fn set_recording_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<crate::TagGrown>,
+    ) -> Result<()> {
+        if !grown.is_empty() && !self.allow_growth {
+            return Err(Error::Refused(GROWTH_REFUSAL));
+        }
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_recording_changes(patches, grown)
+    }
+
     /// Let adding grow a block past its source size. Off by default; see
     /// [`GROWTH_REFUSAL`].
     pub fn set_allow_growth(&mut self, allow: bool) {

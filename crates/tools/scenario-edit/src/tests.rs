@@ -1591,6 +1591,50 @@ fn another_tags_grown_block_is_appended_and_repointed() {
 }
 
 #[test]
+fn the_recordings_blocks_writes_save_with_the_scenario() {
+    let src = fixture_at_end();
+    let mut s = read(src.clone());
+    let base = META + SCNR as u32;
+    let root = base + 0xf00;
+    let g = crate::TagGrown {
+        root,
+        count: 3,
+        bytes: vec![1, 2, 3],
+    };
+    // A pair outside the scenario's payload, one that is also patched, and
+    // a grown stream with nothing in it are refused.
+    let elsewhere = crate::TagGrown {
+        root: META + 0x1100,
+        ..g.clone()
+    };
+    assert!(s.set_recording_changes(vec![], vec![elsewhere]).is_err());
+    assert!(
+        s.set_recording_changes(vec![(root + 4, vec![0])], vec![g.clone()])
+            .is_err()
+    );
+    let empty = crate::TagGrown {
+        bytes: vec![],
+        ..g.clone()
+    };
+    assert!(s.set_recording_changes(vec![], vec![empty]).is_err());
+    assert!(!s.is_modified() && s.changes().is_empty());
+
+    s.set_recording_changes(vec![(base + 0xf40, vec![7, 8])], vec![g])
+        .unwrap();
+    let c = s.changes();
+    assert!(c.patches.contains(&(base + 0xf40, vec![7, 8])));
+    assert_eq!(c.tag_grown.len(), 1);
+    let out = write(&src, &s);
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(&out[sfile(0xf40)..sfile(0xf40) + 2], [7, 8]);
+    assert_eq!(word(&out, sfile(0xf00)), 3);
+    let at = word(&out, sfile(0xf04));
+    assert!(at > META);
+    assert_eq!(&out[src.len()..src.len() + 3], [1, 2, 3]);
+    open(out).validate_checksum().unwrap();
+}
+
+#[test]
 fn a_grown_block_is_appended_and_nothing_else_moves() {
     let src = fixture_at_end();
     let mut s = read(src.clone());

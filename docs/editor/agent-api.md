@@ -2058,6 +2058,26 @@ the window and the API stay one path.
   bad mode are `INVALID_PARAMS`. `recording.path {clear?, limit?}` reads
   the path (`recording`, `player`, `count`, the last `limit` `points`,
   `truncated`) and with `clear` drops it.
+  **Writing (rich editors K3).** `recording.write {name, initial?,
+  trailer?, events?}` edits one stream, all or nothing, as one undo
+  step: `initial` sets unit control fields by the names `recording.read`
+  gives (integers, or an array of reals), `trailer` the twelve bytes
+  (hex), and `events` is a list applied in order of `{op: "set", index,
+  delay?, payload?}` (move the event, the later ones keep their ticks,
+  and/or replace its payload), `{op: "insert", index, kind, delay?,
+  payload?|fields?}` (before event `index`, the end event included) and
+  `{op: "remove", index}`; `fields` names a payload's values as
+  `recording.read` does (`value`, or `a` and `b`). It answers `{name,
+  ticks, stream_bytes, events, grows}`; `grows` says the stream is longer
+  than the source's, which saves as an appended copy and needs **Allow
+  growing full blocks** (`REFUSED` otherwise, as it is for a stream that
+  does not read or is not version 4). An edit that does not fit (an event
+  that is not there, a value past its width, the end event removed) is
+  `INVALID_PARAMS` with the number of the failing edit. The result is an
+  unsaved change of the map (`session.status`). `recording.remove {name}`
+  answers `{removed, recordings}` and is `REFUSED` while a script plays
+  the recording or a later one by its number, and when the scripts do not
+  read. `recording.undo {redo?}` answers `{changed}`.
 - **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through
