@@ -251,6 +251,12 @@ pub const REGISTRY: &[Row] = &[
         slot: "opaque",
     },
     Row {
+        name: "sky",
+        entry: engine::points::RENDER_SKY.base,
+        status: Status::Partial,
+        slot: "after_lights",
+    },
+    Row {
         name: "object_shadows",
         entry: 0x0003_35e0,
         status: Status::D3d,
@@ -932,6 +938,12 @@ pub fn install(b: &mut hooks::Builder) {
             "residual_census_scene_passes_end",
         ),
         (
+            &points::RENDER_SKY,
+            "sky",
+            "residual_census_sky",
+            "residual_census_sky_end",
+        ),
+        (
             &points::OBJECT_SHADOW_LIST,
             "object_shadows",
             "residual_census_object_shadows",
@@ -1313,14 +1325,9 @@ mod tests {
         assert_eq!(status(1, 1), "d3d", "an alternate view's");
         assert_eq!(status(3, 12), "d3d", "the light passes'");
         assert_eq!(status(4, 10), "d3d", "an object shadow's");
-        for r in REGISTRY {
-            assert_eq!(
-                r.status,
-                Status::D3d,
-                "{}: no fixed producer is replaced",
-                r.name
-            );
-        }
+        let sky = Producer::Fixed(row("sky").unwrap());
+        assert_eq!(sky.status(), Status::Partial);
+        assert_eq!(sky.slot(), "after_lights");
     }
 
     #[test]

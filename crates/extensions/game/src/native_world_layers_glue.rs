@@ -9,6 +9,7 @@ use d3d::backend::{
     ExternalPassRequest, ExternalPlan, ExternalSlot, ExternalTarget, ExternalWrites, ResolvedDraw,
 };
 use render_bridge::native_world_layers::{Layer, current};
+use render_bridge::native_sky::{SkyItem, Refusal};
 use native_render::camera::GuestRead;
 use native_render::world_layers::{
     DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
@@ -29,11 +30,12 @@ pub struct DrawContext {
     pub frame: u64,
     pub geometry: Option<Geometry>,
     bsp: Option<u32>,
-    generation: u64,
+    pub(crate) generation: u64,
     pub index_count: Option<u32>,
 }
 
 thread_local! {
+    static SKY: RefCell<Option<Result<SkyItem, Refusal>>> = const { RefCell::new(None) };
     static DRAW: Cell<Option<DrawContext>> = const { Cell::new(None) };
 }
 
@@ -100,6 +102,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
             index,
             "boot:native world layers indexed",
             move |cpu, ctx, selector| {
+                let mut sky = None;
                 let context = (|| {
                     let frame = crate::d3d_diag::presents() + 1;
                     let current = current();
@@ -107,9 +110,10 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                     let mem = Memory(&guest);
                     let return_address = mem.read_u32(cpu.esp)?;
                     let layer = if return_address == SKY_INDEXED_RETURN {
+                        sky = Some(SkyItem::read(&mem, cpu.esp, cpu.ebp));
                         Layer {
                             number: 15,
-                            view: u32::MAX,
+                            view: mem.read_u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX),
                             caller_return: return_address,
                             site: Site::Sky,
                             list: 0,
@@ -119,7 +123,11 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                     } else {
                         current?
                     };
-                    let geometry = Geometry::read(&mem, cpu.esp, layer.number);
+                    let geometry = if layer.site == Site::Sky {
+                        None
+                    } else {
+                        Geometry::read(&mem, cpu.esp, layer.number)
+                    };
                     if timeline::phase::enabled() && layer.site == Site::Scene && matches!(layer.number, 1 | 3 | 5 | 7 | 8)
                         && let Some(owner) = geometry.and_then(|g| match g.owner {
                             Owner::Cluster(n) => Some(native_render::world::Owner::Cluster(n)),
@@ -140,6 +148,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                     })
                 })();
                 let _restore = Restore(DRAW.replace(context));
+                let _sky = sky.map(|item| RestoreSky(SKY.replace(Some(item))));
                 Ok(previous.invoke(cpu, ctx, selector))
             },
         );
@@ -169,6 +178,22 @@ pub fn enter_opaque_range(
         // without it the section cache is bypassed for this range.
         bsp: None, generation: render_bridge::native_map_work::bsp_generation(),
     })))
+}
+
+struct RestoreSky(Option<Result<SkyItem, Refusal>>);
+
+impl Drop for RestoreSky {
+    fn drop(&mut self) {
+        if SKY.replace(self.0.take()).is_some() {
+            // Clipped, unsupported device state, or the device bypassed admission.
+            render_bridge::native_sky::count("device");
+        }
+    }
+}
+
+/// Consume the item captured for this issue, only after checking its draw context.
+pub(crate) fn take_sky() -> Option<Result<SkyItem, Refusal>> {
+    SKY.take()
 }
 
 pub fn indexed_draw() -> Option<DrawContext> {

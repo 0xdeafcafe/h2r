@@ -904,6 +904,8 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Selects the current view's sky and draws its model.
+    RENDER_SKY @ 0x0003_ede0: [opaque]; "docs/graphics/native-renderer.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.

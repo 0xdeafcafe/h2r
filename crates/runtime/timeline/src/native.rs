@@ -22,9 +22,10 @@ pub enum Stage {
     Effects,
     Ui,
     Flares,
+    Sky,
 }
 
-const STAGES: [&str; 16] = [
+const STAGES: [&str; Stage::Sky as usize + 1] = [
     "world",
     "objects",
     "transparents",
@@ -41,6 +42,7 @@ const STAGES: [&str; 16] = [
     "effects",
     "ui",
     "flares",
+    "sky",
 ];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]

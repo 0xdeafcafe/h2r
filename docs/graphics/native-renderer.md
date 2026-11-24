@@ -398,11 +398,23 @@ With a flare in view, sample `h2 agent render.scene` twice. An increase in `coun
 plan as layers 1, 5, 7, 8 and 20 do (`frame-scene.layers`,
 `layer_pass::OVERLAY_LAYER`; [framescene.md](framescene.md), slice 4); its
 outcomes are `layer_plan_2_*`, `layer_plan_alt2_*` and `layer_plan_fp2_*` in `render.scene`.
-The sky model's indexed strip (`0x0004c976`) and the standard layer-2
-geometry the plan leaves at the main-scene and alternate-scene layer sites
-are admitted. Guest order, transforms, shader inputs and stencil setup stay.
+The standard layer-2 geometry the plan leaves at the main-scene and alternate-scene sites is admitted with its resolved inputs.
 The pass records the full range on both live target copies before the device
 drops the D3D draw. Other layer-2 handlers and unknown callers stay on D3D.
+
+**Sky.** At the indexed strip call in the sky model renderer (`0x0004c976`),
+`scene_extract::layout::sky::SkyItem` resolves the scenario sky for this view,
+its model section, part, shader and pass ordinal. It reads the section's rigid
+node or the region's remapped palette from the current view's node block, and
+reconstructs position and UV decompression from the model bounds and section flags.
+`IndexedPass::for_sky` checks those rows against the draw's vertex constants
+and supplies them to the vertex program. The material uses the program,
+textures and other evaluated constants bound at issue. The scene sets stencil
+mode 2 before the sky call at `0x0002c0bc` and restores mode 0 afterwards.
+The native strip requires the mode-2 state and a stencil attachment, and
+replaces stencil on passing fragments. Replay retains the sky pass beside its
+original strip and records it against the replay's own attachments and textures.
+If extraction, admission or recording fails, the original strip draws in order.
 
 **Clears, binds and visibility.** A whole-viewport, unmasked clear uses the
 attachment load operations directly; partial or channel-masked clears use the

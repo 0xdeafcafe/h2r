@@ -2054,7 +2054,12 @@ h2 agent render.parity '{"arm": true}'
   `scene_submitted_flares_display_draws` accumulate flare ranges as
   `GfxBackend::commit_external` appends them to each copy's command
   stream. Private replays also contribute. These counters are available
-  with frame statistics and the residual census disabled. Unless
+  with frame statistics and the residual census disabled. The corresponding
+  `scene_submitted_sky_{reference,display}_draws` count committed sky strips.
+  `sky_plan_admitted` counts strips offered to the device after extraction and
+  material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
+  material, transform, view, range, stencil or device. GPU reservation and
+  replay outcomes appear under `native_sky_*` in the frame counters. Unless
   `frame-scene.layers=off` is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
@@ -2309,7 +2314,7 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   push_words, state_words, clears, binds, copies, uploads, d3d_ms,
   guest_ms}`. Only with `frame-scene.census` in `H2_FEATURES`, which
   places an entry and an exit observer on each producer in
-  `residual_census::REGISTRY` (the views, the scene passes, the object
+  `residual_census::REGISTRY` (the views, the scene passes, the sky, the object
   shadows, decals, the lights, the transparents, the post calls, the HUD,
   the UI, the fade, the frame end and the loading screen) and on the layer
   draw (`layer.<site>.<layer>`, as `render.scene`'s entry census names
@@ -2319,7 +2324,7 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   frame it is `outside_render`. At each boundary the device first decodes
   the push buffer, so an inline draw is charged to the producer open when
   its words were written. `status` is `native` or `d3d` from the
-  registry, and `partial` for a layer draw a native stage draws some
+  registry, and `partial` for the sky and for a layer draw a native stage draws some
   items of from the scene, skipping their guest draws
   (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 7,
   8, 17 and 20, the alternate view's 2 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is

@@ -1,10 +1,8 @@
-//! The native renderer's remaining Direct3D draws: the sky model's
-//! indexed strip and the layer-2 world and object sections, admitted
-//! with the same resolved input and two-copy reservation as the opaque
-//! layers.
+//! Admission of the typed sky model strip and residual layer-2 packets.
 
-/// Use the same resolved indexed input and two-copy reservation as the
-/// opaque layers. No sky model state, sort order or layer handler is moved.
+use native_render::world_layers_gpu::IndexedPass;
+use render_bridge::native_sky;
+
 pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let enabled = hooks::Switches::from_env().is_ok_and(|s| hooks::switches::native_render_on(&s));
     if enabled && let Ok(mut device) = device.lock() {
@@ -27,27 +25,40 @@ impl d3d::DrawAdmission for ResidualDraws {
 
         let call = crate::native_world_layers_glue::indexed_draw()?;
         let draw = snapshot.draw;
-        if draw.entry != "D3DDevice_DrawIndexedVertices"
-            || draw.indices.as_ref()?.len() != call.index_count? as usize
-        {
+        if draw.entry != "D3DDevice_DrawIndexedVertices" {
             return None;
         }
-        let stage = match (call.layer.site, call.layer.number) {
-            (Site::Sky, 15) => timeline::native::Stage::World,
+        let (stage, pass) = match (call.layer.site, call.layer.number) {
+            (Site::Sky, 15) => {
+                let item = crate::native_world_layers_glue::take_sky()?;
+                let plan = native_sky::admit(
+                    item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
+                    |item| IndexedPass::for_sky(draw, self.geometry.clone(), call.frame, call.generation, item),
+                );
+                match plan {
+                    Ok(pass) => {
+                        native_sky::count("admitted");
+                        (timeline::native::Stage::Sky, pass)
+                    }
+                    Err(reason) => {
+                        native_sky::count(reason);
+                        return None;
+                    }
+                }
+            }
             (Site::Scene | Site::AlternateView, 2) if call.layer.list != 0 => {
-                match call.geometry?.owner {
+                if draw.indices.as_ref()?.len() != call.index_count? as usize {
+                    return None;
+                }
+                let stage = match call.geometry?.owner {
                     Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
                     Owner::Object { .. } => timeline::native::Stage::Objects,
-                }
+                };
+                let pass = IndexedPass::new(draw, self.geometry.clone(), call.frame, None)?;
+                (stage, pass)
             }
             _ => return None,
         };
-        let pass = native_render::world_layers_gpu::IndexedPass::new(
-            draw,
-            std::sync::Arc::clone(&self.geometry),
-            call.frame,
-            None,
-        )?;
         Some((
             d3d::ExternalPlan {
                 stage,

@@ -519,6 +519,11 @@ fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
 }
 
 #[test]
+fn sky_admission_replays_refused_strips_in_order() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Sky);
+}
+
+#[test]
 fn shadow_admission_replays_a_refused_packet_without_a_worker_read() {
     indexed_admission_replays_a_refused_packet(timeline::native::Stage::Shadows);
 }

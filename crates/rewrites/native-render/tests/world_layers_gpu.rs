@@ -675,3 +675,60 @@ mod flares;
 
 #[path = "world_layers_gpu/cone_shadows.rs"]
 mod cone_shadows;
+
+#[test]
+fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
+    use native_render::object_state::{structure_stencil, STENCIL_MARK_REFERENCE};
+    use native_render::program::MODEL_ROWS;
+    use scene_extract::layout::sky::SkyItem;
+
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let mut backend = GfxBackend::new(ctx);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let surfaces = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+    let cache = Arc::new(Cache::default());
+    let mut draw = triangle(2.0, [0.0; 4], STENCIL_MARK_REFERENCE, false);
+    draw.primitive = PrimitiveType::TriangleStrip;
+    draw.state.render.stencil = structure_stencil(STENCIL_MARK_REFERENCE);
+    draw.state.render.depth_func = CompareFunc::Always;
+    let words = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xf),
+        Inst::mac(MacOp::Mov, Some(Operand::c(MODEL_ROWS as u8)), None, None)
+            .to_out(false, OutReg::D0, 0xf).last(),
+    ]);
+    draw.shader.vertex = VertexProcessing::Program {
+        start: 0, microcode: Program::parse(&words).unwrap().instructions.iter()
+            .flat_map(|i| i.words).collect::<Vec<_>>().into(),
+    };
+    let pixel = 4 * (4 * SIZE as usize + 4);
+    for value in [[0.0, 1.0, 0.0, 1.0], [1.0; 4]] {
+        let rows = vec![value; 3];
+        Arc::make_mut(&mut draw.shader.constants)[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(&rows);
+        let item = SkyItem {
+            model: 3, section: 1, part: 0, shader: 5, pass: 0,
+            rows, decompression: [[0.0; 4]; 3],
+        };
+        let mut unmarked = draw.clone();
+        unmarked.state.render.stencil.enable = false;
+        assert_eq!(IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone()).err(), Some("stencil"));
+        backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
+        assert!(after_compile(|| {
+            let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone()).unwrap();
+            assert!(pass.replays_scene());
+            record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(pass))
+        }));
+        let pixels = backend.read_color(color).unwrap().0;
+        let expected = value.map(|c| (c * 255.0) as u8);
+        assert_eq!(&pixels[pixel..pixel + 4], &expected);
+        // A guest draw after the sky only reaches the pixels marked by it.
+        let mut probe = triangle(2.0, [0.0, 0.0, 0.0, 1.0], STENCIL_MARK_REFERENCE, false);
+        probe.state.render.depth_func = CompareFunc::Always;
+        probe.state.render.stencil.func = CompareFunc::Equal;
+        probe.state.render.stencil.pass = StencilOp::Keep;
+        assert_eq!(backend.draw(color, Some(depth), &probe, [None; 4]), Ok(DrawOutcome::Drawn));
+        let pixels = backend.read_color(color).unwrap().0;
+        assert_eq!(&pixels[pixel..pixel + 4], &[0, 0, 0, 255]);
+    }
+}
