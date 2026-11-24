@@ -30,7 +30,7 @@ slot, after `record::check` finds nothing (docs/editor/editor.md).
 | `+0x02` | u8 | unknown, preserved | |
 | `+0x03` | u8 | built-in description number (0..=100) | confirmed |
 | `+0x04` | UTF-16 [32] | name; the last unit is always 0 | confirmed |
-| `+0x44` | i32 | game-engine index: 1 CTF, 2 Slayer, 3 Oddball, 4 King, 7 Juggernaut, 8 Territories, 9 Assault | confirmed |
+| `+0x44` | i32 | game-engine index: 1 CTF, 2 Slayer, 3 Oddball, 4 King, 6 Script, 7 Juggernaut, 8 Territories, 9 Assault | confirmed for retail, `record::SCRIPT_INDEX` for scripts |
 | `+0x48` | u32 | flags: bit 0 team play, other bits are settings (below) | confirmed |
 | `+0x4c..+0xf0` | | common settings (below) | confirmed |
 | `+0xf0..+0x10c` | | game-type area: its meaning depends on the engine index | confirmed |
@@ -108,7 +108,8 @@ the others, respawn modifier 2, betrayal penalty 10, map-default weapons
 and vehicles, and each type's own area (Juggernaut fast with an
 overshield, a hill that moves every 60 s, one ball, a 30 s flag reset,
 three territories). It is named by our label of the type. Every stock
-record passes `record::refused`. The ignored test
+record passes `record::refused`. The stock script record uses Slayer's common
+settings and a zeroed type area. The ignored test
 `the_stock_record_is_offered` (`tests/settings_table.rs`) checks that the
 retail editor offers each stock value.
 
@@ -135,6 +136,9 @@ A `sily` tag: `+0` setting number, `+8` its `unic` reference (datum
 `+0xc`), `+0x10` title, `+0x14` the title in capitals and `+0x18` help
 string ids (checked by reading their text), `+0x1c` the options block of 0xc-byte options
 (`+0` default flag, `+4` value, `+8` label string id). Confirmed layout.
+
+Script-index records take the common match, team, player, vehicle and weapon
+settings from Slayer's pages and defaults. The type area stays zero.
 
 Without a disc, `Schema::fallback` lists every setting the record stores
 with our names, any value the record accepts, and no built-ins.
@@ -171,7 +175,9 @@ One file per save directory, no extension, named by the content type
 Content types: 0 profile, 1 Slayer, 2 King, 3 Race, 4 Oddball,
 5 Juggernaut, 6 Headhunter, 7 CTF, 8 Assault, 9 Territories, 10 playlist.
 The listing tries each type's file name in turn (`0x216537`); the first
-that exists gives the type.
+that exists gives the content category. The script index shares Slayer's
+payload filename. The record in that file retains engine 6 and the script
+reference that the game type list resolves to a row.
 
 | Offset | Size | Content |
 |---|---|---|
@@ -240,8 +246,10 @@ file, so it carries no signature.
   the record decodes, `engine` and `name` match it, and a script is
   present exactly when the record names one, its IR hashes to `hash`,
   `hash` starts with the record's prefix, `rules::verify::load` takes it
-  and its carrier is the record's engine. `Bundle::check`, which Live
-  runs before publishing, adds the name rules (1 to 31 characters, no
+  and its carrier matches a retail record's engine. A script-index bundle
+  requires the script and takes its display type from the header.
+  `Bundle::check` accepts only common settings and extension fields on the
+  script index. Before publishing, Live runs this check, which adds the name rules (1 to 31 characters, no
   leading or trailing space, no control character, no `|`, none of
   U+E405..U+E407, nothing past U+FFFF; game-options.md section 4), a
   record the clean-up keeps and our rules allow (`record::refused`), and

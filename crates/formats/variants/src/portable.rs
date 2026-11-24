@@ -100,7 +100,7 @@ pub struct Bundle {
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<Author>,
-    /// For people: our label of the record's game type.
+    /// For people: the script header's type label, or the record's when unscripted.
     pub game_type: String,
     /// The record's game-engine index.
     pub engine: i32,
@@ -142,7 +142,7 @@ pub enum PortableError {
     Block(ext::Why),
     #[error("the record names script mode {0}, which this build does not know")]
     Mode(u8),
-    #[error("the record names a rules script, but the file carries none")]
+    #[error("the record requires a rules script, but the file carries none")]
     ScriptMissing,
     #[error("the file carries a script, but the record does not name one")]
     ScriptUnexpected,
@@ -249,6 +249,7 @@ impl Bundle {
         check_description(description)?;
         let mut v = v.clone();
         v.set_name(name).map_err(|e| PortableError::Edit(e.to_string()))?;
+        let mut game_type = v.game_type().label();
         let script = match script {
             None => None,
             Some(a) => {
@@ -260,7 +261,8 @@ impl Bundle {
                 let id = Sha256::of(&a.ir);
                 // The script's settings are the only source of the block's
                 // extras: the input record's own are not kept.
-                let mut e = settings_record(&ir)?.ext();
+                game_type = ir.header.game_type.row().label.to_owned();
+                let mut e = attached_settings(&ir, &v)?.ext();
                 e.script = ext::Script {
                     mode: Mode::Rules,
                     prefix: id.0[..8].try_into().unwrap(),
@@ -281,7 +283,7 @@ impl Bundle {
             name: name.to_string(),
             description: description.to_string(),
             author: None,
-            game_type: v.game_type().label(),
+            game_type,
             engine: v.game_type().engine(),
             record_hex: hex(v.bytes()),
             script,
@@ -322,7 +324,7 @@ impl Bundle {
     /// engine and name fields match it, and a record that names a rules
     /// script comes with that script, whose IR hashes to its hash, starts
     /// with the record's prefix, loads (`rules::verify::load`) and rides
-    /// the record's engine.
+    /// the record's engine or the script index.
     pub fn integrity(&self) -> Result<Checked, PortableError> {
         let v = self.variant()?;
         let engine = v.game_type().engine();
@@ -344,6 +346,9 @@ impl Bundle {
             Block::None | Block::Ignored(_) => None,
         };
         let script = match (named, &self.script) {
+            (None, None) if engine == record::SCRIPT_INDEX => {
+                return Err(PortableError::ScriptMissing);
+            }
             (None, None) => None,
             (Some(_), None) => return Err(PortableError::ScriptMissing),
             (None, Some(_)) => return Err(PortableError::ScriptUnexpected),
@@ -364,7 +369,7 @@ impl Bundle {
                 }
                 let (decoded, _) = rules::verify::load(&ir)
                     .map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
-                if i32::from(decoded.header.engine()) != engine {
+                if engine != record::SCRIPT_INDEX && i32::from(decoded.header.engine()) != engine {
                     return Err(PortableError::Carrier {
                         record: engine,
                         script: decoded.header.engine(),
@@ -401,7 +406,7 @@ impl Bundle {
             }
             // A script whose own record the game would not keep makes no
             // variant ([`settings_record`]).
-            settings_record(ir)?;
+            attached_settings(ir, &c.variant)?;
         }
         Ok(c)
     }
@@ -532,7 +537,20 @@ pub fn record_for_named(
 /// and has no script reference. [`Bundle::check`] and `h2 rules check`
 /// hold a script to it.
 pub fn settings_record(ir: &rules::Ir) -> Result<GameVariant, PortableError> {
-    let carrier = ir.header.engine();
+    settings_on(ir, ir.header.engine())
+}
+
+/// The settings a bundled script can write on this record. A script-index
+/// record has only common settings and extension fields.
+fn attached_settings(ir: &rules::Ir, v: &GameVariant) -> Result<GameVariant, PortableError> {
+    if v.game_type() == GameType::Script {
+        settings_on(ir, rules::SCRIPT_INDEX)
+    } else {
+        settings_record(ir)
+    }
+}
+
+fn settings_on(ir: &rules::Ir, carrier: u8) -> Result<GameVariant, PortableError> {
     let mut v = GameVariant::stock(GameType::from_engine(i32::from(carrier)))
         .ok_or(PortableError::NoStock(carrier))?;
     let mut e = ext::Ext::default();
@@ -978,6 +996,32 @@ mod tests {
         assert!(base64_decode("T===").is_none());
         assert!(base64_decode("TQ==TWFu").is_none());
         assert!(base64_decode("TW!u").is_none());
+    }
+
+    #[test]
+    fn a_script_index_bundle_files_by_header_and_edits_common_settings() {
+        let mut v = GameVariant::stock(GameType::Script).unwrap();
+        let score = rules::settings::named("score_limit").unwrap().0;
+        set_row(&mut v, score, 11).unwrap();
+        let attach = Attach::from_source(rules::builtin::GLITCH_HUNT).unwrap();
+        let bundle = Bundle::new(&v, "Unfamiliar name", "", Some(attach)).unwrap();
+        assert_eq!(bundle.game_type, rules::types::Type::Research.row().label);
+        assert_eq!(bundle.engine, record::SCRIPT_INDEX);
+        let checked = read(&bundle.canonical()).unwrap().check().unwrap();
+        assert_eq!(checked.variant.game_type(), GameType::Script);
+        assert_eq!(checked.variant.get(SettingId(2)), Some(11));
+        let header = checked.script.unwrap().1.header;
+        assert_eq!(header.game_type, rules::types::Type::Research);
+
+        let attach = Attach::from_source(&carried("ctf", "ctf_flag_type = 1\n")).unwrap();
+        assert!(matches!(
+            Bundle::new(&v, "CTF", "", Some(attach)),
+            Err(PortableError::Setting(_))
+        ));
+        assert!(matches!(
+            Bundle::new(&v, "No script", "", None),
+            Err(PortableError::ScriptMissing)
+        ));
     }
 
     #[test]

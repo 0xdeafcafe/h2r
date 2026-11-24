@@ -199,7 +199,12 @@ fn game_setup_lists_the_lobbys_rows_in_its_order() {
 fn listed(name: &str, ty: GameType, row: Option<Row>) -> Listed {
     let mut v = GameVariant::blank(ty);
     v.set_name(name).unwrap();
-    game_types::listed(v, row).unwrap()
+    if let Some(row) = row {
+        let listed = crate::community_variants::listed_named(name).unwrap();
+        assert_eq!(Row::of_type(listed.game_type), Some(row));
+        v.set_ext(&listed.ext()).unwrap();
+    }
+    game_types::listed(v).unwrap()
 }
 
 #[test]
@@ -261,7 +266,7 @@ fn the_game_types_are_the_lobbys_with_our_rows_last() {
     assert_eq!(Group::Type(GameType::Ctf).label(), "Capture the Flag");
     assert_eq!(Group::Row(Row::Research).label(), "Research and Devolution");
     assert!(
-        game_types::listed(GameVariant::blank(GameType::Other(5)), None).is_none(),
+        game_types::listed(GameVariant::blank(GameType::Other(5))).is_none(),
         "an engine the list has no row for"
     );
 }
@@ -277,14 +282,19 @@ fn the_built_in_list_is_read_from_the_game() {
     ctf.set_name("CTF Classic").unwrap();
     let mut odd = GameVariant::blank(GameType::Oddball);
     odd.set_name("Rockets Oddball").unwrap();
-    g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 2);
-    for (i, v) in [&ctf, &odd].into_iter().enumerate() {
+    let mut script = GameVariant::blank(GameType::Script);
+    script.set_name("My Siege").unwrap();
+    script.set_ext(&crate::community_variants::listed_named("Siege").unwrap().ext()).unwrap();
+    g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 3);
+    for (i, v) in [&ctf, &odd, &script].into_iter().enumerate() {
         let at = RECORDS + 4 + i as u32 * BUILTIN_RECORD + BUILTIN_VARIANT;
         g.write(at, v.bytes()).unwrap();
     }
     let list = game_types::read(&g);
     let names: Vec<&str> = list.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["CTF Classic", "Rockets Oddball"]);
+    assert_eq!(names, ["CTF Classic", "Rockets Oddball", "My Siege"]);
+    assert_eq!(list[2].group, Group::Row(Row::Siege));
+    assert_eq!(list[2].variant, script);
     assert_eq!(list[1].group, Group::Type(GameType::Oddball));
     assert_eq!(list[0].variant, ctf, "the whole record");
 }

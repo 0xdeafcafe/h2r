@@ -35,8 +35,11 @@ const DISTANCE_EPSILON: u32 = 0x0045_dbd8;
 const COLOUR_THRESHOLD: u32 = 0x0045_dc1c;
 const LIM_SLOPE: u32 = 0x0045_e0b0;
 const LIGHT_OPTIONS: u32 = 0x0051_07e8;
-const VISIBILITY_OPTIONS: u32 = 0x004e_9ae8;
-const LIGHT_BSP_OVERRIDES: u32 = 0x0055_e4d0;
+/// The multiplayer engine globals (`points::GAME_ENGINE`); `+0xc14` the
+/// engine index, `+0` a flags byte.
+const GAME_ENGINE: u32 = 0x004e_9ae8;
+/// The engine table (`points::ENGINE_TABLE`): one engine object per index.
+const ENGINE_TABLE: u32 = 0x0055_e4d0;
 const RENDER_MODE: u32 = 0x0048_5602;
 const RECT_SLOPES: u32 = 0x0046_8774;
 const RECIPROCAL_TWO: u32 = 0x0045_dbbc;
@@ -195,12 +198,12 @@ pub fn visible_candidate(m: &dyn GuestMemory, light: u32, definition: u32, flags
         return Ok(false);
     }
     if flags & 0x100 == 0 {
-        let vis = ptr(m, VISIBILITY_OPTIONS)?;
-        let bsp = m.u32(at(vis, 0xc14)?)?;
-        if bsp >= 32 {
+        let engine = ptr(m, GAME_ENGINE)?;
+        let index = m.u32(at(engine, 0xc14)?)?;
+        if index >= 32 {
             return Err(Refusal::Layout);
         }
-        if m.u32(at(LIGHT_BSP_OVERRIDES, bsp * 4)?)? != 0 && m.u8(vis)? & 2 != 0 {
+        if m.u32(at(ENGINE_TABLE, index * 4)?)? != 0 && m.u8(engine)? & 2 != 0 {
             return Ok(false);
         }
     }

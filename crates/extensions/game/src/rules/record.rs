@@ -20,6 +20,10 @@
 //!   game's encoder would jump through a zero entry for it and its decoder
 //!   refuses it. Any other record, and a stream we cannot read whole, go
 //!   to the game's body.
+//! - `VARIANT_CATEGORY` (`0x216a50`), a `before`: a script record is filed
+//!   under Slayer's content category (`variants::record::content_category`)
+//!   on a save or a list add; the game's body would jump through a zero
+//!   entry. Any other record goes to the game's body.
 //!
 //! The differential test against the lifted original is
 //! `crates/rewrites/engine/tests/variant_record_differential.rs`.
@@ -143,7 +147,9 @@ pub fn decode(
     Ok(Some(u8::from(answer == wire::Decoded::Kept)))
 }
 
-/// The hooks. No other feature hooks these points.
+/// The hooks. No other feature hooks these points. The content
+/// category is answered for the script index only; the protocol map for
+/// every index.
 pub fn register(b: &mut hooks::Builder) {
     use hooks::Flow;
     b.raw().before(
@@ -225,6 +231,28 @@ pub fn register(b: &mut hooks::Builder) {
             if let Some(edx) = edx {
                 c.cpu.edx = edx;
             }
+            c.ret(0).map(Flow::Return)
+        },
+    );
+    b.raw().before(
+        &points::VARIANT_CATEGORY,
+        "rules: a script record is filed as Slayer's",
+        move |c| {
+            let engine = {
+                let rt = Arc::clone(c.ctx.runtime());
+                let mem = rt.memory();
+                let m: &dyn GuestMemory = &*mem;
+                m.i32(c.cpu.eax.wrapping_add(record::ENGINE_AT as u32)).ok()
+            };
+            // Only the script index: every other index is the game's body.
+            let Some(category) = engine
+                .filter(|&e| e == record::SCRIPT_INDEX)
+                .and_then(record::content_category)
+            else {
+                return Ok(Flow::Continue);
+            };
+            c.cpu.eax = category;
+            c.cpu.ecx = (record::SCRIPT_INDEX as u32).wrapping_sub(1);
             c.ret(0).map(Flow::Return)
         },
     );

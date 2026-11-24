@@ -27,8 +27,11 @@ const EPSILON: u32 = 0x0045_dbdc;
 const ZERO: u32 = 0x0045_dbd8;
 const LIM_SLOPE: u32 = 0x0045_e0b0;
 const LIGHT_OPTIONS: u32 = 0x0051_07e8;
-const VISIBILITY_OPTIONS: u32 = 0x004e_9ae8;
-const LIGHT_BSP_OVERRIDES: u32 = 0x0055_e4d0;
+/// The multiplayer engine globals (`points::GAME_ENGINE`); `+0xc14` the
+/// engine index, `+0` a flags byte.
+const GAME_ENGINE: u32 = 0x004e_9ae8;
+/// The engine table (`points::ENGINE_TABLE`): one engine object per index.
+const ENGINE_TABLE: u32 = 0x0055_e4d0;
 
 /// The 31 words of a posed volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,8 +207,9 @@ pub struct VolumeCall {
 }
 
 /// `0x000c17f0`: EAX `out`, EDX the light datum, stack 0 `bsp_check` (its
-/// low byte: test the BSP's light override). The volume is posed when
-/// the light options allow lights, the BSP override does not hide it,
+/// low byte: test the game engine's light flag). The volume is posed when
+/// the light options allow lights, a running game engine's flag (`+0`
+/// bit 1) does not hide it,
 /// and the record's flag bit 1 is set.
 pub fn light_volume(m: &dyn GuestMemory, out: u32, datum: u32, bsp_check: u32) -> Result<VolumeCall> {
     let light = lights(m)?.slot(m, datum)?;
@@ -214,13 +218,13 @@ pub fn light_volume(m: &dyn GuestMemory, out: u32, datum: u32, bsp_check: u32) -
     let flags = m.u32(definition)?;
     let mut allowed = true;
     if flags & 0x100 == 0 && bsp_check as u8 != 0 {
-        let vis = m.u32(VISIBILITY_OPTIONS)?;
-        let bsp = m.u32(at(vis, 0xc14)?)?;
-        if bsp >= 32 {
+        let engine = m.u32(GAME_ENGINE)?;
+        let index = m.u32(at(engine, 0xc14)?)?;
+        if index >= 32 {
             return Err(Refusal::Layout);
         }
-        if m.u32(at(LIGHT_BSP_OVERRIDES, bsp * 4)?)? != 0 {
-            allowed = m.u8(vis)? & 2 == 0;
+        if m.u32(at(ENGINE_TABLE, index * 4)?)? != 0 {
+            allowed = m.u8(engine)? & 2 == 0;
         }
     }
     let options = m.u32(LIGHT_OPTIONS)?;

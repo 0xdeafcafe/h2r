@@ -29,6 +29,7 @@ pub mod reload;
 pub mod roles;
 pub mod runtime;
 pub mod scoring;
+pub(crate) mod start_line;
 /// The world API (docs/game/rules-world-api.md): bot orders, show cues,
 /// zones and loadouts.
 pub mod world;

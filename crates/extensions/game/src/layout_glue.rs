@@ -814,6 +814,7 @@ pub fn install(
                     let mem = ctx.runtime().memory();
                     let name = mem.u32(cpu.esp + 4).unwrap_or(0);
                     let n = grown_count(&*mem, cpu.esp, cpu.eax, small_extra);
+                    let n = crate::tweakers::list_capacity(n);
                     let pages = NativeList::from_array(name, cpu.eax).map_or(0, |list| {
                         let kind = mem.u8(crate::list_class::UI_GAME_KIND).ok();
                         pause_pages.for_game(list, kind).count() as u32

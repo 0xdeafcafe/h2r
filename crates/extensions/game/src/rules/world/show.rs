@@ -15,6 +15,7 @@
 use std::sync::{Mutex, MutexGuard};
 
 use ::rules::show::{self, Audience, Cue, HoleValue, Message, To};
+use ::rules::types::{StartLine, Type};
 use ::rules::vm::Arg;
 use ::rules::{Ir, caps};
 use engine::GuestMemory;
@@ -101,6 +102,15 @@ fn push(tick: u32, cue: Cue) {
     let over = c.cues.len().saturating_sub(show::MAX_PENDING);
     if over > 0 {
         c.cues.drain(..over);
+    }
+}
+
+/// The authority speaks the same clip it sends its viewers. The type
+/// table supplies the id on both ends.
+pub fn start_clip(tick: u32, ty: Type) {
+    if ty.row().start == StartLine::Ours {
+        crate::medal_announcer::announce_clip(ty.name());
+        push(tick, Cue::StartClip(ty));
     }
 }
 
@@ -299,29 +309,40 @@ pub fn publish(m: &dyn GuestMemory, ir: &Ir, tick: u32, messages: Vec<Outgoing>)
     }
 }
 
-/// The running script's string table, from the variant record's blob:
+/// The running script's declared type and message strings, from the variant record's blob:
 /// compiled in or in the game-variant store (a `Viewer` has the blob from
 /// the lobby fetch). Cached by the record's hash prefix.
-fn strings(m: &dyn GuestMemory) -> Option<Vec<String>> {
+fn script_context(m: &dyn GuestMemory) -> Option<(Type, Vec<String>)> {
     let block = super::super::guest::block(m).ok().flatten()?;
     let script = variants::ext::Ext::in_effect(&block).script;
+    // A kit director can run under an ordinary Slayer record. The
+    // viewer already received its mode state with the actor packet.
+    let kit_director = script.mode == variants::ext::Mode::None
+        && super::super::guest::engine_index(m).ok().flatten() == Some(variants::GameType::Slayer.engine())
+        && crate::firefight::hud::received().get().is_some_and(|blob| {
+            crate::firefight::hud::Mode::decode(&blob).is_ok()
+        });
+    if script.mode == variants::ext::Mode::Firefight || kit_director {
+        return Some((Type::Firefight, Vec::new()));
+    }
     if script.mode != variants::ext::Mode::Rules {
         return None;
     }
-    static CACHE: Mutex<Option<([u8; 8], Vec<String>)>> = Mutex::new(None);
+    static CACHE: Mutex<Option<([u8; 8], Type, Vec<String>)>> = Mutex::new(None);
     {
         let cache = lock(&CACHE);
-        if let Some((prefix, strings)) = &*cache
+        if let Some((prefix, ty, strings)) = &*cache
             && *prefix == script.prefix
         {
-            return Some(strings.clone());
+            return Some((*ty, strings.clone()));
         }
     }
     let blob = super::super::feature::local_blob(script.prefix)?;
     let (ir, _) = ::rules::verify::load(&blob).ok()?;
-    let strings = ir.strings.clone();
-    *lock(&CACHE) = Some((script.prefix, strings.clone()));
-    Some(strings)
+    let ty = ir.header.game_type;
+    let strings = ir.strings;
+    *lock(&CACHE) = Some((script.prefix, ty, strings.clone()));
+    Some((ty, strings))
 }
 
 /// The cues a client received this tick: each decoded against the running
@@ -340,11 +361,18 @@ pub fn present(cx: &Cx, cues: &[ReceivedCue]) {
 }
 
 fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
-    let (strings, roster) = cx
-        .read(|m| strings(m).map(|s| (s, roster(m))))
+    let (ty, strings) = cx
+        .read(script_context)
         .ok_or_else(|| "the running script's blob is not on this machine".to_string())?;
-    let Cue::Message(message) =
-        Cue::decode(cue.kind, &cue.bytes, &strings).map_err(|e| e.to_string())?;
+    let message = match Cue::decode(cue.kind, &cue.bytes, &strings).map_err(|e| e.to_string())? {
+        Cue::StartClip(clip) if clip == ty => {
+            crate::medal_announcer::announce_clip(ty.name());
+            return Ok(());
+        }
+        Cue::StartClip(_) => return Err("start clip is for another game type".into()),
+        Cue::Message(message) => message,
+    };
+    let roster = cx.read(roster);
     let name = named(&roster);
     let template = &strings[usize::from(message.text)];
     let line = show::line(&strings, template, &message.values, &name);
@@ -419,7 +447,7 @@ mod tests {
             .expect("the blob stores the message template")
             .clone();
         let cue = cue_of(&ir, show::EVERYONE, &template, &[Arg::Int(2)]).unwrap();
-        let Cue::Message(message) = cue.clone();
+        let Cue::Message(message) = cue.clone() else { panic!("expected a message") };
         assert_eq!(message.audience, show::EVERYONE);
         assert_eq!(message.values, vec![HoleValue::Int(2)]);
         assert_eq!(ir.strings[usize::from(message.text)], template);

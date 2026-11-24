@@ -175,7 +175,9 @@ pub fn check(key: &Key, sources: &dyn Sources) -> Verdict {
     let Ok((ir, _)) = ::rules::verify::load(&blob) else {
         return Verdict::Clear;
     };
-    if (ir.labels.is_empty() && ir.tags.is_empty()) || i32::from(ir.header.engine()) != key.engine {
+    let matches_engine = key.engine == variants::record::SCRIPT_INDEX
+        || key.engine == i32::from(ir.header.engine());
+    if !matches_engine || (ir.labels.is_empty() && ir.tags.is_empty()) {
         return Verdict::Clear;
     }
     let census = match sources.census(key.map, key.forge_map.as_deref()) {

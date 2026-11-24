@@ -46,8 +46,9 @@ pub enum GameType {
     Juggernaut,
     Territories,
     Assault,
-    /// Any other engine index (5 Race and 6 Headhunter are in the engine
-    /// but the clean-up rejects them).
+    /// A rules script on the engine object owned by the host.
+    Script,
+    /// An unsupported engine index, including Race (5).
     Other(i32),
 }
 
@@ -70,6 +71,7 @@ impl GameType {
             2 => Self::Slayer,
             3 => Self::Oddball,
             4 => Self::King,
+            SCRIPT_INDEX => Self::Script,
             7 => Self::Juggernaut,
             8 => Self::Territories,
             9 => Self::Assault,
@@ -83,6 +85,7 @@ impl GameType {
             Self::Slayer => 2,
             Self::Oddball => 3,
             Self::King => 4,
+            Self::Script => SCRIPT_INDEX,
             Self::Juggernaut => 7,
             Self::Territories => 8,
             Self::Assault => 9,
@@ -95,11 +98,21 @@ impl GameType {
         Self::ALL.get(i as usize).copied()
     }
 
+    /// The retail template for loading a record through the menu. The script
+    /// index uses Slayer's common pages and save file. Its list row comes
+    /// from the script header.
+    pub fn menu_template(self) -> Self {
+        match self {
+            Self::Script => Self::Slayer,
+            other => other,
+        }
+    }
+
     /// The save-content type (`0x216b60`): which file a saved variant of
     /// this type is stored in.
     pub fn content_type(self) -> Option<u32> {
         Some(match self {
-            Self::Slayer => 1,
+            Self::Slayer | Self::Script => 1,
             Self::King => 2,
             Self::Oddball => 4,
             Self::Juggernaut => 5,
@@ -124,6 +137,7 @@ impl GameType {
             Self::Juggernaut => "Juggernaut".into(),
             Self::Territories => "Territories".into(),
             Self::Assault => "Assault".into(),
+            Self::Script => "Script".into(),
             Self::Other(n) => format!("Engine {n}"),
         }
     }
@@ -132,7 +146,7 @@ impl GameType {
     pub fn score_setting(self) -> Option<SettingId> {
         Some(SettingId(match self {
             Self::Ctf => 1,
-            Self::Slayer => 2,
+            Self::Slayer | Self::Script => 2,
             Self::Oddball => 3,
             Self::King => 4,
             Self::Juggernaut => 7,
@@ -392,7 +406,7 @@ impl GameVariant {
             GameType::Ctf | GameType::Assault | GameType::Territories
         );
         let score = match ty {
-            GameType::Slayer => 25,
+            GameType::Slayer | GameType::Script => 25,
             GameType::Oddball | GameType::King => 120,
             GameType::Juggernaut => 15,
             GameType::Ctf | GameType::Assault => 3,
@@ -445,6 +459,7 @@ impl GameVariant {
                 v.put(area + 2, &5i16.to_le_bytes());
                 v.put(area + 4, &5i16.to_le_bytes());
             }
+            GameType::Script => {}
             GameType::Other(_) => unreachable!("refused above"),
         }
         Some(v)
@@ -813,6 +828,15 @@ pub fn protocol(engine: i32) -> (u32, u32, Option<u32>) {
         .contains(&engine)
         .then_some(u32::from(answer == SYNCHRONOUS));
     (answer, ecx, edx)
+}
+
+/// The content category `0x216a50` files a record of engine index
+/// `engine` under (EAX the record; [`GameType::content_type`]): the
+/// game's for the seven retail indexes, Slayer's for the script index
+/// where the list resolves the script header to choose its visible row.
+/// The body leaves ECX the index less one.
+pub fn content_category(engine: i32) -> Option<u32> {
+    GameType::from_engine(engine).content_type()
 }
 
 /// Team count (setting 93, `+0xb4`): how many teams the game makes. The
@@ -1295,9 +1319,16 @@ mod tests {
         assert_eq!(SCRIPT_INDEX, 6);
         assert_eq!(
             GameType::from_engine(SCRIPT_INDEX),
-            GameType::Other(SCRIPT_INDEX)
+            GameType::Script
         );
-        assert!(!GameType::ALL.iter().any(|t| t.engine() == SCRIPT_INDEX));
+        let ty = GameType::Script;
+        assert_eq!(ty.engine(), SCRIPT_INDEX);
+        assert_eq!(ty.content_type(), GameType::Slayer.content_type());
+        let stock = GameVariant::stock(ty).unwrap();
+        assert_eq!(stock.game_type(), ty);
+        assert!(stock.bytes()[TYPE_AREA].iter().all(|&b| b == 0));
+        assert!(refused(&stock).is_empty());
+        assert!(!GameType::ALL.contains(&ty), "goof lists only retail engines");
     }
 
     #[test]
@@ -1377,5 +1408,16 @@ mod tests {
         assert_eq!(protocol(0), (SYNCHRONOUS, u32::MAX, None));
         assert_eq!(protocol(10), (SYNCHRONOUS, 9, None));
         assert_eq!(protocol(-1), (SYNCHRONOUS, 0xffff_fffe, None));
+    }
+
+    #[test]
+    fn the_content_category_files_the_script_index_as_slayer() {
+        for ty in GameType::ALL {
+            assert_eq!(content_category(ty.engine()), ty.content_type(), "{ty:?}");
+        }
+        assert_eq!(content_category(SCRIPT_INDEX), Some(1));
+        for e in [0, 5, 10, -1, 0x102] {
+            assert_eq!(content_category(e), None, "{e}");
+        }
     }
 }

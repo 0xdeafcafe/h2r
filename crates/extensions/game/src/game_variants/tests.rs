@@ -177,6 +177,28 @@ fn saved_variants_port_once_and_the_saves_are_left_alone() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn porting_a_script_index_save_keeps_its_script_and_options() {
+    let root = tmp("script-save");
+    let ir = ::rules::compile(::rules::builtin::SLAYER).unwrap();
+    let options = [("kill_points".into(), ::rules::ir::OptionValue::Int(3))];
+    let v = variants::portable::record_for_named(&ir, "My rules", &options).unwrap();
+    let mut raw = v.to_bytes();
+    raw[variants::record::TYPE_AREA].fill(0);
+    let mut saved = GameVariant::from_bytes(&raw).unwrap();
+    saved.set_game_type(GameType::Script);
+    write_save(&root, "AAAA", &saved);
+    let mut store = Store::in_memory();
+    let report = port::port_saves(&mut store, &SaveStore::new(&root, None), &PortScript::Builtin);
+    assert_eq!(report.ported, 1, "{report:?}");
+    let entry = &store.entries()[0];
+    assert_eq!(entry.bundle.engine, GameType::Script.engine());
+    assert_eq!(entry.bundle.game_type, ir.header.game_type.row().label);
+    assert_eq!(entry.bundle.variant().unwrap().ext().script, saved.ext().script);
+    assert_eq!(entry.bundle.ir().unwrap(), Some(ir.encode()));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Sparse little-endian memory; unwritten bytes read as missing.
 #[derive(Default)]
 struct Fake(HashMap<u32, u8>);
@@ -317,6 +339,45 @@ fn the_merged_block_holds_retail_community_and_store_entries() {
     other.set_game_type(GameType::King);
     m.wr(rec, other.bytes());
     assert_eq!(inject::apply_block(&mut m, OPTIONS), None);
+
+    // Both records share a goof loader. Their menu names still select
+    // distinct records, even when the name fills the UTF-16 field.
+    let long = "Long shared store variant name!";
+    let mut source = bundle(long, 10, Some(ir(1)));
+    let mut script = source.variant().unwrap();
+    script.set_game_type(GameType::Script);
+    let mut raw = script.to_bytes();
+    raw[variants::record::TYPE_AREA].fill(0);
+    source.engine = GameType::Script.engine();
+    source.record_hex = super::bundle::hex(&raw);
+    let mut both = Store::in_memory();
+    let mut retail = source.clone();
+    retail.engine = GameType::Slayer.engine();
+    retail.record_hex = super::bundle::hex(record(long, 10).bytes());
+    retail.script = None;
+    both.add(Origin::Imported, retail).unwrap();
+    both.add(Origin::Imported, source).unwrap();
+    let (rows, omitted) = inject::entries(&both, &offered, 2);
+    assert!(omitted.is_empty(), "{omitted:?}");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].list_type, rows[1].list_type);
+    let display = inject::text(rows[1].name_id).unwrap();
+    assert!(display.ends_with(&format!(" 2 {}", inject::ICON)));
+    let mut template = GameVariant::stock(GameType::Slayer).unwrap();
+    template.set_name(&display).unwrap();
+    template.set(SettingId(2), 10).unwrap();
+    let mut mem = engine::memory::FlatMemory::new(0, variants::record::RECORD_SIZE);
+    engine::GuestMemory::write(&mut mem, 0, template.bytes()).unwrap();
+    assert!(inject::restore_listed(&mut mem, 0).unwrap());
+    assert!(!inject::restore_listed(&mut mem, 0).unwrap());
+    let mut restored = template.to_bytes();
+    engine::GuestMemory::read(&mem, 0, &mut restored).unwrap();
+    assert!(restored[variants::record::TYPE_AREA].iter().all(|&b| b == 0));
+    let restored = GameVariant::from_bytes(&restored).unwrap();
+    assert_eq!(restored.game_type(), GameType::Script);
+    assert_eq!(restored.ext_block(), script.ext_block());
+    assert_eq!(restored.get(SettingId(2)), Some(10));
+    assert_eq!(restored.name(), display);
 
     // 101 built-ins at most: the store's past it are left out.
     let names: Vec<String> = (0..60).map(|i| format!("V{i}")).collect();

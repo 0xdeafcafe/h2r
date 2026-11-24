@@ -468,6 +468,10 @@ impl Game for GuestGame<'_> {
 pub struct Match {
     pub map: String,
     pub host: Host,
+    #[cfg(feature = "rules")]
+    pub(super) announce_type: bool,
+    #[cfg(feature = "rules")]
+    announced_round: Option<i32>,
     pub kit: KitLayout,
     sight: Vec<bool>,
     sight_due: u32,
@@ -519,6 +523,20 @@ fn map_name(m: &dyn GuestMemory) -> String {
     };
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// The kit's director supplies the type for its legacy mode and its plain
+/// Slayer record. A record naming a rules variant has its own header.
+#[cfg(feature = "rules")]
+fn director_owns_line(m: &dyn GuestMemory) -> bool {
+    use crate::rules::guest::{block, engine_index};
+    use variants::ext::{Ext, Mode};
+    let Ok(Some(block)) = block(m) else { return false };
+    match Ext::in_effect(&block).script.mode {
+        Mode::Firefight => true,
+        Mode::None => engine_index(m).ok().flatten() == Some(variants::record::GameType::Slayer.engine()),
+        _ => false,
+    }
 }
 
 /// This machine's role: a film's playback replays the host's entries; the
@@ -689,7 +707,13 @@ impl Runtime {
                 );
                 let context = bot_context(&host);
                 bots::firefight::set_context(context.clone());
+                #[cfg(feature = "rules")]
+                let announce_type = role == Role::Host && director_owns_line(m);
                 self.status = Status::Running(Box::new(Match {
+                    #[cfg(feature = "rules")]
+                    announce_type,
+                    #[cfg(feature = "rules")]
+                    announced_round: None,
                     map,
                     sight: vec![false; kit.zones.len()],
                     host,
@@ -726,6 +750,15 @@ impl Runtime {
             return None;
         }
         game.pre = Some(tick);
+        #[cfg(feature = "rules")]
+        if game.announce_type
+            && let Some(round) = game.host.director().and_then(|d| d.vm().global("round"))
+            && game.announced_round != Some(round)
+            && crate::rules::start_line::players_ready(m)
+        {
+            crate::rules::world::show::start_clip(tick, ::rules::types::Type::Firefight);
+            game.announced_round = Some(round);
+        }
         let Match {
             host,
             kit,

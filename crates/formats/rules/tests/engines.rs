@@ -633,3 +633,27 @@ fn superbounce_scores_bounces_only_by_their_chain() {
     assert!(scores(&g).is_empty());
     assert_eq!(vm.player_var(0, "bounces"), Some(1));
 }
+
+#[test]
+fn a_round_starts_with_the_declared_types_line_even_with_no_handler() {
+    use rules::fake::RoundLine;
+    use rules::types::{StartLine, TABLE};
+    for row in TABLE {
+        let src = format!("rules \"Test variant\" 1\ntype {}\nuses slayer\n", row.name);
+        let ir = compile(&src).unwrap();
+        let mut vm = Vm::new(ir, 0, 1).unwrap();
+        let mut game = FakeGame::with_players(2);
+        vm.fire(&mut game, Input::Init);
+        assert!(game.start_lines.is_empty());
+        for _ in 0..2 {
+            assert_eq!(vm.fire(&mut game, Input::RoundStart), Fired::NoHandler);
+        }
+        match row.start {
+            StartLine::None => assert!(game.start_lines.is_empty(), "{}", row.name),
+            StartLine::Retail(kind) => {
+                assert_eq!(game.start_lines, [RoundLine::Event { kind, index: 0 }; 2], "{}", row.name);
+            }
+            StartLine::Ours => assert_eq!(game.start_lines, [RoundLine::Clip(row.ty); 2], "{}", row.name),
+        }
+    }
+}

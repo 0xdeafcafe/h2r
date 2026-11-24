@@ -977,3 +977,22 @@ fn the_hud_blob_comes_from_the_hosts_director_and_log() {
     let game = rt.running().unwrap();
     assert!(mode_blob(&game.host, game.players).is_none());
 }
+
+#[cfg(feature = "rules")]
+#[test]
+fn the_kit_director_announces_its_type_only_for_its_own_record() {
+    use crate::rules::guest::{VARIANT, VARIANT_ENGINE};
+    use variants::ext::{Ext, Mode, Script};
+    let (mut m, _) = guest(true, 1);
+    for (engine, mode, owns) in [
+        (2, Mode::Firefight, true),
+        (2, Mode::None, true),
+        (2, Mode::Rules, false),
+        (7, Mode::None, false),
+    ] {
+        m.put_u32(GAME_GLOBALS + VARIANT + VARIANT_ENGINE, engine);
+        let ext = Ext { script: Script { mode, prefix: [9; 8], options: 0 }, ..Ext::default() };
+        m.put(GAME_GLOBALS + crate::variant_ext::BLOCK, &ext.encode());
+        assert_eq!(director_owns_line(&m), owns, "{engine}, {mode:?}");
+    }
+}

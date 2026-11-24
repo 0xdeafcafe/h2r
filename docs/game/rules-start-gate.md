@@ -83,14 +83,15 @@ runs no script. **Code:** what the lobby cannot decide leaves its
 verdict clear and the host decides at the start: a script that is
 neither compiled in nor in the game-variant store
 (`rules::feature::local_blob`), a blob that does not verify, a script for
-another engine, a script with no labels or tags, and a map file whose
+another retail engine, a script with no labels or tags, and a map file whose
 census cannot be read (logged as
 `rules: the lobby's map census could not be read, ...`). Without the
 `rules` feature no script runs, so the lobby checks nothing. In a team
 game the lobby checks `per team` labels for teams 0 and 1, since it does
 not know which teams its players will be on; none otherwise. Joining a lobby or a game is not gated by
 labels. The gate for a guest whose build lacks a capability is the one
-rules-engine.md's "Versioning" leaves open.
+rules-engine.md's "Versioning" leaves open. On the script index, the lobby
+checks the labels and tags of the script referenced by the record.
 
 ## What a blocked start shows
 

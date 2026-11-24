@@ -619,7 +619,7 @@ pub fn script_view(ir: &rules::Ir, v: &GameVariant) -> ScriptView {
     use rules::Ty;
     use rules::ir::Quick;
     let bits = v.ext().script.options;
-    let carrier = ir.header.engine();
+    let engine = u8::try_from(v.game_type().engine()).ok();
     let string = |i: u16| ir.strings.get(usize::from(i)).cloned().unwrap_or_default();
     let options: Vec<OptionView> = ir
         .options
@@ -658,6 +658,9 @@ pub fn script_view(ir: &rules::Ir, v: &GameVariant) -> ScriptView {
         match *q {
             Quick::Setting(i) => {
                 let Some(row) = rules::settings::row_at(i) else {
+                    continue;
+                };
+                let Some(carrier) = engine.filter(|e| row.applies(*e)) else {
                     continue;
                 };
                 let text = portable::setting_value(v, row, carrier)

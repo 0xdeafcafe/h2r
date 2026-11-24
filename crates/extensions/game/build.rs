@@ -5,6 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "../../../art/announcer/start_lines.rs"]
+mod start_lines;
+
 fn walk(dir: &Path, exts: &[&str], files: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -48,6 +51,26 @@ fn main() {
     );
     println!("cargo:rustc-env=CAMPAIGN_CARDS_SOURCE_HASH={cards:016x}");
     ui_docs();
+    start_clips();
+}
+
+/// Package the two type lines with the same mixer format as the medals.
+fn start_clips() {
+    let root = Path::new("../../../art/announcer");
+    println!("cargo:rerun-if-changed={}", root.display());
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    for id in ["firefight", "siege"] {
+        let name = format!("{id}.wav");
+        let path = root.join(&name);
+        let authored = match std::fs::read(&path) {
+            Ok(bytes) if !bytes.starts_with(b"version https://git-lfs") => Some(bytes),
+            Ok(_) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => panic!("{}: {e}", path.display()),
+        };
+        let bytes = authored.unwrap_or_else(|| start_lines::wav(id).expect("known start line"));
+        std::fs::write(out.join(name), bytes).expect("write start clip");
+    }
 }
 
 /// Bake the screen docs for live presentation and the sample states for
