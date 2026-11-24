@@ -209,7 +209,7 @@ mod tests {
                 frame_scene::blend::Plan::Newest,
             )
             .unwrap();
-            assert_eq!(backend.surface_extent(drawn.image), Some((12, 5)));
+            assert_eq!(d3d::Backend::surface_extent(&backend, drawn.image), Some((12, 5)));
             let (pixels, order) = backend.read_color(drawn.image).unwrap();
             let blue = match order {
                 gfx::encode::HostPixelOrder::Bgra8 => [255, 0, 0, 255],
