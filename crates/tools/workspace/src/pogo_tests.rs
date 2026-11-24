@@ -320,14 +320,14 @@ fn the_sound_builder_checks_the_clip_and_leaves_the_map_alone() {
     assert_eq!(names(&set), before);
     assert!(report.added.is_empty());
 
-    // A `snd!` tag is the sound editor's import, not this builder's.
+    // An item with a `tag` is written as a `snd!` (import_tests).
     let tagged = pkg(
         "s",
         &[],
         &[("sound", "a.wav", Some("invented\\snd\\a"), "all")],
         &[("a.wav", ok.as_slice())],
     );
-    assert!(check_package(&tagged)[0].what.contains("snd!"));
+    assert_eq!(check_package(&tagged), vec![]);
     let bad = pkg(
         "s",
         &[],

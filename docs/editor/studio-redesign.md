@@ -361,7 +361,7 @@ maps = "multiplayer"
 | `model` | our primitive YAML (`content/pogo/models/*.yaml`'s form) or glTF | `bitm`, `shad`, `mode`, `phmo`, `hlmt` (built: the primitive YAML, with the atlas it names) | sim |
 | `bitmap` | PNG | `bitm` | client |
 | `animation` | `.anim.yaml` or glTF clips, with the graph and action they join | animations in a `jmad` | sim |
-| `sound` | WAV and an optional `.sound.yaml` (permutations, class, edits, mouth curve) | `snd!`, the gestalt merged (built for an item with no `tag`: the WAV is checked and a game feature plays it; the `snd!` is SN2) | client |
+| `sound` | WAV and an optional `.sound.yaml` (permutations, class, edits, mouth curve) | `snd!`, the gestalt merged (built: an item with a `tag` is written as a `snd!`; one with none is checked and a game feature plays the file) | client |
 | `screens` | screen YAML and `design.yaml` | `wgit` tags and `wgtz` rows ([ui-in-maps.md](../game/ui-in-maps.md)) | client |
 | `screen-edits` | retail screen edit files | changed `wgit` fields | client |
 | `hud` | HUD kit YAML (a `hud_kit_core::model::Hud` as data) | HUD kit records | client |
@@ -454,9 +454,23 @@ changes it. After an error the set is partly changed and is dropped.
   first. What the map lends (the shader template, a global material) is
   read from the base map once by `build_map` (`Cx::shading`); a build with
   no map reader refuses a `model` item by name.
-- **`sound`**: a 16-bit PCM WAV, checked; no tag is added, the game feature
-  that plays it reads the file. An item with a `tag` is refused until SN2
-  writes `snd!` tags.
+- **`sound`** (`workspace/src/sound.rs`, `workspace/src/import.rs`): a
+  16-bit PCM WAV, mono or stereo, at any rate. With no `tag`, the clip is
+  checked and no tag is added: the game feature that plays it reads the
+  file. With a `tag`, the builder writes a `snd!` of that path: the clip
+  is resampled (a Hann-windowed sinc, `audio::resample::resample_sinc`) to
+  the nearest of 22,050, 32,000 and 44,100 Hz that is not below it,
+  encoded as Xbox ADPCM (`audio::adpcm::encode`, whole 64-frame blocks, the
+  last padded with its final frame), cut into `CHUNK_LEN` chunks that join
+  the map as raw resources, and given one pitch range of one permutation
+  in the map's `ugh!`. The gestalt is read from the set (or started
+  empty), extended and written back in its own slot, so the rows of every
+  sound already in it, and the raw its chunks name, stay as they were; the
+  report lists it as changed, or as added when the build made it. The
+  class is the default (`ui`, 51) or the `class:` of a sidecar,
+  `<source stem>.sound.yaml`, which is a `data` item of the package so the
+  package's id covers it. The `snd!` takes its distances from the class
+  and has no cone.
 - **`data`**: any file; no tag is added (a feature reads it, or another
   item's builder does).
 
@@ -827,11 +841,19 @@ package sound the
 curve is part of the `.sound.yaml` and the build writes it with the
 gestalt's extra info; for a disc sound A4's in-place write stands.
 
-**Import and encode.** `import.sound` takes a WAV at any rate and makes
-what the game reads: resampled to a rate the format field names, mono or
-stereo, encoded by `audio::adpcm::encode`, split into chunks, written as
-a `snd!` with its rows merged into the map's gestalt by the converter's
-`merge_sound` moved into `workspace::import`. Looping sounds (`lsnd`)
+**Import and encode (built).** `import.sound` takes a WAV at any rate
+and adds it to a local package as a `sound` item (`app/sound_import.rs`):
+the file is copied in unchanged under `sounds/`, and the manifest and lock
+follow. The build (`workspace::import`) does the rest: resampled to a rate
+the format field names, mono or stereo, encoded by `audio::adpcm::encode`,
+split into chunks and written as a `snd!`, with its rows appended to the
+map's gestalt by the Halo 1 converter's `ConvertedSound` path
+(`h1_assets::sounds`; `workspace` reaches it through `pogo-kit`'s
+dependency already). `merge_sound`, which takes a `snd!` and its rows from
+another map's gestalt, is re-exported from `workspace::import` for the
+import of a retail sound; the gestalt model itself stays in `h1-assets`,
+which cannot depend on `workspace` (`workspace` depends on `pogo-kit`,
+which depends on it). Looping sounds (`lsnd`)
 take a start, a loop and an end file. The codec stream form (WMA) is
 decoded for audition only; nothing encodes it. That every sound class,
 dialogue included, plays from ADPCM is **S**: the converted Halo 1
@@ -859,7 +881,7 @@ its guest entry is **E first**.
 | `sound.mouth {sound, permutation, set?}` | reads a curve (A2, built); the write is A4 |
 | `sound.edit {doc, op, ...}`, `sound.render {doc, out}` | the edit list and its result as a WAV |
 | `sound.permutation {doc, add \| remove \| set}` | the list |
-| `import.sound {file, package, tag, class?}` | a new `sound` item |
+| `import.sound {file, package, tag, class?}` | a new `sound` item (built) |
 
 ## Other editors
 
@@ -941,7 +963,7 @@ Rows are in build order.
 | AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
 | A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |
 | SN1 | **The sound editor as a document**: the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
-| SN2 | **Import and encode**: `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |
+| SN2 | **Import and encode** (built): `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |
 | SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
 | SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |
 | SN5 | **Sound in the game**: the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |

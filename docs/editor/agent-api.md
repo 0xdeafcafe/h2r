@@ -1451,6 +1451,30 @@ h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-
 The tests (`api/tests/assets_tests.rs`) run over an invented tree of two
 maps and one package.
 
+### Sounds into a package
+
+`import.sound {file, package, tag, class?}` (`api/import.rs`,
+`app/sound_import.rs`) adds a WAV to a local package as a `sound` item that
+writes the `snd!` `tag`. The WAV (16-bit PCM, mono or stereo, any rate) is
+copied unchanged to `sounds/<last segment of tag>.wav`, the item is added to
+`package.toml` and `package.lock` is rewritten. `class` is a sound class by
+name (`weapon_fire`, `ui`) or number; the default is `ui` (51), and any
+other is written to `sounds/<name>.sound.yaml`, a `data` item beside the
+WAV. The answer is what the build will write: `rate` (22,050, 32,000 or
+44,100 Hz, the nearest not below the clip's), `frames` at that rate,
+`duration_ms` and the `bytes` of Xbox ADPCM, with `from` the clip's own
+rate, channels and frames. A package that is baked, a tag the package adds
+already or a file that is not a 16-bit PCM WAV is refused; a class that is
+not one is `invalid params`.
+
+```sh
+h2 studio import.sound '{"file":"/tmp/boing.wav","package":"my-pack","tag":"sounds\\boing"}'
+```
+
+The build is `workspace::build` (`h2 package build`); the tests
+(`api/tests/import_tests.rs`, `workspace/src/import_tests.rs`) run over
+invented tones and an invented map.
+
 ### Errors
 
 The JSON-RPC codes (`-32700` parse, `-32601` no such method, `-32602`

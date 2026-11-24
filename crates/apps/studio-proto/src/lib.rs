@@ -129,6 +129,8 @@ pub mod method {
     pub const SOUND_STOP: &str = "sound.stop";
     pub const SOUND_MOUTH: &str = "sound.mouth";
     pub const SOUND_MEASURE: &str = "sound.measure";
+    // A WAV imported into a package as a `sound` item (api/import.rs).
+    pub const IMPORT_SOUND: &str = "import.sound";
 
     // The Announcer: lines said by a voice (api/voice.rs).
     pub const VOICE_SAY: &str = "voice.say";

@@ -4,7 +4,8 @@
 //! - [`registry`]: the closed list of builders: `tag` (a new tag from a
 //!   YAML file), `edits` (changed fields of tags that exist), `bitmap`
 //!   (a PNG as a `bitm`), `model` (a primitive-YAML model as `bitm`, `shad`,
-//!   `mode` and `hlmt`), `sound` (a WAV clip a game feature plays), `data`
+//!   `mode` and `hlmt`), `sound` (a WAV clip a game feature plays, or with a
+//!   `tag` a `snd!` and its gestalt rows: [`import`]), `data`
 //!   (a file a game feature reads) and `hud` (a HUD kit YAML, read by the
 //!   game's install; [`huds`] lists a set's). A package's `[[item]]` names
 //!   one by its `kind`.
@@ -31,6 +32,7 @@ mod edit;
 mod game;
 mod hash;
 mod hud;
+pub mod import;
 mod layer;
 mod load;
 mod model;
@@ -40,6 +42,8 @@ mod sound;
 mod tagitem;
 mod unpin;
 
+#[cfg(test)]
+mod import_tests;
 #[cfg(test)]
 mod pogo_tests;
 #[cfg(test)]

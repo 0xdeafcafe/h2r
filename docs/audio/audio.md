@@ -12,9 +12,9 @@ write on a Rust struct, and a software mixer renders the result.
 
 | Module | Role |
 |---|---|
-| `adpcm` | Xbox ADPCM decoder, pure functions. |
+| `adpcm` | Xbox ADPCM decoder and encoder (`encode`, for Studio's `import.sound`), pure functions. |
 | `format` | `WaveFormat`/`Codec`; decodes PCM8, PCM16, Xbox ADPCM to interleaved `f32`. |
-| `resample` | Linear resampling (whole clip, streaming). |
+| `resample` | Linear resampling (whole clip, streaming) and `resample_sinc`, a band-limited whole-clip path for clips converted once. |
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `MixIn` (an FX-send bus), `Listener`/`Source3d`/`Spatial`. |
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
