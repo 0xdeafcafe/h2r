@@ -1876,9 +1876,9 @@ between calls:
   scenario tool opens another).
 - `map: "<name>"`: that map of the source (`source.maps` lists them),
   opened as the HUD tool opens one.
-- `pogo: true`: that map with the Pogo Stick's kit added as the game
-  serves it (`pogo_kit::rewrite::PogoRewrite`, cached under
-  `<data>/cache/pogo/`). A map the kit cannot go into is `REFUSED` with
+- `pogo: true`: that map with the Pogo Stick's kit added
+  (`pogo_kit::inject::add_pogo`, which the `pogo` package's build equals,
+  uncached). A map the kit cannot go into is `REFUSED` with
   `data.reason: "pogo_refused"` and the kit's reason. A map that already
   holds the kit (its `pogo_kit_v<n>` string) is read as it is. `pogo`
   left out keeps the open map's choice.

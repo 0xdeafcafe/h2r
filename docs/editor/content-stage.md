@@ -82,7 +82,7 @@ Content is one of three kinds, each with one route:
    a `content::kit::ContentKit` ([tag-workspace.md](tag-workspace.md),
    "Kits are build steps"). The boot rewrite that gives a player's
    retail maps the kit and the stage's build call the same `install`.
-   `stage.open {content: [{kit: "pogo", source: "/abs/art/pogo"}]}`
+   `stage.open {content: [{kit: "pogo", source: "/abs/content/pogo"}]}`
    installs from the directory, so an art or YAML change needs no
    rebuild of `h2` and none of the game image. A stage built with a
    working-tree kit holds the kit's root tag, so the game's rewrite
@@ -157,7 +157,7 @@ tool's):
 A lane's last step is one call:
 
 ```sh
-h2 studio stage.run '{"content":[{"kit":"pogo","source":"/abs/path/art/pogo"}]}'
+h2 studio stage.run '{"content":[{"kit":"pogo","source":"/abs/path/content/pogo"}]}'
 ```
 
 `stage.run` registers with `check.run` as the source `stage`. Where the
@@ -350,9 +350,11 @@ takes S4 when it is there. S7 needs S5, S6 and W4.
 - `h1convert::scratch::build` fills an empty tag set from a level's own
   tags and a disc base's globals, and is the default for converted
   multiplayer maps (**Code**, `crates/tools/h1convert/src/scratch.rs`).
-- The Pogo's kit is installed by a `vfs::Rewrite` at the map's first
-  read, from sources baked into the build, and keeps its own cost
-  check (**Code**, `crates/tools/pogo-kit/src/rewrite.rs`, `inject.rs`).
+- The Pogo's kit is the `pogo` package, applied by `PackageRewrite` at
+  the map's first read, from sources baked into the build
+  (**Code**, `content/pogo`, `crates/tools/workspace/src/rewrite.rs`,
+  `model.rs`; `crates/tools/pogo-kit/src/inject.rs` is its reference
+  and keeps the cost check).
 - The Pogo's sounds are host clips outside the game's sound tags and
   are dropped with no audio device (**Code**,
   `crates/extensions/game/src/pogo_sound.rs`).

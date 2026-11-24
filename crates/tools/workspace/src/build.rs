@@ -26,6 +26,7 @@ use tags::repo::TagKey;
 
 use crate::builders::{self, BUILDERS_VERSION};
 use crate::hash::tag_hash;
+pub use pogo_kit::kit::Shading;
 
 /// A package with the bytes of the files its manifest names, by path in the
 /// package.
@@ -165,6 +166,7 @@ pub struct Cx<'a> {
     pub item: usize,
     pub(crate) state: &'a mut State,
     unpin: Option<&'a dyn Unpin>,
+    shading: Option<&'a Result<Shading, String>>,
 }
 
 #[derive(Default)]
@@ -290,8 +292,35 @@ impl Cx<'_> {
     }
 }
 
+impl<'a> Cx<'a> {
+    /// What the base map lends a model: its shader templates and material.
+    /// The caller of [`build_with`] reads them from the map; a build with
+    /// none given refuses a `model` item by name.
+    pub fn shading(&self) -> Result<&'a Shading, String> {
+        match self.shading {
+            Some(Ok(s)) => Ok(s),
+            Some(Err(why)) => Err(format!("what the map lends a model: {why}")),
+            None => {
+                Err("the build was given no map to read a model's shader and material from".into())
+            }
+        }
+    }
+}
+
 const PINNED: &str =
     "the tag is pinned in the base map and no map reader was given to lay it out anew";
+
+/// Whether an item of `packages` for `target` reads the base map's shader
+/// templates and material ([`Cx::shading`]).
+pub fn wants_shading(packages: &[Loaded], target: &Target<'_>) -> bool {
+    packages.iter().any(|p| {
+        p.package
+            .manifest
+            .items
+            .iter()
+            .any(|i| i.kind == Kind::Model && target.takes(&i.maps))
+    })
+}
 
 /// Apply `packages`, in order, to `set` for `target`. After an error `set`
 /// is partly changed: the caller drops it.
@@ -300,6 +329,17 @@ pub fn build(
     packages: &[Loaded],
     target: &Target<'_>,
     unpin: Option<&dyn Unpin>,
+) -> Result<Report, BuildError> {
+    build_with(set, packages, target, unpin, None)
+}
+
+/// [`build`], with what the base map lends a `model` item given.
+pub fn build_with(
+    set: &mut TagSet,
+    packages: &[Loaded],
+    target: &Target<'_>,
+    unpin: Option<&dyn Unpin>,
+    shading: Option<&Result<Shading, String>>,
 ) -> Result<Report, BuildError> {
     let mut state = State::default();
     for loaded in packages {
@@ -328,9 +368,14 @@ pub fn build(
                 item: index,
                 state: &mut state,
                 unpin,
+                shading,
             };
-            (builder.apply)(&mut cx, &builders::Job { item, source })
-                .map_err(|f| fail(f.line, f.why))?;
+            let job = builders::Job {
+                item,
+                source,
+                files: &loaded.files,
+            };
+            (builder.apply)(&mut cx, &job).map_err(|f| fail(f.line, f.why))?;
             ran += 1;
         }
         if ran > 0 {

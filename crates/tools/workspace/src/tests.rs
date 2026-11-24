@@ -384,15 +384,25 @@ fn a_kind_with_no_builder_stops_by_name() {
     let p = pkg(
         "p",
         &[],
-        &[("model", "m.yaml", Some("invented\\m"), "all")],
+        &[("animation", "m.yaml", Some("invented\\m"), "all")],
         &[("m.yaml", b"")],
     );
     let err = build(&mut base(), &[p.clone()], &target(), None).unwrap_err();
-    assert_eq!(err.kind, Kind::Model);
+    assert_eq!(err.kind, Kind::Animation);
     assert!(err.why.contains("no builder"), "{err}");
     assert!(check_package(&p)[0].what.contains("no builder"));
     let kinds: Vec<Kind> = registry().iter().map(|b| b.kind).collect();
-    assert_eq!(kinds, vec![Kind::Tag, Kind::Edits, Kind::Bitmap]);
+    assert_eq!(
+        kinds,
+        vec![
+            Kind::Tag,
+            Kind::Edits,
+            Kind::Bitmap,
+            Kind::Model,
+            Kind::Sound,
+            Kind::Data
+        ]
+    );
 }
 
 // ---------------------------------------------------------------- bitmap

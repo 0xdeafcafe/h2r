@@ -27,9 +27,11 @@ netcode or a film.
 
 ### The kit
 
-`art/pogo/` holds each look as a parametric model source (`<look>.yaml`:
+`content/pogo/` is the `pogo` package (`package.toml`, baked into `h2`). It
+holds each look as a parametric model source (`models/<look>.yaml`:
 lathes, sweeps and boxes on two nodes) and a painted 512x256 atlas
-(`<look>.png`), all original ([art/pogo/README.md](../../art/pogo/README.md)).
+(`models/<look>.png`), all original
+([content/pogo/README.md](../../content/pogo/README.md)).
 The looks are `unsc` (a stamped olive field spring with a coil and a
 chromed piston), `covenant` (a curved shell over a plasma column) and
 `forerunner` (a six-sided alloy strut over a core of light and rings).
@@ -37,8 +39,11 @@ All three share one rig (`pogo_kit::RIG`): the grips, the foot pegs, the
 foot and the piston's travel are in the same places, so a rider is posed
 the same on each.
 
-`crates/tools/pogo-kit` embeds the sources and builds a look into the
-tags a map carries it as (`kit::install_from`):
+The package's `model` item per look and its `tag` item for the weapon build
+a look into the tags a map carries it as (`workspace::PackageRewrite`,
+below); `crates/tools/pogo-kit` holds the builder's code
+(`kit::install_model`) and embeds the same sources for `inject::add_pogo`,
+which the package's build is tested against:
 
 | Tag | From |
 |---|---|
@@ -46,49 +51,65 @@ tags a map carries it as (`kit::install_from`):
 | `shad` | written from a shader template's definition the map has, with the atlas as its base map (`h1convert::shad::Library`, `kit::LAYOUTS`); no retail shader is copied |
 | `mode` | the mesh (`mesh.rs`) through `h1_assets::models::mode::convert_model`: two nodes, `frame` and `piston`, and the five markers |
 | `hlmt` | `h1objects::rebuild::model`, with one of the map's global materials |
-| `weap` | the definition's defaults with the model, an empty HUD, a weapon class and the first-person block of the map's own weapon of that class (`kit::weapon`) |
+| `weap` | the `tag` item `tags/pogo_<look>.weap.yaml`: the definition's defaults with the model, an empty HUD, the weapon class and type, and the first-person block `borrow`ed from the map's own weapon of that class (`workspace`'s `tagitem`; `kit::weapon` is the same record in code) |
 
 The three looks share one physics model and one empty weapon HUD
-(`kit::install_shared`), so a map gains 17 tags. The weapon is inert: no
+(`kit::install_shared_at`, added by the first `model` item), so a map gains
+17 tags. The weapon is inert: no
 triggers, barrels, magazines, melee damage or zoom.
 It is held as a weapon class both player animation graphs already have an
-`idle` for, read from the map when the kit is built (`kit::player_class`),
-because a unit refuses a weapon whose class its graph lacks
-([objects.md](../halo1/objects.md)).
+`idle` for, because a unit refuses a weapon whose class its graph lacks
+([objects.md](../halo1/objects.md)): the magnum's, `pistol` and `hp`
+(`kit::PREFERRED_CLASS`), named in each weapon's tag file. The package's
+build does not read the player graphs; `inject::add_pogo` does
+(`kit::player_class`), and the ignored disc test
+`every_multiplayer_map_holds_the_class` says whether every map has the
+magnum's class.
 
 Held, the game reads a weapon's first-person block (its arms and weapon
 model and their graph) by player character, for its first-person camera
 and draw. The stick's block is a copy of the map's own weapon of the same
-class (`kit::first_person`: the weapon of that class and type, else the
-first of the class), so the references are to tags the map already has
-and the stick is held in that weapon's first-person view. A map with no
-weapon of the class is refused by name, as one with no room is.
+class (the tag file's `borrow`: the weapon of that class and type, else
+the first of the class; `kit::first_person` is the same choice in code),
+so the references are to tags the map already has and the stick is held
+in that weapon's first-person view. A map with no weapon of the class is
+refused by name, as one with no room is.
 
 ### The map rewrite
 
-`pogo_kit::rewrite::PogoRewrite` is a `vfs::Rewrite` in the boot's chain
-(`crates/apps/boot/src/lib.rs`, after the UI screens). For each map the
-game opens whose header says multiplayer, it decomposes the tags, adds
-the kit and builds the map again (`inject::add_pogo`). The same map and
-kit give the same bytes on every machine.
+The stick reaches a map through the one rewrite of the game's packages,
+`workspace::PackageRewrite` (`crates/apps/boot/src/packages.rs`, the last
+rewrite in boot's chain), applying the `pogo` package's items to each
+multiplayer map (`maps = "multiplayer"`, by the map's header) as
+`workspace::build_map` does for `h2 package build`. The same map and
+package give the same bytes on every machine, and the bytes equal
+`inject::add_pogo`'s less the version string (`pogo_tests.rs` in
+`crates/tools/workspace`).
 
-- **Cache.** `<data>/cache/pogo/<map>.map` with a `<map>.json` receipt,
-  keyed by the SHA-256 of the map's name, `KIT_VERSION`, the embedded
-  sources and atlases, and the map's bytes. A boot after the first reads
-  the file back.
-- **Cost and refusal.** `inject::Costs` is the tag memory the kit takes
-  against what the map type allows (`map::writer::max_metadata_size`). A
-  map with no room, with no shader template the kit can write on, or
-  larger than a rewrite reads (`vfs::MAX_REWRITE_BYTES`) is served as it
-  is and named once on stderr (`pogo: <map> is served without the pogo
-  stick: <why>`).
-- **Placed.** The three `weap` datums of each rewritten map are recorded
-  in `pogo_kit::placed`, under the map file's stem and the name in its
-  header. A map served without the kit has none, and then nothing below
+- **Cache.** `<data>/packages/cache/<map sha>-<key>.map` with a `.json`
+  receipt ([studio-redesign.md](../editor/studio-redesign.md), "How the
+  game consumes packages"). The key covers the package's id, so a changed
+  source, atlas or tag file builds anew.
+- **Refusal.** A map with no room, with no shader template the model can
+  be written on, with no weapon of the class to borrow from, or larger
+  than a rewrite reads (`vfs::MAX_REWRITE_BYTES`) is served as it is and
+  named once on stderr (`packages: <map> is served without its
+  packages: <why>`). A map that already holds the stick's tags is left
+  alone.
+- **Off.** The package's `features = ["pogo"]` follows the `pogo`
+  feature: with it off the package is not in the set and no map gains a
+  tag.
+- **Placed.** The `PackageRewrite` hands each map it is asked for, as the
+  game is given it, to `pogo_kit::served::publish`, which reads the three
+  `weap` datums from the map and records them in `pogo_kit::placed`,
+  under the map file's stem and the name in its header. A map without all
+  three (not multiplayer, refused, off) has none, and then nothing below
   happens on it.
-- **The kit's mark.** A rewritten map interns `pogo_kit_v<n>`, so the
-  kit's version changes the map's bytes. `KIT_VERSION` (in
-  `crates/formats/pogo`) is 2: the first with the first-person block.
+- **The kit's version.** `KIT_VERSION` (in `crates/formats/pogo`) is 2
+  and is the version of `inject::add_pogo`'s output, which interns
+  `pogo_kit_v<n>` in the map it builds (Studio's `model.*` with `pogo:
+  true` uses it). The package's build interns no string; a changed
+  package is a changed `PackageId`.
 
 ### The loadout
 
@@ -204,7 +225,7 @@ weapon class's carry animation). Mounted:
   the rider and the stick together about the pelvis by whole turns.
 
 The numbers (heights, lean angles, the hands-off and feet-off targets)
-and the bone names with their aliases are in `art/pogo/poses.yaml`,
+and the bone names with their aliases are in `content/pogo/data/poses.yaml`,
 hand-keyed. A biped's bone names are read from the map file once per map
 and model, off the game thread (`pogo_skeleton.rs`); a skeleton missing a
 bone the pose needs is left in the game's pose, and the reason is logged
@@ -216,7 +237,7 @@ after it (`pogo_pose_glue.rs`). The simulation never sees a posed row.
 
 ### Sounds
 
-`pogo_sound.rs` plays three clips of our own (`art/pogo/compress.wav`,
+`pogo_sound.rs` plays three clips of our own (`content/pogo/sounds/compress.wav`,
 `spring.wav`, `settle.wav`, synthesised by `scripts/pogo-sounds.py`) as 2D
 host buffers through the mixer, as the medals' announcer lines are: the
 piston going in on a touchdown, springing out on a bounce, and easing out
@@ -287,12 +308,16 @@ route and the row override, are in
 - **Test.** The sounds: the `tests` module of `pogo_sound.rs` (each
   clip's peak, the level each plays at, a cue sounding once in three
   ticks, the oldest voice giving way).
-- **Test.** The kit and the rewrite: `pogo-kit`'s `tests.rs` (the rig's
-  markers, the triangle budget, outward normals, the tags read back, the
-  first-person block copied from the class's weapon and the refusal
-  without one) and
+- **Test.** The kit: `pogo-kit`'s `tests.rs` (the rig's markers, the
+  triangle budget, outward normals, the tags read back, the first-person
+  block copied from the class's weapon and the refusal without one) and
   `inject_tests.rs` (the references resolve, the same bytes twice, the
-  refusal, the cache).
+  refusal). The package: `pogo_tests.rs` in `crates/tools/workspace`
+  (on `pogo_kit::fixture`'s map the package builds the tags and the
+  bytes `kit::install_all` builds; the weapon borrows the pistol's
+  first-person block; the rewrite serves it, says which weapons it holds
+  and leaves a map that has the stick alone; the `sound` and `model`
+  builders' refusals).
 - **Test.** The loadout's decision: the `tests` module of
   `pogo_loadout.rs`; the script's options: `superbounce_scores_bounces_only_by_their_chain`
   in `crates/formats/rules/tests/engines.rs`.

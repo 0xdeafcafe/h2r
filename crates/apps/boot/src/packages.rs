@@ -45,7 +45,14 @@ pub fn at_boot(data_root: &Path, feature_on: &dyn Fn(&str) -> bool) -> Packages 
     for p in &set.problems {
         eprintln!("packages: {p}");
     }
-    let rewrite = PackageRewrite::new(set.loaded()).with_cache(data_root);
+    // The pogo stick's weapons are in the maps the `pogo` package built:
+    // read them from what the game is handed, for the loadout.
+    let rewrite = PackageRewrite::new(set.loaded())
+        .with_cache(data_root)
+        .observed(|stem, bytes| match bytes {
+            Some(bytes) => pogo_kit::served::publish(stem, bytes),
+            None => pogo_kit::served::clear(stem),
+        });
     let served = rewrite.served();
     let rewrite = (!rewrite.is_empty()).then_some(rewrite);
     let set = Arc::new(set);

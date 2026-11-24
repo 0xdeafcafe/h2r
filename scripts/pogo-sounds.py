@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the Pogo Stick's sounds (art/pogo/README.md, "Sounds").
+"""Write the Pogo Stick's sounds (content/pogo/README.md, "Sounds").
 
 Usage: python3 -I scripts/pogo-sounds.py [OUT_DIR] [--check]
 
@@ -16,7 +16,7 @@ exit 1 on a difference.
   settle.wav    the piston easing back out after a landing with no bounce:
                 a soft hiss and a tick as it seats
 
-OUT_DIR defaults to art/pogo beside this script's repository.
+OUT_DIR defaults to content/pogo/sounds beside this script's repository.
 """
 import math
 import os
@@ -163,7 +163,7 @@ def main(argv):
     check = "--check" in argv
     args = [a for a in argv if a != "--check"]
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    out = args[0] if args else os.path.join(here, "art", "pogo")
+    out = args[0] if args else os.path.join(here, "content", "pogo", "sounds")
     same = True
     for name, make in CLIPS.items():
         path = os.path.join(out, name + ".wav")

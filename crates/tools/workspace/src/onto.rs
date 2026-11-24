@@ -7,7 +7,7 @@ use content::package::MapScope;
 use map::build::TagSet;
 use map::{CacheType, Map};
 
-use crate::build::{Loaded, Report, Target, Unpin, build};
+use crate::build::{Loaded, Report, Shading, Target, Unpin, build_with, wants_shading};
 use crate::unpin::MapUnpin;
 
 /// A map's class, from its header's cache type. The two shared maps are
@@ -49,10 +49,16 @@ pub fn build_map(
         p.clear_index_tail();
     }
     let reader = unpin.as_ref().ok().map(|u| u as &dyn Unpin);
-    let report = build(&mut set, packages, target, reader).map_err(|e| match &unpin {
-        Ok(_) => e.to_string(),
-        Err(why) => format!("{e} (the map's reader: {why})"),
-    })?;
+    // What a `model` item draws with is read from the base map, once.
+    let shading: Option<Result<Shading, String>> = wants_shading(packages, target)
+        .then(|| Shading::read(&mut map).map_err(|e| format!("{e:#}")));
+    let report =
+        build_with(&mut set, packages, target, reader, shading.as_ref()).map_err(
+            |e| match &unpin {
+                Ok(_) => e.to_string(),
+                Err(why) => format!("{e} (the map's reader: {why})"),
+            },
+        )?;
     let (bytes, _) = set.build().map_err(|e| format!("building the map: {e}"))?;
     Ok((bytes, report))
 }

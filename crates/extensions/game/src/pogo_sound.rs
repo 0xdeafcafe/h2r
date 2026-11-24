@@ -1,7 +1,7 @@
 //! The Pogo Stick's sounds (docs/game/pogo-stick.md, "Sounds"): the
 //! piston going in, springing out and easing out, for the local players.
 //!
-//! The clips are ours (`art/pogo/*.wav`, synthesised by
+//! The clips are ours (`content/pogo/sounds/*.wav`, synthesised by
 //! `scripts/pogo-sounds.py`), embedded and played as plain 2D host
 //! buffers through DirectSound's mixer, as the medals' announcer lines
 //! are ([`crate::medal_announcer`]): no game sound tag, no position, and
@@ -29,22 +29,22 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::medal_announcer::parse_wav;
 use crate::pogo::Cue;
 
-/// Each cue's clip: the file `art/pogo/<id>.wav`.
+/// Each cue's clip: the file `content/pogo/sounds/<id>.wav`.
 pub const CLIPS: [(Cue, &str, &[u8]); 3] = [
     (
         Cue::Compress,
         "compress",
-        include_bytes!("../../../../art/pogo/compress.wav"),
+        include_bytes!("../../../../content/pogo/sounds/compress.wav"),
     ),
     (
         Cue::Spring,
         "spring",
-        include_bytes!("../../../../art/pogo/spring.wav"),
+        include_bytes!("../../../../content/pogo/sounds/spring.wav"),
     ),
     (
         Cue::Settle,
         "settle",
-        include_bytes!("../../../../art/pogo/settle.wav"),
+        include_bytes!("../../../../content/pogo/sounds/settle.wav"),
     ),
 ];
 
@@ -205,7 +205,7 @@ impl MixerVoice {
                             .map(|f| (f, c.data))
                             .map_err(|e| e.to_string())
                     })
-                    .map_err(|e| eprintln!("pogo: art/pogo/{id}.wav: {e}; it stays silent"))
+                    .map_err(|e| eprintln!("pogo: content/pogo/sounds/{id}.wav: {e}; it stays silent"))
                     .ok()
             })
             .clone()
@@ -218,7 +218,7 @@ impl Voice for MixerVoice {
         let mut buffer = match audio::SoundBuffer::from_data(format, data) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("pogo: art/pogo/{}.wav: {e}", clip_id(cue));
+                eprintln!("pogo: content/pogo/sounds/{}.wav: {e}", clip_id(cue));
                 return None;
             }
         };

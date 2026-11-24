@@ -4,7 +4,7 @@
 //! Pure: [`pose`] takes a [`Skeleton`] (a model's nodes at rest, with the
 //! roles the keys name found in it), the rows the game has for the biped
 //! and the stick, the sample, the stick's [`Rig`] and the [`Keys`]
-//! (`art/pogo/poses.yaml`), and gives the rows to draw.
+//! (`content/pogo/data/poses.yaml`), and gives the rows to draw.
 //! [`crate::pogo_pose_glue`] reads and writes the game around it.
 //!
 //! **The body frame.** Its origin is the pelvis joint where the game has
@@ -227,7 +227,7 @@ pub fn two_bone(root: V3, target: V3, l1: f32, l2: f32, pole: V3) -> (V3, V3) {
 
 // ---- the keys ----
 
-/// `art/pogo/poses.yaml`; the file's header says what each field is.
+/// `content/pogo/data/poses.yaml`; the file's header says what each field is.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Keys {
@@ -319,7 +319,7 @@ pub struct Superman {
 }
 
 /// The keys' source, embedded.
-pub const KEYS_YAML: &str = include_str!("../../../../art/pogo/poses.yaml");
+pub const KEYS_YAML: &str = include_str!("../../../../content/pogo/data/poses.yaml");
 
 impl Keys {
     pub fn parse(yaml: &str) -> Result<Keys, String> {

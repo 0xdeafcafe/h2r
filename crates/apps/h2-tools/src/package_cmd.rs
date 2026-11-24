@@ -302,7 +302,7 @@ mod tests {
         write(
             &root,
             "bad/package.toml",
-            "[package]\nformat = 1\nid = \"bad\"\nname = \"Bad\"\nafter = [\"good\"]\n\n[[item]]\nkind = \"model\"\nsource = \"m.yaml\"\ntag = 'invented\\m'\n\n[[item]]\nkind = \"tag\"\nsource = \"dmg.jpt!.yaml\"\ntag = 'invented\\dmg\\c'\n",
+            "[package]\nformat = 1\nid = \"bad\"\nname = \"Bad\"\nafter = [\"good\"]\n\n[[item]]\nkind = \"animation\"\nsource = \"m.yaml\"\ntag = 'invented\\m'\n\n[[item]]\nkind = \"tag\"\nsource = \"dmg.jpt!.yaml\"\ntag = 'invented\\dmg\\c'\n",
         );
         write(&root, "bad/m.yaml", "");
         write(&root, "bad/dmg.jpt!.yaml", "fields: {}\n");

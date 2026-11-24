@@ -2,8 +2,11 @@
 //! and edits of docs/editor/tag-workspace.md).
 //!
 //! - [`registry`]: the closed list of builders: `tag` (a new tag from a
-//!   YAML file), `edits` (changed fields of tags that exist) and `bitmap`
-//!   (a PNG as a `bitm`). A package's `[[item]]` names one by its `kind`.
+//!   YAML file), `edits` (changed fields of tags that exist), `bitmap`
+//!   (a PNG as a `bitm`), `model` (a primitive-YAML model as `bitm`, `shad`,
+//!   `mode` and `hlmt`), `sound` (a WAV clip a game feature plays) and
+//!   `data` (a file a game feature reads). A package's `[[item]]` names one
+//!   by its `kind`.
 //! - [`build`]: an ordered list of [`Loaded`] packages applied to a map's
 //!   [`map::build::TagSet`] for one [`Target`]. A tag path added twice stops
 //!   it naming both; an edit with a stale `was` or a path that does not
@@ -28,11 +31,15 @@ mod game;
 mod hash;
 mod layer;
 mod load;
+mod model;
 mod onto;
 mod rewrite;
+mod sound;
 mod tagitem;
 mod unpin;
 
+#[cfg(test)]
+mod pogo_tests;
 #[cfg(test)]
 mod rewrite_tests;
 #[cfg(test)]
@@ -40,7 +47,8 @@ mod tests;
 
 pub use bitmap::{Picture, decode as decode_png};
 pub use build::{
-    BuildError, Cx, Failure, Loaded, Override, Report, Target, Unpin, build, cache_key,
+    BuildError, Cx, Failure, Loaded, Override, Report, Shading, Target, Unpin, build, build_with,
+    cache_key, wants_shading,
 };
 pub use builders::{BUILDERS_VERSION, Builder, Job, builder, registry};
 pub use edit::{BlockLine, Op, SetLine, TagEdit, parse_edits};
@@ -52,6 +60,6 @@ pub use load::{
     lock_findings, read_lock,
 };
 pub use onto::{build_map, scope_of, scope_of_bytes};
-pub use rewrite::{PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
+pub use rewrite::{Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
 pub use tagitem::group_of_source;
 pub use unpin::MapUnpin;

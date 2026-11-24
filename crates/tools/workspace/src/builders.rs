@@ -1,6 +1,8 @@
 //! The builder registry: the closed list of what turns a package's source
 //! into tags (docs/editor/studio-redesign.md, "The model"). A package names
 //! a builder by an item's `kind`; it cannot add one.
+use std::collections::BTreeMap;
+
 use content::package::{Item, Kind};
 
 use crate::build::{Cx, Failure};
@@ -9,11 +11,13 @@ use crate::build::{Cx, Failure};
 /// every cached build is stale ([`crate::cache_key`]).
 pub const BUILDERS_VERSION: u32 = 1;
 
-/// One item to build: the manifest's entry and its source file's bytes
-/// (empty for an item with no source).
+/// One item to build: the manifest's entry, its source file's bytes
+/// (empty for an item with no source) and the package's files by path, for a
+/// builder whose source names another (a model's atlas).
 pub struct Job<'a> {
     pub item: &'a Item,
     pub source: &'a [u8],
+    pub files: &'a BTreeMap<String, Vec<u8>>,
 }
 
 /// A builder: what it does to a build, and the checks that need no map.
@@ -27,7 +31,7 @@ pub struct Builder {
     pub check: fn(&Job<'_>) -> Result<(), Failure>,
 }
 
-static REGISTRY: [Builder; 3] = [
+static REGISTRY: [Builder; 6] = [
     Builder {
         kind: Kind::Tag,
         name: "tag",
@@ -46,10 +50,29 @@ static REGISTRY: [Builder; 3] = [
         apply: crate::bitmap::apply,
         check: crate::bitmap::check,
     },
+    Builder {
+        kind: Kind::Model,
+        name: "model",
+        apply: crate::model::apply,
+        check: crate::model::check,
+    },
+    Builder {
+        kind: Kind::Sound,
+        name: "sound",
+        apply: crate::sound::apply,
+        check: crate::sound::check,
+    },
+    Builder {
+        kind: Kind::Data,
+        name: "data",
+        apply: crate::sound::data_apply,
+        check: crate::sound::data_check,
+    },
 ];
 
 /// Every builder this build has. The other kinds of "Contents" are named
-/// by manifests already and have no builder yet.
+/// by manifests already and have no builder yet. `data` changes no map: a
+/// game feature reads the file.
 pub fn registry() -> &'static [Builder] {
     &REGISTRY
 }

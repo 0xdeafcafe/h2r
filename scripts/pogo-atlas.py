@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Paints the Pogo Stick's three texture atlases (art/pogo/README.md).
+"""Paints the Pogo Stick's three texture atlases (content/pogo/README.md).
 
-    python3 -I scripts/pogo-atlas.py            # writes art/pogo/<style>.png
+    python3 -I scripts/pogo-atlas.py            # writes content/pogo/models/<style>.png
     python3 -I scripts/pogo-atlas.py --check    # exits 1 if a PNG differs
 
 Standard library only, no input files, fixed seeds: the same bytes every
@@ -508,7 +508,7 @@ STYLES = {"unsc": paint_unsc, "covenant": paint_covenant, "forerunner": paint_fo
 
 
 def main():
-    out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "art", "pogo")
+    out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "content", "pogo", "models")
     check = "--check" in sys.argv[1:]
     bad = 0
     for name, paint in STYLES.items():
