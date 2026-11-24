@@ -24,6 +24,15 @@ and names the first. The scene uses Rust camera records, main-view sets
 and recorded light handles only on equality. Nothing here writes guest memory, so the sim's
 hashes cannot move.
 
+In single-copy play, the Rust comparison uses the horizontal extent set by
+the main-view frustum hook. In exact mode, the scene step projects the portals
+and builds object planes with both lenses. It removes IDs in either the
+guest lists or the Rust gather at the retail lens. It tests rigid BSP
+placements against their clusters' portal windows and deduplicates placements
+referenced by several clusters. The native passes receive the additional
+IDs through `View::display_visibility`.
+[Widescreen projection](high-resolution.md#widescreen-projection).
+
 ## How it works
 
 ### The graph
