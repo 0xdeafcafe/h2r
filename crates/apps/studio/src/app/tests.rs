@@ -1806,7 +1806,6 @@ fn an_items_double_click_opens_the_editor_of_what_it_builds() {
     app.dispatch(open("item:items:2"));
     let front = app.front_doc().unwrap();
     assert!(matches!(front, Doc::Tag(_)), "{front:?}");
-    assert_eq!(app.doc_tool(front), ToolKind::Audition);
     let tag = app
         .tags
         .tag(match front {
@@ -1819,6 +1818,7 @@ fn an_items_double_click_opens_the_editor_of_what_it_builds() {
         r"snd!:objects\test\blaster",
         "the tag the item builds"
     );
+    assert_eq!(super::kinds::kind(tag.group).editor, super::kinds::Editor::Audition, "the sound editor");
 
     // The `edits` item opens the tag its file names.
     app.dispatch(open("item:items:3"));
@@ -1828,7 +1828,7 @@ fn an_items_double_click_opens_the_editor_of_what_it_builds() {
     // An item whose tag no map holds refuses and names the item.
     let before = app.log().len();
     app.dispatch(open("item:items:99"));
-    assert_eq!(app.front_doc(), front, "the edits item stays in front");
+    assert_eq!(app.front_doc(), Some(front), "the edits item stays in front");
     assert!(app.log().len() > before);
     assert!(
         app.status()

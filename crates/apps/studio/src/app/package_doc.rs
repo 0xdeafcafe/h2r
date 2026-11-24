@@ -22,7 +22,7 @@ use ::workspace::{
     check_set, forbidden_files, lock_findings, read_lock, scope_of, store_findings,
 };
 use content::package::{
-    ALWAYS_ON, Credit, Header, Item, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, PACKAGE_FORMAT,
+    ALWAYS_ON, Credit, Header, Item, Kind, LOCK_FILE, MANIFEST_FILE, Manifest, MapScope, PACKAGE_FORMAT,
     SET_FILE, Set, SetFile, valid_slug,
 };
 use serde_json::{Value, json};

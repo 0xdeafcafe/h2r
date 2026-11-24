@@ -1931,6 +1931,13 @@ fn prepare_writes_the_catalogue_and_leaves_a_current_one_alone() {
     let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
     assert!(p.catalogue.is_some());
     assert_eq!(catalogue::read(&root).unwrap().unwrap(), c);
+    // One that does not read (an older format) is written again, not an error.
+    let old = c.to_text().replace('\t', " ");
+    std::fs::write(root.join(catalogue::CATALOGUE_FILE), old).unwrap();
+    assert!(catalogue::read(&root).is_err());
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.catalogue.is_some());
+    assert_eq!(catalogue::read(&root).unwrap().unwrap(), c);
     // A reset takes the catalogue with the rest.
     TagRepo::create(&root)
         .unwrap()
