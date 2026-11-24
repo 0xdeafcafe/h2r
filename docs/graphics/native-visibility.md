@@ -185,6 +185,27 @@ in chain order. The display walk widens the four root corners around
 their horizontal centre and clips anew. Accepted single-copy views use
 the horizontal bounds already present in the input frustum.
 
+### Portal region publication
+
+At `0x001730a0`, `native_scene_lists::portal_regions` consumes the node
+pool and its merged cluster chains for the main single-frustum view. It
+creates regions in ascending order of their chain heads, visiting each
+head's windows newest first. A merged node contributes no slot. An empty
+rectangle reserves a slot and leaves its bytes and the node's backlink
+untouched. Each accepted window stores the region ordinal, incoming
+portal plane (or the root sentinel), depth and a frustum built by
+`visibility::window_record`. The region records carry the six counts and
+first-window indices. The caller sorts a separate ordinal table.
+
+The comparison at `0x001732fe` checks the proposed writes while the
+node backlinks and cluster-to-region lookup still exist and before
+the ordinal sort. A repeat with the same ordered paths, frustum inputs,
+depths, planes and BSP generation can publish the Rust records. The
+plane-validation diagnostic, nonempty prior tables, unsupported floating
+point modes and inconsistent links retain the original producer.
+`native_scene_lists_portal_regions_*` counts comparisons, differences,
+native calls and refusals.
+
 ### The window frusta
 
 `0x00172ee0` builds one frustum per window left after the merge with

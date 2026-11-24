@@ -13,6 +13,10 @@ pub const PORTAL_WINDOW_READY: Point = Point::new("PORTAL_WINDOW_READY", 0x0017_
 const PARTICLES: &str = "docs/graphics/native-particles.md";
 const DECALS: &str = "docs/graphics/native-decals-research.md";
 
+/// The portal region writer has returned; its frame and scratch tables are
+/// intact, and the caller has yet to sort the ordinal table.
+pub const PORTAL_REGIONS_READY: Point = Point::new("PORTAL_REGIONS_READY", 0x0017_32fe, Sig::Site, RENDERER);
+
 /// Ordered layer entries are complete. EAX holds the count and the caller
 /// owns the sort buffer at ESP+8, before the first geometry handler.
 pub const LAYER_BUILT: Point = Point::new("LAYER_BUILT", 0x0003_bc4f, Sig::Site, RENDERER);
@@ -115,6 +119,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         &FLARE_COMPOSITE,
     ];
     [
+        PORTAL_REGIONS_READY.base,
         LAYER_BUILT.base,
         DECAL_RENDER_END.base,
         WORLD_SECTION_END.base,

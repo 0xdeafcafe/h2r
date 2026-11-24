@@ -12,12 +12,12 @@ const GATHER_RETURN: u32 = 0x0013_2157;
 const GEOMETRY_RETURN: u32 = 0x0013_219a;
 const WINDOW_BUILD: u32 = 0x0016_3db0;
 const CAMERA_BYTES: u32 = 0x1bc;
-const REGION_COUNT: u32 = 0xa6c;
-const REGIONS: u32 = 0xa6e;
-const REGION_STRIDE: u32 = 0x1a;
-const ORDER: u32 = 0x1770;
-const WINDOW_COUNT: u32 = 0x1970;
-const WINDOWS: u32 = 0x1974;
+pub(super) const REGION_COUNT: u32 = 0xa6c;
+pub(super) const REGIONS: u32 = 0xa6e;
+pub(super) const REGION_STRIDE: u32 = 0x1a;
+pub(super) const ORDER: u32 = 0x1770;
+pub(super) const WINDOW_COUNT: u32 = 0x1970;
+pub(super) const WINDOWS: u32 = 0x1974;
 const WINDOW_STRIDE: u32 = 0x108;
 
 // The window builder writes the view index, rectangle, then corners,

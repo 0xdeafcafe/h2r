@@ -1052,6 +1052,8 @@ points! { ALL;
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";
+    /// Fill the ordered decorator grid cell table from the BSP and the game-view camera.
+    DECORATOR_GRID @ 0x0003_f830: [fn(grid: stack 0, camera: stack 1) ret 8]; "docs/graphics/native-decorators.md";
     /// The layer's end: every `LAYER_DRAW` call in `RENDER_LIGHT_PASSES`
     /// is followed by one; it ends the layer's state and sets the current
     /// layer (`[0x00467130]`) to 0.
@@ -1096,8 +1098,10 @@ points! { ALL;
     PORTAL_WINDOW_WALK @ 0x0017_2840: [fn(view: stack 0, nodes: stack 1, clusters: stack 2, queue: stack 3, projection: stack 4) -> al ret 20]; "docs/graphics/native-visibility.md";
     /// Merge portal windows by cluster in the current flood's node pool.
     PORTAL_WINDOW_MERGE @ 0x0017_2c70: [fn(chains: esi, pool: stack 0) ret 4]; "docs/graphics/native-visibility.md";
-    /// Materialize regions and frusta from the merged node pool.
-    PORTAL_WINDOW_REGIONS @ 0x0017_30a0: [opaque]; "docs/graphics/native-visibility.md";
+    /// Materialize regions and frusta from the merged node pool. The
+    /// single caller passes its lookup, camera and output tables, with a
+    /// zero word it leaves unused.
+    PORTAL_WINDOW_REGIONS @ 0x0017_30a0: [fn(lookup: stack 0, camera: stack 1, unused: stack 2, output: stack 3) ret 16]; "docs/graphics/native-visibility.md";
     /// Publish sphere-mode region records and update visited-cluster stamps.
     VIEW_SPHERE_REGIONS @ 0x0013_2d60: [fn(vis: eax) ret 0]; "docs/graphics/native-visibility.md";
     /// Populate visibility lists from the current view's cluster references.
