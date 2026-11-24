@@ -1689,7 +1689,7 @@ points! { ALL;
     /// `0x24ba16`, `0x24ba5a`.
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Allocates a one-shot sound after native playback admission.
-    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(source: stack 0, channel: stack 1, tag: stack 2, rule: stack 3) ret 16]; "docs/halo1/sounds.md";
+    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(tag: stack 0, channel: stack 1, source: stack 2, rule: stack 3) -> eax ret 16]; "docs/halo1/sounds.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
     /// Smooth a mix-in's position, obstruction and occlusion.

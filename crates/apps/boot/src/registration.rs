@@ -750,6 +750,10 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    if features.switches().implementation(sim_bridge::sim_sound::SOUND, false) {
+        features.add(&sim_bridge::sim_sound::SimSound)
+            .map_err(|e| anyhow::anyhow!("sound simulation: {e}"))?;
+    }
     features.add(&sim_bridge::sim_physics::NativePhysics)
         .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // SimExt, the extension records saved with checkpoints and snapshots

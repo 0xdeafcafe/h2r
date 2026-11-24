@@ -89,7 +89,7 @@ pub(crate) fn install_table(
         b.raw()
             .implement(point, label, move |cpu, ctx, pc| {
                 let site = pc != point.base && body.sites.contains(&pc);
-                if (pc == point.base || site) && objects::supported(cpu) {
+                if (pc == point.base || site) && table.supports(cpu) {
                     let mut mem = ctx.memory();
                     return objects::drive(cpu, &mut mem, table, pc);
                 }

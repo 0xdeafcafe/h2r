@@ -6,6 +6,7 @@ pub mod shadow;
 pub mod sim_frame;
 pub mod sim_native;
 pub mod sim_objects;
+pub mod sim_sound;
 pub mod sim_ext;
 pub mod sim_physics;
 pub mod sim_status_poll;

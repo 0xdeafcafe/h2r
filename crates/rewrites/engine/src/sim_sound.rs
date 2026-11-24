@@ -22,7 +22,9 @@ pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
         crate::native_sound_submix::BODIES,
         crate::native_sound_tick::BODIES,
     ];
-    Table::new(groups.into_iter().flatten()).expect("sound entries and continuation sites are unique")
+    Table::new(groups.into_iter().flatten())
+        .expect("sound entries and continuation sites are unique")
+        .require_nearest_x87()
 });
 
 /// Selectors that finish a partially native sound body in the image.

@@ -260,6 +260,7 @@ pub struct Table {
     index: Vec<(u32, Role, u16)>,
     /// Per body: calls into it go through the runtime ([`Table::guard`]).
     guarded: Vec<AtomicBool>,
+    nearest_x87: bool,
 }
 
 impl Table {
@@ -276,7 +277,18 @@ impl Table {
             return Err(TableError::Duplicate(w[0].0));
         }
         let guarded = bodies.iter().map(|_| AtomicBool::new(false)).collect();
-        Ok(Table { bodies, index, guarded })
+        Ok(Table { bodies, index, guarded, nearest_x87: false })
+    }
+
+    /// The x87 gain and filter curves require round-to-nearest at every entry,
+    /// including a return from a guest callback that changed the control word.
+    pub fn require_nearest_x87(mut self) -> Self {
+        self.nearest_x87 = true;
+        self
+    }
+
+    pub fn supports(&self, cpu: &CpuAbi) -> bool {
+        supported(cpu) && (!self.nearest_x87 || cpu.x87.control & 0xc00 == 0)
     }
 
     pub fn bodies(&self) -> &[&'static Body] {
@@ -403,7 +415,7 @@ pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, mut pc: u32) -> Res
                     debug_assert!(body.sites.contains(&site), "{} omitted site {site:#x}", body.point.name);
                 }
                 frame::push(cpu, g, site)?;
-                if table.fuses(target) && supported(cpu) {
+                if table.fuses(target) && table.supports(cpu) {
                     pc = target;
                     continue;
                 }
@@ -412,14 +424,14 @@ pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, mut pc: u32) -> Res
             Next::Ret { pop } => {
                 let target = frame::pop(cpu, g)?;
                 cpu.esp = cpu.esp.wrapping_add(u32::from(pop));
-                if table.resumes(target) && supported(cpu) {
+                if table.resumes(target) && table.supports(cpu) {
                     pc = target;
                     continue;
                 }
                 return Ok(TransferAbi::ret(target));
             }
             Next::Tail { target } => {
-                if table.fuses(target) && supported(cpu) {
+                if table.fuses(target) && table.supports(cpu) {
                     pc = target;
                     continue;
                 }
