@@ -725,7 +725,7 @@ impl ExternalPass for SlotCopy {
 }
 
 #[test]
-fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scaled_view() {
+fn an_indexed_intermediate_keeps_its_guest_size_and_is_drawn_and_read_at_every_scale() {
     for scale in [1, 2] {
         let Some(reference) = backend() else { return };
         let ctx = &reference.ctx;
@@ -740,15 +740,13 @@ fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scale
         d.clear(&mut m, 0, 0, 0xf0, 0xff000000, 1., 0).unwrap();
         let mut p = plan(2);
         p.slots = vec![None, Some(d3d::ExternalSlot { header, written: true })];
-        if let Some(ready) = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap() {
-            assert_eq!(scale, 1);
-            ready.commit();
-        } else {
-            assert_eq!(scale, 2);
-        }
+        // Smaller targets keep their guest dimensions in both copies, so
+        // the pass sees the same 16x16 slot at every scale.
+        let ready = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap();
+        ready.expect("guest-size slot at every scale").commit();
         let back = d.back_buffer().unwrap();
         let pixels = d.backend.reference_mut().read_color(back.reference).unwrap().0;
-        assert_eq!(pixels[1], if scale == 1 { 255 } else { 0 });
+        assert_eq!(pixels[1], 255);
     }
 }
 
