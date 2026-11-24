@@ -5,14 +5,19 @@
 //! light and its steps (`scene_extract::layout::light_passes`) go into
 //! the frame step's open view. The light frame body ([`frame`]) runs
 //! `RENDER_DYNAMIC_LIGHTS` itself, and [`items`] a light's item lists at
-//! `SCENE_ITEMS`. The first-person lights (`0x000404b0`)
-//! go into the first person's view at their first layer draw, and their
-//! layers 12 and 13 whose groups the scene holds whole are drawn from it
-//! alone ([`FIRST_PERSON_LAYERS`]). On with the native renderer
-//! (`impl.render.native`, on by default).
+//! `SCENE_ITEMS`. Under the body the scene's light is made from its
+//! hand-off and the item body's lists ([`handoff`]); the guest loop's
+//! lights are read at their passes' entry. The first-person lights
+//! (`0x000404b0`) go into the first person's view at their first layer
+//! draw, and their layers 12 and 13 whose groups the scene holds whole
+//! are drawn from it alone ([`FIRST_PERSON_LAYERS`]). On with the native
+//! renderer (`impl.render.native`, on by default).
 mod frame;
+mod handoff;
 mod items;
 pub mod walk;
+
+pub use handoff::Source;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -231,6 +236,7 @@ fn leave_layer() -> Option<u32> {
 }
 
 pub fn new_view() {
+    handoff::new_view();
     finish_candidate();
     FIRST_PERSON.set(None);
     SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -247,6 +253,7 @@ pub fn new_view() {
 /// not the memory they were read from. Takes no device lock (unlike
 /// [`new_view`], which asks the host for the next view's target).
 pub fn forget_runs() {
+    handoff::forget();
     CANDIDATE.take();
     VIEW_TARGET.set(None);
     FIRST_PERSON.set(None);
@@ -300,39 +307,34 @@ pub struct Entry {
     pub x87_control: u16,
 }
 
-/// The light's constants as `0x00031170` would set them: the call it makes
-/// to `0x0004a1e0` (`engine::light_constants`, with the definition from
-/// the tag table and the shadow word kept under scene flag bit 10), then
-/// its flag code (`engine::light_passes::pass_flags`). Reads guest memory,
-/// writes none. `None` when a read faults or the arithmetic would raise an
-/// unmasked exception. The sphere's screen bounds (`0x001650a0`) are not
-/// asked: they set the scissor in the original body, before our geometry dispatch. S: `0x00040e90` (called with EAX 0 before `0x0004a1e0`) is
-/// taken to leave what `0x0004a1e0` reads alone.
-pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstants> {
+impl Entry {
+    fn fpu(&self) -> engine::light_constants::Fpu {
+        engine::light_constants::Fpu {
+            mxcsr: self.mxcsr,
+            x87_control: self.x87_control,
+        }
+    }
+}
+
+/// The light's constants as `0x00031170` sets them for `source`: its call
+/// to `0x0004a1e0` (`engine::light_constants`), then its flag code
+/// (`engine::light_passes::pass_flags`). Reads guest memory, writes none.
+/// `None` when a read faults or the arithmetic would raise an unmasked
+/// exception. The sphere's screen bounds (`0x001650a0`) are not asked:
+/// they set the scissor in the original body, before our geometry
+/// dispatch. S: the item lists `0x00040e90` (the passes' first call)
+/// leave what `0x0004a1e0` reads alone, but for the casters' layer 10,
+/// which `source`'s shadow word carries.
+pub fn source_constants(
+    mem: &dyn GuestMemory,
+    source: &Source,
+    fpu: engine::light_constants::Fpu,
+) -> Option<LightConstants> {
     use engine::light_constants as lc;
     use engine::light_passes as lp;
-    let arg = |offset: u32| mem.u32(e.esp.wrapping_add(offset)).ok();
-    let table = mem.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
-    let definition = mem
-        .u32(table.wrapping_add((e.eax & 0xffff) << 4).wrapping_add(8))
-        .ok()?;
-    let scene = mem.u32(lp::global::SCENE_FLAGS).ok()?;
-    let shadow = lp::shadow_argument(arg(0xc)?, scene);
-    let call = lc::Call {
-        frame: arg(8)?,
-        context: e.ecx,
-        light: arg(4)?,
-        definition,
-        shadow,
-        weight: arg(0x10)?,
-    };
-    let fpu = lc::Fpu {
-        mxcsr: e.mxcsr,
-        x87_control: e.x87_control,
-    };
-    let g = lc::light_globals(mem, &call, fpu, &mut |_| None).ok()?;
-    let f = lp::pass_flags(mem, &g, shadow as u8, e.mxcsr).ok()?;
-    constants_of(mem, &g, f.flags, definition)
+    let g = lc::light_globals(mem, &source.call, fpu, &mut |_| None).ok()?;
+    let f = lp::pass_flags(mem, &g, source.call.shadow as u8, fpu.mxcsr).ok()?;
+    constants_of(mem, &g, f.flags, source.call.definition)
 }
 
 /// The constants of the light whose `0x0004a1e0` call has run and whose
@@ -382,49 +384,63 @@ fn constants_of(
     })
 }
 
-fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
+/// A light's passes begin: the last light's candidate ends, the scene's
+/// light closes until this one is in it, and the light takes its serial.
+fn enter_light() -> u64 {
     finish_candidate();
     crate::scene_step::light_entry();
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         host.clear_admission();
     }
-    let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
-    let esp = entry.esp;
-    let (Ok(handle), Ok(shadow), Ok(weight)) = (
-        mem.u32(esp.wrapping_add(4)),
-        mem.u8(esp.wrapping_add(12)),
-        mem.u32(esp.wrapping_add(16)),
-    ) else {
+    SERIAL.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The light whose passes run with the registers `entry`, read from
+/// guest memory ([`Source::observed`]): the guest loop's lights at their
+/// passes' entry, and a hand-off's whose lists the guest makes.
+fn observe(mem: &dyn GuestMemory, entry: Entry, serial: u64) {
+    let Some(source) = Source::observed(mem, &entry) else {
         refused("unreadable light arguments");
         return;
     };
-    let Some(mut light) = read_light(mem, handle, shadow != 0, f32::from_bits(weight)) else {
+    open_light(mem, &source, entry.fpu(), serial);
+}
+
+/// The light of `source` into the scene with its steps, and its layers
+/// 12 and 13 that draw become the candidate's.
+fn open_light(
+    mem: &dyn GuestMemory,
+    source: &Source,
+    fpu: engine::light_constants::Fpu,
+    serial: u64,
+) {
+    let call = &source.call;
+    let Some(mut light) = read_light(
+        mem,
+        call.light,
+        call.shadow & 0xff != 0,
+        f32::from_bits(call.weight),
+    ) else {
         refused("invalid or unreadable light record");
         return;
     };
-    light.constants = light_constants(mem, &entry);
+    light.constants = source_constants(mem, source, fpu);
     let prepare = || {
         let c = light.constants.ok_or("unreadable light constants")?;
-        let inputs = light_passes::read(&Ro(mem), c.flags, c.definition_flags)
+        let inputs = source
+            .inputs(mem, c.flags, c.definition_flags)
             .ok_or("unreadable light layer mask")?;
         let steps = light_passes::steps(&inputs);
         crate::scene_step::light(mem, scene_light(&light, &inputs), steps.as_slice());
         let shader_gel = if c.animated_gel {
-            if light.definition != entry.eax {
+            if light.definition != source.definition {
                 return Err("light definition differs from the constants call");
             }
-            let table = mem
-                .u32(engine::tags::TAG_ENTRIES_GLOBAL)
-                .map_err(|_| "unreadable light tag table")?;
-            let ptr = mem
-                .u32(
-                    table
-                        .wrapping_add((entry.eax & 0xffff) << 4)
-                        .wrapping_add(8),
-                )
-                .map_err(|_| "unreadable gel definition")?;
             let shader = mem
-                .u32(ptr.wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER))
+                .u32(
+                    call.definition
+                        .wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER),
+                )
                 .map_err(|_| "unreadable gel shader")?;
             let host = HOST
                 .lock()
@@ -432,7 +448,7 @@ fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
                 .clone()
                 .ok_or("no light host")?;
             host.checkpoint_gel(serial);
-            Some((ptr, shader))
+            Some((call.definition, shader))
         } else {
             None
         };
@@ -747,16 +763,20 @@ impl Feature for NativeLights {
                 if Stage::Lights.standing_down() {
                     return;
                 }
-                begin_light(
-                    &*o.guest(),
-                    Entry {
-                        eax: o.cpu.eax,
-                        ecx: o.cpu.ecx,
-                        esp: o.cpu.esp,
-                        mxcsr: o.cpu.mxcsr,
-                        x87_control: o.cpu.x87.control,
-                    },
-                );
+                let entry = Entry {
+                    eax: o.cpu.eax,
+                    ecx: o.cpu.ecx,
+                    esp: o.cpu.esp,
+                    mxcsr: o.cpu.mxcsr,
+                    x87_control: o.cpu.x87.control,
+                };
+                let mem = o.guest();
+                let serial = enter_light();
+                // The frame body's light waits for its item lists
+                // (`handoff`); the guest loop's is read here.
+                if !handoff::entered(&*mem, entry, serial) {
+                    observe(&*mem, entry, serial);
+                }
             })
             .context_only();
         b.raw()

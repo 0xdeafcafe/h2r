@@ -3,13 +3,17 @@
 //! body `engine::render::light_gather::items` makes the call, with the
 //! guest's per-part calls for each record it does not take. The main
 //! view's kind, and a plan that refuses, run the guest function whole.
+//! The passes' own call (`handoff::ITEMS_RETURN`) of a light the frame
+//! body handed over then puts that light into the scene (slice L5).
 
 use engine::points;
+use engine::render::light_gather::Refusal;
 use engine::render::light_gather::items::{self, LightItems, Made};
 use hooks::{Builder, Cx, EntryFuture};
 use timeline::native::{SceneList, SceneListResult};
 
 use super::frame::{original, refused};
+use super::handoff;
 use crate::native_map_work::Stage;
 
 pub(super) fn install(b: &mut Builder) {
@@ -21,17 +25,26 @@ pub(super) fn install(b: &mut Builder) {
                 if addr != points::SCENE_ITEMS.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
                 }
-                let plan = {
-                    let runtime = std::sync::Arc::clone(ctx.runtime());
+                let runtime = std::sync::Arc::clone(ctx.runtime());
+                let (plan, taken) = {
                     let mem = runtime.memory();
-                    items::plan(&*mem, cpu.esp, cpu.eax)
+                    let ret = mem.u32(cpu.esp).unwrap_or(0);
+                    (items::plan(&*mem, cpu.esp, cpu.eax), handoff::take(ret))
                 };
                 let plan = match plan {
                     Ok(Some(plan)) => plan,
                     // The main view's kind: its list 0 is not this body's.
-                    Ok(None) => return original(cpu, ctx, addr),
+                    Ok(None) => {
+                        if let Some(taken) = &taken {
+                            handoff::guest_made(&*runtime.memory(), taken, Refusal::Layout);
+                        }
+                        return original(cpu, ctx, addr);
+                    }
                     Err(why) => {
                         refused(SceneList::LightItems, why);
+                        if let Some(taken) = &taken {
+                            handoff::guest_made(&*runtime.memory(), taken, why);
+                        }
                         return original(cpu, ctx, addr);
                     }
                 };
@@ -39,6 +52,12 @@ pub(super) fn install(b: &mut Builder) {
                     Box::pin(async move {
                         let (ret, light_items) = items::run(&cx, plan).await?;
                         count(&light_items);
+                        // The passes' own call: their light goes into the
+                        // scene from the frame body's hand-off and these
+                        // lists (slice L5).
+                        if let Some(taken) = taken {
+                            cx.read(|m| handoff::made(m, &taken, &light_items));
+                        }
                         Ok::<_, engine::entry::EntryError>(ret)
                     })
                 })

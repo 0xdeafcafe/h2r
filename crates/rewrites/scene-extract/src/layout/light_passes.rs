@@ -63,11 +63,14 @@ pub struct Inputs {
     pub additional_casters: bool,
 }
 
-/// The light's lists and the additional casters' inputs, read at the
-/// passes' entry, with the flags its constants computed. `None` when a
-/// word does not read. **S**: the passes write neither list mask nor
-/// [`ADDITIONAL_COUNT`] before they read them (none of the passes' own
-/// writes is to them; the shadow setup's callees are not read).
+/// The light's lists and the additional casters' inputs, with the flags
+/// its constants computed. `None` when a word does not read. The passes'
+/// first call (`0x00040e90` at `0x00031192`) makes both lists, so the
+/// masks are the light's only after it; at the passes' entry they are the
+/// last light's (`render_bridge::native_lights::handoff` takes them from
+/// the item body instead). **S**: the passes write no list mask after
+/// that call and not [`ADDITIONAL_COUNT`] before they read them (the
+/// shadow setup's callees are not read).
 pub fn read(mem: &dyn GuestRead, flags: u32, definition_flags: u32) -> Option<Inputs> {
     let receivers = mem.read_u32(LIGHT_LIST + MASK)?;
     let casters = mem.read_u32(CASTERS + MASK)?;
