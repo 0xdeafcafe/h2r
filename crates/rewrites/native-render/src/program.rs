@@ -296,7 +296,7 @@ fn compile_with_textures(
         // functions, lighting, time) are not evaluated here.
         return Err("per-draw engine inputs".into());
     }
-    let t = translate_pass(&PassParts {
+    let parts = PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
         dims,
@@ -310,7 +310,8 @@ fn compile_with_textures(
         input_fetch: WORLD_FETCH,
         w_buffer: true,
         shadow: [None; 4],
-    })?;
+    };
+    let t = translate_program(&parts, psh::translate, true)?;
     Ok(MaterialProgram {
         wgsl: t.wgsl,
         stages: look.textures,
@@ -780,9 +781,19 @@ pub(crate) fn translate_pass_with_pixel(
     p: &PassParts<'_>,
     translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
 ) -> Result<Translated, String> {
+    translate_program(p, translate_pixel, false)
+}
+
+fn translate_program(
+    p: &PassParts<'_>,
+    translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
+    allow_unused_diffuse: bool,
+) -> Result<Translated, String> {
     let program = vsh::Program::parse(p.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let unsupplied = program.inputs_read() & !p.provided_inputs & !defaults_mask(p.vertex_defaults);
-    if unsupplied != 0 {
+    let def =
+        PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    if unsupplied != 0 && !(allow_unused_diffuse && only_unused_diffuse(&program, unsupplied, &def)) {
         return Err(format!(
             "vertex program reads registers we do not supply ({unsupplied:#06x})"
         ));
@@ -796,8 +807,6 @@ pub(crate) fn translate_pass_with_pixel(
         },
     )
     .map_err(|e| format!("vertex program: {e:?}"))?;
-    let def =
-        PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
     let samplers: [Option<StageStates>; 4] =
         std::array::from_fn(|n| p.stage_states.get(n).copied());
     let mut options = PixelOptions {
@@ -880,6 +889,27 @@ pub(crate) fn translate_pass_with_pixel(
         def,
         pixel_options: options,
     })
+}
+
+/// The layer-1 vertex program can forward an unstreamed immediate register
+/// to oD0 even when the pixel program only samples textures. For ordinary
+/// projected fetches the texture units read oT, and only a combiner can
+/// consume diffuse. A missing input reaching any other output stays live.
+fn only_unused_diffuse(program: &vsh::Program, missing: u16, def: &PixelShaderDef) -> bool {
+    let c = def.decode();
+    c.final_combiner.is_some()
+        && c.texture_modes.iter().all(|m| {
+            matches!(m, psh::TexMode::None | psh::TexMode::Project2d)
+        })
+        && !combiner_reads(&c, psh::Reg::V0)
+        && live_source_read(
+            program,
+            |reg| match reg {
+                vsh::SrcReg::Input(n) if missing & (1 << n) != 0 => Some(n),
+                _ => None,
+            },
+            |out| out == vsh::OutReg::D0,
+        ).is_none()
 }
 
 /// Each stage's `D3DTSS_MIPMAPLODBIAS` (f32 bits), zero when not finite,
@@ -3992,6 +4022,65 @@ mod tests {
         )]);
         let e = compile(&plain_look(), &reads_v9).unwrap_err();
         assert!(e.contains("do not supply"), "{e}");
+    }
+
+    #[test]
+    fn layer_1_accepts_an_unstreamed_colour_only_when_its_diffuse_output_is_unused() {
+        use crate::fog_gpu::{FogPass, FogProgram};
+        use psh::bits;
+        use vsh::encode::{Inst, Operand as O, program};
+
+        let mov = |src, dst| Inst::mac(vsh::MacOp::Mov, Some(src), None, None)
+            .to_out(false, dst, 0xf);
+        let colour = mov(O::v(10), vsh::OutReg::D0);
+        let pos = mov(O::v(0), vsh::OutReg::Pos);
+        let uv = mov(O::v(1), vsh::OutReg::T(0));
+        let code = program(&[pos.clone(), uv.clone(), colour.clone()]);
+        let mut pass = FogPass {
+            state: world_pass(plain_look()).state,
+            look: plain_look(),
+            fog: Default::default(),
+        };
+        pass.look.textures[0] = Stage::Bitmap { bitmap: map::TagId(9), image: 0 };
+        let mut def = PixelShaderDef {
+            texture_modes: bits::TEX_PROJECT2D,
+            final_inputs_abcd: bits::inputs(0, 0, 0, bits::REG_T0),
+            final_inputs_efg: bits::final_efg(0, 0, bits::REG_T0 | bits::CHAN_ALPHA, 0),
+            ..Default::default()
+        };
+        pass.look.pixel_shader = def.to_bytes();
+        let layer = FogProgram::compile(&pass, &code).unwrap();
+        assert_eq!(layer.program.inputs, 0b11);
+        shaders::validate(&layer.program.wgsl).unwrap();
+        struct Texture;
+        impl psh::interp::Sampler for Texture {
+            fn sample(&self, _: usize, _: TextureDim, _: [f32; 3]) -> [f32; 4] {
+                [0.25, 0.5, 0.75, 1.0]
+            }
+        }
+        for d0 in [[0.0; 4], [1.0; 4]] {
+            let inputs = psh::interp::Inputs { d0, t: [[0.0, 0.0, 0.0, 1.0]; 4], ..Default::default() };
+            let result = psh::interp::run(
+                &def, &layer.program.pixel_options, &inputs, &layer.program.pixel, &Texture,
+            );
+            assert_eq!(result, Some([0.25, 0.5, 0.75, 1.0]));
+        }
+
+        let refused = |pass: &FogPass, code: &[u8]| {
+            assert!(FogProgram::compile(pass, code).unwrap_err().contains("0x0400"));
+        };
+        // The diffuse copy is dead, but the same immediate also reaches oPos.
+        refused(&pass, &program(&[pos, uv, colour, mov(O::v(10), vsh::OutReg::Pos)]));
+        // Both the general and the final combiners can consume diffuse.
+        def.final_inputs_efg = bits::final_efg(0, 0, bits::REG_V0 | bits::CHAN_ALPHA, 0);
+        pass.look.pixel_shader = def.to_bytes();
+        refused(&pass, &code);
+        def.final_inputs_efg = bits::final_efg(0, 0, bits::REG_T0 | bits::CHAN_ALPHA, 0);
+        def.combiner_count = 1;
+        def.rgb_inputs[0] = bits::inputs(bits::REG_V0, bits::ONE, 0, 0);
+        def.rgb_outputs[0] = bits::outputs(bits::REG_T0, 0, 0, 0);
+        pass.look.pixel_shader = def.to_bytes();
+        refused(&pass, &code);
     }
 
     #[test]
