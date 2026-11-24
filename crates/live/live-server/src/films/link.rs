@@ -1,5 +1,6 @@
 //! A catalogue row can be visible to more viewers than the exact machine
-//! recording. Check the latter's participant rule before every range read.
+//! recording. Check the latter's participant rule before every range read
+//! ([`host_object`]).
 use super::*;
 use crate::http::bearer;
 use axum::http::header;
@@ -53,39 +54,31 @@ pub(crate) async fn film_object(
         )
         .await;
     }
-    match query.object.as_deref() {
+    let part = match query.object.as_deref() {
         None => {
             return ranges::read_film(State(live), Path(id), Query(query.ranges), headers).await;
         }
-        Some("film") => {}
+        Some("film") => HostPart::Film,
+        Some("stats") => HostPart::Stats,
         _ => return Err(invalid("unknown Theater object")),
-    }
+    };
     if !headers.contains_key(header::RANGE) {
-        return download_host_film(&live, &headers, &id).await;
+        return download_host_film(&live, &headers, &id, part).await;
     }
     let author = live.authenticate(bearer(&headers), lxm::READ)?;
     let player = account(&author)?;
     let (key, size, digest) = {
         let viewer = live.viewer_of(&author);
         let model = live.model.read();
-        let Some(Source::Game(game)) = visible_game(&model, &id, viewer) else {
-            return Err(not_found("no host film for this account"));
-        };
-        if !game.has_host_film || !game.xuids.contains(&player) {
-            return Err(not_found("no host film for this account"));
-        }
-        let Some((size, digest)) = model.films.downloads.get(&id) else {
+        let object = host_object(&model, &id, viewer, player, part)?;
+        let Some((size, digest)) = object.receipt else {
             // Older receipts have no content digest. Their authenticated full GET remains available.
             return Err(ApiError::new(
                 ErrorCode::Conflict,
                 "film predates resumable downloads",
             ));
         };
-        (
-            game.film_blob.clone().unwrap_or_else(|| host_film_key(&id)),
-            *size,
-            digest.clone(),
-        )
+        (object.key, size, digest)
     };
     if let Some(tag) = headers.get(header::IF_MATCH)
         && tag.to_str().ok() != Some(&format!("\"film-{digest}\""))

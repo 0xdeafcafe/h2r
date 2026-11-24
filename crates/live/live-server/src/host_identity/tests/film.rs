@@ -1014,3 +1014,141 @@ async fn a_rejected_legacy_job_releases_its_selection_for_a_valid_retry() {
     );
     assert!(live.model.read().games[id].has_host_film);
 }
+
+/// A Live game's host sends two objects. The stats stream is a container
+/// whose time chunks hold events and no action or digest, as every
+/// [`fixture`] is; the film file holds the actions. They arrive in either
+/// order. The ledger imports the stats stream, the film file is stored as
+/// sent, a ranged read serves the stats stream's public ranges, and an
+/// unranged read serves the film file.
+#[tokio::test]
+async fn a_live_game_sends_its_stats_stream_and_its_film_file_as_two_objects() {
+    let live = live().await;
+    let mut lease = lease();
+    let mut readers = Vec::new();
+    for tag in ["FilmPlayer", "FilmViewer"] {
+        let key = KeyPair::generate();
+        let request =
+            live_proto::sign::AccountRequest::sign(&key, tag, None, &live.identity.id, now());
+        let account = live.create_account(&request).await.unwrap();
+        readers.push((key, account));
+    }
+    lease.roster[0] = readers[0].1.xuid;
+    let id = lease.id.clone();
+    let token = assigned_lease(&live, &lease).await;
+    let store = crate::blobs::BlobStore::memory();
+    live.set_blobs(crate::blobs::Blobs {
+        private: store.clone(),
+        public: None,
+    });
+    let app = crate::http::router(live.clone());
+    let send = |film: Vec<u8>| {
+        let req = Request::post(format!("/v1/games/{id}/film?object=film"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(film))
+            .unwrap();
+        app.clone().oneshot(req)
+    };
+    let foreign = crate::films::test_film_file("another-game", 700, true);
+    assert_eq!(
+        send(foreign).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    let film = crate::films::test_film_file(&id, 700, true);
+    // The film file first, before the game exists; a retry is the same file.
+    for _ in 0..2 {
+        assert_eq!(
+            send(film.clone()).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    let other = crate::films::test_film_file(&id, 300, true);
+    assert_eq!(send(other).await.unwrap().status(), StatusCode::CONFLICT);
+    let stored = store.list(&format!("input-films/{id}/")).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        store.get(&stored[0].key).await.unwrap().unwrap().as_ref(),
+        film.as_slice()
+    );
+
+    let mut new = new_game();
+    new.players[0].xuid = Some(readers[0].1.xuid);
+    let stats = fixture(&id, new, 1);
+    assert_eq!(
+        upload(&live, &id, &token, stats.clone()).await,
+        StatusCode::NO_CONTENT
+    );
+    let events = live
+        .store
+        .read(&crate::store::Query {
+            stream: Some(game::stream(&id)),
+            types: vec![
+                game::GAME_STARTED.into(),
+                game::PLAYER_KILLED.into(),
+                game::GAME_ENDED.into(),
+            ],
+            limit: 8,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e.body.kind.as_str())
+            .collect::<Vec<_>>(),
+        [game::GAME_STARTED, game::PLAYER_KILLED, game::GAME_ENDED]
+    );
+    // The film file stays where it was put; the stats cleanup keeps its own.
+    crate::films::cleanup_published(&live, &id).await;
+    assert_eq!(
+        store.get(&stored[0].key).await.unwrap().unwrap().as_ref(),
+        film.as_slice()
+    );
+
+    let read = |path: String, reader: Option<usize>, range: Option<&str>| {
+        let mut req = Request::get(path);
+        if let Some(reader) = reader {
+            let (key, account) = &readers[reader];
+            let token = issue_token(key, &account.id, &live.identity.id, lxm::READ, now());
+            req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(range) = range {
+            req = req.header(header::RANGE, range);
+        }
+        app.clone().oneshot(req.body(Body::empty()).unwrap())
+    };
+    let body = |res: axum::response::Response| async move {
+        to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec()
+    };
+    let games = format!("/v1/games/{id}/film");
+    let films = format!("/v1/films/{id}/film");
+
+    let ranged = read(games.clone(), None, Some("bytes=0-31")).await.unwrap();
+    assert_eq!(ranged.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body(ranged).await, &stats[..32]);
+
+    let whole = read(games.clone(), Some(0), None).await.unwrap();
+    assert_eq!(whole.status(), StatusCode::OK);
+    assert_eq!(body(whole).await, film);
+    // This film file still has a machine part: it is the players' only.
+    let guest = read(games.clone(), Some(1), None).await.unwrap();
+    assert_eq!(guest.status(), StatusCode::NOT_FOUND);
+
+    let resumed = read(format!("{films}?object=film"), Some(0), Some("bytes=8-15"))
+        .await
+        .unwrap();
+    assert_eq!(resumed.status(), StatusCode::PARTIAL_CONTENT);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        resumed.headers()[header::ETAG],
+        format!("\"film-{:x}\"", Sha256::digest(&film))
+    );
+    assert_eq!(body(resumed).await, &film[8..16]);
+
+    let container = read(format!("{films}?object=stats"), Some(0), None)
+        .await
+        .unwrap();
+    assert_eq!(container.status(), StatusCode::OK);
+    assert_eq!(body(container).await, stats);
+}

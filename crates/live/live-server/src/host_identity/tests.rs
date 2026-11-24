@@ -956,6 +956,51 @@ async fn custom_session_has_no_host_player_and_is_bound_to_its_token() {
     );
 }
 
+/// A leased host's session carries the seat and machine identifiers of the
+/// game it will play, the same ones the game's start returns, and two games
+/// of the same players share none of them.
+#[tokio::test]
+async fn sessions_of_two_games_of_the_same_players_share_no_identifier() {
+    let live = live().await;
+    let addr = Some(Ipv4Addr::LOCALHOST.into());
+    let mut issued = Vec::new();
+    for (id, assignment) in [
+        ("hl-AAAAAAAAAAAAAAAAAAAAAA", "custom-one"),
+        ("hl-BBBBBBBBBBBBBBBBBBBBBB", "custom-two"),
+    ] {
+        let mut lease = lease();
+        lease.id = id.into();
+        lease.assignment_id = assignment.into();
+        lease.region = Some("lhr".into());
+        lease.hopper = None;
+        lease.roster.clear();
+        record(
+            &live,
+            vec![live.server_event(
+                live_proto::hosts::STREAM.into(),
+                live_proto::hosts::HOST_REQUESTED,
+                json!({"lease":lease}),
+            )],
+        )
+        .await;
+        let token = live.issue_host_token(&lease);
+        live.create_session(Some(&token), ad(), addr).await.unwrap();
+        let identifiers = live.session_identifiers(Some(&token)).unwrap();
+        assert_eq!(identifiers, game::GameIdentifiers::for_game(id));
+        let created = live.start_game(Some(&token), new_game()).await.unwrap();
+        assert_eq!(created.identifiers.as_ref(), Some(&identifiers));
+        issued.push(identifiers);
+    }
+    let (a, b) = (&issued[0], &issued[1]);
+    assert!(a.seats.iter().all(|seat| !b.seats.contains(seat)));
+    assert!(
+        a.machines
+            .iter()
+            .all(|machine| !b.machines.contains(machine))
+    );
+    assert!(live.session_identifiers(None).is_none());
+}
+
 /// Old sessions have neither a lease nor a service identity. An ordinary
 /// account still publishes, registers its round and signs the result.
 #[tokio::test]
