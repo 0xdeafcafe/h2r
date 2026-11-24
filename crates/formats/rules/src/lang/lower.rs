@@ -52,6 +52,8 @@ pub(crate) const FIELDS: &[(Ty, &str, u16)] = &[
     (Ty::Object, "carrier", caps::id::CARRIER_OF),
     (Ty::Object, "team", caps::id::OBJECT_TEAM),
     (Ty::Squad, "alive", caps::id::SQUAD_ALIVE),
+    (Ty::Object, "health", caps::id::OBJECT_HEALTH),
+    (Ty::Object, "shield", caps::id::OBJECT_SHIELD),
 ];
 
 struct VarInfo {

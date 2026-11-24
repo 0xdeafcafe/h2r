@@ -74,7 +74,9 @@ use variants::ext::{Ext, Mode};
 
 use super::census::{self, Table};
 use super::guest;
+use super::world::data;
 use super::world::zones::{self, Change, Seen, Zones};
+use sim_state::SimEvent;
 use crate::firefight::runtime::read_players;
 use forge_doc::LabelledThing;
 
@@ -108,6 +110,9 @@ pub const DELIVERED: &[Event] = &[
     Event::Leave,
     // The VM's own, when a mover ends (`Vm::update`).
     Event::Arrive,
+    // From the tick's `SimEvent::Damage` events (`Runtime::post_tick`,
+    // `super::world::data::damage_inputs`).
+    Event::Damage,
 ];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
@@ -757,6 +762,13 @@ impl Game for GuestGame<'_> {
                     .iter()
                     .any(|b| b.slot == p && z.contains(*zone, b.at))
                     as i32,
+                _ => 0,
+            },
+            // A fraction of full, 0 to 1; an object that is gone reads 0.
+            id::OBJECT_HEALTH | id::OBJECT_SHIELD => match call.args.first() {
+                Some(Arg::Object(Some(o))) => super::world::data::vitality(m, *o).map_or(0, |(health, shield)| {
+                    if call.entry.id == id::OBJECT_HEALTH { health } else { shield }
+                }),
                 _ => 0,
             },
             id::PLAYER_OF => match call.args.first() {
@@ -1683,8 +1695,11 @@ impl Runtime {
     /// After the game tick: what changed on the roster and in the zones
     /// since the VM was last told (`on death`, `on spawn`, `on leave`, `on
     /// enter`; [`zones::events`]), then timers, then `on tick`. A script
-    /// with no handler for an event has none of it worked out.
-    pub fn post_tick(&mut self, m: &dyn GuestMemory) {
+    /// with no handler for an event has none of it worked out. `events` is
+    /// the tick's sim events: its damage (`on damage`, the first
+    /// [`data::MAX_DAMAGE`], in the order the game applied it) is told
+    /// before the roster's changes, so before `on tick`.
+    pub fn post_tick(&mut self, m: &dyn GuestMemory, events: &[SimEvent]) {
         if self.hud_on && !matches!(self.status, Status::Running(_)) {
             self.publish_hud(None);
         }
@@ -1698,7 +1713,12 @@ impl Runtime {
             }
             _ => return,
         };
+        let wants_damage = matches!(&self.status, Status::Running(r) if r.vm.ir().handlers.iter().any(|h| h.event == Event::Damage));
+        let damage = if wants_damage { data::damage_inputs(events) } else { Vec::new() };
         self.run(m, |vm, g| {
+            for input in damage {
+                vm.fire(g, input);
+            }
             tell(vm, g, &mut seen);
             vm.update(g);
         });

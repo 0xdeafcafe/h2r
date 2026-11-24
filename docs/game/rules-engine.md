@@ -1003,6 +1003,9 @@ error, with the nearest declared name offered.
 `on leave(zone, o)`, `on press(p, o)`, `on timer(t)`,
 `on squad_dead(s)`, `on actor_kill(killer, class)`,
 `on actor_assist(killer, assist, class)` (after its kill),
+`on damage(o, by, amount)` (an object took damage; `by` is the player it
+is credited to or `none`, `amount` a `fixed` fraction of full vitality;
+at most 16 a tick),
 `on bounce(p, spot, chain, monster)` (`chain` the bounce's place in its
 chain, 1 for a single bounce; `monster` a Monster Bounce),
 `on bounced(p)` (a fall out of the map during a bounce),
@@ -1310,7 +1313,7 @@ land at the point in the tick where the lifted engine's did:
 |---|---|---|
 | `on kill`, and each event the carrier engine has a callback for (per port: death, spawn, pickup, drop, join, quit, round start and end) | synchronously, in place of that callback | made at once |
 | `on enter`, `on leave`, `on press`, `on timer` (slot order), then `on tick` | synchronously, in place of the carrier's per-tick update (`0x15c150`) | made at once |
-| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on bounce`, `on bounced`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
+| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on damage`, `on bounce`, `on bounced`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
 
 An event the carrier has no callback for runs with the per-tick group.
 Some calls are queued from any handler and made in program order by the
@@ -1811,7 +1814,8 @@ Tooling:
   `edit` (`player`, `object`), `bounce` (`player`, `object`, `chain`,
   1 when absent, and `monster`, false when absent), `bounced` (the
   player), `squad_dead`, `actor_kill` (`killer`,
-  `class`), `actor_assist` (`killer`, `assist`, `class`) and
+  `class`), `actor_assist` (`killer`, `assist`, `class`), `damage`
+  (`object`, `by`, `amount`, a raw `fixed`) and
   `round_end`. Tick 0 reports `init` and `round_start` first; each tick
   ends with the per-tick group; queued calls are made at the start of
   the next tick and after the last. The fake game is the one the

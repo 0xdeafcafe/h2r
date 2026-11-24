@@ -35,6 +35,20 @@ pub struct FakeGame {
     pub carrier: u8,
     pub round_time_left: i32,
     pub squad_alive: [i32; 16],
+    /// Whether each kit squad is fighting, and its strength as a raw
+    /// `fixed` fraction of its full count (`squad_fighting`,
+    /// `squad_strength`).
+    pub squad_fighting: [bool; 16],
+    pub squad_strength: [i32; 16],
+    /// A unit object's body and shield as raw `fixed` fractions of full
+    /// (`object_health`, `object_shield`). An object not listed reads 0.
+    pub health: BTreeMap<u32, i32>,
+    pub shield: BTreeMap<u32, i32>,
+    /// The root bytes of each tag of the invented map, by the path a
+    /// script names it with, and the fields their definitions give
+    /// (`tag_int`, `tag_fixed`).
+    pub tag_data: BTreeMap<String, Vec<u8>>,
+    pub tag_fields: FakeFields,
     /// The objective registry: object to its carrying player.
     pub objectives: BTreeMap<u32, Option<u8>>,
     /// Objects' teams: an objective's, or a flag placement's designator.
@@ -169,6 +183,30 @@ impl FakeVehicle {
             self.driver = None;
         }
         self.riders.retain(|&r| r != p);
+    }
+}
+
+/// Invented tag definitions: the field a path names in a tag. It is the
+/// [`crate::fields::Schema`] of tests and `h2 rules run`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FakeFields {
+    /// `(tag path, field path)` to where the tag's bytes hold it.
+    pub fields: BTreeMap<(String, String), crate::fields::Field>,
+}
+
+impl FakeFields {
+    pub fn with(mut self, tag: &str, field: &str, f: crate::fields::Field) -> FakeFields {
+        self.fields.insert((tag.into(), field.into()), f);
+        self
+    }
+}
+
+impl crate::fields::Schema for FakeFields {
+    fn field(&self, tag: &str, path: &str) -> Result<crate::fields::Field, String> {
+        self.fields
+            .get(&(tag.to_string(), path.to_string()))
+            .copied()
+            .ok_or_else(|| "the tag's definition has no such field".to_string())
     }
 }
 
@@ -617,9 +655,31 @@ impl FakeGame {
                     self.inside.remove(&(p, zone));
                 }
             }
+            // The shield takes the damage first, then the body.
+            Input::Damage { object, amount, .. } => {
+                let mut left = amount.max(0);
+                for table in [&mut self.shield, &mut self.health] {
+                    if let Some(v) = table.get_mut(&object) {
+                        let taken = left.min(*v);
+                        *v -= taken;
+                        left -= taken;
+                    }
+                }
+            }
             _ => {}
         }
         true
+    }
+
+    /// A tag read as a host makes it: the field the definitions give for
+    /// the tag's path, read from the tag's bytes. `None` for a tag or a
+    /// field the invented map lacks.
+    fn tag_read(&self, call: &Call) -> Option<i32> {
+        let (Some(Arg::Tag(Some(tag))), Some(Arg::Text(path))) = (call.args.first(), call.args.get(1)) else {
+            return None;
+        };
+        let field = crate::fields::Schema::field(&self.tag_fields, tag, path).ok()?;
+        field.read(call.entry.id, self.tag_data.get(tag)?)
     }
 
     /// Whether the engine holds `p`'s respawn: the variant's lives setting
@@ -788,6 +848,17 @@ impl Game for FakeGame {
                 Some(Arg::Squad(s)) => self.squad_alive.get(*s as usize).copied().unwrap_or(0),
                 _ => 0,
             },
+            id::SQUAD_FIGHTING => match call.args.first() {
+                Some(Arg::Squad(s)) => self.squad_fighting.get(*s as usize).copied().unwrap_or(false) as i32,
+                _ => 0,
+            },
+            id::SQUAD_STRENGTH => match call.args.first() {
+                Some(Arg::Squad(s)) => self.squad_strength.get(*s as usize).copied().unwrap_or(0),
+                _ => 0,
+            },
+            id::OBJECT_HEALTH => object(0).and_then(|o| self.health.get(&o).copied()).unwrap_or(0),
+            id::OBJECT_SHIELD => object(0).and_then(|o| self.shield.get(&o).copied()).unwrap_or(0),
+            id::TAG_INT | id::TAG_FIXED => self.tag_read(call).unwrap_or(0),
             id::TEAM_SCORE => match call.args.first() {
                 Some(Arg::Team(Some(t))) => self
                     .players

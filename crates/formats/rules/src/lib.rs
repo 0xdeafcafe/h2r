@@ -12,6 +12,7 @@ pub mod bodies;
 pub mod builtin;
 pub mod caps;
 pub mod fake;
+pub mod fields;
 pub mod ide;
 pub mod ir;
 pub mod labels;

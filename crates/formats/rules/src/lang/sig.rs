@@ -83,6 +83,7 @@ pub fn event_args(ev: Event) -> &'static [Type] {
         Event::Enter | Event::Leave => &[Z, O],
         Event::Arrive => &[O],
         Event::SquadDead => &[Type::Squad],
+        Event::Damage => &[O, P_, Type::Fixed],
         Event::ActorKill => &[P_, Type::Class],
         Event::ActorAssist => &[P_, P_, Type::Class],
         Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],

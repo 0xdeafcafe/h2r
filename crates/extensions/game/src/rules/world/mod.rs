@@ -5,6 +5,7 @@ pub mod audio;
 pub mod body;
 pub mod bots;
 pub mod hud;
+pub mod data;
 pub mod loadout;
 pub mod objects;
 pub mod show;

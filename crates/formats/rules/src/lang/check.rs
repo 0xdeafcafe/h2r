@@ -3442,6 +3442,22 @@ impl<'s> Cx<'s> {
                 None => ok = false,
             }
         }
+        if ok && crate::fields::is_read(entry.id) {
+            // Resolved at load, so both are written in the call.
+            for a in args {
+                if !matches!(a.kind, ExprKind::Str(_)) {
+                    let m = format!("{name} names its tag and its field as strings written in the call, so a host can resolve them at load");
+                    self.err("type.mismatch", a.pos, m);
+                    ok = false;
+                }
+            }
+            if let Some(Expr { kind: ExprKind::Str(field), pos, .. }) = args.get(1)
+                && let Err(why) = crate::fields::valid_path(field)
+            {
+                self.err("field.path", *pos, why);
+                ok = false;
+            }
+        }
         if sig.result.is_none() && !no_value(self) {
             return None;
         }

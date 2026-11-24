@@ -1189,6 +1189,7 @@ pub fn to_file(s: &Scenario) -> (file::Scenario, Vec<String>) {
                 assist,
                 class,
             },
+            Input::Damage { object, by, amount } => file::ScenarioEvent::Damage { object, by, amount },
         };
         if let Some(t) = ticks.get_mut(step.tick as usize) {
             t.events.push(event);

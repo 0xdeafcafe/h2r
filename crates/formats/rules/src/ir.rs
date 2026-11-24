@@ -511,10 +511,13 @@ pub enum Event {
     /// A mover reached the end of its `move_to` (`on arrive(o)`): the VM's
     /// own event, fired on the tick the mover ends.
     Arrive,
+    /// An object took damage: the object, the player it is credited to and
+    /// the amount as a fraction of full vitality (`SimEvent::Damage`).
+    Damage,
 }
 
 impl Event {
-    pub const ALL: [Event; 22] = [
+    pub const ALL: [Event; 23] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -537,6 +540,7 @@ impl Event {
         Event::ActorAssist,
         Event::Bounced,
         Event::Arrive,
+        Event::Damage,
     ];
 
     pub fn code(self) -> u8 {
@@ -572,6 +576,7 @@ impl Event {
             Event::ActorAssist => "actor_assist",
             Event::Bounced => "bounced",
             Event::Arrive => "arrive",
+            Event::Damage => "damage",
         }
     }
 
@@ -594,6 +599,7 @@ impl Event {
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
             Event::Arrive => &[Ty::Object],
             Event::SquadDead => &[Ty::Squad],
+            Event::Damage => &[Ty::Object, Ty::Player, Ty::Fixed],
             Event::ActorKill => &[Ty::Player, Ty::Class],
             Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
             Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
@@ -618,7 +624,8 @@ impl Event {
             | Event::Join
             | Event::Quit
             | Event::ActorKill
-            | Event::ActorAssist => 16,
+            | Event::ActorAssist
+            | Event::Damage => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
             // One a mover, and a script has at most 16 movers.

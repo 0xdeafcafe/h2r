@@ -335,6 +335,12 @@ pub mod id {
     pub const UNLOAD: u16 = 107;
     pub const VEHICLE_RIDERS: u16 = 108;
     pub const VEHICLE_DRIVER: u16 = 109;
+    pub const OBJECT_HEALTH: u16 = 110;
+    pub const OBJECT_SHIELD: u16 = 111;
+    pub const TAG_INT: u16 = 112;
+    pub const TAG_FIXED: u16 = 113;
+    pub const SQUAD_FIGHTING: u16 = 114;
+    pub const SQUAD_STRENGTH: u16 = 115;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -592,6 +598,24 @@ pub const ENTRIES: &[Entry] = &[
     // `0xd0620`, `UNIT_SEATS_NEXT` `0xd0690`). A non-vehicle has none.
     read(id::VEHICLE_RIDERS, "vehicle_riders", &[Object], Int, Traced),
     read(id::VEHICLE_DRIVER, "vehicle_driver", &[Object], Player, Traced),
+    // Advanced data (docs/game/rules-world-api.md, "Advanced data"). A
+    // unit's body and shield as a fraction of full, 0 to 1, from the unit
+    // datum (`game::rules::world::data`); an object that is no unit, or is
+    // gone, reads 0.
+    read(id::OBJECT_HEALTH, "object_health", &[Object], Fixed, Named),
+    read(id::OBJECT_SHIELD, "object_shield", &[Object], Fixed, Named),
+    // A field of a tag the map holds: both arguments are written as
+    // constants, and the field path is resolved at load against our typed
+    // tag definitions (`fields`), so a field they lack is a load error
+    // naming it. A float field is rounded once to `fixed`. The host's
+    // read of a tag instance from the loaded map is not built, so a host
+    // refuses a script that calls either by name.
+    read(id::TAG_INT, "tag_int", &[Tag, Text], Int, NotBuilt),
+    read(id::TAG_FIXED, "tag_fixed", &[Tag, Text], Fixed, NotBuilt),
+    // Actor state beyond what the agent API's `world.ai` snapshot reads is
+    // not traced, so a host refuses a script that reads either by name.
+    read(id::SQUAD_FIGHTING, "squad_fighting", &[Squad], Bool, Untraced),
+    read(id::SQUAD_STRENGTH, "squad_strength", &[Squad], Fixed, Untraced),
 ];
 
 /// The word `message(to, text)` takes for everyone.

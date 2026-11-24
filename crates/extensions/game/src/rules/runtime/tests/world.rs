@@ -67,7 +67,7 @@ fn world(ir: &Ir, flags: &[([f32; 3], u16, u16)], at: [[f32; 3]; 2]) -> (FakeGue
 fn tick(s: &Arc<Shared>, m: &mut FakeGuest, n: u32) -> Option<Work> {
     m.put_u32(GAME_TIME + 8, TICK + n);
     let work = s.lock().pre_tick(m);
-    s.lock().post_tick(m);
+    s.lock().post_tick(m, &[]);
     work
 }
 
@@ -555,4 +555,84 @@ fn the_authority_sends_the_walls_when_they_change_and_repeats_them() {
     // An emptied list goes once, then stays quiet.
     assert!(walls_due(sent(&shown, 5).as_ref(), &none, 6));
     assert!(!walls_due(sent(&none, 6).as_ref(), &none, 6 + repeat * 3));
+}
+
+const DAMAGE: &str = r#"
+rules "Damage" 1
+type slayer
+global var hits: int = 0
+global var last_amount: fixed = 0.0
+global var last_by: player? = none
+global var at_tick: int = -1
+on damage(o, by, amount) {
+    hits = hits + 1
+    last_amount = amount
+    last_by = by
+}
+on tick { at_tick = hits }
+"#;
+
+fn damage_event(victim: u32, player: guest_layout::Datum, body: f32) -> sim_state::SimEvent {
+    sim_state::SimEvent::Damage(sim_state::Damage {
+        tick: Some(1),
+        victim: guest_layout::Datum(victim),
+        victim_kind: 0,
+        victim_player: guest_layout::Datum::NONE,
+        owner_player: player,
+        owner_object: guest_layout::Datum::NONE,
+        owner_team: 0,
+        code: 0,
+        effect: guest_layout::Datum::NONE,
+        flags: 0,
+        body,
+        shield: 0.0,
+        direction: [0.0; 3],
+        origin: [0.0; 3],
+        position: None,
+    })
+}
+
+/// A tick's damage events reach `on damage` before `on tick`, the first
+/// 16 in event order, and only that tick's.
+#[test]
+fn the_ticks_damage_events_fire_on_damage_before_on_tick() {
+    let ir = ::rules::compile(DAMAGE).unwrap();
+    assert_eq!(host_refusal(&ir), None);
+    let (mut m, s, _) = world(&ir, &[], [[0.0; 3], [10.0, 0.0, 0.0]]);
+    let line = s.lock().start(&m, false);
+    assert!(s.lock().state().running, "{line}");
+
+    // Twenty events: only the first sixteen fire; the last of them is the
+    // one the script keeps, and `on tick` already saw all sixteen.
+    let many: Vec<_> = (0..20)
+        .map(|i| damage_event(i, guest_layout::Datum::NONE, 0.5 + i as f32 / 100.0))
+        .collect();
+    m.put_u32(GAME_TIME + 8, TICK + 1);
+    s.lock().pre_tick(&m);
+    s.lock().post_tick(&m, &many);
+    assert_eq!(global(&s, "hits"), 16);
+    assert_eq!(global(&s, "at_tick"), 16);
+    assert_eq!(global(&s, "last_amount"), data::to_fixed(0.65));
+    assert_eq!(global(&s, "last_by"), -1, "no one is credited");
+
+    // The next tick has none of them again.
+    tick(&s, &mut m, 2);
+    assert_eq!(global(&s, "hits"), 16);
+
+    // Credit is the player slot; events that are not damage are ignored.
+    let events = [
+        sim_state::SimEvent::ActorKilled {
+            unit: guest_layout::Datum(9),
+            character: guest_layout::Datum(9),
+            killer: guest_layout::Datum::NONE,
+            weapon: 0,
+        },
+        damage_event(7, guest_layout::Datum(1), 0.25),
+    ];
+    m.put_u32(GAME_TIME + 8, TICK + 3);
+    s.lock().pre_tick(&m);
+    s.lock().post_tick(&m, &events);
+    assert_eq!(global(&s, "hits"), 17);
+    assert_eq!(global(&s, "last_by"), 1);
+    assert_eq!(global(&s, "last_amount"), data::to_fixed(0.25));
 }
