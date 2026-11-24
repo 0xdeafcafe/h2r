@@ -14,6 +14,7 @@ pub mod area;
 pub mod kind;
 pub mod mesh;
 pub mod palette;
+pub mod record;
 pub mod shapes;
 
 #[cfg(test)]

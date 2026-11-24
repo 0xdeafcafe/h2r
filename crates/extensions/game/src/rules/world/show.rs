@@ -114,6 +114,12 @@ pub fn start_clip(tick: u32, ty: Type) {
     }
 }
 
+/// The authority's walls cue at `tick`: the whole list of the areas the
+/// script shows (`::rules::show::Cue::Walls`).
+pub fn walls(tick: u32, shown: Vec<(u32, Option<u8>)>) {
+    push(tick, Cue::Walls(shown));
+}
+
 /// The cues waiting for the channel.
 pub fn take_cues() -> Vec<PendingCue> {
     std::mem::take(&mut lock(&CHANNEL).cues)
@@ -142,6 +148,8 @@ pub fn take_records() -> Vec<::actor_net::Record> {
 /// Forgets the waiting cues: a new match or a snapshot restore starts the
 /// channel empty.
 pub fn clear_cues() {
+    *lock(&WALLS_SEEN) = None;
+    crate::forge_glue::markers_world::publish_walls(Vec::new());
     *lock(&CHANNEL) = Channel {
         cues: Vec::new(),
         tick: None,
@@ -360,7 +368,36 @@ pub fn present(cx: &Cx, cues: &[ReceivedCue]) {
     }
 }
 
+/// The newest walls cue a client acted on, as (tick, sequence), and the
+/// list it showed: a repeat of the same list, or an older cue arriving
+/// late, changes nothing.
+static WALLS_SEEN: Mutex<Option<((u32, u8), Vec<(u32, Option<u8>)>)>> = Mutex::new(None);
+
+/// A walls cue on a client: the host's shown areas, drawn from this
+/// machine's own copy of the map (`super::walls::client`).
+fn present_walls(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
+    let Cue::Walls(shown) = Cue::decode(cue.kind, &cue.bytes, &[]).map_err(|e| e.to_string())? else {
+        return Err("not a walls cue".into());
+    };
+    let key = (cue.tick, cue.sequence);
+    {
+        let mut seen = lock(&WALLS_SEEN);
+        if let Some((at, last)) = &*seen
+            && (key <= *at || *last == shown)
+        {
+            return Ok(());
+        }
+        *seen = Some((key, shown.clone()));
+    }
+    let walls = cx.read(|m| super::walls::client(m, &shown));
+    crate::forge_glue::markers_world::publish_walls(walls);
+    Ok(())
+}
+
 fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
+    if cue.kind == show::WALLS {
+        return present_walls(cx, cue);
+    }
     let (ty, strings) = cx
         .read(script_context)
         .ok_or_else(|| "the running script's blob is not on this machine".to_string())?;
@@ -371,6 +408,7 @@ fn present_one(cx: &Cx, cue: &ReceivedCue) -> Result<(), String> {
         }
         Cue::StartClip(_) => return Err("start clip is for another game type".into()),
         Cue::Message(message) => message,
+        Cue::Walls(_) => return Err("a walls cue is read before the blob".into()),
     };
     let roster = cx.read(roster);
     let name = named(&roster);
