@@ -75,7 +75,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Untraced `D3DDevice_Begin` callers `0x00029b00`, `0x0003bf20` | immediate | none | not read (**S**: what they draw) | none |
 | Loading `0x000289e0`, spinner `0x0002a1f4`, bitmaps `0x0002ae60` | immediate fans | each fan | the animation's clears, binds and presents | none |
 | Movies: tick `0x00156040`, blit `0x001568d0`, quad `0x00156960` | a texture lock and upload, one quad | none | all of it ([bink-hle.md](../audio/bink-hle.md)) | none |
-| Alternate view `0x0002c790` (`0x0002c863`, `0x0002c884`, `0x0002c889`), fallback view `0x002232a0` | whatever its scene and UI draw | as the callers above | view setup and finish | none |
+| Alternate view `0x0002c790` (`0x0002c863`, `0x0002c884`, `0x0002c889`), fallback view `0x002232a0` | whatever its scene and UI draw | alternate scene layers 1, 5 and 2 from the layer plan, layer 3 from the world and sorted object stages, first-person layers at their own calls | view setup and finish, refused items | none |
 | Target selection `0x0001cd30` (five base sites `0x0002bde2` to `0x0002bfe3`), clears `0x00014b60` | binds, clears | attachment loads and clipped rectangle plans up to eight rectangles, device binds and title-surface reference transactions | longer rectangle lists, final resource destruction, the viewport reset | none |
 | Frame end `0x00013b90`, `0x00013cd0`; present `0x00013f10` | a target copy, push words, an optional surface lock, `Swap` | none | all of it | none |
 | Outside the render call: boot, the resource caches, the sim | `CreateDevice`, `AddRef`, `Release`, `IsBusy`, `BlockOnResource`, fences | none | all of it; about 0.1 call a frame from the sim [d] | 0.1 a frame [d] |

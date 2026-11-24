@@ -310,6 +310,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
+        if !crate::native_layers_glue::viewport_clip(&d, &ReadMemory(mem)) {
+            return None;
+        }
         // With a render thread that records scene stages, everything here
         // is extraction: the guest reads and the checks that can refuse,
         // which decide what the guest skips. The render thread binds
@@ -1102,7 +1105,8 @@ impl d3d::ExternalPass for WorldPass {
         let view = ViewInputs {
             constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
         };
-        Some(gpu.selection_draws_lit(t.color_format, t.depth_format, t.size, selection, &view, world_lighting(t.copy, t.lighting)))
+        let draws = gpu.selection_draws_lit(t.color_format, t.depth_format, t.size, selection, &view, world_lighting(t.copy, t.lighting));
+        Some(draws.and_then(|draws| crate::native_layers_glue::clip_packets(draws, request, t.size)))
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }

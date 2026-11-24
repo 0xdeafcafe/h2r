@@ -247,19 +247,19 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "game_view",
         entry: 0x0002_b790,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
         name: "alternate_view",
         entry: 0x0002_c790,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
         name: "scene_passes",
         entry: 0x0002_bcd0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "opaque",
     },
     Row {
@@ -393,13 +393,13 @@ pub const LAYER_SITES: [&str; 6] = [
 /// caller"), by [`LAYER_SITES`] index: the scene's layers 1, 2, 5, 7, 8,
 /// 17 and 20 (`frame-scene.layers`) and 3 (`native_objects`,
 /// `native_world`, the decorators), 6 (water) and 16 (fog), the alternate
-/// view's 2, and the first person's 1, 2, 7, 8 and 20 (`frame-scene.layers`)
+/// view's 1, 2, 3 and 5, and the first person's 1, 2, 7, 8 and 20 (`frame-scene.layers`)
 /// and 3 (`native_first_person`), the light passes’ 12 and 13, and the
 /// object shadow's caster and receiver layers 10 and 11. Each is
 /// [`Status::Partial`]: what its stages refuse stays the guest's.
 pub const PARTIAL_LAYERS: [(u8, &[u8]); 5] = [
     (0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]),
-    (1, &[2]),
+    (1, &[1, 2, 3, 5]),
     (2, &[1, 2, 3, 7, 8, 20]),
     (3, &[12, 13]),
     (4, &[10, 11]),
@@ -1381,7 +1381,10 @@ mod tests {
             assert_eq!(status(5, layer), "d3d", "a different caller keeps its draw");
         }
         assert_eq!(status(1, 2), "partial", "an alternate view's layer 2");
-        assert_eq!(status(1, 1), "d3d", "an alternate view's");
+        for layer in [1, 3, 5] {
+            assert_eq!(status(1, layer), "partial");
+        }
+        assert_eq!(status(1, 7), "d3d");
         for layer in [12, 13] {
             assert_eq!(status(3, layer), "partial", "the light passes'");
         }
@@ -1393,7 +1396,10 @@ mod tests {
                 r.status,
                 if matches!(
                     r.name,
-                    "object_shadow"
+                    "game_view"
+                        | "alternate_view"
+                        | "scene_passes"
+                        | "object_shadow"
                         | "object_shadows"
                     | "water_teardown"
                         | "sky"

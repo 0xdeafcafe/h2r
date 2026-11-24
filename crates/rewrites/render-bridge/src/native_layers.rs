@@ -1,5 +1,5 @@
 //! `frame-scene.layers`: the scene's world layers 1, 5, 7, 8, 20, 2 and 17, the
-//! alternate view's overlay layer 2, the first person's layers 1, 7, 8, 20 and 2, and the sorted transparent list's
+//! alternate view's layers 1, 5 and 2, the first person's layers 1, 7, 8, 20 and 2, and the sorted transparent list's
 //! camouflage layers 18 and 19 and hologram layer 21, drawn from the scene's plan instead of the guest's
 //! draws under the layer call (docs/graphics/framescene.md, slice 4;
 //! docs/graphics/native-water-fog.md for 18, 19 and 21). On with the native renderer;
@@ -11,7 +11,7 @@
 //! - first it sets back the bits it cleared at the last layer it took,
 //!   each only if the item still holds the mask it left;
 //! - then, when the current layer is one of [`LAYERS`] and the caller is
-//!   the scene's, the alternate view's overlay layer, one of [`FIRST_PERSON_LAYERS`] and the caller the
+//!   the scene's, the alternate view's layers 1, 5 or 2, one of [`FIRST_PERSON_LAYERS`] and the caller the
 //!   first person's `0x0003fdf0` (`native_render::world_layers::layer_site`),
 //!   or one of [`SORTED_LAYERS`] and the caller its sorted handler
 //!   (`native_render::world_layers::sorted_site`),
@@ -80,7 +80,7 @@ pub fn caller(layer: u32, ret: u32) -> Option<LayerCaller> {
     }
     match layer_site(layer, ret) {
         Site::Scene if LAYERS.contains(&layer) => Some(LayerCaller::Scene),
-        Site::AlternateView if layer == 2 => Some(LayerCaller::AlternateView),
+        Site::AlternateView if matches!(layer, 1 | 2 | 5) => Some(LayerCaller::AlternateView),
         Site::FirstPerson if FIRST_PERSON_LAYERS.contains(&layer) => Some(LayerCaller::FirstPerson),
         _ => None,
     }
@@ -193,7 +193,7 @@ pub fn extract(mem: &dyn GuestMemory, layer: u8, caller: LayerCaller) -> Option<
         LayerCaller::AlternateView => ViewKind::Alternate,
         LayerCaller::FirstPerson => ViewKind::FirstPerson,
     };
-    b.open_view(ViewKey { kind, player: 0, view: 0 }, camera).ok()?;
+    b.open_view(ViewKey { kind, player: 0, view: ro.read_u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(0) as u8 }, camera).ok()?;
     scene_extract::extract::layer(&ro, layer, true, &mut b).ok()??;
     b.seal(Stamp::default())
 }
@@ -268,7 +268,7 @@ pub struct NativeLayers;
 
 impl Feature for NativeLayers {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "World layers 1, 5, 7, 8, 20, 2 and 17, the alternate view's 2, the first person's 1, 7, 8, 20 and 2 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
+        Manifest::new(ID, "World layers 1, 5, 7, 8, 20, 2 and 17, the alternate view's 1, 5 and 2, the first person's 1, 7, 8, 20 and 2 and the camouflage handler's 18 and 19 and the hologram's 21 drawn from the scene's plan")
             .doc("docs/graphics/framescene.md")
     }
 
@@ -330,7 +330,10 @@ mod tests {
         assert_eq!(caller(20, 0x0004_020b), Some(LayerCaller::FirstPerson));
         assert_eq!(caller(3, 0x0004_0136), None, "native_first_person's");
         assert_eq!(caller(3, 0x0002_bed5), None, "native_objects' and the world's");
-        assert_eq!(caller(1, 0x0002_bd5c), None, "an alternate view's");
+        assert_eq!(caller(1, 0x0002_bd5c), Some(LayerCaller::AlternateView));
+        assert_eq!(caller(5, 0x0002_bd8c), Some(LayerCaller::AlternateView));
+        assert_eq!(caller(5, 0x0002_bd5c), None);
+        assert_eq!(caller(3, 0x0002_bd74), None, "owned by the base-layer stages");
     }
 
     #[test]

@@ -287,8 +287,8 @@ any masks. A cold pipeline leaves the first-person draw on D3D.
 `begin_external_boundary` drains preceding packets before the
 entry states and first-person view constants are read (the camera itself is
 built by `0x0023c110` upstream), rather than copying the scene camera. The
-pass requires a known W-buffered depth mode and a full-target viewport with
-a `0.0..1.0` depth range (split or partial views stay on D3D), uses the
+pass requires a known W-buffered depth mode and a single clip equal to the viewport with
+a `0.0..1.0` depth range. Each copy clips the packets to its scaled viewport. The pass uses the
 device's W-clip and per-call inherited cull, and loads depth/stencil: first person's flag
 disables stencil writes, so no scene stencil is replaced. Record `+4`,
 not the owner definition's third-person model, names the `mode` to load;
@@ -672,14 +672,9 @@ vertex and no matrix work on the CPU.
   with the wrong node count left out.
 - **The feature `native-objects`** (`crates/rewrites/render-bridge/src/native_objects.rs`).
   One observer before `LAYER_DRAW`, inside `render-timing`'s and the
-  world's (`after_feature` on both), context-only. First it sets back the
-  bits the last base-layer layer 3 cleared (items still holding the mask
-  it left). Then, only for layer 3 called from `0x0002bed5`: asks the host
-  for its native set (definitions with their node counts, shaders),
-  clears the accepted items, asks the host to load any definition it has
-  not seen, copies the cleared objects' nodes and spheres, gives back the
-  bits of objects it could not read or whose node count disagrees, and
-  asks for the pass (all bits back if the device cannot). Tests:
+  world's (`after_feature` on both), context-only. Layer 3 at the main or alternate scene call opens the
+  sorted object walk with that view's kind. The geometry handler consumes contiguous admitted runs
+  after reservation. The packets carry the current view's constants and a scissor scaled to each copy. Tests:
   `crates/rewrites/render-bridge/tests/native_objects.rs` (the plan with `render-timing`,
   deep, the layer-draw port and the world; with the world alone the chain
   runs on the render thread; the switch off; the observer on

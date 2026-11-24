@@ -307,7 +307,7 @@ pub fn open_view(mem: &dyn GuestMemory) -> Option<View> {
 /// when none is. At a layer-3 draw the view's clusters and world state
 /// are read, once: they are layer 3's (its list and its texture
 /// accumulation target), and the view can open earlier, at its layer 1.
-fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
+pub(crate) fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
     open_kind_at_layer(mem, kind, false)
 }
 
@@ -429,16 +429,18 @@ fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
 
 /// The objects of the base layer's sorted walk into the open view (its
 /// first geometry handler call). Opens the view first when none is.
-pub fn objects(mem: &dyn GuestMemory, entries: &[Entry]) {
-    if view(mem).is_none() {
-        return;
+pub(crate) fn objects(mem: &dyn GuestMemory, kind: ViewKind, entries: &[Entry]) -> bool {
+    if open_kind(mem, kind).is_none() {
+        return false;
     }
     let m = Ro(mem);
     with_step(|step| {
         if extract::objects(&m, entries, &mut step.builder).is_err() {
             REFUSED.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
-    });
+        true
+    })
 }
 
 /// The model decorators of the base layer 3 into the open view
@@ -1569,6 +1571,10 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
             }
         }
         (Site::Scene, 1 | 5 | 7 | 8 | 20) => layer_items(mem, ViewKind::Game, layer),
+        (Site::AlternateView, LIGHTMAP_LAYER) => {
+            let _ = open_kind_at_layer(mem, ViewKind::Alternate, true);
+        }
+        (Site::AlternateView, 1 | 2 | 5) => layer_items(mem, ViewKind::Alternate, layer),
         (Site::FirstPerson, _) => layer_items(mem, ViewKind::FirstPerson, layer),
         _ => {}
     }

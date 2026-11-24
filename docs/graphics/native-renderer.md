@@ -399,6 +399,8 @@ grid used for object culling.
 
 With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The original GPU query supplies visibility feedback.
 
+**Alternate scene.** The layer planner draws admitted structure and object items in layers 1, 5 and 2. Layer 3 uses the BSP mask reservation and the sorted object walk with an alternate view key and the current render camera. First-person calls use their own camera and models. View setup, target selection, composition and finish still run in guest order.
+
 **Object shadows.** With `impl.render.native`, the caster call identifies its object and fade from the ranked row in its own stack frame. A matching row admits the object to the existing shadow path. Layer 10 draws the mask and layer 11 applies it to admitted receivers. The guest sets up the targets and draws unsupported geometry. See [native-shadow-layers.md](native-shadow-layers.md).
 
 **Residual geometry.** Layer 2's items at the main scene's call

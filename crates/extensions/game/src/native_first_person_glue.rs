@@ -27,29 +27,6 @@ impl native_render::camera::GuestRead for Ro<'_> {
     }
 }
 
-/// The object encoder uses the whole target as its viewport. A split or
-/// otherwise partial view therefore keeps its original D3D draw.
-fn full_target_viewport<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>,
-    mem: &dyn GuestMemory,
-) -> bool {
-    let target = device.bound_target()[0];
-    let Ok(header) = d3d::resource::SurfaceHeader::read(&ReadMemory(mem), target) else {
-        return false;
-    };
-    let Ok(desc) = gfx::texture::TextureDesc::from_header(header.pixels.format, header.pixels.size)
-    else {
-        return false;
-    };
-    let viewport = device.viewport();
-    viewport.x == 0
-        && viewport.y == 0
-        && viewport.width == desc.width
-        && viewport.height == desc.height
-        && viewport.min_z == 0.0
-        && viewport.max_z == 1.0
-}
-
 /// State every item's plan inherits, resolved before `Host::draw` returns.
 #[derive(Clone, Debug)]
 struct LayerEntry {
@@ -183,10 +160,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
         let entry = {
             let device = self.device.lock().ok()?;
-            if !full_target_viewport(&device, mem) {
+            let viewport = device.viewport();
+            let read = ReadMemory(mem);
+            if viewport.min_z != 0.0 || viewport.max_z != 1.0 || !crate::native_layers_glue::viewport_clip(&device, &read) {
                 return None;
             }
-            let read = ReadMemory(mem);
             let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
             let clip = device.depth_clip(&read, native_render::camera::D24_SCALE);
             LayerEntry {
@@ -544,7 +522,7 @@ impl FirstPersonPass {
             z_scale: request.z_scale,
             w_clip: Some(self.w_clip),
         };
-        lit.draws(
+        let draws = lit.draws(
             &target.device,
             &target.queue,
             &target.uploads,
@@ -555,7 +533,8 @@ impl FirstPersonPass {
             request.projection_factor(target.copy),
             &self.draws,
             None,
-        )
+        )?;
+        crate::native_layers_glue::clip_packets(draws, request, target.size)
     }
 }
 

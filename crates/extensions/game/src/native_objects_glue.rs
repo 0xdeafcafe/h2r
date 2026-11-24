@@ -477,10 +477,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // do: the frame step opened it with one (render_bridge::scene_step).
         let (scene, scene_view) = view.ok_or(ObjectWalk::Inputs)?;
         let read = crate::native_world_glue::ReadMemory(mem);
-        let request = device.external_ready(&read, false).map_err(|_| ObjectWalk::Reservation)?;
-        let (width, height) = request.surface_size;
-        let (clip, rects) = device.clip_area(&read).ok().flatten().ok_or(ObjectWalk::State)?;
-        if !rects.is_empty() || !clip.is_whole(width, height) || request.rect != (0, 0, width, height) {
+        if !crate::native_layers_glue::viewport_clip(&device, &read) {
             return Err(ObjectWalk::State);
         }
         let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run)?;
@@ -1586,7 +1583,8 @@ impl ObjectsPass {
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), &self.draws, texaccum)
+        let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), &self.draws, texaccum)?;
+        crate::native_layers_glue::clip_packets(draws, request, t.size)
     }
 }
 

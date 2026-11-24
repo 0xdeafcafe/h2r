@@ -242,7 +242,8 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     };
     use native_render::world_layers::{Site, layer_site};
-    if layer_site(LIGHTMAP_LAYER, ret) == Site::Scene
+    let site = layer_site(LIGHTMAP_LAYER, ret);
+    if site == Site::Scene
         && let Some(bsp) = m.read_u32(ACTIVE_BSP)
         && host.use_resolved_scene(m.0, bsp)
     {
@@ -264,7 +265,8 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         return;
     };
-    let (Some(view), Some(bsp)) = (crate::scene_step::open_view(&*m.0), m.read_u32(ACTIVE_BSP)) else {
+    let kind = if site == Site::AlternateView { frame_scene::ViewKind::Alternate } else { frame_scene::ViewKind::Game };
+    let (Some(view), Some(bsp)) = (crate::scene_step::open_kind(&*m.0, kind), m.read_u32(ACTIVE_BSP)) else {
         return;
     };
     if let Some(c) = host.ask(m.0, bsp, &view, &stencil) {
