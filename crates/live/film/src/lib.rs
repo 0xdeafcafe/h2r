@@ -132,6 +132,10 @@ pub struct Header {
     /// (docs/game/film-format.md, "Recording every game").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub player_features: bool,
+    /// The stats stream holds no actions: every tick's are in the film
+    /// file beside it (`film::file`, `TrackReader::attach_film`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inputs_in_film: bool,
     /// A film cut from a session's running tape at one game's end
     /// (docs/game/film-format.md, "One film per game"): the tape's ID. The
     /// cut keeps the tape's boot `HEAD`, which carries this ID and the

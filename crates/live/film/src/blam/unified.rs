@@ -64,7 +64,13 @@ pub(super) struct TickRecords {
     pub after: Vec<RecordData>,
 }
 
-pub(super) fn encode(ticks: &[Tick], extra: &[TickRecords]) -> Result<Vec<u8>> {
+/// A time chunk's records. `with_inputs` is false when the actions are in
+/// the film file ([`crate::Header::inputs_in_film`]).
+pub(super) fn encode(
+    ticks: &[Tick],
+    extra: &[TickRecords],
+    with_inputs: bool,
+) -> Result<Vec<u8>> {
     ensure!(
         ticks.len() == extra.len(),
         "record groups disagree with film ticks"
@@ -75,7 +81,7 @@ pub(super) fn encode(ticks: &[Tick], extra: &[TickRecords]) -> Result<Vec<u8>> {
     let mut previous = [None; super::MAX_SEATS];
     for (tick, records) in ticks.iter().zip(extra) {
         let seats = ticks::slots(tick)?;
-        if seats != previous {
+        if with_inputs && seats != previous {
             let mut input = Vec::new();
             ticks::write_change(&previous, &seats, &mut input);
             out.record(tick.tick, stream::INPUT, &input)

@@ -31,6 +31,7 @@ fn header(length_ticks: u64) -> Header {
         telemetry: false,
         telemetry_hooks: None,
         render_hooks: None,
+        inputs_in_film: false,
         live_service: false,
         features: String::new(),
         player_features: false,
@@ -312,7 +313,7 @@ fn unified_time_chunks_restore_inputs_and_skip_future_payload_types() {
         RecordData::stats_event(br#"{"kind":"test","data":{}}"#.to_vec()),
         RecordData::marker("Overtime"),
     ];
-    let raw = unified::encode(&source, &extra).unwrap();
+    let raw = unified::encode(&source, &extra, true).unwrap();
     let replay = unified::decode(&raw, 1, source.len()).unwrap();
     assert_eq!(Vec::from(replay), source);
     let records: Vec<_> = stream::Chunk::parse(&raw)
@@ -801,7 +802,7 @@ fn forge_entry_records_round_trip_through_a_time_chunk_in_record_order() {
         [&[stream::FORGE_ITEM][..], b"item bytes"].concat(),
     ];
     let extra = vec![unified::TickRecords::default(); 3];
-    let raw = unified::encode(&ticks, &extra).unwrap();
+    let raw = unified::encode(&ticks, &extra, true).unwrap();
     let back = unified::decode(&raw, 1, 3).unwrap();
     assert_eq!(back.len(), 3);
     assert_eq!(back[1].forge, ticks[1].forge);
@@ -814,7 +815,7 @@ fn forge_entry_records_round_trip_through_a_time_chunk_in_record_order() {
 fn a_forge_record_from_a_producer_is_written_and_read_back() {
     let mut extra = vec![unified::TickRecords::default(); 2];
     extra[0].during.push(RecordData::forge(stream::FORGE_ITEM, b"x"));
-    let raw = unified::encode(&[sample(1), sample(2)], &extra).unwrap();
+    let raw = unified::encode(&[sample(1), sample(2)], &extra, true).unwrap();
     let back = unified::decode(&raw, 1, 2).unwrap();
     assert_eq!(back[0].forge, vec![vec![stream::FORGE_ITEM, b'x']]);
 }
@@ -831,7 +832,7 @@ fn firefight_entry_records_round_trip_through_a_time_chunk_in_record_order() {
     let mut ticks: Vec<Tick> = (1..=3).map(sample).collect();
     ticks[2].firefight = vec![b"{\"seq\":1}".to_vec(), b"{\"seq\":2}".to_vec()];
     let extra = vec![unified::TickRecords::default(); 3];
-    let raw = unified::encode(&ticks, &extra).unwrap();
+    let raw = unified::encode(&ticks, &extra, true).unwrap();
     let back = unified::decode(&raw, 1, 3).unwrap();
     assert_eq!(back[2].firefight, ticks[2].firefight);
     assert!(back[0].firefight.is_empty() && back[1].firefight.is_empty());
@@ -845,8 +846,73 @@ fn firefight_entries_have_one_source_and_are_never_empty() {
         tag: stream::FIREFIGHT,
         payload: b"{}".to_vec(),
     });
-    assert!(unified::encode(&[sample(1)], &extra).is_err());
+    assert!(unified::encode(&[sample(1)], &extra, true).is_err());
     let mut chunk = stream::ChunkWriter::new(1, 1).unwrap();
     chunk.record(1, stream::FIREFIGHT, &[]).unwrap();
     assert!(unified::decode(&chunk.finish(), 1, 1).is_err());
+}
+
+#[test]
+fn a_stats_stream_without_inputs_takes_them_from_the_film_file() {
+    use crate::file::{FilmActions, FilmWriter, Seed, TICK_DIGEST};
+    let mut header = header(2);
+    header.version = 3;
+    header.inputs_in_film = true;
+    let ticks: Vec<Tick> = (1..=300)
+        .map(|n| {
+            let mut tick = sample(n);
+            tick.inputs.retain(|input| input.action.is_some());
+            tick.inputs.iter_mut().for_each(|input| input.pad = None);
+            tick
+        })
+        .collect();
+    let mut out = Writer::new(Cursor::new(Vec::new()), &header).unwrap();
+    let mut track = TrackWriter::default().without_inputs();
+    for tick in &ticks {
+        track
+            .push_clocked(&mut out, tick.clone(), Vec::new(), Some(tick.tick))
+            .unwrap();
+    }
+    track
+        .finish(&mut out, &MatchHeader::default(), &Summary::default())
+        .unwrap();
+    let bytes = out.finish().unwrap().into_inner();
+
+    // The container holds no action record.
+    let mut remote = crate::range::RangeReader::new(Cursor::new(&bytes)).unwrap();
+    let public = remote.chunk(0).unwrap();
+    assert!(
+        stream::Chunk::parse(&public)
+            .unwrap()
+            .records()
+            .all(|r| r.unwrap().tag != stream::INPUT)
+    );
+
+    let seed = Seed {
+        header,
+        descriptor: MatchHeader::default(),
+    };
+    let mut film = FilmWriter::new(Cursor::new(Vec::new()), &seed, 30).unwrap();
+    for tick in &ticks {
+        let mut seats = [None; crate::columns::SEATS];
+        for input in &tick.inputs {
+            seats[usize::from(input.seat)] = input.action;
+        }
+        let flags = if tick.post_hash.is_some() { TICK_DIGEST } else { 0 };
+        film.push_tick(flags, tick.post_hash.unwrap_or(0), &seats)
+            .unwrap();
+    }
+    let film = film.finish().unwrap().into_inner();
+
+    let mut alone = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
+    assert!(alone.step().is_err());
+    let mut merged = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
+    merged
+        .attach_film(FilmActions::new(Box::new(Cursor::new(film))).unwrap())
+        .unwrap();
+    let mut got = Vec::new();
+    while let Some(tick) = merged.step().unwrap() {
+        got.push(tick);
+    }
+    assert_eq!(got, ticks);
 }

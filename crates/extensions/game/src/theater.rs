@@ -396,6 +396,7 @@ impl Session {
                 live_service,
                 features: switches.with(admission, true).spec(),
                 player_features: player_features && !host_recording,
+                inputs_in_film: false,
                 tape_id: None,
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
