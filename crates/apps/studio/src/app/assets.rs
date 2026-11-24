@@ -132,13 +132,13 @@ pub fn tag_id(key: &TagKey) -> String {
 
 /// What the packages do to the tree.
 #[derive(Default)]
-struct Overlay {
+pub(super) struct Overlay {
     /// A tag a package adds: the package and where.
-    added: BTreeMap<TagKey, Vec<(String, Maps)>>,
+    pub(super) added: BTreeMap<TagKey, Vec<(String, Maps)>>,
     /// A tag an edit line touches: the packages, in load order.
-    edited: BTreeMap<TagKey, Vec<(String, Maps)>>,
+    pub(super) edited: BTreeMap<TagKey, Vec<(String, Maps)>>,
     /// Edit files that did not read.
-    problems: Vec<String>,
+    pub(super) problems: Vec<String>,
 }
 
 fn group_ref(text: &str) -> Option<TagKey> {
@@ -146,7 +146,7 @@ fn group_ref(text: &str) -> Option<TagKey> {
     Some(TagKey::new(parse_fourcc(g)?, path.replace('/', "\\")))
 }
 
-fn overlay(set: &GameSet) -> Overlay {
+pub(super) fn overlay(set: &GameSet) -> Overlay {
     let mut out = Overlay::default();
     for e in &set.on {
         let m = &e.loaded.package.manifest;

@@ -1737,14 +1737,29 @@ and answers `not-yet`.
 is refused); the new path is `to`, or the source's with `_copy`; a path
 the tree or the package already has is refused.
 
+`asset.links {asset}` answers what the asset uses, what uses it and which
+editors open it (docs/editor/studio-flow.md, "Links"; `app/links.rs`):
+`{asset, uses, used_by, editors, problems}`. A link is `{asset, role, via}`;
+`role` groups it (Model, Animations, Sounds, HUD, Projectile, Variant,
+Voice, Package, or the target's kind). A tag's `uses` are the tags its file
+references (`via` is `node <n> +<offset>`) and, for a dialogue sound, the
+voice that says it (`voice:<character>`); its `used_by` are the tags that
+reference it and the packages that add or edit it. A `variant` item uses the
+`rules` item of its script key, which lists the variant under `used_by`.
+An item lists the tag it adds or edits and its package; a package lists its
+items and `requires`. `editors` is `[{id, label, why_not}]`. A tag file that
+does not decode, or a missing tree, is named in `problems`. A bad id is
+`INVALID_PARAMS`; an unknown package or item number is `REFUSED`.
+
 ```sh
 h2 studio asset.list '{"kind":"Objects","query":"rifle"}'
 h2 studio asset.list '{"root":"packages","package":"pogo"}'
 h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-pack"}'
+h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
 ```
 
-The tests (`api/tests/assets_tests.rs`) run over an invented tree of two
-maps and one package.
+The tests (`api/tests/assets_tests.rs`, `api/tests/links_tests.rs`) run over
+an invented tree and local packages.
 
 ### Packages
 
