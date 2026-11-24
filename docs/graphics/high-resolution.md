@@ -287,8 +287,9 @@ What scales in the view: surfaces made with `create_surface` at the frame
 size (the first colour surface's, the back buffer), `PersistDisplay`'s copy,
 back-buffer-sized render-to-texture levels
 (`ScaleView::create_scaled_texture_target`) and depth aliases of the whole
-depth buffer (`ScaleStats::scaled_depth_aliases`). Other levels live only in
-the reference and the view samples the reference's textures of them.
+depth buffer (`ScaleStats::scaled_depth_aliases`). Smaller render targets
+keep their guest dimensions. Exact mode gives each camera its own contents,
+including the downsample and blur levels used by the final composite.
 Scissors and clears are scaled inside `GfxBackend` for a scaled surface.
 
 A view failure (a draw it cannot make, an allocation that fails at 4K) does
@@ -360,19 +361,24 @@ once at guest size: `ScaledBackend::guest_image` samples the scaled
 partner to its guest-size handle (`ScaleStats::downsamples`), and a scaled
 partner that the draw modified is transferred back on the GPU
 (`crates/platform/d3d/src/scaled/single.rs`, `draw_single`). In exact mode the
-reference draws every guest-size target from its own 1x surfaces and the view
-samples the reference's result, so no resolve is needed. The view never reads
-back to the CPU.
+reference and display each draw the chain from their own frame. Both
+downsample to the same guest dimensions. The display then composites its
+own blurred image, keeping highlights aligned with their sources at each
+raster resolution. The guest texture header supplies the texel dimensions
+for UV normalization. The compositor supplies the final drawable extent
+after the frame is complete.
 
 ### Depth as a texture
 
-Textures over the whole depth buffer are made on the GPU from the view's
-scaled depth, by a full-screen pass that writes the depth and stencil bits
-into a colour texture in the alias's channel order
-(`ScaleStats::scaled_depth_aliases`; tests `the_depth_buffer_as_a_texture_matches_downsampled`
-and `tests/gpu_depth_alias.rs`). Partial or swizzled aliases stay the
-reference's 1x textures in exact mode ([d3d.md](d3d.md), "Frame buffers as
-textures").
+Each camera decodes textures over its own depth or colour attachment.
+The texture header supplies the guest byte offset, dimensions and pitch
+or swizzle. The decoder maps each addressed guest texel to the source
+attachment's physical grid. This includes subrectangles and texture
+headers that reinterpret texaccum or the colour surface drawn over the
+depth allocation. The GPU paths are `gfx::guest_words::GuestWords` for
+aligned depth words and `gfx::surface_alias::AliasDecoder` for the other
+layouts. `crates/platform/d3d/tests/gpu_depth_alias.rs` checks a partial
+feedback alias against the two cameras at full and three-quarter raster.
 
 Those textures hold packed bits. They must be point sampled, at any scale.
 A stage that samples one with a linear filter is already wrong at 1x.
