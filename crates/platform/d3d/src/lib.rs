@@ -117,4 +117,25 @@ pub enum Lighting {
     /// The Lighting row on E3: shadow maps at `shadow_scale` times their
     /// size in the view, compared with one tap.
     E3,
+    /// The privately reconstructed BSP lightmap with its selected lamp on.
+    RelightOn,
+    /// The privately reconstructed BSP lightmap with its selected lamp off.
+    RelightOff,
+}
+
+impl Lighting {
+    pub fn is_relight(self) -> bool {
+        matches!(self, Self::RelightOn | Self::RelightOff)
+    }
+
+    /// The two startup-only arms that need private BSP resources.
+    pub fn relight_from_name(name: &str) -> Option<Self> {
+        if name.trim().eq_ignore_ascii_case("relight-on") {
+            Some(Self::RelightOn)
+        } else if name.trim().eq_ignore_ascii_case("relight-off") {
+            Some(Self::RelightOff)
+        } else {
+            None
+        }
+    }
 }

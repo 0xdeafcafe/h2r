@@ -28,7 +28,7 @@ const LTMP: FourCC = FourCC(*b"ltmp");
 const USAGE: &str = "usage: h2 lighting <map> [--bsp N] [--disc ISO]
        h2 lighting <map> --bsp N --page N [--group N] [--palette N] --out DIR [--force] [--disc ISO]
        h2 lighting --all [<map>] [--disc ISO]
-       h2 lighting split <map> [--bsp N] [--light ID] [--disc ISO] --out DIR
+       h2 lighting split --help
 Summary only by default. --all validates reviewed metadata, references, bitmap
 pages and bucket resources, and reports page sizes, world texel density,
 cluster skies, sky light flags and incident-vector alignment per scenario BSP.

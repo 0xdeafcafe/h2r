@@ -24,6 +24,7 @@ struct Seen {
     depth_is_depth: bool,
     sizes: ((u32, u32), (u32, u32)),
     copy: d3d::TargetCopy,
+    lighting: d3d::Lighting,
 }
 
 type Got = Arc<Mutex<Vec<Seen>>>;
@@ -40,6 +41,7 @@ impl ExternalPass for Probe {
             depth_is_depth: t.depth_format.is_depth_stencil_format(),
             sizes: (t.guest_size, t.size),
             copy: t.copy,
+            lighting: t.lighting,
         });
         drop(t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("probe"),
@@ -164,6 +166,35 @@ fn native_pass_and_deferred_draw_keep_bound_surfaces_after_settings_changes() {
             expected.push((TargetCopy::Display, (W, H)));
         }
         assert_eq!(copies, expected);
+    }
+}
+
+/// A private bake may reach only a display whose guest reference is drawn separately.
+#[test]
+fn relight_requires_an_isolated_display_copy_at_each_scale() {
+    use d3d::{Lighting, ScaledBackend, TargetCopy};
+    for scale in [1, 2] {
+        for single in [true, false] {
+            let Some(reference) = backend() else { return };
+            let display = GfxBackend::new(app::share_context(&reference.ctx));
+            let mut b = ScaledBackend::with_single_copy(reference, display, scale, single).unwrap();
+            b.set_lighting(Lighting::RelightOff);
+            let (mut device, mut memory) = create(b, UploadPolicy::Always);
+            set_states(&mut device, &mut memory);
+            let got: Got = Arc::default();
+            device.request_external_pass(Box::new(Probe(Arc::clone(&got))));
+            device.drain_until_callback(&mut memory).unwrap();
+            let seen: Vec<_> = got.lock().unwrap().iter().map(|s| (s.copy, s.lighting)).collect();
+            if single {
+                assert!(!seen.is_empty());
+                assert!(seen.iter().all(|s| s.1 == Lighting::Retail));
+            } else {
+                assert_eq!(seen, [
+                    (TargetCopy::Reference, Lighting::Retail),
+                    (TargetCopy::Display, Lighting::RelightOff),
+                ]);
+            }
+        }
     }
 }
 

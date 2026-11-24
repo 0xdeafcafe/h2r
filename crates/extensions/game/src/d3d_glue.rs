@@ -260,6 +260,17 @@ pub fn single_copy(store: Option<&settings::Store>, protected: bool) -> anyhow::
     if protected {
         return Ok(false);
     }
+    // Relit pixels must never feed guest readbacks, including in offline play.
+    let lighting = match store {
+        Some(s) => s.get(crate::setting_defs::LIGHTING.key)
+            .and_then(|v| u32::try_from(v.as_int()?).ok())
+            .map(crate::setting_defs::lighting_of)
+            .unwrap_or_default(),
+        None => d3d::scaled::lighting().map_err(anyhow::Error::msg)?,
+    };
+    if lighting.is_relight() {
+        return Ok(false);
+    }
     let def = &crate::setting_defs::SINGLE_COPY;
     let value = match store {
         Some(store) => store.get(def.key).unwrap_or(def.default),

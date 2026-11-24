@@ -214,6 +214,10 @@ pub enum ProgramChange {
 }
 
 impl MaterialProgram {
+    fn samples_lightmap(&self) -> bool {
+        self.stages.iter().zip(&self.dims).any(|(s, dim)| *s == Stage::Lightmap && dim.is_some())
+    }
+
     /// What drawing `edited` instead of `self` takes. The pixel shader
     /// definition is not compared: its embedded constants reach the
     /// program only through the pixel uniforms, and everything else of it
@@ -657,11 +661,6 @@ pub fn part_fit(
         "lighting vectors",
         "lightmap coordinates",
     ];
-    let lightmap = program
-        .stages
-        .iter()
-        .zip(&program.dims)
-        .any(|(s, d)| *s == Stage::Lightmap && d.is_some());
     let missing = inputs & !d.inputs;
     if missing != 0 {
         let n = missing.trailing_zeros() as usize;
@@ -670,7 +669,7 @@ pub fn part_fit(
             NAMES.get(n).unwrap_or(&"stream")
         ));
     }
-    if lightmap {
+    if program.samples_lightmap() {
         page(d.lightmap.ok_or("a part has no lightmap page")?)?;
     }
     Ok(())
@@ -1401,6 +1400,9 @@ pub struct ProgramSet {
     /// Per batch of the world: the texture group, when the batch's
     /// material has a program.
     batch_groups: Vec<Option<wgpu::BindGroup>>,
+    /// Only groups sampling the structure lightmap have alternate bindings.
+    /// `None` keeps ordinary loads free of replacement textures and groups.
+    relit: Option<Vec<Option<RelitBatch>>>,
     /// The cull the passes that inherit it draw with
     /// ([`ProgramSet::pipelines`]).
     cull: InheritedCull,
@@ -1409,6 +1411,14 @@ pub struct ProgramSet {
     /// ([`ProgramSet::refresh`]) and a live edit rewrites
     /// ([`ProgramSet::page_textures`]).
     pages: HashMap<LightmapKey, Option<wgpu::TextureView>>,
+}
+
+#[derive(Clone)]
+struct RelitBatch {
+    on: wgpu::BindGroup,
+    off: wgpu::BindGroup,
+    /// This page/palette pair includes texels affected by the chosen lamp.
+    changed: bool,
 }
 
 /// What [`ProgramSet::refresh`] did, by material, ascending.
@@ -2041,9 +2051,77 @@ impl ProgramSet {
             materials,
             rigid,
             batch_groups,
+            relit: None,
             cull: InheritedCull::default(),
             pages,
         }
+    }
+
+    /// Bind complete reconstructed RGBA pages at the same sampler slots as
+    /// retail. Both arms share all other stage views, programs and uniforms.
+    /// Publish only after every lightmap-using batch has both bindings.
+    pub fn install_relight(
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World,
+        [on, off]: &[HashMap<LightmapKey, Image>; 2],
+    ) -> Result<(), &'static str> {
+        let mut pages = HashMap::new();
+        let mut groups = HashMap::new();
+        let mut batches = Vec::with_capacity(world.batches.len());
+        for (index, batch) in world.batches.iter().enumerate() {
+            let gpu = self.materials.get(&batch.material).ok_or("world material unavailable")?;
+            if !gpu.program.samples_lightmap() {
+                batches.push(None);
+                continue;
+            }
+            let key = batch.lightmap.ok_or("world batch has no lightmap key")?;
+            self.batch_textures(index).ok_or("world batch has no retail binding")?;
+            let (on_view, off_view, changed) = match pages.entry(key) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let a = on.get(&key).ok_or("lamp-on lightmap page missing")?;
+                    let b = off.get(&key).ok_or("lamp-off lightmap page missing")?;
+                    e.insert((texture(device, queue, a, "lamp on"), texture(device, queue, b, "lamp off"), a != b))
+                }
+            };
+            let bindings = match groups.entry((batch.material, key)) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => e.insert(RelitBatch {
+                    on: gpu.textures(device, Some(on_view)).ok_or("lamp-on binding unavailable")?,
+                    off: gpu.textures(device, Some(off_view)).ok_or("lamp-off binding unavailable")?,
+                    changed: *changed,
+                }),
+            };
+            batches.push(Some(bindings.clone()));
+        }
+        if !batches.iter().flatten().any(|b| b.changed) {
+            return Err("no native world batch samples a changed lightmap page");
+        }
+        self.relit = Some(batches);
+        Ok(())
+    }
+
+    pub(crate) fn has_relight(&self) -> bool {
+        self.relit.is_some()
+    }
+
+    pub(crate) fn discard_relight(&mut self) -> bool {
+        self.relit.take().is_some()
+    }
+
+    pub(crate) fn changed_lightmap_batch(&self, index: usize) -> bool {
+        self.relit.as_ref().and_then(|v| v.get(index)).and_then(Option::as_ref)
+            .is_some_and(|b| b.changed)
+    }
+
+    pub(crate) fn lit_batch_textures(&self, index: usize, lighting: d3d::Lighting) -> Option<&wgpu::BindGroup> {
+        if let Some(batch) = self.relit.as_ref().and_then(|v| v.get(index)).and_then(Option::as_ref) {
+            match lighting {
+                d3d::Lighting::RelightOn => return Some(&batch.on),
+                d3d::Lighting::RelightOff => return Some(&batch.off),
+                _ => {}
+            }
+        }
+        self.batch_textures(index)
     }
 
     /// The program material `material` draws with, if it has one.
@@ -3451,21 +3529,30 @@ mod tests {
             page,
         );
         let world = b.finish();
-        let mut program = compile(&plain_look(), &plain_program()).unwrap();
-        program.dims[..2].fill(Some(TextureDim::D2));
-        program.stages[0] = Stage::Bitmap {
-            bitmap: map::TagId(7),
-            image: 1,
+        // The shader returns the bound atlas texel, making a wrong copy
+        // or a missed bind visible in the target (including the packet path).
+        use psh::bits::{CHAN_ALPHA, REG_T1, TEX_PROJECT2D, texture_modes};
+        let shader = PixelShaderDef {
+            final_inputs_abcd: u32::from(REG_T1),
+            final_inputs_efg: u32::from(REG_T1 | CHAN_ALPHA) << 8,
+            texture_modes: texture_modes([0, TEX_PROJECT2D, 0, 0]),
+            ..Default::default()
         };
-        program.stages[1] = Stage::Lightmap;
-        let set = ProgramSet::new(
-            &ctx.device,
-            &ctx.queue,
-            &world,
-            [(0, program.clone()), (1, program)].into(),
-            &mut |_| Some(Image::solid([200, 100, 50, 255])),
-            &mut |_| Some(Image::solid([255; 4])),
+        let look = PassLook {
+            textures: [Stage::Empty, Stage::Lightmap, Stage::Empty, Stage::Empty],
+            pixel_shader: shader.to_bytes(),
+            ..plain_look()
+        };
+        let program = compile(&look, &plain_program()).unwrap();
+        let mut set = ProgramSet::new(
+            &ctx.device, &ctx.queue, &world, [(0, program.clone()), (1, program)].into(),
+            &mut |_| None, &mut |_| Some(Image::solid([10, 50, 90, 255])),
         );
+        let on = HashMap::from([(page.unwrap(), Image::solid([240, 60, 90, 255]))]);
+        let off = HashMap::from([(page.unwrap(), Image::solid([20, 60, 90, 255]))]);
+        assert!(set.install_relight(&ctx.device, &ctx.queue, &world, &[on.clone(), HashMap::new()]).is_err());
+        assert!(!set.has_relight(), "a missing lamp-off page refuses both arms");
+        set.install_relight(&ctx.device, &ctx.queue, &world, &[on, off]).unwrap();
         let mut gpu = GpuWorld::with_programs(&ctx.device, &ctx.queue, world, set);
         let camera = RenderCamera {
             position: [0.0; 3],
@@ -3516,9 +3603,18 @@ mod tests {
                 view_formats: &[],
             })
         };
+        assert_eq!(gpu.relit_lightmap_ranges(&selection), parts.len());
         let mut images = Vec::new();
         // Packets first: the rows they read are only those written ahead.
-        for packets in [true, false] {
+        for (lighting, packets, expected) in [
+            (d3d::Lighting::Retail, true, [10, 50, 90]),
+            (d3d::Lighting::Retail, false, [10, 50, 90]),
+            (d3d::Lighting::RelightOn, true, [240, 60, 90]),
+            (d3d::Lighting::RelightOn, false, [240, 60, 90]),
+            (d3d::Lighting::RelightOff, true, [20, 60, 90]),
+            (d3d::Lighting::RelightOff, false, [20, 60, 90]),
+            (d3d::Lighting::Retail, true, [10, 50, 90]),
+        ] {
             let (color, depth) = (texture(F::Rgba8Unorm), texture(F::Depth32Float));
             let (cv, dv) = (
                 color.create_view(&Default::default()),
@@ -3558,12 +3654,13 @@ mod tests {
                 multiview_mask: None,
             }));
             let draws = gpu
-                .selection_draws(
+                .selection_draws_lit(
                     F::Rgba8Unorm,
                     F::Depth32Float,
                     (SIZE, SIZE),
                     &selection,
                     &view,
+                    lighting,
                 )
                 .unwrap();
             assert_eq!(
@@ -3617,7 +3714,7 @@ mod tests {
                     height: SIZE as f32,
                 };
                 assert_eq!(
-                    gpu.encode_selection(
+                    gpu.encode_selection_lit(
                         &mut enc,
                         &cv,
                         F::Rgba8Unorm,
@@ -3625,7 +3722,8 @@ mod tests {
                         F::Depth32Float,
                         vp,
                         (SIZE, SIZE),
-                        &selection
+                        &selection,
+                        lighting,
                     ),
                     3
                 );
@@ -3636,12 +3734,17 @@ mod tests {
                 .poll(wgpu::PollType::wait_indefinitely())
                 .unwrap();
             let read = |t, aspect| gfx::readback::read_texture(&ctx, t, aspect, 4, (SIZE, SIZE));
-            images.push((
-                read(&color, wgpu::TextureAspect::All),
-                read(&depth, wgpu::TextureAspect::DepthOnly),
-            ));
+            let pixels = read(&color, wgpu::TextureAspect::All);
+            assert!(pixels.chunks_exact(4).any(|p| p[..3] == expected), "{lighting:?}, packets {packets}");
+            images.push((pixels, read(&depth, wgpu::TextureAspect::DepthOnly)));
         }
         assert_eq!(images[0], images[1]);
+        assert_eq!(images[2], images[3]);
+        assert_eq!(images[4], images[5]);
+        assert_eq!(images[0], images[6], "reference survives both display draws");
+        assert_eq!(images[0].1, images[4].1, "swapping the lightmap cannot move a surface");
+        assert!(gpu.discard_relight());
+        assert_eq!(gpu.relit_lightmap_ranges(&selection), 0);
     }
 
     #[test]

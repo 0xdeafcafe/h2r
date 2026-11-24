@@ -361,13 +361,14 @@ impl SceneDevice for Scaled {
         &mut self,
         stage: &SceneStage<TargetRef>,
         surfaces: ExternalSurfaces<Surface>,
-    ) -> Result<(), String> {
+        private_lighting: Option<crate::Lighting>,
+    ) -> Result<usize, String> {
         let surfaces = surfaces
             .try_map(|s| Some(self.image(*s)))
             .expect("all scene targets are live");
-        self.view.record_replay_stage(stage, surfaces)?;
+        let relit = self.view.record_replay_stage(stage, surfaces, private_lighting)?;
         self.stats.display_draws += stage.plan.ranges as u64;
-        Ok(())
+        Ok(relit)
     }
     fn scene_upload(&mut self, asset: &Arc<DecodedTexture>) -> Result<Texture, String> {
         let t = self.view.scene_upload(asset)?;

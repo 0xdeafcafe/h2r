@@ -325,8 +325,12 @@ impl GfxBackend {
     /// on (`ShaderProvider::set_hard_shadows`). Only a render-scale view
     /// sets it (`crate::scaled`); the backend the guest reads stays retail.
     pub fn set_hard_shadows(&mut self, on: bool) {
-        self.lighting = if on { crate::Lighting::E3 } else { crate::Lighting::Retail };
-        self.set_scene_receiver(on);
+        self.set_display_lighting(if on { crate::Lighting::E3 } else { crate::Lighting::Retail });
+    }
+
+    pub(crate) fn set_display_lighting(&mut self, lighting: crate::Lighting) {
+        self.lighting = lighting;
+        self.set_scene_receiver(lighting == crate::Lighting::E3);
     }
 
     /// The Sharp edge for the draws prepared from now on
@@ -1796,6 +1800,7 @@ impl Backend for GfxBackend {
                 device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
                 depth: dv, depth_format: df, size, sampled, slots, stages,
                 copy: if self.only_display { crate::TargetCopy::Display } else { copy },
+                lighting: crate::Lighting::Retail,
                 single_display: self.only_display,
             }]))
         })();
@@ -1882,6 +1887,7 @@ impl Backend for GfxBackend {
             sampled: &sampled,
             slots: &[],
             copy: if self.only_display { crate::TargetCopy::Display } else { crate::TargetCopy::Reference },
+            lighting: crate::Lighting::Retail,
             stages: [None; 4],
             on_submit: None,
         });

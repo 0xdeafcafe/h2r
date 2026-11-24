@@ -463,6 +463,8 @@ impl PrivateCaptureScene for Selection {
         let lighting = match lighting {
             CaptureLighting::Retail => d3d::Lighting::Retail,
             CaptureLighting::E3 => d3d::Lighting::E3,
+            CaptureLighting::RelightOn => d3d::Lighting::RelightOn,
+            CaptureLighting::RelightOff => d3d::Lighting::RelightOff,
         };
         owner.enqueue(
             self.generation,

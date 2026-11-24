@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn two_private_captures_draw_the_same_pinned_scene_with_each_requested_mode() {
+    fn private_captures_draw_the_same_pinned_scene_with_each_requested_mode() {
         static LATEST: Mutex<Option<Arc<Scene>>> = Mutex::new(None);
         fn select(tick: Option<u64>) -> Result<Option<Arc<dyn PrivateCaptureScene>>, RpcError> {
             let latest = LATEST.lock().unwrap().as_ref().unwrap().clone();
@@ -503,6 +503,12 @@ mod tests {
         assert_eq!(error.message, "reference present failed");
         assert!(!unclaimed.exists());
         let b = capture(CaptureLighting::E3, Some(a.tick));
+        for mode in [CaptureLighting::RelightOn, CaptureLighting::RelightOff] {
+            let relit = capture(mode, Some(a.tick));
+            assert_eq!((relit.tick, relit.present, &relit.scene_hash), (a.tick, a.present, &a.scene_hash));
+            assert_eq!(relit.lighting, Some(mode));
+            std::fs::remove_file(relit.path).unwrap();
+        }
         assert_eq!(
             (a.tick, a.present, a.scene_hash.as_deref()),
             (42, 51, Some("000000000000002d"))
@@ -518,7 +524,7 @@ mod tests {
         );
         assert_eq!(
             *first.draws.lock().unwrap(),
-            [CaptureLighting::Retail, CaptureLighting::E3]
+            [CaptureLighting::Retail, CaptureLighting::E3, CaptureLighting::RelightOn, CaptureLighting::RelightOff]
         );
         let compared = compare_files(&CompareParams {
             a: a.path.clone(),

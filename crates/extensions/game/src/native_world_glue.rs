@@ -73,6 +73,9 @@ pub struct Ready {
     retire: Option<crate::native_map::RetireQueue>,
     opaque: opaque_materials::Library,
     gpu: Mutex<Option<GpuWorld>>,
+    /// Published with the GPU bindings. A live edit clears it under the
+    /// GPU lock. Testing scene ownership must never depend on lock contention.
+    relit: AtomicBool,
     pub(crate) upload_device: Option<(wgpu::Device, wgpu::Queue)>,
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
@@ -130,6 +133,10 @@ impl Drop for Ready {
 }
 
 impl Ready {
+    fn owns_display_lightmaps(&self) -> bool {
+        self.relit.load(Ordering::Acquire)
+    }
+
     pub(crate) fn gpu(&self) -> std::sync::MutexGuard<'_, Option<GpuWorld>> {
         self.gpu.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -199,6 +206,7 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: State,
     switches: hooks::Switches,
     ordered_scene_world: bool,
+    relight_requested: bool,
     /// A live edit's refresh is running ([`refresh_world`]); edits wait
     /// in the queue until it ends, so they apply in order.
     refreshing: Arc<AtomicBool>,
@@ -235,6 +243,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let inputs = self.device.lock().ok().and_then(|d| {
             Some((d.backend.upload_device()?, scene_load_palettes(&d, mem)))
         });
+        let relight_requested = self.relight_requested;
         let launched = background::spawn("native-world load", move || {
             // Releasing all the previous BSP's resources can itself take a
             // frame, including stages the guest never admitted.
@@ -243,7 +252,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 drop(retired);
             }
             if let Some((device, palettes)) = inputs
-                && let Err(e) = load_ready(&key, device, palettes, &finished)
+                && let Err(e) = load_ready(&key, device, palettes, relight_requested, &finished)
                 && key.current()
             {
                 eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.map, key.index, key.bsp);
@@ -262,8 +271,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.refresh_edits();
     }
 
-    fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
-        self.ordered_scene_world
+    fn use_resolved_scene(&self, mem: &dyn GuestMemory, _bsp: u32) -> bool {
+        // The sorted draw binds guest textures. Reserve the atlas-bound
+        // world pass instead when this BSP has a complete replacement.
+        if !self.ordered_scene_world || !self.relight_requested {
+            return self.ordered_scene_world;
+        }
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        !current_ready(&state, mem).is_some_and(|ready| ready.owns_display_lightmaps())
     }
 
     fn opaque_view(
@@ -366,11 +381,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
         let run = u64::from(d.swap_count()).wrapping_add(1);
-        let selection = ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+        let selection = {
+            let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem))?;
+            // A worker encoding the previous frame still owns the same
+            // atlas. Wait for its short recording section in relit mode.
+            let mut guard = if ready.owns_display_lightmaps() {
+                ready.gpu()
+            } else {
+                ready.gpu.try_lock().ok()?
+            };
+            let gpu = guard.as_mut()?;
             configure_world(gpu, depth, cull, &stencil);
             let selection = gpu.select_parts(&selected, &admission_camera)?;
-            gpu.prewarm_world(device, color, depth, &selection).then(|| Arc::new(selection))
-        })?;
+            gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection))?
+        };
         let pass = || Box::new(WorldPass {
             selection: Arc::clone(&selection),
             ready: Arc::clone(&ready),
@@ -554,6 +578,16 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
         native_map_work::reload_bsp();
     };
     let plan = refresh_plan(ready.bsp_tag, edits);
+    if ready.owns_display_lightmaps()
+        && (plan.reload.is_some() || !plan.sections.is_empty() || !plan.shaders.is_empty() || !plan.images.is_empty())
+    {
+        let mut guard = ready.gpu();
+        if let Some(gpu) = guard.as_mut() {
+            gpu.discard_relight();
+        }
+        ready.relit.store(false, Ordering::Release);
+        eprintln!("native-world: {} BSP {}: live edit invalidates reconstructed pages, using retail", key.map, key.index);
+    }
     if let Some(why) = &plan.reload {
         return reload(why.clone());
     }
@@ -929,6 +963,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         state: Arc::clone(&state),
         ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
+        relight_requested: d3d::scaled::lighting().is_ok_and(d3d::Lighting::is_relight),
         switches,
         refreshing: Arc::default(),
     }));
@@ -1001,10 +1036,23 @@ fn configure_world(
     gpu.set_stencil(stencil);
 }
 
+/// The exact guest reference always binds the retail atlas. An ordinary
+/// display or a private capture can request either reconstructed atlas.
+fn world_lighting(copy: d3d::TargetCopy, lighting: d3d::Lighting) -> d3d::Lighting {
+    match copy {
+        d3d::TargetCopy::Reference => d3d::Lighting::Retail,
+        d3d::TargetCopy::Display => lighting,
+    }
+}
+
 impl d3d::ExternalPass for WorldPass {
     // The selection and constants belong to this view. Ready pins the BSP,
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
+
+    fn relit_lightmap_ranges(&self) -> usize {
+        self.ready.gpu().as_ref().map_or(0, |gpu| gpu.relit_lightmap_ranges(&self.selection))
+    }
 
     /// Packets need no worker round trip; the pin holds while no other
     /// command intervenes (`d3d::ThreadedBackend`).
@@ -1051,7 +1099,7 @@ impl d3d::ExternalPass for WorldPass {
         let view = ViewInputs {
             constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
         };
-        Some(gpu.selection_draws(t.color_format, t.depth_format, t.size, selection, &view))
+        Some(gpu.selection_draws_lit(t.color_format, t.depth_format, t.size, selection, &view, world_lighting(t.copy, t.lighting)))
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
@@ -1070,7 +1118,7 @@ impl d3d::ExternalPass for WorldPass {
             return 0;
         }
         let [x, y, width, height] = t.viewport;
-        let recorded = gpu.encode_selection(
+        let recorded = gpu.encode_selection_lit(
             t.encoder,
             t.color,
             t.color_format,
@@ -1079,6 +1127,7 @@ impl d3d::ExternalPass for WorldPass {
             PassViewport { x, y, width, height },
             t.size,
             selection,
+            world_lighting(t.copy, t.lighting),
         );
         let unbound = gpu.unbound_batches();
         if unbound > 0 && !UNBOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -1208,7 +1257,7 @@ fn active_scenario_bsp(addresses: &[Option<u32>], index: u16, bsp: u32) -> Optio
 
 fn load_ready(
     key: &BspKey, (device, queue): (wgpu::Device, wgpu::Queue), palettes: StagePalettes,
-    finished: &mpsc::Sender<StageReady>,
+    relight_requested: bool, finished: &mpsc::Sender<StageReady>,
 ) -> Result<(), load::Error> {
     use timeline::setup::Stage as Setup;
     let started = std::time::Instant::now();
@@ -1225,6 +1274,7 @@ fn load_ready(
     let bsp_tag = bsps[index].0;
     let mut raw = Raw(files);
     let LoadedWorld {
+        checksum,
         world,
         shaders,
         lightmap_bitmap,
@@ -1333,6 +1383,9 @@ fn load_ready(
     // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
     // shadows from objects"). Retail never reads it.
     let sun_world = native_render::sun_casters::SunWorld::new(&world);
+    let missed_lit_parts = if relight_requested {
+        world.draws.iter().filter(|d| d.lightmap.is_some() && !accepts(d)).count()
+    } else { 0 };
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
     let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
@@ -1345,8 +1398,25 @@ fn load_ready(
     let lightmap_bitmap_missing = lightmap_bitmap.is_none();
     let page_set: HashSet<LightmapKey> = lightmaps.keys().copied().collect();
     let gpu = {
-        let set = ProgramSet::with_layered(&device, &queue, &world, programs, &mut |s| stage_bitmap(&stage_images, s),
+        let mut set = ProgramSet::with_layered(&device, &queue, &world, programs, &mut |s| stage_bitmap(&stage_images, s),
             &mut |k| lightmaps.get(&k).cloned(), &layered_images);
+        if relight_requested {
+            let header = map.header();
+            let loaded = crate::relight::load(&header.name, key.index, checksum, header.checksum, &lightmaps)
+                .and_then(|pages| {
+                    let Some(pages) = pages else { return Ok(false) };
+                    if failed_sections != 0 || missed_lit_parts != 0 || !rejected_pages.is_empty() {
+                        return Err(format!("{failed_sections} unread sections, {missed_lit_parts} unowned page-lit parts, {} unread pages", rejected_pages.len()));
+                    }
+                    set.install_relight(&device, &queue, &world, &pages).map_err(str::to_owned)?;
+                    Ok(true)
+                });
+            match loaded {
+                Ok(true) => eprintln!("native-world: {} BSP {}: both reconstructed display lightmaps ready", key.map, key.index),
+                Ok(false) => {},
+                Err(why) => eprintln!("native-world: {} BSP {}: using retail lightmaps ({why})", key.map, key.index),
+            }
+        }
         eprintln!(
             "native-world: {} BSP {} at {:#010x}: {} of {} materials native; {} draws in {} batches, {} parts, in {:.1} s; {} BSP material slots, {} geometry sections skipped; top material rejections: {:?}",
             key.map, key.index, key.bsp, native.len(), declared, world.draws.len(), world.batches.len(), parts.len(),
@@ -1361,6 +1431,7 @@ fn load_ready(
         finished.send(stage).is_ok()
     };
     if !send(StageReady::World(Arc::new(Ready {
+        relit: AtomicBool::new(gpu.has_relight()),
         retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
         shaders: refresh_shaders_list, no_lightmap_group: lightmap_bitmap_missing, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
@@ -1738,6 +1809,25 @@ pub fn light_image<R: std::io::Read + std::io::Seek>(
 mod tests {
     use super::*;
     use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+
+    #[test]
+    fn relit_bsp_ownership_survives_an_encoding_worker_holding_the_gpu() {
+        let ready = Ready::default();
+        ready.relit.store(true, Ordering::Release);
+        let _encoding = ready.gpu();
+        assert!(ready.owns_display_lightmaps());
+        ready.relit.store(false, Ordering::Release);
+        assert!(!ready.owns_display_lightmaps());
+    }
+
+    #[test]
+    fn replacement_arms_are_display_only() {
+        use d3d::{Lighting, TargetCopy};
+        for mode in [Lighting::Retail, Lighting::E3, Lighting::RelightOn, Lighting::RelightOff] {
+            assert_eq!(world_lighting(TargetCopy::Reference, mode), Lighting::Retail);
+            assert_eq!(world_lighting(TargetCopy::Display, mode), mode);
+        }
+    }
 
     /// A live edit's drain, sorted for the world of one BSP: its sections
     /// in place, another BSP's left for that BSP's load, a grown section

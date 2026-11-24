@@ -1186,7 +1186,7 @@ fn run_configured(
     let watch_overrides = agent_glue::socket_from_env().is_some();
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
-    let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
+    let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone(), &opts.data_root));
     let editor_link = host.editor_link.take();
     // The live mirror's camera layer reads the sealed frame scene
     // (docs/editor/live-mirror.md, "Cameras"): why this run seals none.

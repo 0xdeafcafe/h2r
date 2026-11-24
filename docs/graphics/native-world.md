@@ -42,6 +42,19 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   marked *fallback* and keeps its D3D draws.
 - **Pipelines** are made once per supported template.
 
+### Reconstructed display lightmaps
+
+With an owner-baked lamp arm selected at launch, `load_ready` checks both
+replacement atlases for the active BSP. A failed geometry or page decode,
+or a page-lit opaque part outside the native stage, keeps that BSP on retail
+lighting. On a match, `ProgramSet::install_relight` builds both texture
+groups for each material and page/palette pair that samples a lightmap.
+The scene reserves the native `WorldPass` for these draws. Each target copy
+selects its group when recording: the display takes the requested arm and
+the guest reference takes retail. A live section, shader or image refresh
+discards the replacement groups. The offline fit and the room comparison
+are described in [dynamic lighting](dynamic-lighting.md).
+
 ### Live edits
 
 A paired editor's live edit changes the map file as the raw overlay

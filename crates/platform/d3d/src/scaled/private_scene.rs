@@ -138,6 +138,7 @@ impl<'a> MixedPrivatePass<'a> {
         lighting: crate::Lighting,
     ) -> Result<Self, String> {
         let mut pass = Self::new(source, frame, scale)?;
+        pass.commands.private_lighting = Some(lighting);
         if lighting == crate::Lighting::E3 {
             let factor = super::shadow_scale(scale, crate::Lighting::E3);
             let plan = ShadowTiles::plan(frame, factor);
@@ -215,6 +216,13 @@ impl<'a> MixedPrivatePass<'a> {
             tiles.fell_back(*id);
         }
         result
+    }
+
+    /// The final image of a private draw. Validate the requested lighting
+    /// after all retained stages have recorded, including mixed-size targets.
+    pub fn read_rgba(&mut self, presented: TargetRef) -> Result<([u32; 2], Vec<u8>), String> {
+        self.commands.check_private_lightmaps()?;
+        self.read_target(presented)
     }
 
     pub fn read_target(&mut self, key: TargetRef) -> Result<([u32; 2], Vec<u8>), String> {

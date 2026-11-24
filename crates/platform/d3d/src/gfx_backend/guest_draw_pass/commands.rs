@@ -11,7 +11,8 @@ pub(crate) trait SceneDevice: Backend {
         &mut self,
         stage: &SceneStage<TargetRef>,
         surfaces: ExternalSurfaces<Self::Surface>,
-    ) -> Result<(), String>;
+        private_lighting: Option<crate::Lighting>,
+    ) -> Result<usize, String>;
     fn scene_upload(&mut self, asset: &Arc<DecodedTexture>) -> Result<Self::Texture, String>;
     fn share_scene_texture(t: &Self::Texture) -> Self::Texture;
     fn frozen_texture(
@@ -29,6 +30,9 @@ pub(crate) trait SceneDevice: Backend {
 }
 
 pub(crate) struct Commands<B: SceneDevice> {
+    /// Set only for isolated captures. The live attachments keep their display policy.
+    pub(crate) private_lighting: Option<crate::Lighting>,
+    relit_ranges: usize,
     bound: Option<(B::Surface, Option<B::Surface>)>,
     pub(crate) outputs: Outputs<B::Texture>,
 }
@@ -36,6 +40,8 @@ pub(crate) struct Commands<B: SceneDevice> {
 impl<B: SceneDevice> Default for Commands<B> {
     fn default() -> Self {
         Self {
+            private_lighting: None,
+            relit_ranges: 0,
             bound: None,
             outputs: Outputs::default(),
         }
@@ -43,6 +49,15 @@ impl<B: SceneDevice> Default for Commands<B> {
 }
 
 impl<B: SceneDevice> Commands<B> {
+    pub(crate) fn check_private_lightmaps(&self) -> Result<(), String> {
+        if self.private_lighting.is_some_and(crate::Lighting::is_relight)
+            && self.relit_ranges == 0
+        {
+            return Err("no native world range in this scene uses the installed lightmap".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply(
         &mut self,
         gpu: &mut B,
@@ -71,7 +86,7 @@ impl<B: SceneDevice> Commands<B> {
                     .surfaces
                     .try_map(|r| targets.get(r).copied())
                     .ok_or("missing scene stage target")?;
-                gpu.record_scene_stage(stage, surfaces)?;
+                self.relit_ranges += gpu.record_scene_stage(stage, surfaces, self.private_lighting)?;
             }
             ReplayOp::Bind { colour, depth } => self.bound = Some(attachments(colour, depth)?),
             ReplayOp::Draw { draw, textures, .. } => {

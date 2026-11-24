@@ -1,13 +1,14 @@
 //! Single-BSP, offline split in the retail page's stored colour units.
 //! All private products are sent to the caller, which owns the output directory.
 mod input;
-mod lamp;
+pub(super) mod lamp;
 mod report;
 mod scene;
 mod solve;
 
 use anyhow::{Context, Result, ensure};
 use assets::ResourceFiles;
+use content::relight;
 use map::{Map, RawPointer};
 use std::io::{Read, Seek};
 use tags::{geometry::RawSource, lighting::bsp_lightmaps, structure::StructureRender};
@@ -138,13 +139,27 @@ pub fn compare<R: Read + Seek>(
     let fits = [samples.fit(0), samples.fit(1)];
     drop(samples);
     let k = fits[1].map_or([0.; 3], |fit| fit.k);
+    let mut levels = Vec::new();
     for (page, mip, trace) in traced {
         let split = solve::split_page(&trace, &mip.retail, k, 1);
-        let stem = format!(
-            "g{}-page{}-pal{}-mip{}",
-            page.group, page.image, page.palette, mip.level
-        );
-        report.page(&stem, mip, &split, fits[1].is_some(), &mut write)?;
+        ensure!(page.group == 0, "only the bound lightmap group has display pages");
+        let palette = u8::try_from(page.palette)?;
+        let image = u16::try_from(page.image)?;
+        let stem = relight::page_stem(image, palette, mip.level);
+        if let Some([retail, on, off]) =
+            report.page(&stem, mip, &split, fits[1].is_some(), &mut write)?
+        {
+            levels.push(relight::Level {
+                page: image,
+                palette,
+                mip: mip.level,
+                width: mip.width,
+                height: mip.height,
+                retail,
+                on,
+                off,
+            });
+        }
     }
     for (index, run) in inputs.vertices.iter().enumerate() {
         let split = solve::split_vertices(&run.vertices, &run.edges, &source, &visible, k, 1)?;
@@ -157,5 +172,20 @@ pub fn compare<R: Read + Seek>(
             &mut write,
         )?;
     }
-    report.finish(fits, &mut write)
+    let outcome = report.finish(fits, &mut write)?;
+    if let LightId::Placed(lamp) = light_id
+        && outcome.reviewable
+    {
+        let manifest = relight::Manifest {
+            format: relight::FORMAT.into(),
+            map: map.header().name.clone(),
+            map_checksum: map.header().checksum,
+            bsp: bsp_index.try_into()?,
+            structure_checksum: bsp.checksum,
+            placed_lamp: lamp.try_into()?,
+            levels,
+        };
+        write(relight::MANIFEST, &serde_json::to_vec_pretty(&manifest)?)?;
+    }
+    Ok(outcome)
 }

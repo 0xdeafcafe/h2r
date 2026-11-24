@@ -112,14 +112,14 @@ pub fn render_scale() -> Result<u32, String> {
     render_scale_from(std::env::var("H2_RENDER_SCALE").ok().as_deref())
 }
 
-/// `H2_LIGHTING`: unset, empty or `retail` is [`Lighting::Retail`]; `e3`
-/// is [`Lighting::E3`].
+/// Parse the display lighting selected at startup. Empty means retail.
 pub fn lighting_from(value: Option<&str>) -> Result<Lighting, String> {
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         None => Ok(Lighting::Retail),
         Some(v) if v.eq_ignore_ascii_case("retail") => Ok(Lighting::Retail),
         Some(v) if v.eq_ignore_ascii_case("e3") => Ok(Lighting::E3),
-        Some(v) => Err(format!("H2_LIGHTING={v:?}: expected retail or e3")),
+        Some(v) => Lighting::relight_from_name(v)
+            .ok_or_else(|| format!("H2_LIGHTING={v:?}: expected retail, e3, relight-on or relight-off")),
     }
 }
 
@@ -137,7 +137,7 @@ pub fn lighting() -> Result<Lighting, String> {
 /// 512x512 at 6x is 3072x3072, well inside a GPU's texture limit.
 pub fn shadow_scale(scale: u32, lighting: Lighting) -> u32 {
     match lighting {
-        Lighting::Retail => 1,
+        Lighting::Retail | Lighting::RelightOn | Lighting::RelightOff => 1,
         Lighting::E3 => scale.clamp(2, MAX_SCALE),
     }
 }
@@ -202,6 +202,10 @@ pub trait ScaleView<R: Backend>: Backend {
     /// on (`crate::ShaderProvider::set_hard_shadows`). The default does
     /// nothing.
     fn set_hard_shadows(&mut self, _on: bool) {}
+    /// The mode reported at present. Only E3 changes the shadow shader.
+    fn set_display_lighting(&mut self, mode: Lighting) {
+        self.set_hard_shadows(mode == Lighting::E3);
+    }
     /// This backend's handle for `reference`'s texture. `None`: it cannot
     /// sample it.
     fn share_texture(&mut self, reference: &R, texture: &R::Texture) -> Option<Self::Texture>;
@@ -635,11 +639,11 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         shadow_scale(self.scale.vertical_rounded(), lighting)
     }
 
-    /// Whether frame-size display surfaces carry a distinct raster, E3
-    /// lighting, or an anamorphic presentation alongside the exact reference.
+    /// Whether frame-size display surfaces carry a distinct raster, lighting
+    /// or an anamorphic presentation alongside the exact reference.
     fn awake(&self) -> bool {
         self.scale != RenderScale::ONE || self.shadow_factor() > 1
-            || (!self.single_copy && self.anamorphic_guest_frame())
+            || (!self.single_copy && (self.anamorphic_guest_frame() || self.lighting.is_relight()))
     }
 
     /// Takes the wanted scale and lighting at a frame boundary.
@@ -666,7 +670,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         if lighting != self.lighting {
             eprintln!("d3d: lighting {:?} -> {lighting:?}", self.lighting);
             self.lighting = lighting;
-            self.view.set_hard_shadows(lighting == Lighting::E3);
+            self.view.set_display_lighting(lighting);
         }
         let old = self.scale;
         if scale != old && let Err(e) = self.rescale(scale) {
@@ -1255,7 +1259,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
 /// One external pass drawn into both copies of the targets.
 #[derive(Clone)]
-struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>, crate::TargetCopy);
+struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>, crate::TargetCopy, Lighting);
 
 impl crate::backend::ExternalPass for SharedPass {
     fn confirm_issue(&self) -> bool {
@@ -1264,6 +1268,7 @@ impl crate::backend::ExternalPass for SharedPass {
 
     fn encode(&mut self, mut target: crate::backend::ExternalTarget<'_>) {
         target.copy = self.1;
+        target.lighting = self.2;
         self.0.lock().unwrap_or_else(|e| e.into_inner()).encode(target);
     }
 }
@@ -2047,7 +2052,15 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
         if (0..4).any(|i| textures[i].is_some() && vt[i].is_none()) { return Ok(crate::ExternalCopies::Missing(crate::TargetCopy::Display)); }
         match self.view.external_attachments(view, vt, crate::TargetCopy::Display)? {
-            crate::ExternalCopies::Ready(display) => commands.extend(display),
+            crate::ExternalCopies::Ready(mut display) => {
+                // Only this paired recording has a distinct retail reference.
+                if !self.single_copy {
+                    for target in &mut display {
+                        target.lighting = self.lighting;
+                    }
+                }
+                commands.extend(display);
+            }
             missing => return Ok(missing),
         }
         Ok(crate::ExternalCopies::Ready(commands))
@@ -2095,7 +2108,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.scene_coherent.clear();
         if self.single() {
             let levels = sampled.into_iter().map(|s| s.map(|s| self.image(s))).collect();
-            let pass = SharedPass(Arc::new(Mutex::new(pass)), crate::TargetCopy::Display);
+            let pass = SharedPass(Arc::new(Mutex::new(pass)), crate::TargetCopy::Display, Lighting::Retail);
             let drawn = self.view.external_pass(self.image(color), self.image(depth), levels, request, Box::new(pass))?;
             self.stats.display_draws += u64::from(drawn);
             return Ok(drawn);
@@ -2103,7 +2116,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         // Both copies get the pass: the reference (what the guest reads
         // back and what repairs come from) and the view (what is shown),
         // each sampling its own copy of the sampled levels.
-        let mut shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)), crate::TargetCopy::Reference);
+        let mut shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)), crate::TargetCopy::Reference, Lighting::Retail);
         let reference = sampled.iter().map(|s| s.as_ref().map(|s| s.reference)).collect();
         let view = sampled.iter().map(|s| s.as_ref().and_then(|s| self.live(s.view))).collect();
         let drawn = self
@@ -2116,6 +2129,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             return Ok(false);
         }
         shared.1 = crate::TargetCopy::Display;
+        if !self.single_copy { shared.2 = self.lighting; }
         if let (Some(c), Some(d)) = (self.view_surface(&color), self.view_surface(&depth))
         {
             if self.view.external_pass(c, d, view, request, Box::new(shared))? {
@@ -2424,6 +2438,10 @@ impl ScaleView<GfxBackend> for GfxBackend {
         GfxBackend::set_hard_shadows(self, on);
     }
 
+    fn set_display_lighting(&mut self, mode: Lighting) {
+        GfxBackend::set_display_lighting(self, mode);
+    }
+
     fn share_texture(
         &mut self,
         reference: &GfxBackend,
@@ -2572,6 +2590,10 @@ impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
         GfxBackend::set_hard_shadows(self, on);
     }
 
+    fn set_display_lighting(&mut self, mode: Lighting) {
+        GfxBackend::set_display_lighting(self, mode);
+    }
+
     fn share_texture(
         &mut self,
         reference: &ScaledBackend<GfxBackend, GfxBackend>,
@@ -2711,11 +2733,13 @@ mod tests {
     }
 
     #[test]
-    fn lighting_is_retail_unless_e3_is_named() {
+    fn lighting_defaults_to_retail_and_accepts_named_display_modes() {
         assert_eq!(lighting_from(None), Ok(Lighting::Retail));
         assert_eq!(lighting_from(Some("")), Ok(Lighting::Retail));
         assert_eq!(lighting_from(Some("retail")), Ok(Lighting::Retail));
         assert_eq!(lighting_from(Some(" E3 ")), Ok(Lighting::E3));
+        assert_eq!(lighting_from(Some(" RELIGHT-ON ")), Ok(Lighting::RelightOn));
+        assert_eq!(lighting_from(Some("relight-off")), Ok(Lighting::RelightOff));
         assert!(lighting_from(Some("stencil")).is_err());
         assert_eq!(Lighting::default(), Lighting::Retail);
     }
@@ -2723,7 +2747,9 @@ mod tests {
     #[test]
     fn e3_shadow_maps_follow_the_render_scale_and_are_at_least_doubled() {
         for scale in 1..=MAX_SCALE {
-            assert_eq!(shadow_scale(scale, Lighting::Retail), 1);
+            for lighting in [Lighting::Retail, Lighting::RelightOn, Lighting::RelightOff] {
+                assert_eq!(shadow_scale(scale, lighting), 1);
+            }
         }
         let e3: Vec<u32> = (1..=MAX_SCALE)
             .map(|s| shadow_scale(s, Lighting::E3))

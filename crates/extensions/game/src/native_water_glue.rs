@@ -592,6 +592,7 @@ mod tests {
                     sampled: &sampled,
                     slots: &[],
                     uploads: &uploads,
+                    lighting: d3d::Lighting::Retail,
                     copy,
                     stages: [None; 4],
                     on_submit: None,

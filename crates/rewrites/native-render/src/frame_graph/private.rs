@@ -31,7 +31,7 @@ pub(super) fn draw_mixed(
     // A mixed-size frame draws no sun tile: every object shadow keeps
     // retail's mask.
     let e3 = record(&mut pass, scene, replay, true, lighting, observer, None)?;
-    let (size, rgba) = pass.read_target(replay.presented)?;
+    let (size, rgba) = pass.read_rgba(replay.presented)?;
     drop(pass);
     Ok(CapturedFrame {
         id: scene.id,
