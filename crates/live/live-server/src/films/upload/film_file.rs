@@ -103,7 +103,7 @@ fn bad(m: &str) -> ApiError {
 impl Scan {
     /// The next piece of the file, which starts where the last one ended.
     /// The header and the seed come in the first piece.
-    pub fn feed(&mut self, game: &str, bytes: &[u8], inflate: &mut dyn Inflate) -> ApiResult<()> {
+    pub fn feed(&mut self, game: &str, bytes: &[u8], inflate: &mut (dyn Inflate + Send)) -> ApiResult<()> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -181,7 +181,7 @@ impl Scan {
     }
 
     /// Check the header and the seed; returns where the blocks start.
-    fn header(&mut self, game: &str, bytes: &[u8], inflate: &mut dyn Inflate) -> ApiResult<u64> {
+    fn header(&mut self, game: &str, bytes: &[u8], inflate: &mut (dyn Inflate + Send)) -> ApiResult<u64> {
         let h = bytes
             .get(..HEADER)
             .ok_or_else(|| bad("the header must come in the first part"))?;
@@ -274,7 +274,7 @@ pub(in crate::films) async fn accept(
     key: &str,
     game: &str,
     bytes: axum::body::Bytes,
-    inflate: &mut dyn Inflate,
+    inflate: &mut (dyn Inflate + Send),
 ) -> ApiResult<Checked> {
     let mut scan = Scan::default();
     scan.feed(game, &bytes, inflate)?;
