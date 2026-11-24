@@ -247,6 +247,7 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - Notes: [sky.md](halo1/notes/sky.md) (a10's grey slab under the space sky)
 - Notes: [sounds.md](halo1/notes/sounds.md) (the sound audit of a10 on the Delta Approach base)
 - Notes: [models.md](halo1/notes/models.md) (the model and animation round trips: skinning error, geometry error)
+- Notes: [objects.md](halo1/notes/objects.md) (game-run observations on converted Blood Gulch: ghost, scorpion treads, scenery bodies, leaf shaders)
 - Notes: [rebuild.md](halo1/notes/rebuild.md) (game runs on converted Blood Gulch behind the rebuilt vehicles, scenery and weapons)
 - Notes: [hud.md](halo1/notes/hud.md) (the reload warning's thresholds on a converted map)
 - Notes: [multiplayer.md](halo1/notes/multiplayer.md) (the teleporter receiver's brightness against Halo 1's)
