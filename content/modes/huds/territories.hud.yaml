@@ -1,0 +1,19 @@
+# The Territories HUD (docs/game/game-types-without-carriers.md, "The display"):
+# rows of text from the frame's bottom left, as the superbounce readout's,
+# a navpoint over the objective and the timed banner. Elements in draw order.
+name: territories
+elements:
+  - id: ter.owned
+    kind: text
+    font: hud
+    justify: start
+    longest: "Territories 9 of 9"
+    at: {anchor: bottom-left, full: [101, -26]}
+  - id: ter.mark
+    kind: navpoint
+    longest: "999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: ter.banner
+    kind: banner
+    longest: "TERRITORY CAPTURED"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}

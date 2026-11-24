@@ -161,9 +161,21 @@ A script whose options do not fit is refused.
   The Firefight director also speaks its type at the start of each director
   round. The game's announcer queue shares playback with the custom clips.
   See [the clip sources](../../art/announcer/README.md).
-- **HUD and scoreboard.** Slayer's HUD shows score and time. Each type's
-  objective parts (flag state, the hill, the ball's holder) are a HUD
-  kit HUD in the type's package, fed by the script's replicated state.
+- **HUD and scoreboard.** Slayer's HUD shows score and time. The base HUD
+  (`base`) shows the score under the game's `points` label and the clock.
+  Each type's objective parts are a HUD kit HUD of the kit's own: `ctf`
+  (both flags' places), `assault` (the bomb, with its fuse once armed),
+  `oddball` (the holder and your held time), `koth` (the hill's state and
+  held time) and `territories` (those held of the total), each with a
+  navpoint over the objective and a banner for the moment it changes hands.
+  The HUDs are YAML (`content/modes/huds/`, `BUILTIN` in
+  `hud-kit-core/src/data.rs`); `hud-kit-core/src/views/objective.rs` holds
+  each one's state, the values it makes of it and invented states for the
+  preview and the checks. The script's replicated state that feeds them is
+  built with the objective types (GT3, GT4); the runtime does not draw
+  them yet. At each round start the VM tells the game the header's `points`
+  (`Game::points_label`, `FakeGame::scoreboard_label`); the retail
+  scoreboard's own label is not traced ([the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "The HUD and the scoreboard").
 - **Post-game.** The statborg's scores, under the `points` label.
 
 ### No retail engine object
