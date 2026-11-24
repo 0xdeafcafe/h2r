@@ -799,6 +799,10 @@ fn transcripts(point: &points::Point, cases: u32) {
         let fresh = || start(ram, point.base, case);
         let (cpu, g) = fresh();
         let reference = h.run(cpu, g, &|_| false);
+        if point.base == points::OBJECT_FUNCTION_VALUE.base && case == function_cases() {
+            let evaluations = reference.callouts.iter().filter(|call| call.target == 0x13bb90).count();
+            assert_eq!(evaluations, 2, "both trailing exports must reach the evaluator");
+        }
         let (cpu, g) = fresh();
         ::sim_objects::events::clear();
         let fused = h.run(cpu, g, &|_| true);
@@ -1236,6 +1240,30 @@ fn definitions(g: &mut Guest, case: u32) {
 /// Arguments for slice 3's roots: the name, the outputs, and the record
 /// for the export evaluator.
 fn function_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    if root == points::OBJECT_FUNCTION_VALUE.base && case == function_cases() {
+        // The last two records match after a long run of misses. The plain
+        // interpreter and every mixed frame must reach both in order.
+        const LONG_TABLE: u32 = 0x0070_0000;
+        const ROWS: u32 = 513;
+        let body = RECORDS + 2 * BODY;
+        word(g, STACK + 4, handle(2));
+        word(g, STACK + 8, EXPORT_NAME);
+        word(g, STACK + 12, VALUE_OUT);
+        word(g, body, 0);
+        byte(g, body + 0xaa, 0);
+        g.set_u16(body + 0xc0, 0).unwrap();
+        // Empty ancestry so the import passes the name to the exports.
+        word(g, 0x0046_8630, DEFS + 0x300);
+        word(g, DEFS + 0x384, 0);
+        word(g, DEFS + 0x64, ROWS);
+        word(g, DEFS + 0x68, LONG_TABLE);
+        for i in 0..ROWS {
+            let row = LONG_TABLE + i * 32;
+            word(g, row + 8, if i >= ROWS - 2 { EXPORT_NAME } else { OTHER_NAME });
+            word(g, row + 0x18, INPUT_KINDS + 1);
+        }
+        return;
+    }
     let name = pick(g, case / 2);
     word(g, VALUE_OUT, 0xdead_beef);
     word(g, ACTIVE_OUT, 0xdead_beef);
