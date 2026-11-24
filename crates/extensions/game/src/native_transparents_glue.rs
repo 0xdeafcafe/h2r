@@ -19,7 +19,7 @@ use timeline::native::{Metric, Stage};
 
 struct Walk<B: d3d::Backend> {
     device: d3d::abi::SharedDevice<B>,
-    cache: crate::native_map::MapIndexedCache,
+    cache: Arc<crate::native_map::MapIndexedCache>,
     packed: Arc<Mutex<Cache>>,
 }
 
@@ -79,12 +79,28 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
         return;
     }
     let packed = Arc::new(Mutex::new(Cache::default()));
+    let indexed = Arc::new(crate::native_map::MapIndexedCache::default());
     native_transparents::set_walk_host(Arc::new(Walk {
         device: device.clone(),
-        cache: Default::default(),
+        cache: Arc::clone(&indexed),
         packed: Arc::clone(&packed),
     }));
     if let Ok(mut device) = device.lock() {
+        device.set_indexed_admission(Box::new(move |mem, esp, snapshot| {
+            if !native_transparents::layered_indexed_call(&ReadMemory(mem), esp) {
+                return None;
+            }
+            let pass = IndexedPass::for_sorted_layer(
+                snapshot.draw, indexed.get(), crate::d3d_diag::presents() + 1,
+            )?;
+            let view = mem.read_u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+            Some((d3d::ExternalPlan {
+                stage: Stage::Transparents,
+                view,
+                ranges: 1,
+                slots: Vec::new(),
+            }, Box::new(pass) as Box<dyn d3d::ExternalPass>))
+        }));
         device.set_scoped_indexed_geometry(
             native_transparents::in_indexed_handler,
             Box::new(move |mem, esp, draw| {

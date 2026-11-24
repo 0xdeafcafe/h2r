@@ -293,6 +293,10 @@ succeeds once queued: the render thread records the particle or draws
 that packet ([render-thread.md](render-thread.md), "Keeping guest-visible
 semantics exact").
 
+A sealed frame retains eligible particle replacements beside the guest
+packet. It resolves the sampled textures against the replay's targets and
+updates verified view constants on paced frames.
+
 The effects walk admits the effect quad at
 `0x0004b252` from the builder's source and contrails at `0x0004b28c`
 from the builder's output. The return frame and caller arguments must

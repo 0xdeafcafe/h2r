@@ -688,6 +688,25 @@ impl Pass {
     }
 }
 impl ExternalPass for Pass {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn with_draw(&self, draw: Arc<d3d::ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+        Some(Box::new(Self {
+            draw,
+            id: self.id,
+            color: self.color,
+            depth: self.depth,
+            vertices: self.vertices.clone(),
+            raw_vertices: self.raw_vertices.clone(),
+            indices: self.indices.clone(),
+            renderer: Arc::clone(&self.renderer),
+            prepared: Vec::new(),
+            frame: self.frame,
+        }))
+    }
+
     fn encode(&mut self, _: ExternalTarget<'_>) {} // only transactional recording is supported
     fn writes(&self) -> ExternalWrites {
         let r = &self.draw.state.render;

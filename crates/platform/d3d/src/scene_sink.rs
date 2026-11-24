@@ -54,6 +54,12 @@ pub type FlareTickets = Vec<(u64, u64)>;
 
 /// Where the frame step is, or `None` while the sink records nothing.
 pub type SlotSource = fn() -> Option<SlotAt>;
+
+pub(crate) fn retains_draw_stage(stage: timeline::native::Stage) -> bool {
+    use timeline::native::Stage;
+    matches!(stage, Stage::Flares | Stage::Sky | Stage::Transparents | Stage::Particles)
+}
+
 /// The scene's object shadow the guest is drawing, by index into the
 /// sealed scene's `object_shadows`; `None` outside one.
 pub type ShadowSource = fn() -> Option<u32>;
@@ -272,7 +278,7 @@ impl<B: Backend> SceneSink<B> {
             || !attachments
             || !s.sampled.is_empty() || !s.slots.is_empty() || !s.slot_sizes.is_empty()
             || !known(&s.color) || !known(&s.depth) || !room
-            || !matches!(admission.plan.stage, Stage::Flares | Stage::Sky)
+            || !retains_draw_stage(admission.plan.stage)
             || (admission.plan.stage == Stage::Flares && draw.writes_depth_stencil())
             || !(Arc::ptr_eq(&admission.packet, draw) || *admission.packet == **draw)
             || !admission.pass.lock().is_ok_and(|p| p.replays_scene())

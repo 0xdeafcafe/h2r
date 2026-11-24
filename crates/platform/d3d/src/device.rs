@@ -1123,6 +1123,7 @@ pub struct Device<B: Backend> {
     /// Optional vertex-binding optimization at the resolved indexed draw.
     indexed_geometry: Option<IndexedGeometryHook>,
     indexed_geometry_scope: fn() -> bool,
+    indexed_admission: Option<IndexedAdmissionHook>,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing<B>>,
     /// How the last swallow that ended early ended
@@ -1377,6 +1378,11 @@ pub struct IndexedGeometry {
     pub stream: StreamBytes,
 }
 
+/// Consults a native owner using an indexed draw's live API frame.
+pub type IndexedAdmissionHook = Box<dyn Fn(
+    &dyn GuestMemory, u32, &crate::DrawSnapshot<'_>,
+) -> Option<(crate::ExternalPlan, Box<dyn crate::ExternalPass>)> + Send>;
+
 /// Reads the live guest stack and an indexed draw to select its binding.
 pub type IndexedGeometryHook =
     Box<dyn FnMut(&dyn GuestMemory, u32, &ResolvedDraw) -> Option<IndexedGeometry> + Send>;
@@ -1479,6 +1485,7 @@ impl<B: Backend> Device<B> {
             residual: Residual::default(),
             indexed_geometry: None,
             indexed_geometry_scope: || false,
+            indexed_admission: None,
             swallowing: None,
             swallow_mismatch: None,
             display: display::Display::default(),
@@ -2268,6 +2275,12 @@ impl<B: Backend> Device<B> {
     pub fn set_scoped_indexed_geometry(&mut self, scope: fn() -> bool, hook: IndexedGeometryHook) {
         self.set_indexed_geometry(hook);
         self.indexed_geometry_scope = scope;
+    }
+
+    /// Consult a native indexed producer with the actual DrawIndexedVertices
+    /// API frame and its resolved draw, before the fallback binding adapter.
+    pub fn set_indexed_admission(&mut self, hook: IndexedAdmissionHook) {
+        self.indexed_admission = Some(hook);
     }
 
     /// Whether the backend can draw an external pass: asked before the
@@ -6250,7 +6263,8 @@ impl<B: Backend> Device<B> {
             (draw, snapshots)
         };
         let admission = if self.swallowing.is_some()
-            || (native.is_none() && scoped.is_none() && self.admissions.is_empty())
+            || (native.is_none() && scoped.is_none() && self.admissions.is_empty()
+                && (parts.indexed_esp.is_none() || self.indexed_admission.is_none()))
             || !draw.state.bad.is_empty()
         {
             None
@@ -6275,9 +6289,16 @@ impl<B: Backend> Device<B> {
             } else if let Some((_, stage)) = &scoped {
                 crate::backend::admit_draw(stage.as_ref(), &snapshot)
             } else {
-                self.admissions
+                let indexed = if !draw.hw.zpass_count_enable {
+                    parts.indexed_esp.zip(self.indexed_admission.as_ref())
+                        .and_then(|(esp, hook)| hook(mem, esp, &snapshot))
+                        .filter(|(_, pass)| !pass.counts_samples())
+                } else {
+                    None
+                };
+                indexed.or_else(|| self.admissions
                     .iter()
-                    .find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot))
+                    .find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot)))
             }
         };
         let mut fallback_reason = "packet admission";
@@ -6364,7 +6385,8 @@ impl<B: Backend> Device<B> {
                 && binding.same_draw_writes(self.render_target, color, depth, writes_color, writes_depth)
                 && !(parts.indexed_esp.is_some()
                     && compatible_geometry_target
-                    && (self.indexed_geometry_scope)())
+                    && (self.indexed_geometry_scope)()
+                    && plan.stage != timeline::native::Stage::Transparents)
             {
                 pass.resolved_fallback()
             } else {
@@ -6372,7 +6394,7 @@ impl<B: Backend> Device<B> {
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
             // These passes can record again on replay's attachments.
-            if matches!(plan.stage, timeline::native::Stage::Flares | timeline::native::Stage::Sky)
+            if crate::scene_sink::retains_draw_stage(plan.stage)
                 && let Some(packet) = &fallback
             {
                 retained = Some(crate::backend::RetainedAdmission {
@@ -6471,6 +6493,7 @@ impl<B: Backend> Device<B> {
         // Only adapt geometry for a submission that will use the D3D draw.
         // A committed external replacement recycles the original streams.
         let original = if let Some(esp) = parts.indexed_esp
+            && retained.is_none()
             && compatible_geometry_target
             && depth.is_some()
             && sampled

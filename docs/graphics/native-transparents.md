@@ -45,12 +45,16 @@ The standard handler runs its layer-15 material builds, bindings and restores. T
 Each triangle list or strip goes through the existing indexed pass with the resolved shaders, fog, blend and depth state and the current attachments. The resolved packet supplies the live inputs even when the item’s object lighting owner is unavailable. A triangle list keeps trailing indices in its snapshot and rasterizes complete triangles. Admission preserves the order of the individual ranges and intervening handlers. A refused range runs its original indexed call, which can still use the immutable vertex binding adapter.
 
 Camouflage and hologram use the same indexed path for ranges that reach
-the guest emitter. The two nested return sites identify the emitter and
-layer dispatcher, and the live layer must match the layer argument. The
+the guest emitter. The indexed API return and two nested return sites
+identify the emitter and layer dispatcher, and the live layer must match the layer argument. The
 handler's return address identifies its regular layer replays or the
 specific draw of layer 18, 19 or 21. Layer begin, material state, texture
 snapshots and target changes execute in their original order. Items
-already admitted by `frame-scene.layers` never reach this path.
+already admitted by `frame-scene.layers` never reach this path. A sealed
+frame retains each replacement beside its original indexed packet and
+resolves the sampled textures for that replay. When a verified camera
+moves between ticks, the replacement uses the same updated constants as
+the original packet.
 
 
 ### Vertex bindings

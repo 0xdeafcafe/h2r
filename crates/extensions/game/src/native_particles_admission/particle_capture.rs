@@ -21,7 +21,7 @@ pub(super) fn owns(draw: &ResolvedDraw) -> bool {
         && draw.primitive == PrimitiveType::QuadList
         && draw.vertex_count >= 4
         && draw.indices.is_none()
-        && matches!(draw.streams.as_slice(), [stream] if stream.data.as_ref() == corner_bytes())
+        && matches!(draw.streams.as_slice(), [stream] if stream.data.as_ref() == corner_bytes().as_slice())
 }
 
 pub(super) struct Pass {
@@ -41,6 +41,14 @@ impl Pass {
 }
 
 impl ExternalPass for Pass {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+        Some(Box::new(Self { draw, gpu: Arc::clone(&self.gpu), frame: self.frame }))
+    }
+
     fn record_draws(
         &mut self,
         target: &ExternalAttachments,

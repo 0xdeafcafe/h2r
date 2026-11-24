@@ -96,6 +96,28 @@ fn sorted_layer_call(layer: u32, caller: u32) -> bool {
             && matches!(layer, 1 | 2 | 3 | 7 | 8 | 15 | 16))
 }
 
+fn live_layer(mem: &dyn GuestRead, esp: u32, layer: u32) -> bool {
+    mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
+        && esp.checked_add(0xf094).and_then(|at| mem.read_u32(at)) == Some(0x0004_45b7)
+}
+
+/// The DrawIndexedVertices API frame includes the return address and three
+/// arguments below the standard emitter frame. Only its four proved calls
+/// may carry a replacement of sorted-layer geometry into a sealed scene.
+pub fn layered_indexed_call(mem: &dyn GuestRead, api_esp: u32) -> bool {
+    let Some(ret) = mem.read_u32(api_esp) else { return false };
+    if ret != GEOMETRY_RANGE_TAIL && !SUBPART_DRAWS.iter().any(|&(_, resume)| resume == ret) {
+        return false;
+    }
+    let Some(esp) = api_esp.checked_add(16) else { return false };
+    let word = |offset| mem.read_u32(esp.checked_add(offset)?);
+    if word(0x18) != Some(GEOMETRY_EMITTER_CALLER) || word(0x68) != Some(LAYER_DRAW_CALLER) {
+        return false;
+    }
+    let (Some(layer), Some(caller)) = (word(0x78), word(LAYER_DRAW_FRAME)) else { return false };
+    live_layer(mem, esp, layer) && sorted_layer_call(layer, caller)
+}
+
 fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let word = |offset| mem.read_u32(esp.checked_add(offset)?);
     if word(0x18)? != GEOMETRY_EMITTER_CALLER {
@@ -117,14 +139,7 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
             let caller = word(LAYER_DRAW_FRAME)?;
             // The emitter is inside the layer dispatcher, after the guest
             // applied the material and selected this exact index range.
-            let live_layer = mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
-                && word(0xf094) == Some(0x0004_45b7);
-            if live_layer && sorted_layer_call(layer, caller) {
-                // Any items already claimed by frame-scene.layers never
-                // reach the emitter. This is the remaining sorted geometry.
-                return Some(Stage::Transparents);
-            }
-            if live_layer && scene_extract::late::scene_layer_call(layer, caller) {
+            if live_layer(mem, esp, layer) && scene_extract::late::scene_layer_call(layer, caller) {
                 return Some(if layer == 16 { Stage::Fog } else { Stage::Water });
             }
             let first_person_layer = layer_site(layer, caller) == Site::FirstPerson;
@@ -551,7 +566,9 @@ mod walk_tests {
     fn layered_ranges_need_the_matching_handler_and_live_layer_frame() {
         let mut mem = FlatMemory::new(0x0040_0000, 0x0021_0000);
         let stack = 0x005e_0000;
+        let api = stack - 16;
         for (addr, value) in [
+            (api, GEOMETRY_RANGE_TAIL),
             (stack + 0x18, GEOMETRY_EMITTER_CALLER),
             (stack + 0x68, LAYER_DRAW_CALLER),
             (stack + 0xf094, 0x0004_45b7),
@@ -559,28 +576,54 @@ mod walk_tests {
             mem.set_u32(addr, value).unwrap();
         }
         for (layer, caller, expected) in [
-            (18, 0x0004_2015, Some(Stage::Transparents)),
-            (19, 0x0004_205f, Some(Stage::Transparents)),
-            (21, 0x0004_2721, Some(Stage::Transparents)),
-            (19, 0x0004_2015, None),
-            (21, 0x0004_205f, None),
-            (3, 0x0004_1d00, Some(Stage::Transparents)),
-            (15, 0x0004_2500, Some(Stage::Transparents)),
-            (20, 0x0004_2500, None),
-            (3, 0x0004_20a0, None),
-            (3, 0x0004_2760, None),
+            (18, 0x0004_2015, true),
+            (19, 0x0004_205f, true),
+            (21, 0x0004_2721, true),
+            (19, 0x0004_2015, false),
+            (21, 0x0004_205f, false),
+            (3, 0x0004_1d00, true),
+            (15, 0x0004_2500, true),
+            (20, 0x0004_2500, false),
+            (3, 0x0004_20a0, false),
+            (3, 0x0004_2760, false),
         ] {
             mem.set_u32(stack + 0x78, layer).unwrap();
             mem.set_u32(stack + LAYER_DRAW_FRAME, caller).unwrap();
             mem.set_u32(native_render::skip::CURRENT_LAYER, layer).unwrap();
-            assert_eq!(walk_stage(&ReadMemory(&mem), stack), expected);
+            assert_eq!(layered_indexed_call(&ReadMemory(&mem), api), expected);
         }
         mem.set_u32(stack + 0x78, 18).unwrap();
         mem.set_u32(stack + LAYER_DRAW_FRAME, 0x0004_2015).unwrap();
-        assert_eq!(walk_stage(&ReadMemory(&mem), stack), None);
+        assert_eq!(layered_indexed_call(&ReadMemory(&mem), api), false);
         mem.set_u32(native_render::skip::CURRENT_LAYER, 18).unwrap();
         mem.set_u32(stack + 0xf094, 0).unwrap();
-        assert_eq!(walk_stage(&ReadMemory(&mem), stack), None);
+        assert_eq!(layered_indexed_call(&ReadMemory(&mem), api), false);
+    }
+
+    #[test]
+    fn sealed_layer_candidate_starts_at_one_of_the_four_indexed_api_calls() {
+        let mut mem = FlatMemory::new(0x0040_0000, 0x0021_0000);
+        let stack = 0x005e_0000;
+        let api = stack - 16;
+        for (addr, value) in [
+            (stack + 0x18, GEOMETRY_EMITTER_CALLER),
+            (stack + 0x68, LAYER_DRAW_CALLER),
+            (stack + 0x78, 19),
+            (stack + 0xf094, 0x0004_45b7),
+            (stack + LAYER_DRAW_FRAME, 0x0004_205f),
+            (native_render::skip::CURRENT_LAYER, 19),
+        ] {
+            mem.set_u32(addr, value).unwrap();
+        }
+        for ret in std::iter::once(GEOMETRY_RANGE_TAIL).chain(SUBPART_DRAWS.map(|(_, resume)| resume)) {
+            mem.set_u32(api, ret).unwrap();
+            assert!(layered_indexed_call(&ReadMemory(&mem), api));
+        }
+        mem.set_u32(api, GEOMETRY_RANGE_TAIL + 1).unwrap();
+        assert!(!layered_indexed_call(&ReadMemory(&mem), api));
+        mem.set_u32(api, GEOMETRY_RANGE_TAIL).unwrap();
+        mem.set_u32(stack + 0x68, TRANSPARENT_DRAW_CALLER).unwrap();
+        assert!(!layered_indexed_call(&ReadMemory(&mem), api));
     }
 
     #[test]
