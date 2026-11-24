@@ -1,0 +1,386 @@
+//! The ground a hill, a territory or a site covers
+//! (docs/game/gametype-markers.md, "Areas"): a radius round the centre
+//! marker, or a path of points dropped round it, between two heights.
+//!
+//! A path's points are offsets from the centre marker across the floor,
+//! so moving the marker moves its area. They are joined in the order
+//! they were dropped and closed back to the first; the outline may be
+//! concave and may not cross itself.
+use std::fmt;
+
+use crate::shapes::circle;
+
+/// The fewest points a path has.
+pub const MIN_POINTS: usize = 3;
+/// The most points a tool stores in a path.
+pub const MAX_POINTS: usize = 32;
+/// The smallest radius, in world units.
+pub const MIN_RADIUS: f32 = 0.25;
+/// The largest radius, and the farthest a path's point is from the
+/// centre marker, in world units.
+pub const MAX_REACH: f32 = 64.0;
+/// The shortest edge of a path, in world units.
+pub const MIN_EDGE: f32 = 0.1;
+/// The smallest floor a path covers, in square world units.
+pub const MIN_FLOOR: f32 = 0.05;
+/// The least an area reaches from its lowest to its highest, and the
+/// most it reaches under or over its centre marker, in world units.
+pub const MIN_HEIGHT: f32 = 0.25;
+pub const MAX_HEIGHT: f32 = 32.0;
+
+/// The radius of an area nobody has shaped: the cylinder a zone round
+/// one flag is (`game::rules::world::zones::RADIUS`).
+pub const DEFAULT_RADIUS: f32 = 1.0;
+/// How far an unshaped area reaches under its marker (`zones::BELOW`).
+pub const DEFAULT_BELOW: f32 = 0.5;
+/// How far an unshaped area reaches over its marker (`zones::ABOVE`).
+pub const DEFAULT_ABOVE: f32 = 1.5;
+/// The points a radius's outline is drawn with.
+pub const SEGMENTS: usize = 32;
+
+/// An area's outline across the floor.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shape {
+    /// A circle of this radius round the centre marker.
+    Radius(f32),
+    /// The polygon through these offsets from the centre marker, in the
+    /// order they were dropped.
+    Path(Vec<[f32; 2]>),
+}
+
+/// An area: its outline, and how far it reaches under and over its
+/// centre marker.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Area {
+    pub shape: Shape,
+    pub below: f32,
+    pub above: f32,
+}
+
+/// Why an area is refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AreaError {
+    /// A number is not finite.
+    NotFinite,
+    /// The radius is outside [`MIN_RADIUS`] to [`MAX_REACH`].
+    Radius(f32),
+    /// A height is negative or over [`MAX_HEIGHT`], or the two together
+    /// are under [`MIN_HEIGHT`].
+    Height { below: f32, above: f32 },
+    /// The path has fewer than [`MIN_POINTS`] or more than
+    /// [`MAX_POINTS`] points.
+    Points(usize),
+    /// The point at this index is farther than [`MAX_REACH`] from the
+    /// centre marker.
+    Reach(usize),
+    /// The edge from the point at this index to the next is shorter than
+    /// [`MIN_EDGE`].
+    Edge(usize),
+    /// The path covers less than [`MIN_FLOOR`]: its points are in a line.
+    Flat,
+    /// The edges starting at these two indices cross or touch.
+    Crosses(usize, usize),
+}
+
+impl fmt::Display for AreaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFinite => write!(f, "An area's numbers must be finite."),
+            Self::Radius(r) => write!(
+                f,
+                "An area's radius is {MIN_RADIUS} to {MAX_REACH} world units; this one is {r}."
+            ),
+            Self::Height { below, above } => write!(
+                f,
+                "An area reaches 0 to {MAX_HEIGHT} world units under and over its marker and at least {MIN_HEIGHT} in all; this one reaches {below} under and {above} over."
+            ),
+            Self::Points(n) => write!(
+                f,
+                "An area's path has {MIN_POINTS} to {MAX_POINTS} points; this one has {n}."
+            ),
+            Self::Reach(i) => write!(
+                f,
+                "Point {} of the path is more than {MAX_REACH} world units from the marker.",
+                i + 1
+            ),
+            Self::Edge(i) => write!(
+                f,
+                "Point {} of the path is less than {MIN_EDGE} world units from the next.",
+                i + 1
+            ),
+            Self::Flat => write!(f, "The path's points are in a line: it covers no floor."),
+            Self::Crosses(a, b) => write!(
+                f,
+                "The path crosses itself: the edge after point {} meets the edge after point {}.",
+                a + 1,
+                b + 1
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AreaError {}
+
+impl Default for Area {
+    /// The area of a marker nobody has shaped.
+    fn default() -> Self {
+        Self::radius(DEFAULT_RADIUS)
+    }
+}
+
+/// `(b - a) x (c - a)`: positive when `c` is left of `a -> b`.
+fn cross(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn dot(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+    (b[0] - a[0]) * (c[0] - a[0]) + (b[1] - a[1]) * (c[1] - a[1])
+}
+
+/// Whether `p`, on the line through `a` and `b`, is between them.
+fn between(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> bool {
+    p[0] >= a[0].min(b[0])
+        && p[0] <= a[0].max(b[0])
+        && p[1] >= a[1].min(b[1])
+        && p[1] <= a[1].max(b[1])
+}
+
+/// Whether the segments `a b` and `c d` cross or touch.
+fn meet(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> bool {
+    let (d1, d2) = (cross(c, d, a), cross(c, d, b));
+    let (d3, d4) = (cross(a, b, c), cross(a, b, d));
+    let apart = |x: f32, y: f32| (x > 0.0 && y < 0.0) || (x < 0.0 && y > 0.0);
+    (apart(d1, d2) && apart(d3, d4))
+        || (d1 == 0.0 && between(c, d, a))
+        || (d2 == 0.0 && between(c, d, b))
+        || (d3 == 0.0 && between(a, b, c))
+        || (d4 == 0.0 && between(a, b, d))
+}
+
+/// Twice the signed floor of the polygon: positive counter-clockwise.
+fn doubled_floor(points: &[[f32; 2]]) -> f32 {
+    let n = points.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum()
+}
+
+/// The convex hull of `points`, counter-clockwise (Andrew's monotone
+/// chain). Fewer than three points, or all in a line, give fewer than
+/// three corners.
+pub fn hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut p: Vec<[f32; 2]> = points.to_vec();
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    p.dedup();
+    if p.len() < 3 {
+        return p;
+    }
+    let mut chain: Vec<[f32; 2]> = Vec::with_capacity(p.len() + 1);
+    let back: Vec<[f32; 2]> = p.iter().rev().copied().collect();
+    // The lower side left to right, then the upper side back.
+    for side in [&p, &back] {
+        let start = chain.len();
+        for &q in side {
+            while chain.len() >= start + 2
+                && cross(chain[chain.len() - 2], chain[chain.len() - 1], q) <= 0.0
+            {
+                chain.pop();
+            }
+            chain.push(q);
+        }
+        // Each side's last point is the other side's first.
+        chain.pop();
+    }
+    chain
+}
+
+impl Area {
+    /// A circle of `radius` at the default heights.
+    pub fn radius(radius: f32) -> Self {
+        Self {
+            shape: Shape::Radius(radius),
+            below: DEFAULT_BELOW,
+            above: DEFAULT_ABOVE,
+        }
+    }
+
+    /// The polygon through `points` at the default heights.
+    pub fn path(points: Vec<[f32; 2]>) -> Self {
+        Self {
+            shape: Shape::Path(points),
+            below: DEFAULT_BELOW,
+            above: DEFAULT_ABOVE,
+        }
+    }
+
+    /// The area of a map's hill corners, and its centre marker's place:
+    /// the convex hull of the corners across the floor round their mean,
+    /// from [`DEFAULT_BELOW`] under the lowest corner to
+    /// [`DEFAULT_ABOVE`] over the highest, which is the zone the host
+    /// makes of them (`game::rules::world::zones`). `None` when the
+    /// corners make no polygon. It is read from a map and not stored, so
+    /// it may have more than [`MAX_POINTS`] points.
+    pub fn of_corners(corners: &[[f32; 3]]) -> Option<([f32; 3], Area)> {
+        let flat: Vec<[f32; 2]> = corners.iter().map(|c| [c[0], c[1]]).collect();
+        let hull = hull(&flat);
+        if hull.len() < MIN_POINTS {
+            return None;
+        }
+        let n = hull.len() as f32;
+        let x = hull.iter().map(|p| p[0]).sum::<f32>() / n;
+        let y = hull.iter().map(|p| p[1]).sum::<f32>() / n;
+        let low = corners.iter().map(|c| c[2]).fold(f32::INFINITY, f32::min);
+        let high = corners
+            .iter()
+            .map(|c| c[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let area = Area {
+            shape: Shape::Path(hull.iter().map(|p| [p[0] - x, p[1] - y]).collect()),
+            below: DEFAULT_BELOW,
+            above: high - low + DEFAULT_ABOVE,
+        };
+        Some(([x, y, low], area))
+    }
+
+    /// Refuses an area the tools must not store. A stored area has
+    /// passed this, so [`Area::contains`] and [`Area::outline`] need no
+    /// checks of their own.
+    pub fn validate(&self) -> Result<(), AreaError> {
+        let shape_finite = match &self.shape {
+            Shape::Radius(r) => r.is_finite(),
+            Shape::Path(points) => points.iter().flatten().all(|c| c.is_finite()),
+        };
+        if !(shape_finite && self.below.is_finite() && self.above.is_finite()) {
+            return Err(AreaError::NotFinite);
+        }
+        let height = 0.0..=MAX_HEIGHT;
+        if !height.contains(&self.below)
+            || !height.contains(&self.above)
+            || self.below + self.above < MIN_HEIGHT
+        {
+            return Err(AreaError::Height {
+                below: self.below,
+                above: self.above,
+            });
+        }
+        match &self.shape {
+            Shape::Radius(r) => {
+                if !(MIN_RADIUS..=MAX_REACH).contains(r) {
+                    return Err(AreaError::Radius(*r));
+                }
+            }
+            Shape::Path(points) => validate_path(points)?,
+        }
+        Ok(())
+    }
+
+    /// The outline across the floor, counter-clockwise, as offsets from
+    /// the centre marker: a radius as [`SEGMENTS`] points, a path as its
+    /// own points.
+    pub fn outline(&self) -> Vec<[f32; 2]> {
+        match &self.shape {
+            Shape::Radius(r) => circle(*r, SEGMENTS),
+            Shape::Path(points) => {
+                let mut points = points.clone();
+                if doubled_floor(&points) < 0.0 {
+                    points.reverse();
+                }
+                points
+            }
+        }
+    }
+
+    /// Whether the world point `p` is in the area of a marker at
+    /// `centre`, edges included.
+    pub fn contains(&self, centre: [f32; 3], p: [f32; 3]) -> bool {
+        if p[2] < centre[2] - self.below || p[2] > centre[2] + self.above {
+            return false;
+        }
+        let q = [p[0] - centre[0], p[1] - centre[1]];
+        match &self.shape {
+            Shape::Radius(r) => q[0] * q[0] + q[1] * q[1] <= r * r,
+            Shape::Path(points) => inside_path(points, q),
+        }
+    }
+
+    /// The middle of the area of a marker at `centre`: the marker across
+    /// the floor for a radius, the mean of a path's points, halfway
+    /// between the heights.
+    pub fn middle(&self, centre: [f32; 3]) -> [f32; 3] {
+        let z = centre[2] + (self.above - self.below) / 2.0;
+        match &self.shape {
+            Shape::Radius(_) => [centre[0], centre[1], z],
+            Shape::Path(points) => {
+                let n = points.len().max(1) as f32;
+                let x = points.iter().map(|p| p[0]).sum::<f32>() / n;
+                let y = points.iter().map(|p| p[1]).sum::<f32>() / n;
+                [centre[0] + x, centre[1] + y, z]
+            }
+        }
+    }
+}
+
+fn validate_path(points: &[[f32; 2]]) -> Result<(), AreaError> {
+    let n = points.len();
+    if !(MIN_POINTS..=MAX_POINTS).contains(&n) {
+        return Err(AreaError::Points(n));
+    }
+    if let Some(i) = points
+        .iter()
+        .position(|p| p[0] * p[0] + p[1] * p[1] > MAX_REACH * MAX_REACH)
+    {
+        return Err(AreaError::Reach(i));
+    }
+    let next = |i: usize| points[(i + 1) % n];
+    for i in 0..n {
+        let (a, b) = (points[i], next(i));
+        if dot(a, b, b) < MIN_EDGE * MIN_EDGE {
+            return Err(AreaError::Edge(i));
+        }
+    }
+    if doubled_floor(points).abs() < 2.0 * MIN_FLOOR {
+        return Err(AreaError::Flat);
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            let (a, b, c, d) = (points[i], next(i), points[j], next(j));
+            let crosses = if j == i + 1 {
+                // Neighbours share `b`: they meet only when one folds
+                // back along the other.
+                cross(b, a, d) == 0.0 && dot(b, a, d) > 0.0
+            } else if i == 0 && j == n - 1 {
+                // Neighbours round the join: they share `a`.
+                cross(a, b, c) == 0.0 && dot(a, b, c) > 0.0
+            } else {
+                meet(a, b, c, d)
+            };
+            if crosses {
+                return Err(AreaError::Crosses(i, j));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `q` is in the polygon `points` or on its edge: an edge test,
+/// then the crossings of a ray to +x.
+fn inside_path(points: &[[f32; 2]], q: [f32; 2]) -> bool {
+    let n = points.len();
+    let mut inside = false;
+    for i in 0..n {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        if cross(a, b, q) == 0.0 && between(a, b, q) {
+            return true;
+        }
+        if (a[1] > q[1]) != (b[1] > q[1]) {
+            let x = a[0] + (q[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            if q[0] < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
