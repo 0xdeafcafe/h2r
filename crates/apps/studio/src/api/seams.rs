@@ -49,6 +49,9 @@
 //!   when asked ([`super::models`]); read-only, so no actions.
 //!   `model.colors`, `model.emblem` and `custom.*` are planned
 //!   (docs/editor/agent-api.md).
+//! - **model poses**: `anim.list` and `anim.pose` over the Tags tool's
+//!   own pose reading (`app::anim`), one path with the Animation window
+//!   ([`super::anim`]); read-only.
 //! - **the Announcer** and **Voices**: `voice.say`, `voice.list`,
 //!   `voice.commit`, `voice.characters`, `voice.dataset.build`,
 //!   `voice.dataset.status`, `voice.clone.train` and `voice.clone.say`
@@ -126,6 +129,9 @@ pub fn register(api: &mut Api) {
     // model.*: objects' models read, rendered (ground, third and first
     // person) and checked as content, Pogo kit maps included.
     api.register(Box::new(super::models::Models::default()));
+    // anim.*: a jmad's animations listed and one posed on the model that
+    // uses it (app::anim), the Animation window's own path.
+    api.register(Box::new(super::anim::Anim::default()));
     // The Announcer: a line said by a voice, made a clip and kept
     // (app::announcer).
     api.register(Box::new(super::voice::Voice));

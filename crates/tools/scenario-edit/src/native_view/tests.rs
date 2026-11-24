@@ -1186,3 +1186,56 @@ fn an_item_reference_set_after_open_has_its_model_read() {
     assert!(ed.native_models().unwrap().has_read(late));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---- posed models (M1) --------------------------------------------------------
+
+/// A pose that turns node 1 a quarter about z at frame 1 of 2, over a
+/// two-node skeleton whose child sits at x = 1: `posed_nodes` composes the
+/// turn into the child's world matrix and leaves the rest pose elsewhere.
+#[test]
+fn posed_nodes_compose_the_animation_over_the_defaults() {
+    use tags::anim_sample::{NodeTransform, Pose};
+    let skeleton = [
+        SkeletonNode {
+            parent: -1,
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+        },
+        SkeletonNode {
+            parent: 0,
+            translation: [1.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+        },
+    ];
+    let mut pose = Pose {
+        nodes: vec![NodeTransform::default(), NodeTransform::default()],
+    };
+    pose.nodes[1].rotation = [
+        0.0,
+        0.0,
+        std::f32::consts::FRAC_1_SQRT_2,
+        std::f32::consts::FRAC_1_SQRT_2,
+    ];
+    pose.nodes[1].has_rotation = true;
+    let nodes = posed_nodes(&skeleton, &pose, &NodeMatrix::IDENTITY).unwrap();
+    assert_eq!(nodes.len(), 2);
+    // The root is where it rests.
+    assert_eq!(nodes[0], NodeMatrix::IDENTITY);
+    // The child is its rest frame after the quarter turn: x now points to
+    // y, and the node still sits at x = 1.
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+    assert!(close(nodes[1].forward, [0.0, 1.0, 0.0]), "{:?}", nodes[1]);
+    assert!(close(nodes[1].position, [1.0, 0.0, 0.0]), "{:?}", nodes[1]);
+    // A vertex at the child's x = 1 (its own origin) is unchanged; one
+    // further out follows the turn, as the renderer skins it.
+    assert!(close(nodes[1].point([0.0, 0.0, 0.0]), [1.0, 0.0, 0.0]));
+    assert!(close(nodes[1].point([1.0, 0.0, 0.0]), [1.0, 1.0, 0.0]));
+    // A pose for another node count is named, not papered over.
+    let short = Pose {
+        nodes: vec![NodeTransform::default()],
+    };
+    let e = posed_nodes(&skeleton, &short, &NodeMatrix::IDENTITY).unwrap_err();
+    assert!(e.contains("node count"), "{e}");
+}

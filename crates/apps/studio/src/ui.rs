@@ -15,6 +15,7 @@ mod palette;
 mod play;
 mod playlists;
 mod sound;
+mod anim;
 mod announcer;
 pub mod scripts;
 pub mod tags;
@@ -101,6 +102,8 @@ pub struct Studio {
     pub map_list: map_list::MapListUi,
     /// The Sound window over the Tags tool's selected `snd!`.
     sound: sound::SoundUi,
+    /// The Animation window over the Tags tool's selected `jmad`.
+    anim: anim::AnimUi,
     /// The Voices window (View > Voices): the announcer and the clones.
     announcer: announcer::AnnouncerUi,
 }
@@ -137,6 +140,7 @@ impl Studio {
             scripts: scripts::ScriptsUi::default(),
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::default(),
+            anim: anim::AnimUi::default(),
             announcer: announcer::AnnouncerUi::default(),
         }
     }
@@ -239,6 +243,8 @@ impl Studio {
         // The seam for sound audition until the tag view tabs exist
         // (docs/editor/rich-editors.md, "One seam for every rich view").
         sound::window(ui, app, &mut self.sound);
+        // The same seam for model poses (that page's slice M1).
+        anim::window(ui, app, gpu, &mut self.anim);
         announcer::window(ui, app, &mut self.announcer);
         // Image generation: the Generate window over any tool, opened from
         // a bitmap's slot (app::image_gen).

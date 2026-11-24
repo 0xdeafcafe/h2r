@@ -1011,6 +1011,77 @@ pub fn rest_nodes(model: &Model, placement: &NodeMatrix) -> Vec<NodeMatrix> {
     }
 }
 
+/// One node of a render model's skeleton, as a pose needs it: the parent
+/// link and the node's own default channels (`mode` node `+4` parent,
+/// `+0xc` translation, `+0x18` orientation, `+0x28` scale).
+/// [`super::native_view::preview::Piece`] carries one per node, in model
+/// node order, which is the animation graph's node order too (the engine
+/// writes an animation's channels by node index into the object's nodes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkeletonNode {
+    pub parent: i16,
+    pub translation: [f32; 3],
+    /// Unit quaternion `[x, y, z, w]`, the node's default orientation.
+    pub rotation: [f32; 4],
+    /// The channel's default scale: the `mode` node stores none (the
+    /// words at `+0x28` are its inverse rest frame), so 1.
+    pub scale: f32,
+}
+
+/// A column-major `T·R·S` matrix, as `tags::anim_sample` composes one, as
+/// a node matrix: the rotation's columns as the axes, the uniform scale
+/// their length, the translation the position.
+fn mat4_node(m: &tags::anim_sample::Mat4) -> NodeMatrix {
+    let length =
+        |c: usize| (m[c][0] * m[c][0] + m[c][1] * m[c][1] + m[c][2] * m[c][2]).sqrt();
+    let scale = length(0).max(length(1)).max(length(2));
+    let axis = |c: usize| {
+        let s = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+        [m[c][0] * s, m[c][1] * s, m[c][2] * s]
+    };
+    NodeMatrix {
+        scale,
+        forward: axis(0),
+        left: axis(1),
+        up: axis(2),
+        position: [m[3][0], m[3][1], m[3][2]],
+    }
+}
+
+/// A model's nodes under a sampled pose, in place of [`rest_nodes`]: the
+/// animation's channels over the node defaults, composed up the render
+/// model's node tree, then placed. `pose` is a clip's sample at a frame
+/// ([`tags::anim_sample::AnimationClip::sample`]), merged with
+/// `skeleton`'s defaults first (a channel the animation supplies none for
+/// is the node's own); an overlay can have been applied to it already
+/// with [`tags::anim_sample::Pose::add_overlay`]. This is the engine's
+/// own composition (docs/engine/anim-sampling.md; the Halo 1 converter
+/// writes rotations in this convention and its disc round-trip
+/// `h1-assets/src/models/skin_tests.rs` checks it), settled for the pose
+/// viewer by slice M1 of docs/editor/rich-editors.md.
+pub fn posed_nodes(
+    skeleton: &[SkeletonNode],
+    pose: &tags::anim_sample::Pose,
+    placement: &NodeMatrix,
+) -> Result<Vec<NodeMatrix>, String> {
+    let defaults: Vec<tags::anim_sample::NodeDefault> = skeleton
+        .iter()
+        .map(|n| tags::anim_sample::NodeDefault {
+            parent: n.parent,
+            rotation: n.rotation,
+            translation: n.translation,
+            scale: n.scale,
+        })
+        .collect();
+    let merged = pose.merged(&defaults).map_err(|e| e.to_string())?;
+    let parents: Vec<i16> = skeleton.iter().map(|n| n.parent).collect();
+    let worlds = merged.world_matrices(&parents).map_err(|e| e.to_string())?;
+    Ok(worlds
+        .iter()
+        .map(|w| placement.compose(&mat4_node(w)))
+        .collect())
+}
+
 /// A model's bounding sphere under `placement`: its box's centre and
 /// half diagonal, placed and scaled.
 pub fn placed_sphere(model: &Model, placement: &NodeMatrix) -> ([f32; 3], f32) {
@@ -1235,6 +1306,23 @@ impl NativeObjects {
                     placed_sphere(model, &placement),
                     highlight,
                 ))
+            })
+            .collect();
+    }
+
+    /// The placements to draw with their node matrices given (a posed
+    /// model, as [`posed_nodes`] builds them), in place of the rest pose
+    /// [`Self::place`] computes: one per entry whose object tag has been
+    /// uploaded, with the sphere the posed vertices lie in.
+    pub fn place_posed<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (&'a TagId, &'a [NodeMatrix], ([f32; 3], f32))>,
+    ) {
+        self.placed = entries
+            .into_iter()
+            .filter_map(|(object, nodes, sphere)| {
+                let index = *self.uploaded.get(object)?;
+                Some((index, nodes.to_vec(), sphere, [0; 4]))
             })
             .collect();
     }

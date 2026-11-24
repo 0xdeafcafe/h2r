@@ -137,6 +137,20 @@ pub struct Pose {
     pub nodes: Vec<NodeTransform>,
 }
 
+/// A skeleton node's default local channels, for merging a sampled pose
+/// into full local transforms: the render model's own node (`mode` node
+/// `+4` parent, `+0xc` translation, `+0x18` orientation, `+0x28` scale).
+/// A channel the animation supplies none for falls back to these, as the
+/// game composes a model: the object's node state starts from the node
+/// defaults and the sampled animation replaces per channel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeDefault {
+    pub parent: i16,
+    pub rotation: [f32; 4],
+    pub translation: [f32; 3],
+    pub scale: f32,
+}
+
 /// Normalise a quaternion; a zero or non-finite one is damaged data, not
 /// something to paper over with identity.
 fn normalize(q: [f32; 4]) -> Result<[f32; 4]> {
@@ -160,7 +174,97 @@ pub fn mat_mul(a: &Mat4, b: &Mat4) -> Mat4 {
     std::array::from_fn(|c| std::array::from_fn(|r| (0..4).map(|k| a[k][r] * b[c][k]).sum()))
 }
 
+/// The Hamilton product `a ⊗ b`, the engine's own rotation composition
+/// (its `a ⊗ b` operation order, docs/engine/anim-sampling.md,
+/// "Evaluators"): components `[x, y, z, w]`, `b`'s rotation applying
+/// first.
+fn hamilton(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let [ax, ay, az, aw] = a;
+    let [bx, by, bz, bw] = b;
+    [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by + ay * bw + az * bx - ax * bz,
+        aw * bz + az * bw + ax * by - ay * bx,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+}
+
 impl Pose {
+    /// Local transforms with `defaults` under the channels the animation
+    /// supplies none for: the sampled value replaces the node's own
+    /// default per channel, everything else stays. `has_*` keeps the
+    /// animation's flags, so a false one means the value shown is the
+    /// node's default. The parents of `defaults` are what
+    /// [`Self::world_matrices`] composes with (the render model's node
+    /// tree, which the graph's nodes index).
+    pub fn merged(&self, defaults: &[NodeDefault]) -> Result<Self> {
+        if self.nodes.len() != defaults.len() {
+            return Err(bad("pose node count differs from the skeleton's"));
+        }
+        let mut out = self.clone();
+        for (n, d) in out.nodes.iter_mut().zip(defaults) {
+            if !n.has_rotation {
+                n.rotation = d.rotation;
+            }
+            if !n.has_translation {
+                n.translation = d.translation;
+            }
+            if !n.has_scale {
+                n.scale = d.scale;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply an overlay's sample over this pose with the engine's
+    /// scaled-add rule (its mode 3, docs/engine/anim-sampling.md,
+    /// "Evaluators"): rotations compose `r ⊗ s'` where `s'` blends the
+    /// overlay quaternion towards the nearer of ±1 by `weight` and scales
+    /// its vector part by it, translations add `weight * s`, scale adds
+    /// `(s - 1) * weight`. Channels the overlay supplies none for are
+    /// left alone; where it does, `has_*` becomes true (the value is no
+    /// longer the node's default alone). `weight` is clamped to 0..1; 0
+    /// changes nothing, 1 is the engine's plain add (its mode 2).
+    pub fn add_overlay(&mut self, overlay: &Self, weight: f32) -> Result<()> {
+        if self.nodes.len() != overlay.nodes.len() {
+            return Err(bad("overlay node count differs from the pose's"));
+        }
+        let w = if weight.is_finite() {
+            weight.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        for (r, s) in self.nodes.iter_mut().zip(&overlay.nodes) {
+            if s.has_rotation {
+                // s' = [s.xyz * w, w * (s.w - c) + c], c = ±1 by s.w's sign.
+                let c = if s.rotation[3].is_sign_negative() {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let sp = [
+                    s.rotation[0] * w,
+                    s.rotation[1] * w,
+                    s.rotation[2] * w,
+                    w * (s.rotation[3] - c) + c,
+                ];
+                r.rotation = normalize(hamilton(r.rotation, sp))?;
+                r.has_rotation = true;
+            }
+            if s.has_translation {
+                for k in 0..3 {
+                    r.translation[k] += w * s.translation[k];
+                }
+                r.has_translation = true;
+            }
+            if s.has_scale {
+                r.scale = ((s.scale - 1.0) * w + 1.0) * r.scale;
+                r.has_scale = true;
+            }
+        }
+        Ok(())
+    }
+
     /// Compose the local transforms up the node tree into world matrices
     /// (`world = parent_world * local`, column-major). `parents` holds each
     /// node's parent index, negative for a root, as in

@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1) and Scripts, read (H1), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), Scripts, read (H1) and Model poses (M1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/anim.rs` and `crates/apps/studio/src/ui/anim.rs` (M1). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `api/anim/tests.rs` and `anim_tests.rs`'s pose suite (M1); each other slice names its own.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -461,8 +461,10 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
   plays from a click on the waveform. A permutation whose compression is
   neither Xbox ADPCM nor a codec stream is refused by name. The mouth
   track, the face preview and the curve's drawing are A2 to A4;
-- models draw in the rest pose only (`native_view` `rest_nodes`):
-  slice M1 poses a model from `tags::anim_sample::AnimationClip::sample`;
+- models posed from their animation graphs: slice M1 (built) samples a
+  clip with `tags::anim_sample::AnimationClip` and draws the posed node
+  matrices in place of `native_view`'s `rest_nodes` (the Animation
+  window, `anim.pose`), so the face preview (A3) has its model;
 - a WMA sound without the executable is refused: `This sound needs the
   game's executable to decode.` The mouth track still shows.
 
@@ -560,7 +562,7 @@ yet; the method is the viewer.
 
 | Editor | Payoff | Stands on | Blocked by |
 |---|---|---|---|
-| **Model poses and animations**: pick an animation, scrub it on the model | high: it is the preview every character, weapon and vehicle edit wants, and the face preview needs it | `tags::anim::AnimationGraph`, `anim_sample` (every retail codec), the native view | nothing; slice M1. Editing animation data is the animation editor of [studio-redesign.md](studio-redesign.md) |
+| **Model poses and animations**: pick an animation, scrub it on the model | high: it is the preview every character, weapon and vehicle edit wants, and the face preview needs it | `tags::anim::AnimationGraph`, `anim_sample` (every retail codec), the native view | the poses are built (slice M1); editing animation data is the animation editor of [studio-redesign.md](studio-redesign.md) |
 | **Sound audition**: play any sound, loop or dialogue line | high for little work | as "Sounds" | nothing; slice A1 |
 | **Strings**: every `unic` string by name and language, searched | medium: the first thing a map author changes | `tags::localization` (read only) | writing: string bytes live in the cache's language tables, outside the metadata, and no writer exists. Slice N1 is the read, `strings.list` ([below](#strings)); the write is named, not sliced |
 | **Effects, particles, lights and flares** with a preview | high, but large | `tags::effects::{effect, particle, movement, contrail, light, lens}`, curves and colours from this page | a preview needs effect drawing in the native view, which is the game renderer's work first |
@@ -604,7 +606,7 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `sound.play` | `{tag, range?, permutation?, from_ms?}` | `{playing, frames, rate, channels, duration_ms, from_ms, output}`; `output` is `headless` when `Audition::headless` is set (tests, the API's own examples), which plays to nothing in real time |
 | `sound.stop` | `{}` | `{stopped}` |
 | `sound.mouth` | `{tag, permutation}`, with `curve?` or `from_sound?: {gain, smoothing}` to write | `{ticks, curve}` (0 to 1 per tick) |
-| `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame, overlay?: {name, weight}}` | names and frame counts; `{png}` of the posed model |
+| `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame?, overlay?: {animation, weight}, model?, size?, out?}` | the animations with types, frame counts and codecs, and the models that use the graph; the posed node transforms (local and world, which channels the animation supplied), and the posed model drawn to a PNG |
 | `recording.list` | none | `{recordings: [{name, ticks, control_version, played_by}]}` |
 | `recording.read` | `{name}` | `{initial, events: [{tick, kind, fields}]}` |
 | `recording.write` | `{name, initial?, events}` | the new `recording.read`; one undo step |
@@ -677,7 +679,7 @@ the first one whose needs are met.
 | A1 | **Sound audition**: decode, the host output, waveform, play and scrub, `sound.read`, `sound.play` | M | X1 | an invented ADPCM sound plays through the headless sink to its sample count; a WMA sound without the executable is refused by name |
 | F1 | **Curve editor, same length**: typed payload accessors, the plot, handles, `function.*` | M | X1 | `function.sample` equals `Function::evaluate` for every type on invented blobs; an edit round-trips through `to_bytes`; types 6 and 8 are read-only |
 | H1 | **Scripts, read**: the Scripts tool, the catalog from the source's executable, source with links, `script.list`, `script.source`, `script.uses` | M | P4 | an invented scenario's scripts list and decompile; a link to an object name selects the placement; without the executable the tool refuses by name |
-| M1 | **Model poses**: `anim.list`, `anim.pose`, an animation picker and scrub on a model in the native view | M | P14 | an invented two-bone model posed at a frame differs from the rest pose where the clip moves it and nowhere else |
+| M1 (built) | **Model poses**: `anim.list`, `anim.pose`, an animation picker and scrub on a model in the native view | M | P14 | an invented two-bone model posed at a frame differs from the rest pose where the clip moves it and nowhere else |
 | S1 | **Shader tab**: slots with `Used by`, bitmap thumbnails in rows and in the picker, the preview on sphere, quad and object, refusals listed, `shader.read`, `shader.set`, `shader.preview` | L | C1, P15 | on an invented material: `shader.set` equals the `tag.set` it stands for; a changed colour changes `shader.preview` pixels; a refused pass is counted and absent |
 | S2 | **Shader animation**: animated properties as curves, the preview clock | S | S1, F1 | a periodic property changes the preview between two clock times; a refused animation kind is named |
 | S4 | **Shader code, read**: listings, WGSL and warnings per pass, `shader.code` | S | S1 | an invented pass lists both programs; a state program shows its refusal |

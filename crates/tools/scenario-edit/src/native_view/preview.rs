@@ -1,7 +1,8 @@
 //! One object, or a render model alone, drawn offscreen through the native
 //! renderer the viewport draws placed objects with ([`NativeObjects`]),
 //! with no level around it: Studio's `model.render`
-//! (docs/editor/agent-api.md, "`model.*`").
+//! (docs/editor/agent-api.md, "`model.*`") and its posed model
+//! (`anim.pose`, the M1 slice of docs/editor/rich-editors.md).
 //!
 //! - [`object`]: an object tag's model at a variant (a collection stands
 //!   for its first entry, as the viewport draws it).
@@ -10,6 +11,10 @@
 //! - [`markers`]: a `mode`'s markers (`mode +0x58`), and [`marker_frame`]
 //!   where one sits in the rest pose, so a weapon can be put in a hand.
 //! - [`render`]: the pieces, each placed by a node matrix, into a picture.
+//! - [`render_posed`]: the pieces with their own node matrices (a sampled
+//!   animation's pose, built by [`super::posed_nodes`]), each piece
+//!   carrying the skeleton it was posed on ([`Piece::skeleton`]) and
+//!   [`posed_bounds`] framing the posed vertices.
 //!
 //! A material whose shader names no base map the renderer decodes is
 //! drawn [`UNTEXTURED`] rather than left out, so a preview shows every
@@ -29,7 +34,9 @@ use tags::StringId;
 use tags::model::RenderModelGeometry;
 use tags::object::{Context, PermutationChoice};
 
-use super::{Clear, Files, Lighting, NativeModel, NativeModels, NativeObjects, invert};
+use super::{
+    Clear, Files, Lighting, NativeModel, NativeModels, NativeObjects, SkeletonNode, invert,
+};
 
 /// The node matrix a piece is placed by (the renderer's), so callers
 /// need no dependency on the renderer crate.
@@ -58,6 +65,9 @@ pub struct Piece {
     /// The permutation drawn per region of the variant, `(region,
     /// permutation)`; empty for a render model alone (each region's first).
     pub picked: Vec<(String, String)>,
+    /// The render model's skeleton, model node order: what
+    /// [`super::posed_nodes`] poses a graph's animation on.
+    pub skeleton: Vec<SkeletonNode>,
 }
 
 impl Piece {
@@ -201,6 +211,19 @@ fn finish<R: Read + Seek>(
         mode,
         untextured,
         picked: Vec::new(),
+        skeleton: geo
+            .nodes
+            .iter()
+            .map(|n| SkeletonNode {
+                parent: n.wire.parent_index,
+                translation: n.wire.translation,
+                rotation: n.wire.orientation,
+                // The mode node stores no default scale (the words at
+                // `+0x28` are its inverse rest frame), so the channel's
+                // default is 1.
+                scale: 1.0,
+            })
+            .collect(),
     })
 }
 
@@ -385,13 +408,7 @@ pub fn render(
     size: [u32; 2],
     background: [f64; 3],
 ) -> wgpu::Texture {
-    let models = NativeModels {
-        models: pieces
-            .iter()
-            .map(|(p, _)| (p.model.object, Arc::new(p.model.clone())))
-            .collect(),
-        errors: Vec::new(),
-    };
+    let models = models_of(pieces.iter().map(|(p, _)| *p));
     let markers: Vec<Marker> = pieces
         .iter()
         .enumerate()
@@ -406,6 +423,54 @@ pub fn render(
         .collect();
     let mut objects = NativeObjects::new(device, queue, &models, Lighting::Flat);
     objects.place(&models, &markers, &[]);
+    draw(device, queue, objects, camera, size, background)
+}
+
+/// A posed model to draw: its piece, the node matrices in place of the
+/// rest pose (as [`super::posed_nodes`] builds them), and the sphere the
+/// posed vertices lie in, for culling.
+pub struct Posed<'a> {
+    pub piece: &'a Piece,
+    pub nodes: &'a [NodeMatrix],
+    pub sphere: ([f32; 3], f32),
+}
+
+/// Draws `posed` models with their own node matrices (a sampled pose in
+/// place of the rest pose), as [`render`] draws pieces placed in theirs:
+/// same camera, background, texture format and copy readability.
+pub fn render_posed(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    posed: &[Posed<'_>],
+    camera: &Camera,
+    size: [u32; 2],
+    background: [f64; 3],
+) -> wgpu::Texture {
+    let models = models_of(posed.iter().map(|p| p.piece));
+    let mut objects = NativeObjects::new(device, queue, &models, Lighting::Flat);
+    objects.place_posed(posed.iter().map(|p| (&p.piece.model.object, p.nodes, p.sphere)));
+    draw(device, queue, objects, camera, size, background)
+}
+
+/// The models of `pieces`, each one once, shared.
+fn models_of<'a>(pieces: impl IntoIterator<Item = &'a Piece>) -> NativeModels {
+    NativeModels {
+        models: pieces
+            .map(|p| (p.model.object, Arc::new(p.model.clone())))
+            .collect(),
+        errors: Vec::new(),
+    }
+}
+
+/// The picture itself: `objects` drawn into a new `size` texture.
+fn draw(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mut objects: NativeObjects,
+    camera: &Camera,
+    size: [u32; 2],
+    background: [f64; 3],
+) -> wgpu::Texture {
     let extent = wgpu::Extent3d {
         width: size[0].max(1),
         height: size[1].max(1),
@@ -458,6 +523,28 @@ pub fn covered(rgba: &[u8], background: [f64; 3]) -> usize {
     rgba.chunks_exact(4)
         .filter(|p| (0..3).any(|k| p[k].abs_diff(bg[k]) > 2))
         .count()
+}
+
+/// The posed model's bounds: every vertex skinned by the posed node
+/// matrices (the vertex shader's arithmetic, on the CPU: `Model::skin`),
+/// for the camera that frames it and the culling sphere. `None` when the
+/// model has no finite vertex position.
+pub fn posed_bounds(piece: &Piece, nodes: &[NodeMatrix]) -> Option<([f32; 3], [f32; 3])> {
+    let model = &piece.model.model;
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    let mut any = false;
+    for v in &model.vertices {
+        let p = model.skin(v, nodes);
+        for k in 0..3 {
+            if p[k].is_finite() {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+                any = true;
+            }
+        }
+    }
+    any.then_some((lo, hi))
 }
 
 #[cfg(test)]

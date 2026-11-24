@@ -633,6 +633,8 @@ pub mod icon {
     pub const SHIELD: &str = "\u{e158}";
     pub const USERS: &str = "\u{e1a4}";
     pub const SOUND: &str = "\u{e1ab}";
+    /// A posed model (the Animation window).
+    pub const RUN: &str = "\u{e566}";
     pub const COG: &str = "\u{e30b}";
     pub const KNIFE: &str = "\u{e4a0}";
     pub const ZAP: &str = "\u{e1b4}";

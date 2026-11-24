@@ -25,6 +25,7 @@ use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod anim;
 mod bitmaps;
 mod checks;
 mod collision;

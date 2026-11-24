@@ -854,7 +854,7 @@ fn open_map(app: &App, name: String, source: EditSource, auto: bool, pogo: bool)
 }
 
 /// `size`: `[w, h]` of 1 to 4096, default 640 by 480.
-fn size(p: &P) -> Result<[u32; 2], RpcError> {
+pub(super) fn size(p: &P) -> Result<[u32; 2], RpcError> {
     let Some(v) = p.get("size") else {
         return Ok([640, 480]);
     };
