@@ -154,7 +154,7 @@ pub fn installed(map: &str) -> Option<Sha256> {
 /// not changed (docs/game/forge-map-variants.md, "How a pick names a map variant").
 pub fn suggest(
     listed: &mut [crate::lobby_mode::VariantEntry],
-    game: &variants::portable::Bundle,
+    game: &::variants::portable::Bundle,
     base: &Sha256,
 ) {
     let ids: Vec<String> = game.suggested_for(base).map(|m| m.variant.clone()).collect();
