@@ -281,27 +281,9 @@ struct HudSwap {
     halo2_levels: Arc<HashSet<String>>,
 }
 
-/// The campaign levels under `<data>/campaigns` that have a Halo 2-assets
-/// map (`<key>/h2/<level>.map`, `h1_variants::campaign_alternate`), by
-/// level name, lower case. When the game's campaign assets are Halo 2's
-/// that map is served, and the Halo 1 map's HUD pairs name other tags.
+/// Levels whose stored Halo 2-assets variant uses different HUD datums.
 pub fn campaign_halo2_levels(data_root: &Path) -> HashSet<String> {
-    let mut out = HashSet::new();
-    let Ok(dirs) = std::fs::read_dir(data_root.join("campaigns")) else {
-        return out;
-    };
-    for d in dirs.flatten() {
-        let Ok(files) = std::fs::read_dir(d.path().join("h2")) else {
-            continue;
-        };
-        for f in files.flatten() {
-            let name = f.file_name().to_string_lossy().to_ascii_lowercase();
-            if let Some(level) = name.strip_suffix(".map") {
-                out.insert(level.to_owned());
-            }
-        }
-    }
-    out
+    crate::campaigns::halo2_maps(data_root).into_keys().collect()
 }
 
 fn locked(s: &std::sync::Mutex<Sensor>) -> std::sync::MutexGuard<'_, Sensor> {

@@ -338,7 +338,7 @@ takes; they go when the store is the default.
   renews the table's modification time), sparing the images the boot
   serves.
 - **Converted levels.** A map a converter wrote (a converted Halo 1
-  map) is kept by `workspace::converted::store_converted`: its tags go
+  map or a Map Pack level) is kept by `workspace::converted::store_converted`. Its tags go
   through `store_map` (a tag the store holds is not written again, a key
   held with other contents is a variant only this level reads), its
   skeleton and extents through `store_skeleton`, and the store must give
@@ -353,7 +353,11 @@ takes; they go when the store is the default.
   a Halo 2 tag silently). The level then assembles as a disc level does
   (`level::assemble`). A re-extraction of the disc under a new extractor
   version empties `<store>/maps/`, markers included, and the converter's
-  unit runs again.
+  unit runs again. The multiplayer list and campaign picker use verified
+  converter markers. Halo 1 sandbox and asset choices select distinct store
+  stems. Campaign manifests, HUD data and pictures live under
+  `<data>/campaigns/halo1/`. Multiplayer list metadata is under
+  `<store>/halo1-mp/`. The VFS serves the selected level from the store.
 - **Levels built whole.** A level of ours (the stage) has no skeleton: its
   image is a `fresh` build from the manifest's closure. A retail level builds that way once its level tags extract
   without loss (W10 of [tag-workspace.md](../editor/tag-workspace.md)).
@@ -687,14 +691,14 @@ them. Tests are headless on invented maps unless marked disc
 | AS7 | **Mods in Studio.** `package.diff`, `asset.fork`, `asset.revert`, **Changed by** in order, the conflict rows in Problems | AS6 | `crates/apps/studio/src/{api/packages.rs, api/assets.rs, app/{mods.rs (new), package_doc.rs, links.rs, problems.rs}, ui/inspector.rs}`, `studio-proto`, [agent-api.md](../editor/agent-api.md) | every method's example; a fork changes one level's `LevelId` and no other's; revert removes the item and its line | a field forked for one map shows there and nowhere else, in the window and through the API |
 | AS8 | **Identity on Live and in films.** `level_id` in the session and the join check with the asset diff (with PK14); `DESC.level_id`; `prepare_map` by `LevelId`; film-named images kept; the cross-platform determinism test | AS4; PK13 for Live | `crates/live/live-proto`, `crates/live/live-hle/src/maps.rs`, `crates/extensions/game/src/theater/metadata.rs`, `crates/live/film/src`, [film-format.md](../game/film-format.md), [live-api.md](../live/live-api.md) | on the fake server a joiner with another asset fails before the map load naming it; a film recorded on an assembled level verifies, and after a builder bump plays from its kept image | two machines of different architectures print the same image hash for one `LevelId` |
 | AS9 | **Mod import.** `package.import` and `h2 live mods import` write tag-level packages through the store, `map-patch` as the fallback | AS6 | `crates/tools/workspace/src/import_map.rs` (new), `crates/apps/cli/src/live_cmd`, `crates/apps/studio/src/api/packages.rs`, [maps.md](../game/maps.md) | an invented patched map imports to a package that assembles to the same tags; a patch touching the scenario's lossy part stays a `map-patch` and says so | two imported mods of one base map load together |
-| AS10 | **Converted and imported levels in the store.** `workspace::converted::store_converted` keeps a converter's map as a level (**built**); the `convert` items call it with their output and `<data>/maps/` derived packages and `<data>/campaigns/` whole maps are removed (**not built**: the Halo 1 and Map Pack converters, the boot's map list and the campaign picker still read the files) | AS4 | `crates/tools/workspace/src/{converted.rs, convert.rs, maps.rs}`, `crates/apps/cli/src/{h1_import.rs, mappack_cmd.rs}`, [multiplayer.md](../halo1/multiplayer.md), [map-pack.md](../game/map-pack.md) | an invented converted level stores only tags the store lacks and assembles to the map the converter wrote | a converted level loads from the store; the note has the disk size before and after |
+| AS10 | **Converted and imported levels in the store.** Halo 1 and Map Pack converters store their levels as conversion units. Halo 1's campaign and multiplayer maps are served from the store. | AS4 | `workspace::converted`, `cli::h1_import`, `cli::mappack_cmd`, [multiplayer.md](../halo1/multiplayer.md), [map-pack.md](../game/map-pack.md) | invented levels round-trip, a store reset invalidates converter output, and the VFS serves the selected sandbox | a converted level loads from the store and the note records disk usage |
 | AS11 | **The renderer on asset hashes.** The image's datum table; loaders keyed by asset hash; a model read from the store by key; the Monitor's catalogue by `(key, asset hash)` | AS4, AS5 | `crates/rewrites/native-render/src/{model_load.rs, models.rs, load.rs}`, `crates/extensions/forge/src/look/census.rs`, `crates/apps/cli/src/forge_looks.rs`, [native-objects.md](../graphics/native-objects.md), [forge-monitor-appearance.md](../game/forge-monitor-appearance.md) | an invented model shared by two levels uploads once across a level change; a model in no loaded level resolves from the store | a campaign body draws on a multiplayer level with no other map file opened |
 | AS12 | **Forge on the store.** A Forge document as a layer; the materialised map and its package removed | AS4 | `crates/tools/forge-build`, `crates/formats/content/src/forge.rs`, `crates/extensions/forge`, [forge-design.md](../game/forge-design.md) | the image for an invented document equals the materialised map's tags | a saved Forge variant loads with no `.map` written |
 | AS13 | **Bundles from the store.** The host data bundle and the device packers (`h2host::layout`) take images and a subset of the store | AS4 | `crates/live/host-data/src/bundle`, `crates/apps/h2host/src/layout.rs`, [dedicated-host.md](../live/dedicated-host.md) | an invented bundle serves every range its coverage names and refuses one it lacks by name | a host plays a match from a bundle built with no disc image mounted |
 | AS14 (later) | **Retail levels built whole.** With W10, a retail level assembles `fresh` and its skeleton is dropped | W10 | as W10 | as W10 | a retail level with no skeleton loads |
 | AS15 (later, **E first**) | **No slot copy.** The guest's slot answered as warm and its reads routed to the store file | AS2; a read of the status and resource-read functions | `crates/extensions/game/src/map_copy.rs` | the kernel cache-slot test with the route on | a level load copies nothing and `<data>/disk/` shrinks |
 
-AS1 to AS4, AS6 and AS7 are built, and AS10's `store_converted`; the disc checks of AS1 to AS4 are the
+AS1 to AS4, AS6, AS7 and AS10 are built. The disc checks of AS1 to AS4 are the
 coordinator's (above). AS4's build reads the level whole and builds at
 first open, and `PackageRewrite` with `<data>/packages/cache/` stays for
 `store-maps` off.

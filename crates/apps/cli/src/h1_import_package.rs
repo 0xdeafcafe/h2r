@@ -140,7 +140,10 @@ impl Converter for Halo1 {
 
     /// What `h2 import halo1` (or the import before packages) converted.
     fn kept(&self, _: &ConvertSpec) -> bool {
-        Stamp::read(&self.data).is_some_and(|s| s.done.values().any(Result::is_ok))
+        let root = boot::store_status::root(&self.data);
+        workspace::converted::levels(&root).iter().any(|mark| {
+            workspace::converted::verified(&root, mark, "halo1").is_some()
+        })
     }
 
     fn units(&self, input: &Input, spec: &ConvertSpec) -> Result<Vec<Unit>, String> {

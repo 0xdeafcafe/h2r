@@ -626,7 +626,7 @@ fn run_configured(
     campaign_cache::configure(
         &mut features, &loaded.runtime, &mut cfg, &campaign_maps, maps.as_deref(),
     )?;
-    let packages = map_override::packages_dir(&opts.data_root);
+    let packages = workspace::converted::halo1_metadata(&store_status::root(&opts.data_root));
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
     // (docs/halo1/campaign-picker.md, "Pictures").
     let cards = campaigns.as_ref().and_then(|s| {
@@ -762,7 +762,7 @@ fn run_configured(
         None => None,
     };
     // More than one campaign (docs/halo1/campaign-picker.md): campaigns
-    // installed under <data>/campaigns get their level lists and the
+    // with a manifest and available levels get their level lists and the
     // picker ahead of Campaign Options. None installed: nothing is
     // hooked and the disc is not read for it.
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
