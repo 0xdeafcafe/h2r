@@ -8,6 +8,7 @@ use runtime::CpuAbi;
 use sim_sound::environment::{ClusterPair, GainCurve};
 
 mod portals;
+mod rays;
 
 const DOC: &str = "docs/engine/sim-rewrite.md";
 const GLOBALS: u32 = 0x004e_6380;
@@ -62,7 +63,27 @@ pub const CLUSTER_DISTANCE: Point = Point::new(
     DOC,
 )
 .with_flags(&[Flag::Optional]);
+pub const SOURCE_ENVIRONMENT: Point = Point::new(
+    "SOUND_SOURCE_ENVIRONMENT",
+    0x221e30,
+    Sig::Fn {
+        args: &[
+            ("source", Loc::Edi),
+            ("weights", Loc::Stack(0)),
+            ("listener", Loc::Stack(1)),
+        ],
+        ret: None,
+        pop: 8,
+    },
+    DOC,
+)
+.with_flags(&[Flag::Optional]);
 pub const BODIES: &[Body] = &[
+    Body {
+        point: &SOURCE_ENVIRONMENT,
+        sites: rays::SITES,
+        run: rays::update,
+    },
     Body {
         point: &CLUSTER_DISTANCE,
         sites: &[AFTER_FALLBACK],

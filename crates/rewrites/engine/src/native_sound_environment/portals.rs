@@ -50,7 +50,7 @@ fn sources(c: &mut CpuAbi, g: &mut Guest, first: bool) -> Result<Next> {
             c.ecx = c.esp.wrapping_add(0xc0);
             frame::push(c, g, c.ecx)?;
             return Ok(Next::Call {
-                target: 0x221e30,
+                target: super::SOURCE_ENVIRONMENT.base,
                 site: AFTER_SOURCE,
             });
         }

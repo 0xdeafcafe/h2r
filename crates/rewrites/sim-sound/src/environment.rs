@@ -145,3 +145,51 @@ mod distance_tests {
         }
     }
 }
+
+/// Fractions along the listener-to-source ray and the reverse ray where
+/// solid geometry first intercepts each one.
+#[derive(Clone, Copy)]
+pub struct ObstructionSpan {
+    pub forward: u32,
+    pub reverse: u32,
+}
+
+impl ObstructionSpan {
+    /// Thickness divided by segment length. Degenerate or unordered hits
+    /// leave the cached contact points alone.
+    pub fn depth(self, mxcsr: &mut u32, unit: u32) -> (u32, u32, bool) {
+        let clear = simd::subss(mxcsr, u128::from(unit), self.reverse).expect("masked SSE");
+        let raw = simd::subss(mxcsr, clear, self.forward).expect("masked SSE") as u32;
+        let above = |flags: u32| flags & 0x41 == 0;
+        let compare = |m: &mut u32, a, b| simd::comiss(m, a, b).expect("masked SSE");
+        if above(compare(mxcsr, 0, raw)) {
+            (raw, 0, false)
+        } else if above(compare(mxcsr, raw, unit)) {
+            (raw, unit, true)
+        } else {
+            (raw, raw, above(compare(mxcsr, raw, 0)))
+        }
+    }
+}
+
+#[cfg(test)]
+mod ray_tests {
+    use super::*;
+
+    #[test]
+    fn valid_overlapping_and_reversed_ray_contacts() {
+        for (a, b, d, write) in [
+            (0.25f32, 0.5f32, 0.25f32, true),
+            (0.375, 0.625, 0., false),
+            (0.75, 0.75, 0., false),
+            (-0.75, 0., 1., true),
+        ] {
+            let span = ObstructionSpan {
+                forward: a.to_bits(),
+                reverse: b.to_bits(),
+            };
+            let (_, depth, points) = span.depth(&mut 0x1f80, 1.0f32.to_bits());
+            assert_eq!((depth, points), (d.to_bits(), write));
+        }
+    }
+}
