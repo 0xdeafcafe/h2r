@@ -49,6 +49,7 @@ The commands `h2-tools` runs (`tools::TOOLS`):
 |---|---|
 | `rules check\|build\|run\|sim\|caps\|builtin\|settings\|lsp\|editors` | `rules_cmd.rs`, `rules_lsp.rs`, `rules_editors.rs` |
 | `variants port\|from-script` | `variants_cmd.rs` |
+| `package check\|build` | `package_cmd.rs` (over `crates/tools/workspace`; [studio-redesign.md](../editor/studio-redesign.md), "Packages") |
 | `firefight kit` | `firefight_cmd.rs` |
 | `forge build\|check` | `forge_cmd.rs` |
 | `maps`, `tags`, `tag` | `maps.rs`, `tag_repo_cmd.rs` (`tags extract\|build`) |

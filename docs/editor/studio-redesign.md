@@ -1,7 +1,7 @@
 # Studio, redesigned: one tag tree, packages, and the animation and sound editors
 
 Status: Design. Nothing on this page is built except what "What exists" names and the slices marked built; the slices at the end are the order to build it in.
-Code: `crates/apps/studio/src` (the shell, `ui.rs`, `ui/layout.rs`, `app.rs`), `crates/apps/studio-proto/src` (the API's wire), `crates/formats/content/src/package/` (manifest, id, set), `crates/tools/workspace` (new: builders and the build), `crates/apps/boot/src/packages.rs` (new: the game's side). Tests: each slice names its own.
+Code: `crates/apps/studio/src` (the shell, `ui.rs`, `ui/layout.rs`, `app.rs`), `crates/apps/studio-proto/src` (the API's wire), `crates/formats/content/src/package/` (manifest, id, set), `crates/tools/workspace` (builders and the build), `crates/apps/boot/src/packages.rs` (new: the game's side). Tests: each slice names its own.
 Switch: none.
 
 Studio is one window over one tree: every tag of every map on the
@@ -40,7 +40,8 @@ before its slice starts.
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, the load order, the content set | built, nothing reads it yet | `crates/formats/content/src/package/` |
-| Layers, projects, kits as build steps, edit files | design | [tag-workspace.md](tag-workspace.md) |
+| The package build: the builder registry (`tag`, `edits`, `bitmap`), `build` of ordered packages on a `TagSet`, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2), nothing in the game reads it yet | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
+| Projects, the other kits as build steps | design | [tag-workspace.md](tag-workspace.md) |
 
 Each piece of new content reaches the game by a path of its own
 (**Code**, `crates/apps/boot/src/lib.rs`, the `vfs::Chain` of rewrites and
@@ -388,6 +389,62 @@ the retail list, as it does for maps ([maps.md](../game/maps.md) section
   not match stops the build with the line.
 - **The content set** of a game is the ordered list of the `PackageId`s
   that have a `sim` item. Its hash goes where `map_id` goes (below).
+
+### The build
+
+`workspace::build(set, packages, target, unpin)` applies the loaded
+packages, in order, to a map's `map::build::TagSet` for one `Target` (the
+map's name and class). An item runs when its `maps` takes the target;
+its builder comes from the closed registry (`workspace::registry`: `tag`,
+`edits`, `bitmap`; the other kinds stop the build with "no builder"). The
+base is what is built onto: the result differs from it only in the tags
+the items add or change, and a tag a decomposed map keeps pinned is laid
+out anew (through `Unpin`, `MapUnpin` for a map file) only when an item
+changes it. After an error the set is partly changed and is dropped.
+
+- **`tag`** (`<path>.<group>.yaml`, the group the second extension):
+  `like:` a tag of the same group in the map, else the group's defaults
+  (`tags::defs::default_record`); `block:` lines (`{path, op: add|remove,
+  like|index}`), applied first; `fields:` a mapping from field path
+  (`a.b[2].c`) to value. A tag reference is `<group>:<path>` and names a
+  tag the base or an earlier item has.
+- **`edits`**: a YAML list of `{tag: <group>:<path>, was, block, set}`;
+  `set` is a list of `{path, value}`. Values follow the field's type:
+  numbers, enum and flag names or numbers, text for string IDs, lists for
+  vectors, `<group>:<path>` for references, `null` to clear one. A block
+  is changed with `block` lines.
+- **`bitmap`**: a PNG (any depth or colour type) as one linear `ARGB8888`
+  `bitm` with no mips, through `tags::rgba_bitmap::install`.
+
+`was` is the SHA-256 of the tag as the build first found it
+(`workspace::tag_hash`: group, bytes and fixups, references by name, raw
+resources by their bytes). A tag added by an item is hashed when it is
+added. The error for a stale `was` gives both hashes and the line of the
+entry.
+
+A tag path two items add, or one an item adds that the base has, stops
+the build and names both items. Two packages that set the same field
+leave the later one's value and an entry in `Report::overrides`.
+
+`workspace::cache_key(base, packages, target)` is the SHA-256 of the
+base file's hash, the map's lowercased name and class, the builders'
+version (`BUILDERS_VERSION`, bumped when a builder's output changes) and
+the `PackageId`s of the packages with an item for the target, in order.
+
+`Layered` is a `TagSource` over sources in order, first hit wins; a key
+held by several is listed once.
+
+`h2 package check <dir>...` reads package folders (or folders of them),
+orders them as the game would (`content::package::Set`) and reports, one
+line each: a manifest that does not read, a missing, stale or unlisted
+`package.lock`, a cache map, tag bundle, disc file, model weights file or
+dataset folder in the folder, an item with no builder, a missing or
+oversize source (`MAX_FILE_BYTES`), a source its builder refuses (with its
+line), and two packages that add the same tag. `h2 package build <dir>...
+--base <map> -o <out.map> [--map NAME] [--scope CLASS] [--no-lock]` runs
+the same checks, applies the packages to the base map and writes the
+result and each package's `package.lock`, then prints what was added,
+changed and overridden, and the cache key.
 
 ### How the game consumes packages
 
@@ -789,7 +846,7 @@ Rows are in build order.
 | SH1 | **Document tabs and editors by kind** (built: tabs, own undo, editor by group, `shell.*`; `ToolKind` still stands): `ToolKind` goes; a document id per open tag; the editor from `app::kinds::KINDS`; panels that follow the front document; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close`; one layout | M | nothing | each kind's editor draws at 1000 by 420 with no stray child window (`every_panel_scrolls_as_a_whole_on_a_short_window`); two documents have two undo stacks; the Timeline shows for an invented sound and not for an invented weapon; the window's clicks and `shell.*` leave the same state |
 | W3 | **First start and the tree in Studio** (tag-workspace; it needs W1 only here) | M | nothing | as there |
 | PK1 | **Manifest and set** (built): `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
-| PK2 | **Builders and the build**: `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
+| PK2 | **Builders and the build** (built): `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
 | SH2 | **The browser**: the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
 | PK3 | **The game's side**: `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
 | PK11 | **HUDs as data**: the `hud` builder, HUD kit YAML for the superbounce and Firefight HUDs; `hud-kit-core/src/huds/*.rs` deleted | M | PK3 | each YAML compiles to the records its Rust definition compiled to (`hud-kit-core/src/tests.rs`' fixtures) |

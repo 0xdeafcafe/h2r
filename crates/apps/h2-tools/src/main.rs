@@ -18,6 +18,7 @@ mod lights;
 mod map_testbuild;
 mod maps;
 mod object;
+mod package_cmd;
 mod rules_cmd;
 mod rules_editors;
 mod rules_lsp;
@@ -57,6 +58,9 @@ sits beside h2 (docs/runtime/cli-tools.md).
   testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
                           placements (docs/runtime/agent-api.md, phase 5)
   forge build|check <doc.h2forge> [--disc <iso>]  materialise or verify a local Forge map
+  package check <dir>...  what is wrong with package folders, before any map
+  package build <dir>... --base <map> -o <out.map>  apply packages to a map
+                          (docs/editor/studio-redesign.md, Packages)
   collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
   superbounce scan <map>  bounce strips and forced-crouch spots in a map's
@@ -104,6 +108,7 @@ fn main() -> Result<()> {
         "variants" => variants_cmd::run(rest),
         "firefight" => firefight_cmd::run(rest),
         "forge" => forge_cmd::run(rest),
+        "package" => package_cmd::run(rest),
         "map" => map_testbuild::run(rest),
         "testmap" => testmap_cmd::run(rest),
         "tags" if tag_repo_cmd::handles(&rest) => tag_repo_cmd::run(rest),
