@@ -36,7 +36,11 @@ mod tests {
 
     #[test]
     fn relative_selection_sign_extends_each_field() {
-        let choice = Selection { range: -3, permutation: 5, chunk: -8 };
+        let choice = Selection {
+            range: -3,
+            permutation: 5,
+            chunk: -8,
+        };
         assert_eq!(choice.range_index(10), 7);
         assert_eq!(choice.permutation_index(-8), -3);
         assert_eq!(choice.chunk_index(2), -6);
