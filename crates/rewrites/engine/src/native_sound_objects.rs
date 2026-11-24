@@ -24,13 +24,22 @@ const LOOP_PLAYER: u32 = 0x21a250;
 const FIND_RECORD: u32 = 0x18d1c0;
 const FREE_RECORD: u32 = 0x16ba40;
 
+// The position is in ESI. The comparison radius arrives in XMM3.
+const LISTENER_IN_RANGE: Point = Point::new("SOUND_OBJECT_LISTENER_IN_RANGE", CHECK_POSITION,
+    Sig::Fn { args: &[("position", Loc::Esi)], ret: Some(Loc::Al), pop: 0 },
+    "docs/engine/sim-rewrite.md").with_flags(&[Flag::Optional]);
+const SCENARIO_FADE: Point = Point::new("SOUND_OBJECT_SCENARIO_FADE", 0x18d6e0,
+    Sig::Fn { args: &[], ret: Some(Loc::Xmm0), pop: 0 },
+    "docs/engine/sim-rewrite.md").with_flags(&[Flag::Optional]);
+
 pub const BODIES: &[Body] = &[Body {
     point: &OBJECT_SOUND_STEP,
     sites: &[0x18a82b, 0x18a83f, 0x18a90f, 0x18a976, 0x18aa0f, 0x18aa40,
         0x18aa4d, 0x18aa7b, 0x18aab3, 0x18aac0, 0x18aac7, 0x18aae7, 0x18aaf5,
         0x18ab09, 0x18ab50],
     run: step,
-}];
+}, Body { point: &LISTENER_IN_RANGE, sites: &[], run: listener_in_range },
+   Body { point: &SCENARIO_FADE, sites: &[], run: scenario_fade }];
 
 fn at(base: u32, off: u32) -> u32 { base.wrapping_add(off) }
 fn call(target: u32, site: u32) -> Result<Next> { Ok(Next::Call { target, site }) }
@@ -350,4 +359,63 @@ fn step(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
             _ => unreachable!("unregistered object sound continuation"),
         };
     }
+}
+
+/// Find the first mapped listener inside the squared source radius. The last
+/// comparison leaves its XMM registers live for the resumed source update.
+fn listener_in_range(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
+    use sse::Ss;
+    let (c, g) = (&mut *cx.cpu, &mut *cx.g);
+    c.ecx = at(g.u32(crate::points::SOUND_GLOBALS.base)?, 0xc0);
+    c.eax = byte(c.eax, 0);
+    c.edx = 0;
+    sse::ss_reg(c, Ss::Mul, 3, 3);
+    frame::push(c, g, c.ebx)?;
+    loop {
+        let active = g.u8(c.ecx.wrapping_sub(0x32))?;
+        c.ebx = byte(c.ebx, active);
+        if active != 0 {
+            for axis in 0..3 {
+                sse::load(c, axis, g.u32(at(c.ecx.wrapping_sub(8), axis as u32 * 4))?);
+                sse::ss(c, Ss::Sub, axis, g.u32(at(c.esi, axis as u32 * 4))?);
+            }
+            sse::movaps(c, 4, 0);
+            sse::ss_reg(c, Ss::Mul, 4, 0);
+            for axis in [1, 2] {
+                sse::movaps(c, 0, axis);
+                sse::ss_reg(c, Ss::Mul, 0, axis);
+                sse::ss_reg(c, Ss::Add, 4, 0);
+            }
+            sse::comiss(c, sse::lane0(c, 3), sse::lane0(c, 4));
+            if !sse::below(c) {
+                c.eax = byte(c.eax, 1);
+                break;
+            }
+        }
+        c.edx += 1;
+        c.ecx = at(c.ecx, 0x48);
+        arithmetic(c, c.edx, 4, true);
+        if c.edx == 4 { break; }
+    }
+    c.ebx = frame::pop(c, g)?;
+    Ok(Next::Ret { pop: 0 })
+}
+
+fn scenario_fade(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
+    let (c, g) = (&mut *cx.cpu, &mut *cx.g);
+    c.eax = g.u32(0x4e034c)?;
+    c.ecx = g.u32(at(c.eax, 0xc0))?;
+    sse::load(c, 0, g.u32(0x45dc10)?);
+    let entry = if c.ecx == 0 { 0 } else { g.u32(at(c.eax, 0xc4))? };
+    c.eax = g.u32(at(entry, 0x14))?;
+    arithmetic(c, c.eax, u32::MAX, true);
+    if c.eax != u32::MAX {
+        c.ecx = g.u32(TAGS)?;
+        c.eax = (c.eax & 0xffff) << 4;
+        // The last integer instruction affecting flags is SHL EAX,4.
+        crate::sim_objects::alu::shl(c, c.eax >> 4, 4, 32);
+        c.edx = g.u32(at(c.ecx, c.eax + 8))?;
+        sse::load(c, 0, g.u32(at(c.edx, 0x54))?);
+    }
+    Ok(Next::Ret { pop: 0 })
 }
