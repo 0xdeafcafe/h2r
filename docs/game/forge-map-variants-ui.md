@@ -272,7 +272,7 @@ act on the variant store (`forge::files::variants`).
 | Name | the game's keyboard (`Effect::Keyboard`) | Save as; Rename; Save on a variant with no name | 16 characters (the title NAME MAP VARIANT is not set: the keyboard's open call takes none yet) |
 | Map variant picker | `kit.picker.map-variant` | the lobby's Map Variant... | a picker: Original, then this map's saved variants by name; the description block has the author and the counts by kind of what a variant adds (`forge_screens::variants::detail`), or the sentence of one that cannot be used, which A does not choose (`Pick::blocked`) |
 | Map variants | `forge.variants` | **Map variants...** on Forge options | a dialog (`forge_screens::variants::list_sheet`) on the large dialog, so each row's line shows beside it: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) in the value column, or `Unusable` and its sentence as the row's line |
-| A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top (`variant_sheet`): **Load**, **Rename**, **Duplicate** and **Delete**, each only where it can act |
+| A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top (`variant_sheet`): **Load**, **Rename**, **Duplicate** and **Delete**, each only where it can act. A row that is only a fact (the page's "No map variants", the open variant's "Open now") takes no A: while it is focused the legend is Back alone (`ForgeScreen::spec`, `prompts`) |
 | Questions | `forge.question` | below | Yes and No, No focused |
 
 - **Save** writes the open variant under its name

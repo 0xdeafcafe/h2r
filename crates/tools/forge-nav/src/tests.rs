@@ -144,7 +144,10 @@ fn a_block_out_ramp_gains_the_sectors_and_link_that_make_the_ledge_reachable() {
         .nav
         .corridor(slope, ledge)
         .expect("the slope leads to the ledge");
-    assert!(corridor.len() >= 2);
+    // A corridor is the edges taken (`NavMesh::corridor`), so one edge is
+    // the slope's link onto the ledge; none would mean they are one sector.
+    assert_ne!(slope, ledge);
+    assert!(!corridor.is_empty());
 }
 
 #[test]
