@@ -87,6 +87,8 @@ pub mod method {
     pub const ASSET_LIST: &str = "asset.list";
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
+    // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
+    pub const PROBLEMS_LIST: &str = "problems.list";
     // The tag workspace (docs/editor/tag-workspace.md, "Interfaces";
     // api/workspace.rs).
     pub const WORKSPACE_STATUS: &str = "workspace.status";

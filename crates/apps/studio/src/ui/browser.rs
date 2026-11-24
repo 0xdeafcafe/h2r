@@ -158,6 +158,20 @@ fn open(actions: &mut Vec<Action>, asset: &str, map: Option<String>) {
     });
 }
 
+impl BrowserUi {
+    /// Show a package or one of its items, as a Problems row opens it.
+    pub fn reveal(&mut self, asset: &str) {
+        let package = asset
+            .strip_prefix("package:")
+            .or_else(|| asset.strip_prefix("item:").and_then(|r| r.rsplit_once(':').map(|(p, _)| p)));
+        if let Some(p) = package {
+            self.root = Root::Packages;
+            self.package = Some(p.to_owned());
+            self.selected = Some(asset.to_owned());
+        }
+    }
+}
+
 /// Draw the panel.
 pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
     st.shown.clear();

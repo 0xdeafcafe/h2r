@@ -35,6 +35,7 @@ pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
 pub mod assets;
+pub mod problems;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
@@ -289,6 +290,11 @@ pub enum Action {
     /// Copy a browser row's tag into a local package, as `asset.copy`
     /// does (`app::assets`).
     CopyAsset { asset: String, package: String },
+    /// Read the Problems list again: every source, or one of
+    /// [`problems::SOURCES`] (`app::problems`).
+    RefreshProblems(Option<String>),
+    /// Open the document of row `.0` of the Problems list (`app::problems`).
+    OpenProblem(usize),
 
     // Document tabs (`shell`).
     /// Open a document as a tab and bring it to the front: a tag of the
@@ -593,6 +599,8 @@ pub struct App {
     pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The Problems list as last read (`app::problems`).
+    pub problems: problems::Problems,
     /// The fan-out of every write to the Preview, the own game and an
     /// attached game (docs/editor/live-editors.md).
     pub live: live::Fanout,
@@ -651,6 +659,7 @@ impl App {
             loaded: None,
             saved_path: None,
             tool: ToolKind::Scenario,
+            problems: Default::default(),
             fly_speed: crate::camera::DEFAULT_SPEED,
             session: Session::new(),
             pending: None,
@@ -1097,6 +1106,8 @@ impl App {
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
             Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
+            Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),
+            Action::OpenProblem(index) => self.open_problem(index),
             Action::OpenDoc(doc) => self.open_doc(doc),
             Action::FocusDoc(doc) => self.focus_doc(doc),
             Action::CloseDoc(doc) => self.close_doc(doc),
@@ -2011,5 +2022,7 @@ pub(crate) mod map_cards_tests;
 mod map_pack_tests;
 #[cfg(test)]
 pub(crate) mod shell_tests;
+#[cfg(test)]
+mod problems_tests;
 #[cfg(test)]
 mod tests;

@@ -15,6 +15,7 @@ mod outliner;
 mod palette;
 mod play;
 mod playlists;
+pub mod problems;
 mod sound;
 mod anim;
 mod announcer;
@@ -101,6 +102,8 @@ pub struct Studio {
     pub scripts: scripts::ScriptsUi,
     /// The browser panel's state.
     pub browser: browser::BrowserUi,
+    /// The Problems panel's state.
+    pub problems: problems::ProblemsUi,
     /// The map grid's pictures.
     pub map_list: map_list::MapListUi,
     /// The Sound window over the Tags tool's selected `snd!`.
@@ -145,6 +148,7 @@ impl Studio {
             tags: tags::TagsUi::default(),
             scripts: scripts::ScriptsUi::default(),
             browser: browser::BrowserUi::default(),
+            problems: problems::ProblemsUi::default(),
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::default(),
             anim: anim::AnimUi::default(),
@@ -247,6 +251,7 @@ impl Studio {
         self.previous_map = app.loaded_map().or_else(|| app.loaded_halo1()).map(str::to_owned);
         self.play.pending_window(ui, app, &self.keys.pending_edits);
         self.log_window(ui, app);
+        self.problems_window(ui, app, &mut actions);
         if bar::is_map(app.tool) {
             ui.window(&self.keys.bytes).build(|| {
                 tags::hex(ui, app, &self.tags, &self.fonts, gpu, &mut self.map_list, &mut actions);
@@ -1063,6 +1068,22 @@ impl Studio {
                 }
             });
         });
+    }
+
+    /// The Problems panel (`ui/problems.rs`). A row that opens a package
+    /// shows it in the browser.
+    fn problems_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+        if let Some(asset) = app.problems.reveal.take() {
+            self.browser.reveal(&asset);
+            ui.set_window_focus(Some("###browser"));
+        }
+        let mut st = std::mem::take(&mut self.problems);
+        let focus = st.focus > 0;
+        st.focus = st.focus.saturating_sub(1);
+        ui.window(&self.keys.problems).focused(focus).build(|| {
+            problems::draw(ui, app, &mut st, actions);
+        });
+        self.problems = st;
     }
 
     fn status_bar(&mut self, ui: &Ui, app: &App) {

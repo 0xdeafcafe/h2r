@@ -1979,6 +1979,68 @@ mod tests {
         assert_eq!(app.tool, crate::ToolKind::Scenario);
     }
 
+    /// The Problems panel lists the rows it was given, and a double-click
+    /// on a row opens what it is about: the tool of a HUD finding, and the
+    /// package of a package finding in the browser. Skipped without a wgpu
+    /// adapter.
+    #[test]
+    fn the_problems_panel_lists_rows_and_a_double_click_opens_them() {
+        use crate::api::checks::Severity;
+        use crate::app::problems::{Problem, Problems, SOURCES};
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else { return };
+        let t = crate::app::map_cards_tests::Temp::new("problems-panel");
+        let data = t.0.join("data");
+        browser_tree(&data);
+        let mut app = App::new();
+        app.set_data_root(data);
+        let row = |source: &'static str, message: &str| Problem {
+            source,
+            area: source.to_owned(),
+            code: format!("{source}.invented"),
+            severity: Severity::Error,
+            message: message.to_owned(),
+            target: String::new(),
+            path: None,
+            asset: None,
+            tool: None,
+            field: None,
+        };
+        let hud = Problem {
+            tool: Some(crate::ToolKind::Hud),
+            ..row("hud", "a HUD finding")
+        };
+        let package = Problem {
+            asset: Some("item:pogo:0".into()),
+            ..row("package", "a package finding")
+        };
+        app.problems.merge(
+            Problems {
+                rows: vec![package, hud],
+                ..Default::default()
+            },
+            &SOURCES,
+        );
+        h.studio.problems.focus = 4;
+        h.frames(&mut app, 6).unwrap();
+        assert_eq!(h.studio.problems.shown, [0, 1]);
+        // The list is worst first, then by source: the HUD's row is first.
+        h.step(&mut app, &Step::Click("##problem-0".into(), Button::Double))
+            .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.tool, crate::ToolKind::Hud);
+        h.studio.problems.focus = 4;
+        h.frames(&mut app, 4).unwrap();
+        h.step(&mut app, &Step::Click("##problem-1".into(), Button::Double))
+            .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert!(
+            h.studio.browser.shown.iter().any(|a| a.starts_with("item:pogo:")),
+            "{:?}",
+            h.studio.browser.shown
+        );
+    }
+
     /// Copy into package, from the browser's context menu, is
     /// [`Action::CopyAsset`]: the same call as `asset.copy`, a `tag` item
     /// that holds none of the source's bytes.
