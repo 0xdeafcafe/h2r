@@ -62,7 +62,13 @@ fn start(src: &str, index: TagIndex) -> (FakeGuest, Arc<Shared>, String) {
 }
 
 fn tick(s: &Arc<Shared>, m: &mut FakeGuest) {
-    m.put_u32(GAME_TIME + 8, TICK + 1);
+    tick_at(s, m, TICK + 1);
+}
+
+/// A tick at game time `at`: the runtime runs a tick once, so a second
+/// tick is a later time.
+fn tick_at(s: &Arc<Shared>, m: &mut FakeGuest, at: u32) {
+    m.put_u32(GAME_TIME + 8, at);
     s.lock().pre_tick(m);
     s.lock().post_tick(m, &[]);
 }
@@ -81,7 +87,7 @@ fn a_script_reads_a_tags_fields_from_the_maps_tag_in_guest_memory() {
     // The tag is replaced in the guest: the read follows it, as every
     // machine that loads the map does.
     m.put_f32(DATA + 4, 4.0);
-    tick(&s, &mut m);
+    tick_at(&s, &mut m, TICK + 2);
     assert_eq!(global(&s, "radius"), 4 * fixed::ONE);
 }
 
@@ -151,12 +157,15 @@ fn a_film_skips_the_tag_check() {
 
 #[test]
 fn a_swapped_in_script_is_held_to_the_maps_tags() {
-    let (_, s, line) = start(POINTS, rock());
+    // The running script has READS' slots, so a swap that fails on the
+    // tags fails for that and not for a changed state shape.
+    let (_, s, line) = start(READS, rock());
     assert!(s.lock().state().running, "{line}");
     let missing = compile(&READS.replace("props/rock", "props/gone"));
     let why = s.lock().swap(missing).unwrap_err();
     assert!(why.contains("the map does not have what the script needs"), "{why}");
     assert!(why.contains("props/gone"), "{why}");
-    // One the map satisfies swaps in.
-    s.lock().swap(compile(READS)).unwrap();
+    // One the map satisfies, of the same shape, swaps in.
+    let same = READS.replace("message = tag_int(\"objects/props/rock\", \"object.hud_message_index\")", "message = 7");
+    s.lock().swap(compile(&same)).unwrap();
 }
