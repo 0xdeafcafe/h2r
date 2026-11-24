@@ -264,7 +264,7 @@ one gives its row back to the kind.
 
 GAME MENU keeps its five Forge rows
 ([forge-firefight-ui.md](forge-firefight-ui.md), "The screens"); they
-act on the variant store (`forge::files`).
+act on the variant store (`forge::files::variants`).
 
 | Screen | Doc | Opened by | Is |
 |---|---|---|---|

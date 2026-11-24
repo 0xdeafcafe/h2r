@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M10 and D2 to D4 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); everything else named here as new is not.
+Status: Design, slices M1 to M10, D2 to D4 and V1 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); and the variant store, `forge::files::variants` (V1); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -497,9 +497,21 @@ A map variant is a Forge document, in the form a game is played from.
   the same directory holds the ones fetched from Live, as the
   game-variant store keeps its Live copies
   (`crates/extensions/game/src/game_variants/store.rs`).
-  `forge::files` owns the store: `list(map)`, `save`, `load`,
-  `rename`, `duplicate`, `delete`. Files are user output and stay out
-  of Git checkouts.
+  `forge::files::variants` owns the store (`crates/extensions/forge/src/files.rs`):
+  `list(data, map, installed)`, `save(data, doc, replace)`,
+  `load(data, map, file, installed)`, `rename`, `duplicate`, `delete`,
+  where `installed` is the hash of this machine's map of that name, or
+  `None`. A file is named by its stem. `save` writes the play form and
+  refuses a name another variant of the map has, compared without case
+  (`variant_name_taken`), unless `replace` is set; a rename or a
+  duplicate never replaces. Two names that make one stem get `-2`. A
+  rename or a duplicate drops `expect`, since the title is in the id.
+  `list` gives every file, the Live copies after the saved ones, each
+  with the `Problem` that bars it and its sentence; `load` refuses with
+  the same one. Rename, duplicate and delete act on saved files, and on
+  one that has a problem. Files are user output and stay out of Git
+  checkouts. The `.h2forge` store of Forge maps is the same module's
+  other half.
 - **No game bytes.** The document rule holds unchanged: typed values an
   author set, tag keys, digests. A print and a `was` are digests. An
   own entry's position is never written unless the author moved it,
@@ -631,7 +643,7 @@ Every machine builds the map from its own disc; no built byte travels
   `Tool::{aimed_thing, held_thing, game, show}`, `Show`, `in_game`,
   `MARK_RADIUS` and `Command::{MoveThing, Remove}`.
   `forge::props` is the table of properties by name: the kinds
-  each is on, how it reads a thing and the op it writes. `forge::files`
+  each is on, how it reads a thing and the op it writes. `forge::files::variants`
   is the variant store.
 - **Agent API** (game), in [agent-api.md](../runtime/agent-api.md),
   "Local Forge session". `forge.things {kind?, changed?}` (read) lists
@@ -672,6 +684,7 @@ map loads. None is answered by loading the original map.
 | `variant_builder` | `builder` differs from this build's | "<name> was made with another version of Forge." with both versions in the log |
 | `variant_format` | `format` is one this build does not read | the same sentence |
 | `variant_print` | an entry's print differs | "<name> does not match this map (<block> <index>)." |
+| `variant_unreadable` | the file does not parse, or is in another map's directory | "<name> cannot be read." |
 | `variant_tier` | a file offered as a variant holds more than one may | "<name> is a Forge map, not a map variant." |
 | `variant_expect` | the built map's id is not `expect.map_id` (`forge_expect_map_id`) | "<name> did not build to the map its author saved." |
 | `variant_missing` | the document is on neither this machine nor Live, or is hidden or blocked | "<name> is not available." |
@@ -718,7 +731,7 @@ are under `crates/` unless they start with `docs/`, `assets/` or `web/`.
 | **D3** | Rows for D1's fields in `forge::props`: Game types, Place at start | `extensions/forge/src/{props.rs, props_tests.rs}` | the table gains the rows; a set change is one op a changed slot | tests pass |
 | **D4** | `EntryOp::Property` and the `team` property | `formats/forge-doc/src/{entry.rs, validate.rs}`, `tests/entry.rs`, `extensions/forge/src/props.rs` | golden vector; a property on a kind that has none is refused; `forge_doc::labelled` reports the team | tests pass |
 | **D5** | Spare clips and weight, each after its trace: the weapon reserve's field, the spawn chooser's rule | `docs/game/notes/forge-probes.md`, then `extensions/agent/src/forge/base.rs`, `extensions/forge/src/props.rs` | a differential test of the write on the fake game | the row appears; until then it is absent |
-| **V1** | The variant store: per-map directories, `.h2mapvariant`, list, save, load, rename, duplicate, delete, the named errors | `extensions/forge/src/{files.rs, lib.rs}`, `extensions/forge/src/file_tests.rs` (new) | in a temporary directory: a save reads back to the same id; a name taken is refused without case; a file of the map tier is `variant_tier`; a base of another hash lists with `variant_base_hash` | tests pass |
+| **V1** (built) | The variant store: per-map directories, `.h2mapvariant`, list, save, load, rename, duplicate, delete, the named errors | `extensions/forge/src/{files.rs, lib.rs}`, `extensions/forge/src/file_tests.rs` (new) | in a temporary directory: a save reads back to the same id; a name taken is refused without case; a file of the map tier is `variant_tier`; a base of another hash lists with `variant_base_hash` | tests pass |
 | **V2** | The lobby's pick and the build before Start: `lobby_start::map_variant`, the checks, the package selection | `extensions/game/src/{map_variant.rs (new), lobby_start.rs, lobby_status.rs}` | over a fake library: a pick builds once and reuses the receipt; each refusal of the table gives its sentence and holds the start state; a map change clears the pick | tests pass |
 | **V3** | `MapGate` for a variant: the document by id, the checks, the build callback, the member's sentence | `live/live-hle/src/maps.rs`, its tests | a joiner without the base is refused before load; a hidden document is `variant_missing`; a ranked session takes only a pinned id | tests pass |
 | **V4** | Live: the projection and the two routes, the unlisted upload, the 1 MiB cap, in the local server | `live/live-proto/src/map_variants.rs` (new), `live/live-server/src/map_variants.rs` (new), `live/live-server/src/content.rs`, `docs/live/live-api.md` | a document of the map tier is not listed; an oversize one is refused; the list is by base hash, newest first | tests pass |
