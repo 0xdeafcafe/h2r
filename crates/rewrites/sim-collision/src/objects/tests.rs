@@ -212,7 +212,9 @@ fn guest_marks_and_the_topology_are_read_only_when_needed() {
         ..query()
     };
     let v = object_visit(&w.img, &q, || panic!("no flood")).unwrap();
-    assert_eq!(v.handles, [0x7777_0007]);
+    // Cluster 0 alone: its object 3 is already marked, and the other
+    // object sits in cluster 1, which no flood reaches.
+    assert!(v.handles.is_empty());
 }
 
 #[test]
