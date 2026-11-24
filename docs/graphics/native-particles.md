@@ -32,8 +32,11 @@ Code evidence from the owner's executable, inspected with `h2 disasm`:
 - The inline corner payload is eight words for four vertices. The
   stage admits only a *live declaration proven by the adapter* to be v0
   SHORT4, no other arrays. It expands (0,0), (1,0), (1,1), (0,1), z/w both
-  zero. A different declaration refuses; the payload alone is not proof
-  of SHORT4. Quad triangulation uses the D3D diagonal (0,1,2), (0,2,3).
+  zero. Quad triangulation uses the D3D diagonal (0,1,2), (0,2,3).
+  A different declaration or inherited register value leaves direct issue
+  to the guest. At publication the scoped admission compares the complete
+  corner payload and submits it through the resolved program and vertex
+  layout.
 
 `native_render::particles::read_emission` reads the helper inputs without
 writing guest memory. The feature's context-only hook always returns
@@ -93,10 +96,12 @@ identical quad cannot become owned. Pending interrupt callbacks remain
 queued and refuse the scope. No shared sorted dispatcher is modified.
 
 `DrawSnapshot::draw` supplies the actual declaration, streams, defaults,
-shaders, constants, state and clipping. Particle corners and every effective
-register must agree bitwise with the independent emission decoder.
-Generated geometry must agree byte-for-byte with the completed callback
-output, and its topology/count/declaration must agree independently.
+shaders, constants, state and clipping. The direct particle path requires
+bitwise agreement with the independent emission decoder. The publication
+path can use the live declaration and carried defaults when the packet
+belongs to the emitter and its full corner bytes match. Generated geometry
+must agree byte-for-byte with the completed callback output, and its
+topology, count and declaration must agree independently.
 
 A small pure helper in `d3d::nv2a::resolved` uses the existing translator's
 program-key derivation and state rules for uniforms and samplers. It keeps
