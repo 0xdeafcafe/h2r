@@ -370,16 +370,21 @@ fn once(seen: &AtomicBool, what: &str) {
 
 /// Forward through the actual Slayer datum. The press may dispose of the
 /// source screen, so nothing writes back through its list after the call.
-async fn press(cx: Cx, ours: Row, list: u32, chain: u32, press_at: u32) -> Result<Ret, EntryError> {
+async fn press(cx: Cx, ours: Row, list: u32, chain: u32) -> Result<Ret, EntryError> {
     let slayer = cx.read(|m| crate::retail_rows::retail_handle(m, list, SLAYER_PANE));
     let Some(handle) = slayer else {
         return Ok(Ret::new(0, 8));
     };
+    let press_at = cx.entry().esp.wrapping_sub(4);
     cx.write(|m| m.set_u32(press_at, handle))?;
     let _opening = Opening::new(ours);
-    let r = cx.call(GuestCall::new(points::VARIANT_CATEGORY_ROW_CHOSEN.base)
-        .ecx(list).args([chain, press_at])).await;
-    r?;
+    cx.call(
+        GuestCall::new(points::VARIANT_CATEGORY_ROW_CHOSEN.base)
+            .ecx(list)
+            .reserve(4)
+            .args([chain, press_at]),
+    )
+    .await?;
     Ok(Ret::new(0, 8))
 }
 
@@ -522,7 +527,7 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
     })
 }
 
-fn row_chosen(c: &mut Call, press_at: u32) -> Result<Flow, GuestFault> {
+fn row_chosen(c: &mut Call) -> Result<Flow, GuestFault> {
     let (list, chain, word) = {
         let mem = c.ctx.runtime().memory();
         let chain = mem.u32(c.cpu.esp + 4).unwrap_or(0);
@@ -534,7 +539,7 @@ fn row_chosen(c: &mut Call, press_at: u32) -> Result<Flow, GuestFault> {
         return Ok(Flow::Continue);
     };
     eprintln!("tweakers: opening the {} variants", ours.label());
-    c.answer_async(move |cx| -> EntryFuture { Box::pin(press(cx, ours, list, chain, press_at)) })
+    c.answer_async(move |cx| -> EntryFuture { Box::pin(press(cx, ours, list, chain)) })
 }
 
 /// The reopen entries' labels: for each row in [`Row::ALL`]'s order, its
@@ -571,7 +576,6 @@ impl hooks::Feature for Tweakers {
             .doc("docs/game/community-gametypes.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let press_at = b.guest_alloc(4, Permissions::RW)?;
         let scratch = b.guest_alloc(0x1000, Permissions::RW)?;
         // Each row's list's own loaders, one for each of Slayer's: for each
         // row in [`Row::ALL`]'s order, settings, lobby, pick.
@@ -632,7 +636,7 @@ impl hooks::Feature for Tweakers {
         b.raw().before(
             &points::VARIANT_CATEGORY_ROW_CHOSEN,
             "our rows' press",
-            move |c| row_chosen(c, press_at),
+            row_chosen,
         );
         b.raw().after(
             &points::VARIANT_LIST_SCREEN_CTOR,

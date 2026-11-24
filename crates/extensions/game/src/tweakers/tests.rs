@@ -349,14 +349,14 @@ fn handles_are_written_back_with_their_count() {
 fn forwarding_each_category_leaves_its_datum_alone_even_if_retail_replaces_it() {
     for ours in Row::ALL {
         let mut g = FakeGuest::new();
-        g.map(SCREEN, 0x5000).map(STACK, 0x100).map(SCRATCH, 4);
+        g.map(SCREEN, 0x5000).map(STACK, 0x100);
         let handles = rows_with(&mut g, HANDLER, &[SLAYER_WORD, word_of_row(ours)], 4);
         let old = DatumArray::at(ARRAY).try_get(&g, handles[1]).unwrap().unwrap();
-        let f = move |cx: Cx| -> EntryFuture { Box::pin(press(cx, ours, HANDLER, STACK, SCRATCH)) };
-        let run = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, |call, m| {
+        let f = move |cx: Cx| -> EntryFuture { Box::pin(press(cx, ours, HANDLER, STACK)) };
+        let run = entry::testing::run(&f, g, Regs { esp: STACK + 0x80, ..Default::default() }, |call, m| {
             assert_eq!(call.target, points::VARIANT_CATEGORY_ROW_CHOSEN.base);
-            assert_eq!(call.args.as_slice(), &[STACK, SCRATCH]);
-            assert_eq!(m.u32(SCRATCH), Ok(handles[0].0));
+            assert_eq!(call.args.as_slice(), &[STACK, STACK + 0x7c]);
+            assert_eq!(m.u32(STACK + 0x7c), Ok(handles[0].0));
             assert_eq!(m.u16(old + ROW_WORD), Ok(word_of_row(ours) as u16));
             m.set_u16(old + ROW_WORD, 0xaabc).unwrap(); // allocation reused during the press
             Regs::default()
