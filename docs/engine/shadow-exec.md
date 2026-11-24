@@ -89,6 +89,23 @@ on. Boot's run gives the registry the image once the module is loaded
 `shadow_original`): the build's cached analysis, lifted on demand, built
 at the first `shadow.enable`.
 
+The object subsystem registers six points in the `sim.native.objects` group
+under their guest point names. Its installer in
+`crates/rewrites/sim-bridge/src/sim_objects.rs` uses the same subsystem
+switch for all six. A sample covers one entry or resume through its next
+transfer, including the call's return-address push or the return's pop.
+Checks also see calls and resumes fused inside the object dispatcher.
+Callees run separately, so each live event or callback is delivered once.
+
+| Object walk | Function lookup | Light | Unit |
+|---|---|---|---|
+| `OBJECTS_PRE_PHYSICS`, `OBJECTS_POST_PHYSICS` | `OBJECT_FUNCTION_VALUE` | `LIGHT_RECORD_UPDATE` | `UNIT_CLAMP_DIRECTION`, `UNIT_ACTIONS_UPDATE` |
+
+When checks are off, the dispatcher reads one atomic at the start of
+each fused chain. During a run, `shadow.status` reports the samples,
+skips and mismatches for each named point. A point with zero checked
+samples still needs a gameplay case that reaches it.
+
 Methods ([agent-api.md](../runtime/agent-api.md#shadow-checks)):
 `shadow.enable`, `shadow.disable`, `shadow.status`.
 
@@ -110,12 +127,16 @@ It never builds: build the image first (same `H2_OPT`), and the map needs
 its nav mesh.
 
 ```sh
-H2_OPT=2 scripts/shadow-gate.sh lockout 900          # every port
+H2_OPT=2 scripts/shadow-gate.sh lockout 900          # standalone ports
 H2_OPT=2 scripts/shadow-gate.sh lockout 1800 sim.physics
+H2_OPT=2 scripts/shadow-gate.sh lockout 1800 sim.native.objects
 SHADOW_EVERY=8 H2_OPT=2 scripts/shadow-gate.sh midship 3000 all
 ```
 
-`feature`'s tests check that the script lists every registered port.
+The gate's `all` profile selects the standalone ports. The
+`sim.native.objects` profile runs separately because the object
+dispatcher owns entries also used by standalone ports. The registry
+tests in `sim-bridge` check that the script lists every port.
 
 ## Limits
 

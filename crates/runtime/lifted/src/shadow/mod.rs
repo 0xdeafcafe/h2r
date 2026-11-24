@@ -333,6 +333,12 @@ impl Shadow {
         Ok(off)
     }
 
+    /// Whether any port requests samples. A fused dispatcher can take its
+    /// ordinary path for the whole chain while checks are disabled.
+    pub fn any_enabled(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
     pub fn status(&self) -> Status {
         let s = self.lock();
         let ports: Vec<Port> = s.ports.values().cloned().collect();

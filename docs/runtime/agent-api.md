@@ -5674,9 +5674,10 @@ game reached, then runs on the live Guest as usual. Only installed ports
 are checked: a port's `impl.` switch puts it in the plan, and
 `shadow.enable` is the only switch for the checks.
 
-Ports are named by switch (`sim.native_unit_pose`,
-`sim.native_havok_solver`), by group (`sim.native`, `sim.physics`) or
-`all`.
+Select ports by switch name (`sim.native_unit_pose`), object point name
+(`OBJECT_FUNCTION_VALUE`), group (`sim.native`, `sim.physics`,
+`sim.native.objects`) or `all`. The object group samples individual entries
+and resumes, including those reached inside a fused walk.
 
 | Method | Access | What |
 |---|---|---|
