@@ -415,10 +415,12 @@ game's quads for those widgets are left out; otherwise the HUD draw is the
 game's quads of [native-post-hud.md](native-post-hud.md), counted by its
 first reason ([native-post-hud.md](native-post-hud.md#the-hud-on-the-overlay)).
 The renderer's glyph atlas is `native_render::overlay::GlyphPages` (one
-page per font, each glyph rasterised once) and its bitmap images are
-decoded from the map on the host (`OverlayAssets`, uploaded by
-`ui_gpu::OverlayResidency`). Tag shaders do not translate, so no retail
-HUD draw is the overlay's yet; what translating them needs is in
+page per font, filled by the host from the fonts as the game serves them:
+`game::hud_overlay::fill_glyphs`, each glyph decoded once) and its bitmap
+images are decoded from the map on the host (`OverlayAssets`, uploaded by
+`ui_gpu::OverlayResidency`, each image and each glyph once). Tag shaders
+do not translate, so no retail HUD draw is the overlay's yet; what
+translating them needs is in
 [native-post-hud.md](native-post-hud.md#the-hud-on-the-overlay).
 
 The UI's producer is `scene_extract::ui::draw_list`. Its input, a

@@ -337,11 +337,11 @@ record, the `nhdt` (EDI) and the user (`[ebp+8]`) and asks the host
    (`hud_edit::overlay::first_inexact`): drawn by a tag shader that does not
    translate (`game::hud_overlay::translates`), a text widget, a widget
    with effects, an anchor that is not a corner, or a widget not listed.
-5. Decodes the bitmap images the items name, adds the items to
-   `FrameScene::overlay`, and places a pass at this point in the frame
-   (`Device::external_pass_now`) that draws them with
-   `ui_gpu::OverlayGpu`, its images and glyph pages made resident by
-   `ui_gpu::OverlayResidency`.
+5. Decodes the bitmap images the items name and fills the glyph pages
+   their text runs draw, adds the items to `FrameScene::overlay`, and
+   places a pass at this point in the frame (`Device::external_pass_now`)
+   that draws them with `ui_gpu::OverlayGpu`, its images and glyph pages
+   made resident by `ui_gpu::OverlayResidency`.
 
 In a claimed draw each widget quad `0x0022a664` called from `0x0022b39c`'s
 call (a widget that is not the shield meter) by that draw's `0x0022aff1`
@@ -355,9 +355,46 @@ game's quads and counts its first reason (`render.stats`,
 `native_ui_overlay_hud_*`). The scene's overlay holds only claimed
 draws' items.
 
+**Glyphs.** The overlay's text runs sample glyph pages
+(`native_render::overlay::GlyphPages`, one per engine font), which the
+host fills from the disc's fonts as the game serves them:
+
+- `game::hud_overlay::fonts` reads `font_table.txt` and each font file it
+  names once, through the VFS (the game's font rewrites applied), and
+  shares them: engine font N is line N of the table. It reads the Latin
+  table, not the `font_table_{cht,jpn,kor}.txt` of a CJK language.
+- `game::hud_overlay::assets` is the loaded map's `OverlayAssets`: the
+  glyph pages every list drawn from the overlay shares, new at each map.
+  The first ask on a map starts the load of its HUDs.
+- `game::hud_overlay::fill_glyphs` takes a list and puts every glyph of
+  its text runs into the pages: for each engine font and glyph index not
+  in its page, the glyph decoded from the font (`font::Font::
+  glyph_by_index`) and written white with its ARGB4444 alpha times 17 as
+  coverage. A glyph already in a page is not decoded again, so a list
+  filled again adds nothing and `Ok(())` says the list can draw; the
+  first glyph the fonts do not give is the error (no such font, a bad
+  record, no room in the page). A run whose glyph is missing at plan time
+  is dropped and counted `native_ui_overlay_refused_glyph`.
+- `ui_gpu::OverlayResidency` writes a page whole when it first appears
+  and, as it grows, only the rectangles of the glyphs added since the
+  version it holds (`GlyphPages::added_since`): each glyph is decoded
+  once and its texels uploaded once.
+
+A page keeps coverage alone, so a glyph with colours of its own (a medal,
+a button icon) draws in its run's colour. The HUD's claim fills its items'
+text runs after their images; a glyph the fonts do not give refuses the
+draw (`native_ui_overlay_hud_refused_unlisted`), as an image that does
+not decode does. A menu's list takes the same fonts, assets and filler
+and draws through the same `game::hud_overlay::OverlayPass`.
+
 No retail HUD draw is claimed: every retail bitmap widget is drawn by its
-tag shader and none translates, and a text widget's colour is its
-shader's. Translating a HUD shader needs, per template the HUDs use
+tag shader and none translates. A text widget is the game's as well: the
+walk refuses it under the engine's shading because its colour is its
+shader's and its localized text is not read (neither is answered through
+`hud_edit::render::Answers`), and a claim leaves out none of the game's
+text quads, so a text run the pass drew would be drawn twice. The glyph
+pages are filled for a list that does list text. Translating a HUD shader
+needs, per template the HUDs use
 (`widget_legacy_meter`, the plain sprite templates, `text_flash`):
 
 - what the shader draw `0x0001bbf0` sets for it: the template pass's
