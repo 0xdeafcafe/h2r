@@ -380,38 +380,74 @@ pub fn world_constants_read(look: &PassLook, microcode: &[u8]) -> Result<(), Str
     Ok(())
 }
 
-/// The texture-coordinate outputs `oT0..oT3` nothing reads: the pass's
-/// pixel shader leaves the stage's texture mode at `NONE`, so the
-/// rasteriser never interpolates or fetches with that stage's
-/// coordinates. A pixel shader that does not decode leaves none dead.
-pub(crate) fn dead_texcoords(look: &PassLook) -> [bool; 4] {
-    match PixelShaderDef::from_bytes(&look.pixel_shader) {
-        Ok(def) => def.decode().texture_modes.map(|m| m == psh::TexMode::None),
-        Err(_) => [false; 4],
-    }
+/// Explicit register reads in the active general combiners and final combiner.
+/// Implicit inputs, such as the initial r0.a from texture 0, are the caller's.
+pub(crate) fn combiner_reads(c: &psh::Combiners, reg: psh::Reg) -> bool {
+    c.stages.iter().any(|s| {
+        s.rgb.inputs.iter().chain(&s.alpha.inputs).any(|i| i.reg == reg)
+    }) || c.final_combiner.as_ref().is_some_and(|f| {
+        [f.a, f.b, f.c, f.d, f.e, f.f, f.g].iter().any(|i| i.reg == reg)
+    })
 }
 
-/// The first constant `program` reads that `set` does not name and whose
-/// value can reach something the draw uses, or `None`. The shared world
-/// programs write every stage's texture coordinates (`oT2 = uv ·
-/// c[20].xy + c[20].zw`) whether or not the material has that stage: a
-/// material that binds no transform for it leaves `c[20]` as whatever the
-/// device held, and its pixel shader never reads `oT2`. A read counts only
-/// when a value computed from it reaches an output other than a dead
-/// `oT` (`dead`), `a0.x`, or a constant write. The walk is forward and
-/// never clears a temporary, so a register reused for something else
-/// afterwards stays tainted (refused, never wrongly admitted).
-pub(crate) fn live_unset_read(
+/// Coordinates ignored by the fragment shader. PASSTHRU copies oTn into tn
+/// without sampling. Its result matters only if the fragment program reads it.
+pub(crate) fn dead_texcoords(look: &PassLook) -> [bool; 4] {
+    use psh::TexMode;
+    let Ok(def) = PixelShaderDef::from_bytes(&look.pixel_shader) else {
+        return [false; 4];
+    };
+    let c = def.decode();
+    std::array::from_fn(|n| {
+        // Reflection can read other stages' interpolants directly (the
+        // normal's third row and the per-vertex eye), even with no fetch.
+        if c.texture_modes[2] == TexMode::DotRflctDiff
+            || c.texture_modes[3] == TexMode::DotRflctSpec
+        {
+            return false;
+        }
+        match c.texture_modes[n] {
+            TexMode::None => true,
+            TexMode::Passthru => {
+                n != 0 // r0.a starts at t0.a
+                    && !combiner_reads(&c, psh::Reg::T(n as u8))
+                    && !c.texture_modes.iter().enumerate().any(|(i, mode)| {
+                        mode.reads_input_texture() && c.input_stage(i) == Some(n)
+                    })
+            }
+            _ => false,
+        }
+    })
+}
+
+fn live_unset_read(
     program: &vsh::Program,
     set: &impl Fn(u8) -> bool,
     dead: [bool; 4],
 ) -> Option<u8> {
-    use vsh::{IluOp, MacOp, OutDest, OutReg, SrcReg, Unit};
+    live_source_read(
+        program,
+        |reg| match reg {
+            vsh::SrcReg::Const { index, .. } if !set(index) => Some(index),
+            _ => None,
+        },
+        |out| matches!(out, vsh::OutReg::T(k) if dead.get(usize::from(k)) == Some(&true)),
+    )
+}
+
+/// First missing source whose value may reach a live output, address register
+/// or constant write. Track a whole temporary conservatively, including after
+/// a partial overwrite. Both units read the temporary bank before either writes.
+pub(crate) fn live_source_read(
+    program: &vsh::Program,
+    missing: impl Fn(vsh::SrcReg) -> Option<u8>,
+    dead_output: impl Fn(vsh::OutReg) -> bool,
+) -> Option<u8> {
+    use vsh::{IluOp, MacOp, OutDest, SrcReg, Unit};
     let mut tainted = [None::<u8>; 16];
     let taint = |s: &vsh::Source, tainted: &[Option<u8>; 16]| match s.reg {
-        SrcReg::Const { index, .. } if !set(index) => Some(index),
         SrcReg::Temp(n) => tainted[usize::from(n) & 15],
-        _ => None,
+        reg => missing(reg),
     };
     for i in &program.instructions {
         let (ra, rb, rc) = i.mac_reads();
@@ -433,15 +469,22 @@ pub(crate) fn live_unset_read(
             };
             if let Some(c) = value {
                 match o.dest {
-                    OutDest::Output(OutReg::T(k)) if dead.get(usize::from(k)) == Some(&true) => {}
+                    OutDest::Output(out) if dead_output(out) => {}
                     _ => return Some(c),
                 }
             }
         }
+        // A temporary write to r12 writes oPos on both paths.
         if i.mac_writes_temp() && mac.is_some() {
+            if i.mac_temp == 12 {
+                return mac;
+            }
             tainted[usize::from(i.mac_temp) & 15] = mac;
         }
         if i.ilu_writes_temp() && ilu.is_some() {
+            if i.ilu_temp == 12 {
+                return ilu;
+            }
             tainted[usize::from(i.ilu_temp) & 15] = ilu;
         }
     }
@@ -4371,6 +4414,41 @@ mod tests {
             ..live
         };
         assert_eq!(read(&bound, stage_two_program(false, true)), Ok(()));
+    }
+
+    #[test]
+    fn c20_can_feed_a_passthrough_coordinate_unused_by_the_fragment() {
+        let mut look = final_look(false);
+        let mut def = PixelShaderDef::from_bytes(&look.pixel_shader).unwrap();
+        def.texture_modes = 4 << 10; // stage 2 passes its coordinates through
+        let code = stage_two_program(true, false);
+        look.pixel_shader = def.to_bytes();
+        let program = compile_world(&world_pass(look.clone()), &code).unwrap();
+        shaders::validate(&program.wgsl).unwrap();
+
+        let rejected = |def: PixelShaderDef| {
+            let mut live = look.clone();
+            live.pixel_shader = def.to_bytes();
+            assert_eq!(world_constants_read(&live, &code),
+                Err("vertex program reads c[20], which the native pass does not set".into()));
+        };
+        let mut general = def.clone();
+        general.combiner_count = 1;
+        general.rgb_inputs[0] = 0xa; // t2
+        rejected(general.clone());
+        general.rgb_inputs[0] = 0;
+        general.alpha_inputs[0] = 0x1a; // t2.a
+        rejected(general);
+        let mut final_read = def.clone();
+        final_read.final_inputs_abcd = 0xa; // D takes t2
+        rejected(final_read);
+        let mut dependent = def.clone();
+        dependent.texture_modes |= 0x0f << 15; // stage 3 samples using the selected stage's AR
+        dependent.input_texture = 2 << 20;
+        rejected(dependent);
+        let mut clip = def;
+        clip.texture_modes = 5 << 10; // clip plane can discard without a combiner read
+        rejected(clip);
     }
 
     /// The rigid classification's shape: `r10 = v0 · c[170] + c[171]`,
