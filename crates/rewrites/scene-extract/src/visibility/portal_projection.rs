@@ -106,6 +106,42 @@ impl Projection {
         })
     }
 
+    /// Widen the four-corner main-view polygon emitted by 0x000441b0.
+    /// The display lens scales the half-width about the original centre,
+    /// including when that centre lies off the optical axis.
+    pub fn widen(&mut self, horizontal_factor: f32) -> Result<(), Decline> {
+        let [left, right, bottom, top] = self.rect.0;
+        let corners = [[left, bottom], [right, bottom], [right, top], [left, top]];
+        if !horizontal_factor.is_finite()
+            || horizontal_factor <= 0.0
+            || !self.rect.0.into_iter().all(f32::is_finite)
+            || left >= right
+            || bottom >= top
+            || !self
+                .polygon
+                .iter()
+                .map(|p| p.map(f32::to_bits))
+                .eq(corners.map(|p| p.map(f32::to_bits)))
+        {
+            return Err(Decline::Frusta);
+        }
+        // Keep all endpoint bits at identity, as the frustum hook does.
+        if horizontal_factor == 1.0 {
+            return Ok(());
+        }
+        let centre = (left + right) * 0.5;
+        let half = (right - left) * 0.5 / horizontal_factor;
+        let (left, right) = (centre - half, centre + half);
+        if !left.is_finite() || !right.is_finite() || left >= right {
+            return Err(Decline::Frusta);
+        }
+        self.rect = Rect([left, right, bottom, top]);
+        for (corner, x) in self.polygon.iter_mut().zip([left, right, right, left]) {
+            corner[0] = x;
+        }
+        Ok(())
+    }
+
     /// `0x001429d0`: the scaled basis is multiplied by the world point
     /// before adding the paired sums. Subtracting the eye first changes
     /// rounding when the transform has a translation.
@@ -342,6 +378,24 @@ mod tests {
             sphere: [0.0; 4],
             vertices: vec![[0.0, -1.0, -2.0], [2.0, -1.0, -2.0], [1.0, 2.0, -2.0]],
         }
+    }
+
+    #[test]
+    fn off_centre_widening_preserves_the_vertical_bounds_and_corner_order() {
+        let mut view = view();
+        // The fixture starts at top right. A rotated or clipped root
+        // cannot be replaced by the rectangle emitted by the main camera.
+        assert_eq!(view.widen(0.5), Err(Decline::Frusta));
+        assert_eq!(view.polygon, ROOT);
+        view.rect = Rect([-0.25, 1.25, -0.0, 0.75]);
+        view.polygon = view.rect.corners();
+        view.widen(0.5).unwrap();
+        assert_eq!(view.rect.0, [-1., 2., -0., 0.75]);
+        assert_eq!(
+            view.polygon,
+            [[-1., -0.], [2., -0.], [2., 0.75], [-1., 0.75]]
+        );
+        assert_eq!(view.polygon[0][1].to_bits(), (-0.0f32).to_bits());
     }
 
     #[test]

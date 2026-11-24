@@ -1,7 +1,8 @@
 //! The window written by 0x00163db0 at the portal walk's materialization
 //! call. Offsets 4..16 and 32..36 belong to the caller.
 
-use super::frusta::{self, Inputs};
+use super::flood::Rect;
+use super::frusta::{self, Frustum, Inputs};
 use super::{Decline, guest, read};
 use crate::GuestRead;
 
@@ -19,6 +20,27 @@ pub struct WindowInputs {
     unit: u32,
     minus: u32,
     epsilon: u32,
+}
+
+struct Window {
+    corners: [[f32; 3]; 4],
+    origin: [f32; 3],
+    volume: Frustum,
+    rays: [[f32; 3]; 4],
+}
+
+impl Window {
+    /// The contiguous float fields starting at record offset 0x24.
+    fn values(&self) -> impl Iterator<Item = f32> + '_ {
+        self.corners
+            .iter()
+            .flatten()
+            .chain(&self.origin)
+            .chain(&self.volume.bounds)
+            .chain(self.volume.planes.iter().flatten())
+            .chain(self.rays.iter().flatten())
+            .copied()
+    }
 }
 
 fn words<const N: usize>(mem: &dyn GuestRead, base: u32) -> Result<[u32; N], Decline> {
@@ -60,13 +82,17 @@ impl WindowInputs {
         })
     }
 
-    /// Fill exactly the defined record fields in the incoming slot image.
-    /// False is the original leaf's AL=0 exit with the slot untouched.
-    pub fn build(&self, slot: &mut [u8; SIZE]) -> Result<bool, Decline> {
-        let r = self.rect.map(f32::from_bits);
-        let [x0, x1, y0, y1] = r;
+    /// World-space bounds and planes of one portal window in tangent units.
+    pub fn volume(&self, rect: Rect) -> Result<Option<Frustum>, Decline> {
+        Ok(self.window(rect)?.map(|w| w.volume))
+    }
+
+    fn window(&self, Rect([x0, x1, y0, y1]): Rect) -> Result<Option<Window>, Decline> {
+        if ![x0, x1, y0, y1].into_iter().all(f32::is_finite) {
+            return Err(Decline::Frusta);
+        }
         if x1 <= x0 || y1 <= y0 {
-            return Ok(false);
+            return Ok(None);
         }
         let world = self.world.map(f32::from_bits);
         let scale = world[0];
@@ -129,21 +155,29 @@ impl WindowInputs {
             plane([0.0, 0.0, inputs.negative_unit], far, false),
         ];
         let rays = corners.map(|p| [0, 1, 2].map(|k| p[k] - t[k]));
-        let tail = corners
-            .into_iter()
-            .flatten()
-            .chain(t)
-            .chain(bounds)
-            .chain(planes.into_iter().flatten())
-            .chain(rays.into_iter().flatten());
+        let window = Window {
+            corners,
+            origin: t,
+            volume: Frustum { bounds, planes },
+            rays,
+        };
+        if !window.values().all(f32::is_finite) {
+            return Err(Decline::Frusta);
+        }
+        Ok(Some(window))
+    }
+
+    /// Fill exactly the defined record fields in the incoming slot image.
+    /// False is the original leaf's AL=0 exit with the slot untouched.
+    pub fn build(&self, slot: &mut [u8; SIZE]) -> Result<bool, Decline> {
+        let Some(window) = self.window(Rect(self.rect.map(f32::from_bits)))? else {
+            return Ok(false);
+        };
         slot[..4].copy_from_slice(&self.ordinal.to_le_bytes());
         for (out, value) in slot[0x10..0x20].chunks_exact_mut(4).zip(self.rect) {
             out.copy_from_slice(&value.to_le_bytes());
         }
-        for (out, value) in slot[0x24..].chunks_exact_mut(4).zip(tail) {
-            if !value.is_finite() {
-                return Err(Decline::Frusta);
-            }
+        for (out, value) in slot[0x24..].chunks_exact_mut(4).zip(window.values()) {
             out.copy_from_slice(&value.to_le_bytes());
         }
         Ok(true)
@@ -187,6 +221,32 @@ mod tests {
         assert_eq!(floats(&slot, 0xb8), [0., 0., 1., 2.]);
         assert_eq!(floats(&slot, 0xc8), [0., 0., -1., 14.]);
         assert_eq!(floats(&slot, 0xfc), [48., -16., -16.]);
+    }
+
+    #[test]
+    fn typed_volume_and_serialized_planes_share_the_supplied_portal_rectangle() {
+        let mut view = view();
+        let rect = Rect([0.5, 0.875, -0.75, 1.25]);
+        view.clip = Some([1., -2., 3., -4.].map(f32::to_bits));
+        let volume = view.volume(rect).unwrap().unwrap();
+        let mut slot = [0x3c; SIZE];
+        view.rect = rect.0.map(f32::to_bits);
+        assert!(view.build(&mut slot).unwrap());
+        assert_eq!(
+            volume.bounds.map(f32::to_bits),
+            floats(&slot, 0x60).map(f32::to_bits)
+        );
+        for (i, plane) in volume.planes.into_iter().enumerate() {
+            assert_eq!(
+                plane.map(f32::to_bits),
+                floats(&slot, 0x78 + 16 * i).map(f32::to_bits)
+            );
+        }
+        assert_eq!(view.volume(Rect([2., 1., -1., 1.])), Ok(None));
+        assert_eq!(
+            view.volume(Rect([f32::NAN, 1., 0., 1.])),
+            Err(Decline::Frusta)
+        );
     }
 
     #[test]
