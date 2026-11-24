@@ -66,6 +66,8 @@ pub mod volumes;
 #[cfg(test)]
 mod area_tests;
 #[cfg(test)]
+mod data_tests;
+#[cfg(test)]
 mod ground_tests;
 #[cfg(test)]
 mod tests;
@@ -79,7 +81,9 @@ pub use scenario::{
     BspPatch, Changes, GeometryChanges, GeometryGrown, Grown, MovedRaw, RawAppend, RawPatch,
     Removed, Scenario, TagGrown, TagMove, TagRef, Value, VolumeRemoved,
 };
-pub use session::{AreaFrom, GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
+pub use session::{
+    AreaFrom, DATA_GROWTH_REFUSAL, GROWTH_REFUSAL, Reference, RotationField, Session, Transform,
+};
 
 /// Why an edit, read or save was refused.
 #[derive(Debug, thiserror::Error)]

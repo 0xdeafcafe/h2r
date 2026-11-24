@@ -122,6 +122,13 @@ pub struct Drag {
 pub const GROWTH_REFUSAL: &str = "the block is full: growing it needs more tag memory, and the \
      engine's headroom for that is not established (docs/editor/scenario-editor.md §6)";
 
+/// Why a scenario data reference may not grow past the room its source
+/// had while growth is off.
+pub const DATA_GROWTH_REFUSAL: &str = "the data is longer than it was in the source. Growing it \
+     appends a copy to the map's metadata, and the engine's headroom for more tag memory is not \
+     established (docs/editor/scenario-editor.md §6): turn on Edit > Allow growing full blocks \
+     to do it";
+
 /// The editor state over one map.
 pub struct Session {
     doc: Option<Doc>,
@@ -977,6 +984,37 @@ impl Session {
         }
         let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
         doc.scenario.set_recording_changes(patches, grown)
+    }
+
+    /// Why the scenario's data reference at `pair` (the virtual address of
+    /// its `(size, address)` pair) may not be given `len` bytes, if it may
+    /// not: [`Scenario::data_pair_refusal`]'s reasons, and
+    /// [`DATA_GROWTH_REFUSAL`] for one that needs new room while growth is
+    /// off.
+    pub fn data_refusal(&self, pair: u32, len: u32) -> Option<&'static str> {
+        let Some(s) = self.scenario() else {
+            return Some("no map is open");
+        };
+        if let Some(why) = s.data_pair_refusal(pair) {
+            return Some(why);
+        }
+        (!self.allow_growth && s.data_grows(pair, len)).then_some(DATA_GROWTH_REFUSAL)
+    }
+
+    /// Give the scenario's data reference at `pair` the payload `bytes`,
+    /// of any length, as one undo step: the session's form of the tag
+    /// editor's `TagDoc::resize_data` (docs/editor/rich-editors.md, "Data
+    /// that changes length"). The save writes it in place or appends it
+    /// ([`Scenario::changes`]).
+    pub fn resize_data(&mut self, pair: u32, bytes: Vec<u8>, label: &str) -> Result<()> {
+        let len = u32::try_from(bytes.len()).map_err(|_| Error::Refused("the data is too long"))?;
+        if let Some(why) = self.data_refusal(pair, len) {
+            return Err(Error::Refused(why));
+        }
+        if self.scenario().and_then(|s| s.data(pair)).as_deref() == Some(bytes.as_slice()) {
+            return Ok(());
+        }
+        self.apply(Command::resize_data(pair, bytes, label))
     }
 
     /// Let adding grow a block past its source size. Off by default; see

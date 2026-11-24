@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod data;
 pub mod ground;
 
 /// The `scnr` root is at least this long: the furthest block pair this crate
@@ -448,6 +449,11 @@ pub struct Scenario {
     /// The recordings block's writes. See [`Self::set_recording_changes`].
     recording_patches: Vec<(u32, Vec<u8>)>,
     recording_grown: Vec<TagGrown>,
+    /// The payload as read, for the source of a resized data reference.
+    payload: std::sync::Arc<[u8]>,
+    /// Resized data references: each one's whole current payload, by the
+    /// virtual address of its `(size, address)` pair. See [`data`].
+    data: std::collections::BTreeMap<u32, Vec<u8>>,
     /// The Modeling tool's writes. See [`Self::set_geometry_changes`].
     geometry: GeometryChanges,
     /// The Textures tool's writes, in the same shape. See
@@ -680,6 +686,8 @@ impl Scenario {
             tag_strings: Vec::new(),
             recording_patches: Vec::new(),
             recording_grown: Vec::new(),
+            payload: bytes.into(),
+            data: std::collections::BTreeMap::new(),
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
             areas: std::collections::BTreeMap::new(),
@@ -938,6 +946,7 @@ impl Scenario {
         self.blocks.iter().any(|b| b.entries != b.original)
             || self.names.entries != self.names.original
             || self.volume_blocks.iter().any(VolumeBlock::is_modified)
+            || self.data_modified()
     }
 
     /// What a save must write: the minimal fixed-size patches for blocks
@@ -1027,6 +1036,7 @@ impl Scenario {
                     .push((root, (b.len() as u32).to_le_bytes().to_vec()));
             }
         }
+        self.data_changes(&mut out.patches, &mut out.tag_grown);
         out.patches.sort();
         out
     }
