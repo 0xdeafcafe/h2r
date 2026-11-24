@@ -22,7 +22,7 @@ use native_render::light_gpu::{
     LayeredImage, LightDraw, LightGpu, LightSet, LightTarget, ModelGeometry, StaticLightTexture,
     TextureDim,
 };
-use native_render::light_list::SortedItem;
+use native_render::world_layers::{Geometry, Owner as ResolvedOwner};
 use native_render::light_look::{
     DIFFUSE_LAYER, LightInputs, LightProgram, LightStage, SPECULAR_LAYER,
 };
@@ -355,69 +355,65 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         group: &render_bridge::native_lights::SceneGroup,
         c: &LightConstants,
     ) -> Result<Vec<Planned>, Keep> {
-        use native_render::light_scene::Resident;
+        self.gathered_draws(
+            d, mem, ready, usize::from(group.group.layer), c, false,
+            group.entries.iter().enumerate().map(|(i, e)| {
+                (e, group.rows.get(i).map_or(&[][..], Vec::as_slice))
+            }),
+        )
+    }
+
+    fn model_lights(
+        &self,
+        device: &d3d::Device<B>,
+        mem: &dyn GuestMemory,
+        ready: &Ready,
+    ) -> Result<Arc<models::ModelLights>, Keep> {
+        let name = crate::health::loaded_map_name(mem)
+            .map_err(|_| Keep::Unsupported("the loaded map's name does not read"))?;
+        self.models.get(
+            &name,
+            &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0,
+            || native_render::object_streams::StreamFormats::read(&ReadMemory(mem)),
+            || crate::native_world_glue::scene_load_palettes(device, mem),
+        ).ok_or(Keep::Unsupported("the map's model light parts are loading"))
+    }
+
+    fn gathered_draws<'a>(
+        &self,
+        device: &d3d::Device<B>,
+        mem: &dyn GuestMemory,
+        ready: &Ready,
+        layer: usize,
+        c: &LightConstants,
+        produced_gel: bool,
+        entries: impl Iterator<Item = (&'a LightEntry, &'a [Row])>,
+    ) -> Result<Vec<Planned>, Keep> {
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
-        let objects = group.entries.iter().any(|e| structure_key(e).is_none());
-        let model_lights = if objects {
-            let name = crate::health::loaded_map_name(mem)
-                .map_err(|_| Keep::Unsupported("the loaded map's name does not read"))?;
-            let read = ReadMemory(mem);
-            Some(
-                self.models
-                    .get(
-                        &name,
-                        &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0,
-                        || native_render::object_streams::StreamFormats::read(&read),
-                        || crate::native_world_glue::scene_load_palettes(d, mem),
-                    )
-                    .ok_or(Keep::Unsupported("the map's model light parts are loading"))?,
-            )
-        } else {
-            None
-        };
-        let held = Held {
-            clusters: &world.clusters,
-            models: model_lights.as_deref().map(|m| &m.models),
-        };
-        let entries = group.entries.iter().enumerate().map(|(i, entry)| {
-            (entry, group.rows.get(i).map_or(&[][..], Vec::as_slice))
-        });
-        // The actual draws below use this order and material layout.
-        // Validate the geometry without building a second, unused draw plan.
-        for (entry, rows) in entries.clone() {
-            if held.part(entry).is_none() {
-                return Err(Keep::Unsupported(
-                    "scene group entry has no native light stream",
-                ));
-            }
-            if matches!(entry.pose, frame_scene::LightPose::Rows(_)) && rows.is_empty() {
-                return Err(Keep::Unsupported("scene group entry has no pose"));
-            }
-        }
-        let layer = usize::from(group.group.layer);
+        let mut model_lights = None;
         // Runs of structure entries resolve together, as the sorted
         // list's do; each object entry is a draw of its own (its rows).
         let mut draws: Vec<Planned> = Vec::new();
-        let mut run: Vec<(usize, usize, WorldDraw)> = Vec::new();
-        for (e, rows) in entries {
-            let imp = usize::from(e.binding.implementation);
-            if let Some(k) = structure_key(e) {
-                let (_, draw) = world.clusters.get(&k).ok_or(Keep::Unsupported(
-                    "scene group entry has no native light stream",
-                ))?;
-                run.push((layer, imp, *draw));
+        let mut run = Vec::new();
+        for (entry, rows) in entries {
+            let binding = entry.binding;
+            let selection = Some((binding.variant, binding.selector));
+            if structure_key(entry).is_some() {
+                let draw = world.structure_entry(entry)?;
+                run.push((layer, usize::from(binding.implementation), draw, selection));
                 continue;
             }
             if !run.is_empty() {
-                draws.extend(world.resolve_parts(c, run.drain(..), false)?);
+                draws.extend(world.resolve_world_parts(c, run.drain(..), produced_gel)?);
             }
             let lights = model_lights
+                .get_or_insert_with(|| self.model_lights(device, mem, ready))
                 .as_ref()
-                .ok_or(Keep::Unsupported("the map's model light parts are loading"))?;
-            draws.push(world.resolve_model(c, lights, layer, e, rows)?);
+                .map_err(Clone::clone)?;
+            draws.push(world.resolve_model(c, lights, layer, entry, rows, selection, produced_gel)?);
         }
         if !run.is_empty() {
-            draws.extend(world.resolve_parts(c, run, false)?);
+            draws.extend(world.resolve_world_parts(c, run, produced_gel)?);
         }
         Ok(draws)
     }
@@ -824,14 +820,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         } = dispatch;
         let constants = constants(&light)?;
         let ready = self.ready(mem)?;
-        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
-        let mut parts = Vec::new();
-        let sorted = sorted
-            .read(&ReadMemory(mem), |entry| {
-                parts.push(select_part(&world.clusters, entry)?);
-                Ok(())
-            })
-            .map_err(Keep::Unsupported)?;
+        let mut entries = Vec::new();
+        let read = ReadMemory(mem);
+        sorted.read(&read, |item| {
+            let (entry, rows, indices) = item.scene_entry(&read)?;
+            entries.push((LightSlot::new(item.slot, indices, &entry), entry, rows));
+            Ok(())
+        }).map_err(Keep::Unsupported)?;
         let mut d = self
             .device
             .lock()
@@ -846,7 +841,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("light view target changed"));
         }
         let binding = self.gel_binding(mem, serial, shader_gel, &constants)?;
-        let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
+        let draws = self.gathered_draws(
+            &d, mem, &ready, layer as usize, &constants, binding.is_some(),
+            entries.iter().map(|(_, e, rows)| (e, rows.as_slice())),
+        )?;
         let plan = self.prepare_planned(&d, mem, ready, constants, draws, binding, false, None)?;
         let c = &plan.constants;
         // The layer is one the light's steps draw, and every planned draw
@@ -878,7 +876,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &plan.ready)) {
             return Err(Keep::Unsupported("world changed during light preparation"));
         }
-        let layer = LightLayer::new(view_target, plan, &sorted.entries).ok_or(
+        let slots = entries.into_iter().map(|(slot, _, _)| slot);
+        let layer = LightLayer::new(view_target, plan, slots).ok_or(
             Keep::Unsupported("light ranges differ from its sorted entries"),
         )?;
         *self.admission.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(layer);
@@ -1011,20 +1010,23 @@ struct LightAdmission(Mutex<Option<LightLayer>>);
 struct LightLayer {
     targets: [u32; 8],
     light: PreparedLight,
-    draws: HashMap<u32, (SortedItem, Planned)>,
+    draws: HashMap<u32, (LightSlot, Planned)>,
 }
 
 impl LightLayer {
-    fn new(targets: [u32; 8], mut light: PreparedLight, entries: &[SortedItem]) -> Option<Self> {
-        let mut draws = HashMap::with_capacity(entries.len());
-        let mut entries = entries.iter();
+    fn new(
+        targets: [u32; 8],
+        mut light: PreparedLight,
+        mut slots: impl ExactSizeIterator<Item = LightSlot>,
+    ) -> Option<Self> {
+        let mut draws = HashMap::with_capacity(slots.len());
         for pass in std::mem::take(&mut light.draws) {
             for range in pass.ranges {
-                let entry = *entries.next()?;
+                let slot = slots.next()?;
                 draws.insert(
-                    entry.slot,
+                    slot.geometry.sorted_slot,
                     (
-                        entry,
+                        slot,
                         Planned {
                             material: pass.material,
                             layer: pass.layer,
@@ -1032,12 +1034,13 @@ impl LightLayer {
                             compiled: Arc::clone(&pass.compiled),
                             ranges: vec![range],
                             model: pass.model.clone(),
+                            placement: pass.placement,
                         },
                     ),
                 );
             }
         }
-        if entries.next().is_some() {
+        if slots.next().is_some() {
             return None;
         }
         Some(Self {
@@ -1072,7 +1075,7 @@ impl d3d::DrawAdmission for LightAdmission {
         let (entry, planned) = run.draws.get(&geometry.sorted_slot)?;
         if run.targets[..2] != [snapshot.color_header, snapshot.depth_header]
             || planned.layer != context.layer.number as usize
-            || !matches_light_entry(*entry, geometry)
+            || !entry.matches(geometry, context.light_selection, draw.primitive, context.index_address?, context.index_count?)
             || !run.light.matches(draw, planned)
             || !crate::native_world_layers_glue::matches_triangle_range(
                 draw,
@@ -1108,21 +1111,58 @@ impl d3d::DrawAdmission for LightAdmission {
     }
 }
 
-fn matches_light_entry(entry: SortedItem, geometry: native_render::world_layers::Geometry) -> bool {
-    use native_render::world_layers::Owner as ResolvedOwner;
-    let Some(item) = entry.geometry else {
-        return false;
-    };
-    let owner = match geometry.owner {
-        ResolvedOwner::Cluster(section) => Owner::Cluster(section),
-        ResolvedOwner::Placement(index) => Owner::Instance(index),
-        ResolvedOwner::Object { .. } => return false,
-    };
-    geometry.variant == 0
-        && geometry.sorted_slot == entry.slot
-        && geometry.implementation == entry.implementation
-        && item.part == (owner, geometry.part)
-        && item.shader == geometry.shader
+/// The complete part promised for one sorted handler. A subpart draw of
+/// the same record and material can have a different index window.
+struct LightSlot {
+    geometry: Geometry,
+    index_address: u32,
+    selection: (u8, u16),
+    primitive: gfx::vertex::PrimitiveType,
+    index_count: u32,
+}
+
+impl LightSlot {
+    fn new(slot: u32, index_address: u32, entry: &LightEntry) -> Self {
+        let owner = match entry.owner {
+            LayerOwner::Cluster(n) => ResolvedOwner::Cluster(u32::from(n)),
+            LayerOwner::Placement(n) => ResolvedOwner::Placement(u32::from(n)),
+            LayerOwner::Object(handle) => ResolvedOwner::Object {
+                handle: handle.0,
+                model: entry.model,
+                section: u32::from(entry.stream.section),
+            },
+        };
+        Self {
+            geometry: Geometry {
+                owner,
+                record: entry.record,
+                sorted_slot: slot,
+                part: entry.stream.part,
+                shader: entry.binding.shader,
+                variant: entry.binding.variant,
+                implementation: entry.binding.implementation,
+            },
+            index_address,
+            selection: (entry.binding.selector, entry.stream.vertex_class),
+            primitive: match entry.stream.topology {
+                frame_scene::Topology::List => gfx::vertex::PrimitiveType::TriangleList,
+                frame_scene::Topology::Strip => gfx::vertex::PrimitiveType::TriangleStrip,
+            },
+            index_count: entry.stream.index_count,
+        }
+    }
+
+    fn matches(
+        &self,
+        geometry: Geometry,
+        selection: Option<(u8, u16)>,
+        primitive: gfx::vertex::PrimitiveType,
+        indices: u32,
+        index_count: u32,
+    ) -> bool {
+        self.geometry == geometry && Some(self.selection) == selection
+            && self.primitive == primitive && self.index_address == indices && self.index_count == index_count
+    }
 }
 
 fn uses_gel_target(
@@ -1154,25 +1194,6 @@ fn constants(light: &Light) -> Result<LightConstants, Keep> {
 }
 
 type ClusterParts = HashMap<(Owner, u8), (TagId, WorldDraw)>;
-
-/// The resolved path requires a resident cluster part at every sorted slot.
-fn select_part(
-    clusters: &ClusterParts,
-    entry: &SortedItem,
-) -> Result<(usize, usize, WorldDraw), &'static str> {
-    let item = entry
-        .geometry
-        .ok_or("gathered model or unsupported geometry handler")?;
-    match clusters.get(&item.part) {
-        Some((shader, d)) if shader.0 == item.shader => Ok((
-            item.layers.trailing_zeros() as usize,
-            usize::from(entry.implementation),
-            *d,
-        )),
-        Some(_) => Err("gathered shader datum differs from the cluster material"),
-        None => Err("gathered part has no native cluster draw"),
-    }
-}
 
 #[derive(Default)]
 struct RunOrder {
@@ -1512,25 +1533,19 @@ impl std::fmt::Debug for ModelDraw {
 }
 
 impl ModelDraw {
+    fn section(&self) -> Option<&native_render::light_models::LightSection> {
+        self.lights.models.models.get(&self.model)?.sections.get(&self.section)
+    }
+
     fn buffer(&self) -> Result<&native_render::light_models::LightBuffer, Keep> {
-        self.lights
-            .models
-            .models
-            .get(&self.model)
-            .and_then(|model| model.sections.get(&self.section))
+        self.section()
             .and_then(|section| section.buffers.get(self.buffer))
             .ok_or(Keep::Unsupported("model light buffer unavailable"))
     }
 
     /// Its buffers on `device`, uploaded the first time.
     fn geometry(&self, device: &wgpu::Device) -> Option<ModelGeometry<'_>> {
-        let section = self
-            .lights
-            .models
-            .models
-            .get(&self.model)?
-            .sections
-            .get(&self.section)?;
+        let section = self.section()?;
         let buffer = section.buffers.get(self.buffer)?;
         Some(ModelGeometry {
             vertices: buffer.vertices.get(device),
@@ -1665,12 +1680,21 @@ impl LightsWorld {
         parts: impl IntoIterator<Item = (usize, usize, WorldDraw)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
+        self.resolve_world_parts(c, parts.into_iter().map(|(l, i, d)| (l, i, d, None)), produced_gel)
+    }
+
+    fn resolve_world_parts(
+        &self,
+        c: &LightConstants,
+        parts: impl IntoIterator<Item = (usize, usize, WorldDraw, Option<(u8, u8)>)>,
+        produced_gel: bool,
+    ) -> Result<Vec<Planned>, Keep> {
         // Resolved without the colours, which each light's uniforms take
         // (`colour_uniforms`): a light whose colour animates keeps its key.
         let inputs = LightInputs::from_constants(c).without_colours();
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (layer, imp, draw) in parts {
+        for (layer, imp, draw, selection) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -1678,7 +1702,9 @@ impl LightsWorld {
                 .ok_or(Keep::Unsupported("invalid cluster index range"))?;
             let range = draw.first_index..end;
             let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
-            let resolved = match self.resolver.world(lit, inputs, layer, imp) {
+            let class = u32::from(residency::classification(draw.owner));
+            let placement = self.placement(draw.owner)?;
+            let resolved = match self.resolver.world(lit, inputs, layer, imp, class, selection) {
                 Err(Keep::MaterialPending) => {
                     // Request the remaining variants for this layer on the same frame.
                     pending = true;
@@ -1694,6 +1720,7 @@ impl LightsWorld {
             }
             self.binds(&compiled.program, c.gel, produced_gel, &self.images)?;
             if let Some(previous) = out.last_mut()
+                && placement.is_none() && previous.placement.is_none()
                 && previous.material == m
                 && previous.layer == layer
                 && Arc::ptr_eq(&previous.compiled, &compiled)
@@ -1707,6 +1734,7 @@ impl LightsWorld {
                 layer,
                 implementation: imp,
                 ranges: vec![range],
+                placement,
                 model: None,
             });
         }
@@ -1728,6 +1756,8 @@ impl LightsWorld {
         layer: usize,
         entry: &LightEntry,
         rows: &[Row],
+        selection: Option<(u8, u8)>,
+        produced_gel: bool,
     ) -> Result<Planned, Keep> {
         let (section, part) = lights.models.part(entry).ok_or(Keep::Unsupported(
             "scene group entry has no native light stream",
@@ -1740,7 +1770,7 @@ impl LightsWorld {
         let imp = usize::from(entry.binding.implementation);
         let resolved = self
             .resolver
-            .model(*shader, instance, inputs, layer, imp, lights, entry)?;
+            .model(*shader, instance, inputs, layer, imp, lights, entry, selection)?;
         let buffer = resolved
             .buffer
             .ok_or(Keep::Unsupported("model light buffer unavailable"))?;
@@ -1759,13 +1789,14 @@ impl LightsWorld {
                 "object entry's node rows do not fit the palette",
             ));
         }
-        self.binds(&compiled.program, c.gel, false, &lights.images)?;
+        self.binds(&compiled.program, c.gel, produced_gel, &lights.images)?;
         Ok(Planned {
             material: MODEL_MATERIAL,
             layer,
             implementation: imp,
             compiled,
             ranges: vec![part.indices.clone()],
+            placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
                 model: entry.model,
@@ -2200,6 +2231,27 @@ impl PreparedLight {
         use gfx::state::{CompareFunc, DepthBufferMode, FillMode};
         let r = &draw.state.render;
         let program = &planned.compiled.program;
+        if draw.hw.zpass_count_enable || !draw.state.bad.is_empty() ||
+            !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { microcode, .. }
+                if &microcode[..] == program.words.as_slice()) {
+            return false;
+        }
+        let rows = planned.model.as_ref().map(|m| m.rows.as_slice())
+            .or_else(|| planned.placement.as_ref().map(|rows| rows.as_slice()));
+        if let Some(rows) = rows {
+            let decompression = match &planned.model {
+                Some(model) => match model.section() {
+                    Some(section) => Some(&section.decompression),
+                    None => return false,
+                },
+                None => None,
+            };
+            if !pose_matches(&draw.shader.constants[..], rows, decompression)
+                || draw.retail_constants.as_ref().is_some_and(|(constants, _)|
+                    !pose_matches(&constants[..], rows, decompression)) {
+                return false;
+            }
+        }
         let (primitive, (writes_depth, depth_compare)) = native_render::program::pipeline_state(
             Some(&program.state),
             self.cull.of(program.inherits_cull, true),
@@ -2253,6 +2305,17 @@ impl PreparedLight {
             model: None,
         }
     }
+}
+
+/// The handler may re-pose a model between planning and indexed emission.
+fn pose_matches(constants: &[Row], nodes: &[Row], decompression: Option<&[Row; 3]>) -> bool {
+    use native_render::program::{MODEL_ROWS, POSITION_DECOMPRESSION};
+    let matches = |start: usize, rows: &[Row]| {
+        constants.get(start..start + rows.len()).is_some_and(|live|
+            live.iter().zip(rows).all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits)))
+    };
+    matches(MODEL_ROWS, nodes)
+        && decompression.is_none_or(|rows| matches(POSITION_DECOMPRESSION, rows))
 }
 
 /// Intersect in guest pixels, after the guest projected and rounded its
@@ -2502,48 +2565,66 @@ mod tests {
     use engine::FlatMemory;
 
     #[test]
-    fn a_light_range_requires_its_original_sorted_slot_and_geometry() {
-        use native_render::world_layers::{Geometry, Owner as ResolvedOwner};
-        let entry = SortedItem {
-            slot: 8,
-            handler_item: 16,
-            implementation: 2,
-            geometry: Some(native_render::light_list::Item {
-                part: (Owner::Cluster(4), 3),
-                shader: 0xe000_0001,
-                layers: 1 << 12,
-            }),
-        };
-        let draw = Geometry {
-            shader: 0xe000_0001,
-            variant: 0,
-            implementation: 2,
-            sorted_slot: 8,
+    fn gathered_models_match_the_live_instance_pass_class_and_complete_index_window() {
+        use frame_scene::{InstanceKey, LightBinding, LightPose, LightStream, Topology};
+        use gfx::vertex::PrimitiveType::{TriangleList, TriangleStrip};
+        let entry = LightEntry {
+            slot: 2,
             record: 5,
-            part: 3,
-            owner: ResolvedOwner::Cluster(4),
+            owner: LayerOwner::Object(InstanceKey(101)),
+            model: 80,
+            stream: LightStream {
+                section: 7, part: 3, vertex_class: 6, first_index: 12,
+                index_count: 9, topology: Topology::Strip,
+            },
+            pose: LightPose::Rows(0..6),
+            binding: LightBinding { shader: 64, selector: 2, variant: 1, implementation: 4 },
         };
-        assert!(matches_light_entry(entry, draw));
+        let slot = LightSlot::new(8, 72, &entry);
+        let owner = |handle, model, section| ResolvedOwner::Object { handle, model, section };
+        let live = Geometry {
+            shader: 64, variant: 1, implementation: 4, sorted_slot: 8,
+            record: 5, part: 3, owner: owner(101, 80, 7),
+        };
+        let selection = Some((2, 6));
+        assert!(slot.matches(live, selection, TriangleStrip, 72, 9));
         for changed in [
-            Geometry {
-                sorted_slot: 32,
-                ..draw
-            },
-            Geometry {
-                implementation: 1,
-                ..draw
-            },
-            Geometry {
-                shader: 0xe000_0002,
-                ..draw
-            },
-            Geometry {
-                owner: ResolvedOwner::Placement(4),
-                ..draw
-            },
+            Geometry { sorted_slot: 32, ..live },
+            Geometry { record: 6, ..live },
+            Geometry { part: 2, ..live },
+            Geometry { shader: 64 + (1 << 16), ..live },
+            Geometry { variant: 0, ..live },
+            Geometry { implementation: 2, ..live },
+            Geometry { owner: owner(102, 80, 7), ..live },
+            Geometry { owner: owner(101, 81, 7), ..live },
+            Geometry { owner: owner(101, 80, 6), ..live },
+            Geometry { owner: ResolvedOwner::Cluster(7), ..live },
         ] {
-            assert!(!matches_light_entry(entry, changed));
+            assert!(!slot.matches(changed, selection, TriangleStrip, 72, 9));
         }
+        for changed in [None, Some((1, 6)), Some((2, 5))] {
+            assert!(!slot.matches(live, changed, TriangleStrip, 72, 9));
+        }
+        assert!(!slot.matches(live, selection, TriangleList, 72, 9));
+        assert!(!slot.matches(live, selection, TriangleStrip, 72, 6));
+        assert!(!slot.matches(live, selection, TriangleStrip, 74, 9));
+    }
+
+    #[test]
+    fn moved_nodes_and_replaced_decompression_refuse_the_resident_model() {
+        use native_render::program::{MODEL_ROWS, POSITION_DECOMPRESSION};
+        let nodes = [[0.5; 4]; 6];
+        let compression = [[2.; 4]; 3];
+        let mut live = vec![[0.; 4]; POSITION_DECOMPRESSION + 3];
+        live[MODEL_ROWS..MODEL_ROWS + nodes.len()].copy_from_slice(&nodes);
+        live[POSITION_DECOMPRESSION..].copy_from_slice(&compression);
+        assert!(pose_matches(&live, &nodes, Some(&compression)));
+        live[MODEL_ROWS + 4][1] = 0.;
+        assert!(!pose_matches(&live, &nodes, Some(&compression)));
+        live[MODEL_ROWS + 4] = nodes[4];
+        live[POSITION_DECOMPRESSION][3] = 0.;
+        assert!(!pose_matches(&live, &nodes, Some(&compression)));
+        assert!(pose_matches(&live, &nodes, None));
     }
 
     fn level(face: u32, level: u32, depth: u32) -> assets::bitmap::Level {
@@ -2794,64 +2875,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn gathered_parts_match_owner_part_and_full_shader_in_guest_layer_order() {
-        let shader = TagId(0x1234_0017);
-        let part = |owner, first_index| WorldDraw {
-            owner: Owner::Cluster(owner),
-            part: 1,
-            material: 3,
-            lightmap: None,
-            first_index,
-            index_count: 3,
-            bounds: native_render::world::Aabb::EMPTY,
-            batch: 0,
-            inputs: 1,
-        };
-        let (a, b) = (part(7, 30), part(8, 6));
-        let clusters =
-            ClusterParts::from([((a.owner, 1), (shader, a)), ((b.owner, 1), (shader, b))]);
-        let entry = |slot, d: WorldDraw, implementation| SortedItem {
-            slot,
-            handler_item: slot + 80,
-            implementation,
-            geometry: Some(native_render::light_list::Item {
-                part: (d.owner, d.part),
-                shader: shader.0,
-                layers: 1 << 12,
-            }),
-        };
-        let mut items = [
-            entry(1, b, 2),
-            entry(2, b, 3),
-            entry(3, a, 1),
-            entry(4, b, 1),
-        ];
-        assert_eq!(
-            items
-                .iter()
-                .map(|item| select_part(&clusters, item).unwrap())
-                .collect::<Vec<_>>(),
-            [
-                (DIFFUSE_LAYER, 2, b),
-                (DIFFUSE_LAYER, 3, b),
-                (DIFFUSE_LAYER, 1, a),
-                (DIFFUSE_LAYER, 1, b)
-            ]
-        );
-        items[2].geometry.as_mut().unwrap().shader ^= 1 << 24;
-        assert_eq!(
-            select_part(&clusters, &items[2]).unwrap_err(),
-            "gathered shader datum differs from the cluster material"
-        );
-        items[2].geometry.as_mut().unwrap().shader ^= 1 << 24;
-        items[0].geometry = None;
-        assert!(
-            select_part(&clusters, &items[0]).is_err(),
-            "a gathered model keeps the whole light on D3D"
-        );
     }
 
     #[test]
