@@ -10,11 +10,11 @@
 //!   `speed > 16.0` is true exactly when the host's `speed > 16.0` is.
 //! - The end of a run of bounces is `Input::Grounded`.
 //!
-//! `p.airborne` and `p.primed` are reads of the same chain's view of each
+//! `p.airborne`, `p.crouching` and `p.primed` read the chain's view of each
 //! player's biped on its last step ([`crate::superbounce_chain::Body`]):
 //! the runtime keeps the latest set ([`crate::rules::runtime::Runtime::bodies`])
-//! and the game answers from it ([`read`]); a player with no unit in the
-//! step, and any tick the mode does not step, reads false.
+//! and the game answers from it ([`read`]). A player with no unit in the
+//! snapshot reads false.
 //!
 //! A chain step sees at most one touchdown, one launch and one end of a
 //! run for its player, so a tick has at most 16 of each: the events' cap
@@ -59,7 +59,7 @@ pub fn input(slot: u8, p: Physics) -> Input {
     }
 }
 
-/// The answer to `airborne` or `primed` (`entry`) for player `slot`: false
+/// The answer to a biped read (`entry`) for player `slot`: false
 /// for a player with no body in `bodies`, and for any other entry.
 pub fn read(bodies: &[Body], entry: u16, slot: u8) -> bool {
     let Some(b) = bodies.iter().find(|b| b.slot == slot) else {
@@ -67,6 +67,7 @@ pub fn read(bodies: &[Body], entry: u16, slot: u8) -> bool {
     };
     match entry {
         ::rules::caps::id::AIRBORNE => b.airborne,
+        ::rules::caps::id::CROUCHING => b.crouching,
         ::rules::caps::id::PRIMED => b.primed,
         _ => false,
     }
@@ -142,13 +143,14 @@ mod tests {
     fn the_reads_answer_from_the_last_step_and_false_for_the_rest() {
         use ::rules::caps::id;
         let bodies = [
-            Body { slot: 2, airborne: true, primed: false },
-            Body { slot: 4, airborne: false, primed: true },
+            Body { slot: 2, airborne: true, crouching: false, primed: false },
+            Body { slot: 4, airborne: false, crouching: true, primed: true },
         ];
         assert!(read(&bodies, id::AIRBORNE, 2) && !read(&bodies, id::PRIMED, 2));
         assert!(!read(&bodies, id::AIRBORNE, 4) && read(&bodies, id::PRIMED, 4));
         assert!(!read(&bodies, id::AIRBORNE, 3), "no unit in the step");
-        assert!(!read(&bodies, id::CROUCHING, 2), "crouching has no host half");
+        assert!(!read(&bodies, id::CROUCHING, 2));
+        assert!(read(&bodies, id::CROUCHING, 4));
         assert!(!read(&[], id::PRIMED, 4));
     }
 

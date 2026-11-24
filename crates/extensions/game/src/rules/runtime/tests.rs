@@ -595,8 +595,8 @@ fn the_game_answers_airborne_and_primed_from_the_chains_bodies() {
     let (m, _) = guest([0; LEN], SLAYER);
     let mut calls = Vec::new();
     let bodies = [
-        Body { slot: 0, airborne: true, primed: false },
-        Body { slot: 1, airborne: false, primed: true },
+        Body { slot: 0, airborne: true, crouching: false, primed: false },
+        Body { slot: 1, airborne: false, crouching: false, primed: true },
     ];
     let mut g = GuestGame::new(&m, &mut calls).with_bodies(&bodies);
     let read = |g: &mut GuestGame<'_>, name: &str, p: Option<u8>| {

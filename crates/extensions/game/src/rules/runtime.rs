@@ -155,6 +155,10 @@ pub const READS: &[u16] = &[
     // A field of a tag the map holds (`super::world::map_tags::read`).
     id::TAG_INT,
     id::TAG_FIXED,
+    // The superbounce chain's biped snapshot (super::world::physics).
+    id::AIRBORNE,
+    id::CROUCHING,
+    id::PRIMED,
 ];
 /// The action entries this runtime makes.
 pub const ACTIONS: &[u16] = &[
@@ -572,6 +576,7 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
     if let Some(why) = super::world::audio::refusal(ir) {
         return Some(why);
     }
+    let superbounce = super::header::asks_superbounce(ir);
     for hd in &ir.handlers {
         if !DELIVERED.contains(&hd.event) {
             return Some(format!(
@@ -586,6 +591,14 @@ fn runtime_refusal(ir: &Ir) -> Option<String> {
                         continue;
                     };
                     match e.kind {
+                        Kind::Read if matches!(e.id, id::AIRBORNE | id::CROUCHING | id::PRIMED)
+                            && !superbounce =>
+                        {
+                            return Some(format!(
+                                "the script reads {}, which needs the superbounce mode (add `requires {}`)",
+                                e.name, super::header::SUPERBOUNCE
+                            ));
+                        }
                         Kind::Read if !READS.contains(&e.id) => {
                             return Some(format!(
                                 "the script reads {}, which this host runtime does not answer yet",
@@ -644,7 +657,7 @@ pub struct GuestGame<'a> {
     /// The map's tag paths, for `tag_int` and `tag_fixed`; none reads 0.
     pub tags: Option<&'a TagIndex>,
     /// The players' bodies at the last superbounce chain step, for
-    /// `airborne` and `primed` (`super::world::physics`); none reads false.
+    /// `airborne`, `crouching` and `primed` (`super::world::physics`); none reads false.
     pub bodies: &'a [crate::superbounce_chain::Body],
 }
 
@@ -858,7 +871,7 @@ impl Game for GuestGame<'_> {
                 .unwrap_or(0),
                 _ => 0,
             },
-            id::AIRBORNE | id::PRIMED => {
+            id::AIRBORNE | id::CROUCHING | id::PRIMED => {
                 p.is_some_and(|p| super::world::physics::read(self.bodies, call.entry.id, p)) as i32
             }
             id::PLAYER_OF => match call.args.first() {
@@ -1395,6 +1408,7 @@ impl Runtime {
     /// which runs only the built-in scripts. Returns the line to log.
     pub fn start(&mut self, m: &dyn GuestMemory, system_link: bool) -> String {
         self.errors.clear();
+        self.bodies.clear();
         self.store.remove();
         if bots::guest::game_mode(m) != Some(MODE_MULTIPLAYER) {
             self.status = Status::Idle("not a multiplayer game");
@@ -1853,7 +1867,7 @@ impl Runtime {
     }
 
     /// The players' bodies at the medal chain's step, replacing the last
-    /// set: what a script's `p.airborne` and `p.primed` read until the next.
+    /// set for a script's biped reads.
     pub fn bodies(&mut self, bodies: &[crate::superbounce_chain::Body]) {
         self.bodies.clear();
         self.bodies.extend_from_slice(bodies);

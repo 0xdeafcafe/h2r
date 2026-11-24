@@ -406,11 +406,11 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 - **Known runtime gaps.** A host refuses a script, by name, if it calls an
   entry that is not `named` or VM-only: `set_team`, `give`,
   `take`, `create`, `register_objective`,
-  `spawn_objective`, and the physics read `crouching`. The host answers
-  `sees(a, b)` from the next tick boundary's collision trace, one tick
-  after the first request. `airborne` and `primed` are
-  the superbounce chain's view of the biped, so they read false outside
-  a game that `requires hud.superbounce`. `on touchdown`,
+  and `spawn_objective`. The host answers `sees(a, b)` from the next
+  tick boundary's collision trace, one tick after the first request.
+  `airborne`, `crouching` and `primed` read the superbounce chain's
+  biped snapshot. The host names the read and refuses the script at
+  start if it omits `requires hud.superbounce`. `on touchdown`,
   `on launch` and `on grounded` come from the superbounce mode's medal
   chain, so a host delivers them only to a script that `requires
   hud.superbounce`. `push` and
@@ -420,7 +420,7 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   `death`, `enter`, `leave`, `arrive` and `damage`;
   reads only scores, kills, deaths, `alive`, `team_of`, `lives`,
   `round_time_left`, `is_objective`, `carrier_of`, the label reads,
-  `inside`, `player_of`, `object_pos` and `object_vel`; makes only `score`, `end_round`, `set_lives`,
+  `inside`, `player_of`, `object_pos`, `object_vel` and the three biped reads; makes only `score`, `end_round`, `set_lives`,
   `respawn`, `role_traits`, `reset_objective`, `sound_to`, `sound_to_team` and `sound_to_all` (a `sound` of the map, played at the audience's units), `set_loadout` (the
   multiplayer weapon list's tags only), `spawn_areas` and `spawn_near`
   (a team's spawn rule, read at each spawn), `set_body` (a team's body,
