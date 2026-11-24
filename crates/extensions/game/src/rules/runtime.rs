@@ -74,7 +74,9 @@ use variants::ext::{Ext, Mode};
 
 use super::census::{self, Table};
 use super::guest;
+use super::world::data;
 use super::world::zones::{self, Change, Seen, Zones};
+use sim_state::SimEvent;
 use crate::firefight::runtime::read_players;
 use forge_doc::LabelledThing;
 
@@ -106,6 +108,9 @@ pub const DELIVERED: &[Event] = &[
     Event::Death,
     Event::Enter,
     Event::Leave,
+    // From the tick's `SimEvent::Damage` events (`Runtime::post_tick`,
+    // `super::world::data::damage_inputs`).
+    Event::Damage,
 ];
 /// The read entries this runtime answers.
 pub const READS: &[u16] = &[
@@ -1581,8 +1586,11 @@ impl Runtime {
     /// After the game tick: what changed on the roster and in the zones
     /// since the VM was last told (`on death`, `on spawn`, `on leave`, `on
     /// enter`; [`zones::events`]), then timers, then `on tick`. A script
-    /// with no handler for an event has none of it worked out.
-    pub fn post_tick(&mut self, m: &dyn GuestMemory) {
+    /// with no handler for an event has none of it worked out. `events` is
+    /// the tick's sim events: its damage (`on damage`, the first
+    /// [`data::MAX_DAMAGE`], in the order the game applied it) is told
+    /// before the roster's changes, so before `on tick`.
+    pub fn post_tick(&mut self, m: &dyn GuestMemory, events: &[SimEvent]) {
         let Some(tick) = bots::guest::game_tick(m) else {
             return;
         };
@@ -1593,7 +1601,12 @@ impl Runtime {
             }
             _ => return,
         };
+        let wants_damage = matches!(&self.status, Status::Running(r) if r.vm.ir().handlers.iter().any(|h| h.event == Event::Damage));
+        let damage = if wants_damage { data::damage_inputs(events) } else { Vec::new() };
         self.run(m, |vm, g| {
+            for input in damage {
+                vm.fire(g, input);
+            }
             tell(vm, g, &mut seen);
             vm.update(g);
         });

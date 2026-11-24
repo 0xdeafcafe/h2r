@@ -374,7 +374,7 @@ impl hooks::Feature for Rules {
         b.frame().on_tick("run the rules script's tick", move |o| {
             let mem = o.guest();
             let m: &dyn GuestMemory = &*mem;
-            s.lock().post_tick(m);
+            sim_state::events(|events| s.lock().post_tick(m, events));
         });
         let s = Arc::clone(&self.shared);
         super::start_line::replace_carrier(

@@ -299,7 +299,7 @@ fn reset_objective_returns_an_oddball_through_the_engines_ball_return() {
     drive(&s, m, work, true);
     // The tick finds the ball on the ground and queues its return.
     let (m, _) = oddball_guest(block(prefix(&id), 0), TICK + 1, None);
-    s.lock().post_tick(&m);
+    s.lock().post_tick(&m, &[]);
     let work = s.lock().pre_tick(&m).expect("the queued return");
     assert_eq!(work.calls, [Call::ResetObjective(BALL)]);
     let calls = drive(&s, m, work, true);
@@ -331,7 +331,7 @@ fn a_carried_salted_objective_is_visited_and_its_carrier_read() {
         ENGINE + engine::objectives::OBJECTIVES + engine::objectives::RECORD_PLAYER,
         datums[0],
     );
-    s.lock().post_tick(&m);
+    s.lock().post_tick(&m, &[]);
     // The carried ball was visited, its carrier read as a player, and no
     // return was queued.
     let queued = s.lock().pre_tick(&m).map(|w| w.calls);

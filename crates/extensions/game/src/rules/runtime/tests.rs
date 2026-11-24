@@ -515,14 +515,14 @@ fn a_reverted_record_resumes_the_vm_from_it() {
     assert_eq!(s.lock().state().budget.unwrap().tick, TICK + 1);
     // A checkpoint revert puts the start's record back.
     store.put(at_start.clone());
-    s.lock().post_tick(&m);
+    s.lock().post_tick(&m, &[]);
     assert_eq!(s.lock().state().budget.unwrap().tick, 0);
     assert_eq!(store.bytes(), Some(at_start));
     // A full restore clears it: the script stops, by name.
     *store.0.lock().unwrap() = None;
     let mut m = m;
     m.put_u32(GAME_TIME + 8, TICK + 1);
-    s.lock().post_tick(&m);
+    s.lock().post_tick(&m, &[]);
     let why = s.lock().state().refused.unwrap();
     assert!(why.contains("RULES record was cleared"), "{why}");
 }
@@ -1212,7 +1212,7 @@ mod round_start_and_quit {
         let other = 1 - j;
         leave(&mut m, other);
         s.lock().quit(&m, other);
-        s.lock().post_tick(&m);
+        s.lock().post_tick(&m, &[]);
         assert_eq!(holder(&s), i32::from(j));
         assert!(pending(&s).is_empty());
     }
@@ -1231,7 +1231,7 @@ mod round_start_and_quit {
         assert_eq!(holder(&s), ::rules::ty::NONE);
         assert!(pending(&s).is_empty(), "{:?}", pending(&s));
         // `on tick` names one from those left.
-        s.lock().post_tick(&m);
+        s.lock().post_tick(&m, &[]);
         assert_eq!(holder(&s), i32::from(heir));
         assert_eq!(pending(&s), [role(heir, true)]);
         // The next boundary gives it through the role setter.
