@@ -308,7 +308,7 @@ impl LevelWrites {
     /// The write of one block: patched in place, only the runs that
     /// differ, when its count holds; else grown. `old` is the block and its
     /// bytes as read, `pair` where its pair is, `new` the count and bytes.
-    fn block(
+    pub(crate) fn block(
         &mut self,
         name: &'static str,
         (old, old_bytes): (BlockAt, &[u8]),
@@ -335,6 +335,51 @@ impl LevelWrites {
             bytes: bytes.to_vec(),
             align: GROWN_ALIGN,
         });
+    }
+}
+
+impl LevelWrites {
+    /// The write of a MOPP block: over the old program when the new one
+    /// fits, its count set to the new length and the old tail zeroed;
+    /// else a grown block. `old` is the block and its bytes as read, `pair`
+    /// where its `(count, address)` pair is.
+    pub(crate) fn mopp(
+        &mut self,
+        (old, old_bytes): (BlockAt, &[u8]),
+        (pair_space, pair): (Option<AddressSpace>, u32),
+        new: &[u8],
+    ) {
+        let fits = old.count > 0 && new.len() <= old.count as usize;
+        if fits {
+            let mut bytes = new.to_vec();
+            bytes.resize(old.count as usize, 0);
+            for (offset, run) in changed_runs(old_bytes, &bytes) {
+                let was = old_bytes[offset..offset + run.len()].to_vec();
+                self.patches.push(RegionWrite {
+                    space: old.space,
+                    address: old.address + offset as u32,
+                    bytes: run,
+                    was,
+                });
+            }
+            if new.len() != old.count as usize {
+                self.patches.push(RegionWrite {
+                    space: pair_space,
+                    address: pair,
+                    bytes: (new.len() as u32).to_le_bytes().to_vec(),
+                    was: old.count.to_le_bytes().to_vec(),
+                });
+            }
+        } else if !new.is_empty() {
+            self.grown.push(GrownBlock {
+                name: "mopp",
+                pair_space,
+                pair,
+                count: new.len() as u32,
+                bytes: new.to_vec(),
+                align: GROWN_ALIGN,
+            });
+        }
     }
 }
 
@@ -381,40 +426,11 @@ impl LevelEdit {
             (src.space, src.root + LEAVES_FIELD as u32),
             ((new.leaves.len() / LEAF_SIZE) as u32, &new.leaves),
         );
-        let old = src.mopp;
-        let fits = old.count > 0 && new.mopp.len() <= old.count as usize;
-        if fits {
-            // Over the old program: the new code, then zeros to the old
-            // block's end, and the count set to the new length.
-            let mut bytes = new.mopp.clone();
-            bytes.resize(old.count as usize, 0);
-            for (offset, run) in changed_runs(&src.level.mopp, &bytes) {
-                let was = src.level.mopp[offset..offset + run.len()].to_vec();
-                out.patches.push(RegionWrite {
-                    space: old.space,
-                    address: old.address + offset as u32,
-                    bytes: run,
-                    was,
-                });
-            }
-            if new.mopp.len() != old.count as usize {
-                out.patches.push(RegionWrite {
-                    space: src.space,
-                    address: src.root + MOPP_FIELD as u32,
-                    bytes: (new.mopp.len() as u32).to_le_bytes().to_vec(),
-                    was: old.count.to_le_bytes().to_vec(),
-                });
-            }
-        } else if !new.mopp.is_empty() {
-            out.grown.push(GrownBlock {
-                name: "mopp",
-                pair_space: src.space,
-                pair: src.root + MOPP_FIELD as u32,
-                count: new.mopp.len() as u32,
-                bytes: new.mopp.clone(),
-                align: GROWN_ALIGN,
-            });
-        }
+        out.mopp(
+            (src.mopp, &src.level.mopp),
+            (src.space, src.root + MOPP_FIELD as u32),
+            &new.mopp,
+        );
         out
     }
 

@@ -2434,8 +2434,8 @@ the window and the API stay one path.
   IDs are the Tags tool's to edit (`REFUSED`).
 - **Modeling (studio-modeling, landed in part).** `api/geometry.rs`:
   `geometry.list` gives the open map's structure clusters and instanced
-  definitions (and a render model's sections with `model`) as target ids
-  `kind:tag:index` (`cluster:e1000004:0`); `geometry.open` enters edit
+  definitions, every `coll` BSP (`coll_bsp:…`) and, with `model`, a render
+  model's sections as target ids `kind:tag:index` (`cluster:e1000004:0`); `geometry.open` enters edit
   mode on one, after which a `target` param may be left out.
   `geometry.read` gives the mesh (positions by vertex id, faces, the
   selection); `mesh.*` are `Action::Model(ModelAction::Apply)`, one undo
@@ -2445,7 +2445,10 @@ the window and the API stay one path.
   `geometry.check` gives each open target's write class and
   `save_refusal`, why a save would be refused (Allow unverified geometry
   writes off, `allow_unverified`, or an edit that changes a count).
-  `geometry.collision.add_box {structure, lo, hi, material?}` adds a
+  `geometry.lower_lods {target?, on?}` is **Use for lower LODs** on an
+  open model section (`Action::Model(ModelAction::UseForLowerLods)`, one
+  undo step; `on` defaults to true) and answers `changed`; any other
+  target is refused. `geometry.collision.add_box {structure, lo, hi, material?}` adds a
   closed box solid inside `[lo, hi]` to a structure's level collision
   (`structure` its tag id), onto the boxes added before, as
   `Action::Model(ModelAction::AddCollisionBox)`, and answers its counts

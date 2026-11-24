@@ -388,6 +388,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::GEOMETRY_CLOSE
         | m::GEOMETRY_READ
         | m::GEOMETRY_CHECK
+        | m::GEOMETRY_LOWER_LODS
         | m::MESH_MODE
         | m::MESH_SELECT
         | m::MESH_TRANSFORM
@@ -1387,6 +1388,10 @@ fn every_method_in_methods_has_a_test() {
             // The invented map has no hill with corners to convert
             // (markers_tests.rs makes one).
             (None, Err(e)) if d.name == m::MARKERS_AREA_CONVERT && e.code == code::REFUSED => {}
+            // The invented map has no render model: its example names a
+            // model section that is not open (the refusal of any other
+            // target is `use_for_lower_lods_is_for_model_sections`).
+            (None, Err(e)) if d.name == m::GEOMETRY_LOWER_LODS && e.code == code::NO_DOCUMENT => {}
             // Retail tag edits need the disc's screens: ours are refused.
             (None, Err(e))
                 if matches!(d.name, m::UI_HIDE | m::UI_DUPLICATE | m::UI_SET_STRING)
@@ -4305,6 +4310,67 @@ fn a_geometry_edit_saves_only_with_the_unverified_switch_on() {
     let (source, saved) = (std::fs::read(&map).unwrap(), std::fs::read(&out).unwrap());
     assert_eq!(saved.len(), source.len());
     assert_ne!(saved, source);
+}
+
+#[test]
+fn use_for_lower_lods_is_for_model_sections() {
+    let t = Temp::new("geometry-lods");
+    let (mut api, mut app, _) = textured(&t);
+    // A cluster has no levels of detail: refused, nothing recorded.
+    let e = api
+        .call(&mut app, m::GEOMETRY_LOWER_LODS, json!({"target": "cluster:e1000004:0"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS, "{e}");
+    assert!(e.message.contains("levels of detail"), "{e}");
+    // A model section that is not open is not found.
+    let e = api
+        .call(&mut app, m::GEOMETRY_LOWER_LODS, json!({"target": "mode_section:e1000002:0"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::NO_DOCUMENT, "{e}");
+    // `on` must be a boolean.
+    assert!(
+        api.call(&mut app, m::GEOMETRY_LOWER_LODS, json!({"target": "cluster:e1000004:0", "on": 3}))
+            .is_err()
+    );
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "unchanged");
+    assert_eq!(check["save_refusal"], Value::Null);
+}
+
+#[test]
+fn a_coll_bsp_opens_as_a_mesh_and_a_compile_that_cannot_hold_is_named() {
+    let t = Temp::new("geometry-coll");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let map = t.path("objects.map");
+    std::fs::write(&map, fixture::fixture_with_object_collision()).unwrap();
+    call(&mut api, &mut app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+    let list = call(&mut api, &mut app, m::GEOMETRY_LIST, Value::Null);
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "coll_bsp")
+        .expect("the object's collision BSP is listed")
+        .clone();
+    let id = entry["target"].as_str().unwrap().to_owned();
+    assert!(id.starts_with("coll_bsp:"), "{id}");
+    let cube = fixture::collision_cube();
+    assert_eq!(entry["triangles"], json!(cube.surfaces.len()));
+    let open = call(&mut api, &mut app, m::GEOMETRY_OPEN, json!({"target": id}));
+    assert_eq!(open["faces"], json!(cube.surfaces.len()));
+    // An unedited BSP has nothing to write.
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "unchanged");
+    // Moving it recompiles it; the invented tag has no collision
+    // materials, so the compile is refused with the reason.
+    call(&mut api, &mut app, m::MESH_MODE, json!({"mode": "vert"}));
+    call(&mut api, &mut app, m::MESH_SELECT, json!({"all": true}));
+    call(&mut api, &mut app, m::MESH_TRANSFORM, json!({"translate": [0.0, 0.0, 1.0]}));
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "grown_blocks");
+    assert!(check["targets"][0]["refused"].is_string(), "{check}");
+    assert!(check["save_refusal"].is_string(), "{check}");
 }
 
 #[test]
