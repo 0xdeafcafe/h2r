@@ -207,7 +207,7 @@ source = "scripts/hill.variant.rules"
     for name in ["hill.rules", "hill.variant.rules"] {
         std::fs::write(
             t.0.join("data/packages/items/scripts").join(name),
-            "rules \"Hill\" 1\ntype party\n\nrequires hud.message\n",
+            "rules \"Hill\" 1\ntype slayer\nuses slayer\n",
         )
         .unwrap();
     }

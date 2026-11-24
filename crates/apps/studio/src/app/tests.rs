@@ -1735,12 +1735,11 @@ source = "edits/blaster.yaml"
 "#,
     )
     .unwrap();
-    // The opening lines of a script (docs/game/rules-engine.md): a name,
-    // a type, what it requires.
+    // Both items use a buildable script so the variant can open its settings.
     for name in ["hill.rules", "hill.variant.rules"] {
         std::fs::write(
             dir.join("scripts").join(name),
-            "rules \"Hill\" 1\ntype party\n\nrequires hud.message\n",
+            "rules \"Hill\" 1\ntype slayer\nuses slayer\n",
         )
         .unwrap();
     }
