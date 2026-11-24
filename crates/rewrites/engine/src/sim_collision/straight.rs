@@ -134,3 +134,99 @@ pub fn vector_context(
         .map(|walk| commit(c, g, &plan, walk))
         .transpose()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{CollisionWorld, layout, vector_parity};
+    use runtime::{CpuAbi, Guest, guest::Permissions};
+    use sim_collision::{
+        Bail, Entry,
+        synth::{Builder, SOLID},
+    };
+    use sim_core::Epoch;
+
+    const DATA: u32 = 0x10_000;
+    const BSP: u32 = DATA;
+    const RECORD: u32 = DATA + 0x1000;
+    const CONTEXT: u32 = DATA + 0x2000;
+    const START: u32 = DATA + 0x3000;
+    const DELTA: u32 = START + 16;
+    const SP: u32 = 0x30_000;
+    const FRAME_BYTES: u32 = 0x4000;
+    const FRAME_PHYS: u32 = 0x10_000;
+
+    fn snapshot(g: &Guest) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        // Read each mapping separately, including both virtual names of
+        // any aliased bytes. Split mappings must not conceal partial writes.
+        for m in g.mappings() {
+            let start = bytes.len();
+            bytes.resize(start + m.len as usize, 0);
+            g.read_bytes(m.virtual_start, &mut bytes[start..], 1)
+                .unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn mapped_return_and_arguments_cannot_alias_the_discarded_frame() {
+        for entry in [Entry::VectorTest, Entry::VectorContext] {
+            for (ret, args, alias) in [
+                (0x20_000, 0x21_000, false),
+                (FRAME_PHYS + FRAME_BYTES - 8, 0x21_000, true),
+                (0x20_000, FRAME_PHYS + FRAME_BYTES - 16, true),
+            ] {
+                let mut g = Guest::new();
+                g.map(DATA, 0x4000, 0, Permissions::RW).unwrap();
+                g.map(layout::PROJECTION, 36, 0x4000, Permissions::RW)
+                    .unwrap();
+                g.map(layout::ONE, 0x40, 0x5000, Permissions::RW).unwrap();
+                g.map(SP - FRAME_BYTES, FRAME_BYTES, FRAME_PHYS, Permissions::RW)
+                    .unwrap();
+                g.map(SP, 4, ret, Permissions::RW).unwrap();
+                g.map(SP + 4, 16, args, Permissions::RW).unwrap();
+                g.set_u32(layout::ONE, 1.0f32.to_bits()).unwrap();
+                g.set_u32(SP, 0xabcd_ef00).unwrap();
+                let mut tree = Builder::default();
+                tree.planes.push([1.0, 0.0, 0.0, 0.0]);
+                tree.nodes.push((0, SOLID, SOLID));
+                tree.write(BSP, |a, b| g.write_bytes(a, b, 1).unwrap());
+                let mut c = CpuAbi {
+                    eax: RECORD,
+                    edx: BSP,
+                    esp: SP,
+                    mxcsr: 0x1fa0,
+                    ..CpuAbi::default()
+                };
+                let dispatch = if entry == Entry::VectorTest {
+                    g.set_u32(SP + 12, START).unwrap();
+                    g.set_u32(SP + 16, DELTA).unwrap();
+                    vector_parity::dispatch_vector
+                } else {
+                    use layout::context as ctx;
+                    g.set_u32(SP + 4, CONTEXT).unwrap();
+                    g.set_u32(CONTEXT + ctx::BSP, BSP).unwrap();
+                    g.set_u32(CONTEXT + ctx::RECORD, RECORD).unwrap();
+                    g.set_u32(CONTEXT + ctx::START, START).unwrap();
+                    g.set_u32(CONTEXT + ctx::DELTA, DELTA).unwrap();
+                    vector_parity::dispatch_context
+                };
+                static EPOCH: Epoch = Epoch::new();
+                let world = CollisionWorld::new(&EPOCH);
+                let before = (c, snapshot(&g));
+                let result = dispatch(17, &mut c, &mut g, &world).unwrap();
+                if alias {
+                    assert!(result.is_none(), "{entry:?} ret {ret:#x} args {args:#x}");
+                    assert_eq!(c, before.0);
+                    assert_eq!(snapshot(&g), before.1);
+                    assert_eq!(
+                        world.stats().entries[entry as usize].bails[Bail::Alias as usize],
+                        1
+                    );
+                } else {
+                    assert_eq!(result.unwrap().target_pc, 0xabcd_ef00);
+                }
+            }
+        }
+    }
+}
