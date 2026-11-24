@@ -1,13 +1,17 @@
-# Studio, redesigned: workspaces, packages, and the animation and sound editors
+# Studio, redesigned: one tag tree, packages, and the animation and sound editors
 
 Status: Design. Nothing on this page is built except what "What exists" names; the slices at the end are the order to build it in.
 Code: `crates/apps/studio/src` (the shell, `ui.rs`, `ui/layout.rs`, `app.rs`), `crates/apps/studio-proto/src` (the API's wire), `crates/formats/content/src/package/` (new: manifest, id, set), `crates/tools/workspace` (new: builders and the build), `crates/apps/boot/src/packages.rs` (new: the game's side). Tests: each slice names its own.
 Switch: none.
 
-Studio is one window with eight workspaces over one asset browser, one
-inspector and one preview, and every piece of content we add to the game
-is a **package**: a folder with a manifest that the game build, the game's
-boot, Studio and Live all read the same way. Halo 1 maps, the Pogo Stick,
+Studio is one window over one tree: every tag of every map on the
+user's discs, extracted, with our packages laid over it. There are no
+tools and no modes. Opening a tag opens the editor for what it is: a
+sound tag is the sound editor, an animation graph the animation editor,
+a scenario the map editor with its viewport. Every piece of content we
+add to the game is a **package**: a folder with a manifest that the game
+build, the game's boot, Studio and Live all read the same way. Halo 1
+maps, the Pogo Stick,
 our menu screens, the HUD kit's HUDs, Firefight, Forge, the Map Pack's
 rotations and the rules modes stop being separate injection paths in
 `boot` and become packages in one load order. The rules that must hold:
@@ -58,32 +62,30 @@ the calls before it):
 
 ### The shell
 
-One window. The workspace bar replaces the tool tabs. A workspace is a
-dock layout, a filter on the browser and a default editor; it holds no
-document of its own. Documents are tabs in the centre, and any document
-opens in any workspace.
+One window and one layout. The tool tabs go and nothing takes their
+place: what is on screen follows the document in front. Documents are
+tabs in the centre.
 
 ```
 +--------------------------------------------------------------------------------------+
 | File  Edit  View  Package  Game  Help                                                |
 +--------------------------------------------------------------------------------------+
-| Content | Map | Animation | Sound | UI/HUD | Rules | Playtest | Packages             |
-|                              into: pogo *  [v]          (o) Paired: h2 fast  > || >| |
+| [Go to anything........]     into: pogo *  [v]          (o) Paired: h2 fast  > || >| |
 +----------------+---------------------------------------------------+-----------------+
 | BROWSER        | pogo_unsc.weap x | pogo_unsc.mode | lockout.scnr  | INSPECTOR       |
 | [search......] +---------------------------------------------------+ pogo_unsc       |
 | Kind: [All  v] |                                                   | Weapon          |
-|                |                                                   | > Handling      |
-| v Packages     |              editor and preview                   |   Ready time    |
-|   v pogo  (*)  |          of the document in front                 |   0.25 s        |
-|     weapons    |                                                   | > Barrel        |
-|     models     |                                                   | > Model         |
-|     sounds     |                                                   |   -> pogo_unsc  |
-|   > ui         |                                                   |      .hlmt      |
-| v Disc         |  Preview: (o) Studio  ( ) My game  ( ) Attached   |                 |
-|   > Halo 2     |                                                   | Where used (3)  |
-|   > Map Pack   |                                                   | Changed by: pogo|
-|   > Halo 1     |                                                   |                 |
+| Map:  [All  v] |                                                   | > Handling      |
+| v Tags         |              the editor for this                  |   Ready time    |
+|   v objects    |               kind of tag, and                    |   0.25 s        |
+|     v weapons  |                its preview                        | > Barrel        |
+|       > rifle  |                                                   | > Model         |
+|       v pogo + |                                                   |   -> pogo_unsc  |
+|   > sound      |                                                   |      .hlmt      |
+|   > scenarios  |  Preview: (o) Studio  ( ) My game  ( ) Attached   |                 |
+|   > ui         |                                                   | Where used (3)  |
+| v Packages     |                                                   | Changed by: pogo|
+|   > pogo  (*)  |                                                   | In maps: 12     |
 +----------------+---------------------------------------------------+-----------------+
 | Problems (2) | Timeline | Pending | Game | Log                                       |
 |  ! pogo  weapons\pogo_unsc.weap  barrels[0].rounds_per_second: no such field         |
@@ -92,50 +94,65 @@ opens in any workspace.
 +--------------------------------------------------------------------------------------+
 ```
 
-- **Workspace bar** (`ui/bar.rs`). Left: the eight workspaces. Middle:
-  the **edit target**, the package that receives every edit ("into:
-  pogo"), with `*` while it has unsaved edits. Right: the game link pill
-  and its Play, Pause and Step controls, as built.
+- **The bar** (`ui/bar.rs`). Left: Go to anything. Middle: the **edit
+  target**, the package that receives every edit ("into: pogo"), with
+  `*` while it has unsaved edits. Right: the game link pill and its
+  Play, Pause and Step controls, as built.
 - **Browser** (left). One tree for everything Studio can open, in place
   of the Maps list, the Tags tab, the Variants and Playlists lists, the
   screen folders and the HUD list.
-- **Documents** (centre). One tab per open asset. Each has its own undo
+- **Documents** (centre). One tab per open tag. Each has its own undo
   stack, as `doc.list` reports them. The editor is the one
-  `app::kinds::KINDS` names for the asset's kind.
+  `app::kinds::KINDS` names for the tag's group; a group with no editor
+  of its own gets the field panel full width.
 - **Inspector** (right). The field panel's rows (`fields::rows`) for the
-  selection in the front document, with **Where used** and **Changed
-  by** (the packages whose edit lines touch the tag).
+  selection in the front document, with **Where used**, **In maps** and
+  **Changed by** (the packages whose edit lines touch the tag). Every
+  editor is a second view of these rows, so any tag can always be edited
+  field by field.
 - **Bottom dock.** **Problems** is one list for every check and build
-  error; **Timeline** is shared by the Animation, Sound and Playtest
-  workspaces; **Pending**, **Game** and **Log** are the built panels.
-- **Go to anything** (`ui/palette.rs`) searches assets of every source,
-  commands and workspaces.
+  error. **Timeline** shows when the front document has time (an
+  animation, a sound, a recording, a playtest run) and hides otherwise.
+  **Pending**, **Game** and **Log** are the built panels.
+- **Go to anything** (`ui/palette.rs`) searches every tag, package and
+  command.
 
 ### The browser
 
-Three roots: **Packages** (ours and the user's, the edit target first),
-**Disc** (the Halo 2 disc, the Map Pack and the Halo 1 disc, read-only,
-through `editor_core`'s sources) and **Live** (packages the server
-offers). Under a root, assets group by kind, not by map: Maps, Objects,
+The **Tags** root is the tag tree: every tag of every map of the Halo 2
+disc, the Map Pack and the Halo 1 disc, extracted once on first start
+into `<data>/tags/` (`tags::repo::TagRepo`,
+[tag-repo.md](../formats/tag-repo.md); the first start is slice W3 of
+[tag-workspace.md](tag-workspace.md)). It is one tree by tag path, as
+the tags name themselves (`objects\weapons\...`, `sound\...`,
+`scenarios\...`), not a list of maps. A tag that many maps hold is one
+row; where maps hold different versions the row opens to the tree's
+variants, each naming its maps. Tags our packages add are in the same
+tree at their own paths, marked `+`. A map is not a container here: it
+is its scenario tag, and opening that is opening the map.
+
+Two pickers and a search box narrow the tree: **Kind** (Maps, Objects,
 Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs,
-Rules, Variants, Playlists, Strings. A **Kind** picker and a search box
-(every word must match) narrow the tree; the workspace sets the picker's
-default.
+Strings, or a tag group) and **Map** (only what one map reaches, by the
+closure from its scenario). Every word of the search must match.
+
+The **Packages** root lists the set in load order, the edit target
+first; a package opens to its items and source files, and holds what is
+not a tag: `.rules` scripts, variants, playlists, recipes. **Live**
+lists packages the server offers.
 
 A row shows a thumbnail (a bitmap's image, a model through
 `model.render`, a sound's waveform, a screen through `ui.render`), the
-name, and a badge: **disc**, **edited by <package>**, **new in
-<package>**. A disc asset that several maps hold is one row, with the
-maps as its children; tags that differ between maps are told apart by the
-tag tree's variants ([tag-repo.md](../formats/tag-repo.md)), and until the
-tree is extracted (slice W3 of [tag-workspace.md](tag-workspace.md)) the
-Disc root lists per map, as the Maps list and Tags tab do.
+name, and a badge: **edited by <package>** or **new in <package>**.
 
-Double-click opens a document. Right-click offers **Open**, **Open in
-workspace**, **Copy into <edit target>** (for a disc asset: a new tag
-`like:` it, which holds no disc bytes), **Show edits**, **Where used**.
-Dragging a source file (PNG, WAV, glTF, YAML, `.rules`) onto a package
-runs the importer for its type.
+Double-click opens a document. Right-click offers **Open**, **Open as
+fields**, **Copy into <edit target>** (a new tag `like:` this one, which
+holds no disc bytes), **Show edits**, **Where used**. Dragging a source
+file (PNG, WAV, glTF, YAML, `.rules`) onto a package runs the importer
+for its type.
+
+A loose `.map` (a community mod) opened from **File > Open** is stored
+as an import layer (W9) and its tags join the tree under its name.
 
 ### Editing a disc asset
 
@@ -160,19 +177,28 @@ Pending are the built ones ([live-mirror.md](live-mirror.md)). The
 (Cmd/Ctrl+Enter) runs `pair.preview` for the front document's kind and
 puts the picture and its findings in Problems.
 
-### The workspaces
+### The editor follows the tag
 
-| Workspace | Browser shows | Centre | Bottom | Holds today's |
-|---|---|---|---|---|
-| **Content** | objects, models, bitmaps, shaders, effects, strings | the kind's editor with the model or bitmap preview | Problems | Tags tool, Textures tool, Modeling section, `model.*`, image generation |
-| **Map** | maps, and the open map's Scene as a second tab | the viewport with gizmo and layers | Pending, Game | Scenario tool, Scene, layers, collision and nav picks, Halo 1 overlay |
-| **Animation** | animation graphs and models | the posed model | Timeline with tracks and curves | nothing (new) |
-| **Sound** | sounds, dialogue, voices | waveform, permutations, mouth track | Timeline | the Sound and Voices windows |
-| **UI/HUD** | screens and HUDs | the 640 by 480 canvas | Problems | UI Screens tool, HUD tool |
-| **Rules** | scripts, variants, playlists | variant settings, script read-only, check and sim reports | Problems | Variants tool, Playlists tool, Scripts tab, the game type script window |
-| **Playtest** | maps and saved runs | the viewport with result overlays | Timeline (a run's ticks) | `playtest.*` and its overlays ([playtest.md](playtest.md)) |
-| **Packages** | packages only | the manifest, items, order and build | Problems, Log | Save as package, the Maps list's package cards, the Map Pack window |
+| Opening | Gives | With | Is today's |
+|---|---|---|---|
+| a scenario (`scnr`) | the map editor: the viewport with gizmo and layers | a **Scene** tab beside the browser; Pending and Game below; **Playtest** runs and their overlays ([playtest.md](playtest.md)) | Scenario tool, Scene, layers, collision and nav picks, the Halo 1 overlay, the Modeling section |
+| an object (`weap`, `vehi`, `bipd`, `scen`, `eqip`, `proj`, `hlmt`) | the object editor: the model, variants, markers, the tuning sheet | the model preview | the Tags tool, `model.*` |
+| a model (`mode`, `coll`, `phmo`) | the model view and the Modeling tools | | the Modeling section |
+| an animation graph (`jmad`) | the animation editor | the Timeline | nothing (new) |
+| a sound (`snd!`, `lsnd`, `udlg`) | the sound editor | the Timeline | the Sound and Voices windows |
+| a bitmap (`bitm`) | the canvas: paint, import, export | | the Textures tool, image generation |
+| a shader (`shad`, `stem`, `spas`) | the Shader tab and its preview | | the field panel |
+| an effect (`effe`, `prt3` and their kin) | the effect editor | the Timeline; the paired game as preview | the field panel |
+| a screen (`wgit`) or our screen YAML | the 640 by 480 canvas | Problems | the UI Screens tool |
+| a HUD (`nhdt`) or a HUD kit file | the same canvas with the HUD's states | Problems | the HUD tool |
+| a `.rules` script, a variant, a playlist file | the variant's settings, the script read-only, check and sim reports | Problems | the Variants and Playlists tools, the Scripts tab, the game type script window |
+| a package | its manifest, items, order and build ("Studio's side") | Problems, Log | Save as package, the package cards, the Map Pack window |
+| any other tag | the field panel | | the Tags tool |
 
+Panels a document brings (Scene, Timeline) dock where the layout has
+them and go when another document is in front; nothing else moves.
+
+**A scenario open.**
 **Map.**
 
 ```
@@ -187,7 +213,7 @@ puts the picture and its findings in Problems.
 +----------------+---------------------------------------------------+-----------------+
 ```
 
-**Rules.** Scripts are written in VS Code or Zed through the extensions
+**Scripts.** Scripts are written in VS Code or Zed through the extensions
 ([rules-editors.md](rules-editors.md)). Studio shows a script read-only
 with its problems, its options as a form, its check and simulation
 reports (`rules::workbench`), **Open in editor** (`app/external.rs`) and
@@ -197,13 +223,14 @@ formatter) is deleted; the language server is its one home.
 
 ### Navigation
 
-- Cmd/Ctrl+1 to 8 switch workspace; Cmd/Ctrl+P is Go to anything;
-  Cmd/Ctrl+Tab cycles documents; Alt+Left and Alt+Right step the
-  navigation history across documents (`app/navigation.rs`).
+- Cmd/Ctrl+P is Go to anything; Cmd/Ctrl+Tab cycles documents;
+  Alt+Left and Alt+Right step the navigation history across documents
+  (`app/navigation.rs`).
 - A reference row's **Show this tag** opens or focuses the target's
-  document. A document remembers the workspace it was last used in.
-- One layout per workspace persists in `h2-editor.ini`; **View > Reset
-  layout** restores the workspace shown.
+  document, so following references is how one moves from a weapon to
+  its model, its animations and its sounds.
+- One layout persists in `h2-editor.ini`; **View > Reset layout**
+  restores it.
 
 ### The API
 
@@ -212,9 +239,8 @@ Every row above is a method. The shell's own, in
 
 | Method | Does |
 |---|---|
-| `shell.workspace {name?}` | reads or sets the workspace |
 | `shell.tabs`, `shell.open {asset}`, `shell.focus {doc}`, `shell.close {doc, discard?}` | the document tabs; `doc.*` takes the same ids |
-| `asset.list {root?, package?, kind?, query?, limit?}` | the browser's rows with kind, origin badge and the packages that edit them |
+| `asset.list {root?, package?, kind?, map?, query?, limit?}` | the browser's rows with kind, origin badge and the packages that edit them |
 | `asset.thumb {asset, out?}` | a thumbnail as a PNG path |
 | `asset.copy {asset, package}` | Copy into a package |
 | `problems.list {source?}` | the Problems panel |
@@ -229,14 +255,16 @@ document id.
 ### What goes away
 
 - `ToolKind` as a mode, the tool tabs and the per-tool `ToolWindows`
-  (`ui/layout.rs`): a workspace is a layout.
+  (`ui/layout.rs`): the editor comes from the tag's kind.
+- Opening a map as the unit of work: the tree holds every map's tags
+  at once.
 - The Maps list and its cards (`ui/map_list.rs`, `app/map_cards.rs`),
   the Tags tab's tree as a separate list, the per-tool list panels: the
   browser.
 - **Save as package...**, the package form of `doc.save`, **Save as...**
   for a `.map`, `active.toml`: the edit target and **Export map...**.
 - The floating Sound, Voices, Image and Map Pack windows: panes of the
-  Sound, Content and Packages workspaces.
+  sound, bitmap and package documents.
 - The in-window script text editor (above).
 - `.h2tag` bundles as a way to move content between maps
   (`app/tag_bundle.rs`): a bundle copies a map's bytes, so it cannot go
@@ -456,7 +484,7 @@ the author's key (the `MapPublished` flow of `live_proto::maps`).
 
 ### Studio's side
 
-The **Packages** workspace:
+A package opens as a document; the browser's Packages root is the set:
 
 ```
 +----------------+---------------------------------------------------+-----------------+
@@ -496,8 +524,8 @@ command line, for the coordinator and CI.
 
 ## The animation editor
 
-The Animation workspace reads a `jmad`, poses a model with it, edits
-keys on a timeline and writes the graph back.
+Opening a `jmad` gives the animation editor: it poses a model with the
+graph, edits keys on a timeline and writes the graph back.
 
 ```
 +----------------+---------------------------------------------------+-----------------+
@@ -604,7 +632,8 @@ which guest entry it calls is **E first**.
 
 ## The sound editor
 
-The Sound workspace is the built audition (A1) with editing around it.
+Opening a sound tag gives the sound editor: the built audition (A1)
+with editing around it.
 
 ```
 +----------------+---------------------------------------------------+-----------------+
@@ -688,7 +717,7 @@ its guest entry is **E first**.
 ## Other editors
 
 Each is a document kind in `app::kinds::KINDS`, opened from the browser
-into the Content workspace unless noted, and each writes through
+as a tab, and each writes through
 `TagDoc` into the edit target.
 
 | Editor | Fits as | Stands on | First step |
@@ -698,9 +727,9 @@ into the Content workspace unless noted, and each writes through
 | **Colours and curves** | pickers and plots inside any field panel | rich-editors C1 to C3, F1, F2 | X1 |
 | **Effects and particles** | one document for an `effe` and what it spawns, with curves on the shared Timeline; the preview is the paired game, because the native view draws no effects | `tags::effects`, the game view | LE7; a host call that spawns an effect at a point is **E first** |
 | **Objects** | one editor per object: model, variants, markers, attachments, the tuning sheet | `tags::object`, `model.*` | LE5 |
-| **Scenario placement** | the Map workspace | `crates/tools/scenario-edit` | built; AI squads and zones wait on the engine's AI readers ([scenario-editor.md](scenario-editor.md) section 6) |
-| **Level geometry and collision** | the Modeling tools in the Map workspace's viewport | [modeling.md](modeling.md), [realtime-edits.md](realtime-edits.md) | their own slices |
-| **Scripts (HaloScript)** | read-only in the Rules workspace, edited outside | rich-editors H1 to H4 | H2 |
+| **Scenario placement** | the map editor a scenario opens | `crates/tools/scenario-edit` | built; AI squads and zones wait on the engine's AI readers ([scenario-editor.md](scenario-editor.md) section 6) |
+| **Level geometry and collision** | the Modeling tools in the map editor's viewport | [modeling.md](modeling.md), [realtime-edits.md](realtime-edits.md) | their own slices |
+| **Scripts (HaloScript)** | read-only from the scenario's **Scripts** tab, edited outside | rich-editors H1 to H4 | H2 |
 | **Recordings** | a document on the shared Timeline | rich-editors K1 to K4 | K1 |
 | **Strings** | a table by name and language; a `strings` item for ours | `tags::localization` | N1 |
 | **Sky and fog** | a tag view with the dome | `tags::lighting` | LE8 |
@@ -735,14 +764,15 @@ cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
 
 | # | Slice | Size | Needs | Accepted when |
 |---|---|---|---|---|
-| SH1 | **Workspaces and document tabs**: `ToolKind` becomes a workspace (layout only) and a document id; `shell.workspace`, `shell.tabs`, `shell.open`, `shell.focus`, `shell.close`; a layout per workspace | M | nothing | each workspace draws at 1000 by 420 with no stray child window (`every_panel_scrolls_as_a_whole_on_a_short_window`); two documents have two undo stacks; the window's clicks and `shell.*` leave the same state |
+| SH1 | **Document tabs and editors by kind**: `ToolKind` goes; a document id per open tag; the editor from `app::kinds::KINDS`; panels that follow the front document; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close`; one layout | M | nothing | each kind's editor draws at 1000 by 420 with no stray child window (`every_panel_scrolls_as_a_whole_on_a_short_window`); two documents have two undo stacks; the Timeline shows for an invented sound and not for an invented weapon; the window's clicks and `shell.*` leave the same state |
+| W3 | **First start and the tree in Studio** (tag-workspace; it needs W1 only here) | M | nothing | as there |
 | PK1 | **Manifest and set**: `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
 | PK2 | **Builders and the build**: `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
-| SH2 | **The browser**: `asset.list`, `asset.thumb`, `asset.copy`, the three roots, kinds, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1 | an invented source with two maps and one package lists by kind; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
+| SH2 | **The browser**: the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
 | PK3 | **The game's side**: `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
 | PK4 | **Pogo as a package**: `packages/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
 | PK5 | **Screens as a package**: `packages/ui/`, the `screens` and `screen-edits` builders over `ui_kit::inject::tag::add_screens`; `ScreensRewrite` deleted; `ui.save` writes into the edit target | M | PK3 | `ui_kit::inject::tests` pass through the package; a screen saved from the window is a changed file in the package and nowhere else |
-| PK6 | **The Packages workspace and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play | M | PK2, SH1 | every method's example runs; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
+| PK6 | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play | M | PK2, SH1 | every method's example runs; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems**: one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
 | SH4 | **The preview switch**: `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
@@ -754,23 +784,23 @@ cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 | **Model poses** (rich-editors) | M | nothing | as there |
-| AN1 | **The Animation workspace, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
+| AN1 | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
 | AN2 | **The encoder**: `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
 | AN3 | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document; a drag is one undo step; a rotation survives the angle view unchanged |
 | AN4 | **Write back**: the `animation` builder, replace and add in a `jmad`, the refusals, the live flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced differs only in that record and stream; an added one is reachable by its action; an inheriting graph is refused by name |
 | AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |
 | AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
 | A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |
-| SN1 | **The Sound workspace**: the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
+| SN1 | **The sound editor as a document**: the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
 | SN2 | **Import and encode**: `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |
 | SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
 | SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |
 | SN5 | **Sound in the game**: the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |
-| SH5 | **Old tools removed**: the tool tabs, floating windows, the script text editor; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the workspaces | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from workspaces; no `ToolKind` match is left in `ui.rs` |
+| SH5 | **Old tools removed**: the tool tabs, floating windows, the script text editor; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the tree and the editors | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from documents; no `ToolKind` match is left in `ui.rs` |
 
-SH1, PK1, AN2 and M1 need nothing and start together. PK2 and SH2 follow
-PK1 and SH1. The other editors' slices keep their own pages' order and
-need only SH1 to dock as documents.
+SH1, PK1, W3, AN2 and M1 need nothing and start together. PK2 follows
+PK1; SH2 follows SH1, PK1 and W3. The other editors' slices keep their own pages' order and
+need only SH1 to open as documents.
 
 ## Evidence
 
@@ -805,7 +835,7 @@ need only SH1 to dock as documents.
 ## Related
 
 - [tag-workspace.md](tag-workspace.md): the tree, layers, edit files and the build this stands on
-- [live-editors.md](live-editors.md), [rich-editors.md](rich-editors.md), [game-view.md](game-view.md), [playtest.md](playtest.md), [content-stage.md](content-stage.md): the editors and views that dock into the workspaces
+- [live-editors.md](live-editors.md), [rich-editors.md](rich-editors.md), [game-view.md](game-view.md), [playtest.md](playtest.md), [content-stage.md](content-stage.md): the editors and views that open as documents
 - [editor.md](editor.md), [agent-api.md](agent-api.md): the window and the API as built
 - [maps.md](../game/maps.md): map packages, `MapId`, Live's store and credit
 - [animation.md](../formats/animation.md), [sounds.md](../halo1/sounds.md): the formats the two new editors write
