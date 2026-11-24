@@ -90,22 +90,31 @@ Dear ImGui's own, keeps the field panel's **Show unnamed fields** and
 
 ## The window
 
-![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 tool bar, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 document tabs and game link, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
 
-*The headless renderer's `--callout` labels the menu bar, tool bar,
+*The headless renderer's `--callout` labels the menu bar, document bar,
 Scene, viewport, inspector, Log and status bar.*
 
 - **Main menu**: File (open a disc or map, open a folder of maps, **Save**,
-  **Save as...**, save as or open a package, the other tools' file
+  **Export map...**, open a package, the front editor's file
   commands, quit), Edit (**Go to anything...**, undo, redo, duplicate,
   delete, allow growing full blocks), View (frame the map, frame the
-  selection, gizmo mode (move, rotate, scale) and local or world axes,
-  grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
+  selection, **Editors** (start the map, variant, playlist, UI screen,
+  HUD or Textures editor), gizmo mode (move, rotate, scale) and local or
+  world axes, grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
   Unpair, Pause, Step, Resume and Edit).
-- **Save** (Cmd/Ctrl+S, `App::save_target`) writes the open package or
-  the standalone file the editor last saved for this map. A base map
-  opens **Save as package...** with its name filled in. **Save as...**
-  (Shift+Cmd/Ctrl+S) asks for a standalone `.map` path.
+- **The bar** (`ui/bar.rs`) has no tool tabs. The window draws the
+  front document's editor: `App::surface` (`app/shell.rs`, `Surface`) is
+  read from the tool the front tab brings forward, `Action::Show` asks
+  for one, and `ui.rs` draws by `Surface`. `ToolKind` stays in `app` and
+  the API as the holder of each document's state. The script editor is
+  the `.rules` document (`Doc::Rules`): a tab from the first open of a
+  script, drawn beside the variant's settings, closed without dropping
+  its text.
+- **Save** (Cmd/Ctrl+S, `App::save_target`) writes the edit target's
+  package. The first edit to a base map asks which package takes it.
+  **Export map...** (Shift+Cmd/Ctrl+S) asks for a standalone `.map`
+  path.
 - **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the maps,
   the open map's tags and placements, and available menu actions. Each
   word must match. Use Up or Down to move, Enter to open or run the
@@ -123,11 +132,11 @@ Scene, viewport, inspector, Log and status bar.*
   the game.
   The controls beside it provide Play or Stop, Pause or Resume, Step and
   the Edit switch as they become available. The link's width is measured
-  first, and the document tabs take what the tool tabs and the link
-  leave.
-- **Left dock**: Map has a full-height column with **Scene**, **Tags**
-  and **Maps** tabs above the bottom dock. Other tools have their own
-  windows in the left, centre and right regions (`ui/layout.rs`). The Map
+  first, and the document tabs take what the link leaves.
+- **Left dock**: the map's editor has a full-height column with the
+  **Browser**, **Scene** and **Tags** tabs above the bottom dock. The
+  other editors have their own windows in the left, centre and right
+  regions (`ui/layout.rs`). The Map
   windows keep the `outliner`, `viewport` and `inspector` IDs used by saved layouts.
 - **Scene** (`ui/outliner.rs`): the placement blocks as
   a tree, a filter (every word must match the block, the tag name or
@@ -208,11 +217,11 @@ Scene, viewport, inspector, Log and status bar.*
   asks first, naming the tool: another source or map (scenario), another,
   new or imported variant, or an entry's variant opened from a playlist
   (variants), another or new playlist file (playlists). Save (Save as...
-  for a base map or an untitled playlist file), Discard or Cancel.
+  for an untitled playlist file), Discard or Cancel.
   Quitting asks about each tool with unsaved edits in turn.
 
 Shortcuts include Cmd/Ctrl+O to open, Cmd/Ctrl+S to save, Shift+Cmd/Ctrl+S
-to save a map or playlist to a chosen path, Cmd/Ctrl+P to open Go to
+to export a map or save a playlist to a chosen path, Cmd/Ctrl+P to open Go to
 anything, Cmd/Ctrl+Z to undo and Shift+Cmd/Ctrl+Z or
 Cmd/Ctrl+Y redo (in the active tool), F5 Play, Shift+F5 stop the
 game the editor started, and Cmd/Ctrl+Q quit. In the scenario tool,
@@ -227,9 +236,9 @@ opens it.
 
 Opening a map's scenario in the **Browser** (or picking a map on the grid
 shown while no map is open) opens it, unless the open map has unsaved edits
-(the guard asks). **File > Save as...** asks for the path of a whole
-`.map` export. The base map stays untouched. **Save as
-package...** and **Open package...** save and open map packages in
+(the guard asks). **File > Export map...** asks for the path of a whole
+`.map` export. The base map stays untouched. **Save** writes the edit
+target's package and **Open package...** opens a map package in
 `<data>/maps` (scenario-editor.md §5, [maps.md](../game/maps.md) §8).
 
 ### Packages and Halo 1 in the Maps list
@@ -490,9 +499,9 @@ in a shared map: shared.map (3)` when any is outside this map.
 
 Saving never writes the installed files:
 
-- **Save as package** writes a package over the pack map (its base, by
-  hash), as for a disc map. Its **Packages** tooltip names the pack map.
-- **Save as...** writes the patched `.map` (`save::save_as`) anywhere
+- **Save** writes the edit target's package over the pack map (its base,
+  by hash), as for a disc map. Its **Packages** tooltip names the pack map.
+- **Export map...** writes the patched `.map` (`save::save_as`) anywhere
   but the installed content: `App::save_refusal` refuses a path inside
   `T:\$c` on the host, or any installed pack map file (whatever the data
   root).
@@ -1144,7 +1153,7 @@ publish by itself.
 
 Every field of any tag of the open map (a disc map, a package, a
 converted Halo 1 map), labelled, with a widget per type. Edits save with
-the map. **Save**, **Save as...** and **Save as package...** write them
+the map. **Save** and **Export map...** write them
 through the same lossless `MapEditor` path as the scenario's. Any other map of
 the source (the shared caches among them) can be browsed read-only, and
 tags go out to and come back from tag bundles (below).
@@ -1726,7 +1735,7 @@ last. The flags that set the scene up:
 | `--copy-variant <name>` | copy it to an editable variant named `<name>` |
 | `--hopper <file>\|default --playlist <1..16>` | open a playlist file (or the default lineup) at a playlist |
 | `--preset <n>` | pick historical preset `n` for that playlist |
-| `--dialog package\|unsaved` | open the Save as package window, or nudge the selection and ask to quit (the unsaved-changes window) |
+| `--dialog edit-target\|unsaved` | open the first-edit picker (the edit target), or nudge the selection and ask to quit (the unsaved-changes window) |
 | `--nudge <x>,<y>,<z>` | move the selection by that much, as an edit |
 | `--page <title>` | in the variant tool, open only the settings pages whose title contains it |
 | `--no-disc` | open no disc and no Halo 1 source (the first run) |

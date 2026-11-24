@@ -368,9 +368,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_SAVE,
-        "Save to the document's destination, or open the package form for a source map",
+        "Save to the document's destination; for a source map the edits are lines in the edit target, and with none set the call answers NO_TARGET",
         r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","bytes?":"integer","package_form?":"{name,dir}","log":"[string]"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","edit_target?":"string","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(

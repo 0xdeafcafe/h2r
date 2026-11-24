@@ -152,7 +152,7 @@ shot layout-docked "${asc[@]}" \
 shot layout-reset "${asc[@]}" \
   --do 'move win:###inspector@60,10; down; move win:###outliner; wait 8; up; click View; hover Reset layout'
 # The menus.
-detail menu-file "${asc[@]}" --do 'click File; hover Save as package' $(menu File)
+detail menu-file "${asc[@]}" --do 'click File; hover Export map' $(menu File)
 detail menu-edit "${asc[@]}" --nudge 0,0,0.5 --do 'click Edit; hover Allow growing full blocks' \
   $(menu Edit) --crop 'win:##Tooltip'
 detail menu-view "${asc[@]}" --do 'click View; hover Rotate gizmo' $(menu View)
@@ -190,8 +190,7 @@ shot move-after "${near[@]}" --nudge 2,0,0 --crop 'win:###viewport'
 detail undo-menu "${asc[@]}" --nudge 2,0,0 --do 'click Edit; hover Undo' $(menu Edit)
 detail undo-log "${asc[@]}" --nudge 2,0,0 --do 'click Edit; click Undo' \
   --crop 'win:###log' --crop-height 100
-# Save as package, and Open package once one is saved.
-detail package-form --pick ascension --dialog package --crop 'win:###save-package'
+# Open package once one is saved.
 detail package-open --pick ascension --do 'click File; click Open package' --crop 'win:###open-package'
 # Unsaved changes, asked on quit.
 shot unsaved-prompt "${asc[@]}" --dialog unsaved

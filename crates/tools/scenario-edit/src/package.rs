@@ -20,7 +20,7 @@ use tags::geometry::TagView;
 use tags::structure::GeometryHeader;
 use tags::structure::StructureRender;
 
-/// What the "Save as package" form asks for.
+/// What a package's display details are.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PackageForm {
     /// The package's display name (required).

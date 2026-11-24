@@ -44,6 +44,14 @@ pub enum Refusal {
     Failed(String),
 }
 
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refusal::Params(m) | Refusal::Refused(m) | Refusal::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
 type Res<T = Value> = Result<T, Refusal>;
 
 use Refusal::{Failed, Params, Refused};
@@ -604,6 +612,80 @@ pub fn item_remove(data: &Path, id: &str, index: usize) -> Res {
     v["removed"] = serde_json::to_value(&gone).unwrap_or(Value::Null);
     v["index"] = json!(index);
     Ok(v)
+}
+
+/// The edits file the window and `tag.set` write for `map`: a path in the
+/// package, which is also the `edits` item's source.
+pub fn edits_file(map: &str) -> String {
+    format!("edits/{map}.yaml")
+}
+
+/// Put `text` in the local package `id` as `edits/<map>.yaml`, with the
+/// `edits` item that names it (its `maps` just `map`), and lock the
+/// package. Empty text removes the file and its item. Answers whether
+/// anything changed on disc.
+pub fn put_edits(data: &Path, id: &str, map: &str, text: &str) -> Res<bool> {
+    if map.is_empty() || !map.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(Params(format!(
+            "map {map:?} cannot name a file: letters, digits, '_' and '-'"
+        )));
+    }
+    let k = known(data);
+    let (loaded, dir) = k.local(id)?;
+    let rel = edits_file(map);
+    let path = dir.join(&rel);
+    let at = loaded
+        .package
+        .manifest
+        .items
+        .iter()
+        .position(|i| i.kind == content::package::Kind::Edits && i.source.as_deref() == Some(&rel));
+    let relock = |dir: &Path| -> Res<()> {
+        let l = Loaded::from_dir(dir).map_err(|e| Refused(e.to_string()))?;
+        let lock = dir.join(LOCK_FILE);
+        std::fs::write(&lock, l.package.lock.to_toml())
+            .map_err(|e| Failed(format!("{}: {e}", lock.display())))
+    };
+    if text.is_empty() {
+        let Some(at) = at else {
+            return Ok(false);
+        };
+        let mut manifest = loaded.package.manifest.clone();
+        manifest.items.remove(at);
+        commit(data, &dir, &manifest)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Failed(format!("{}: {e}", path.display()))),
+        }
+        relock(&dir)?;
+        return Ok(true);
+    }
+    if at.is_some() && std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Failed(format!("{}: {e}", parent.display())))?;
+    }
+    std::fs::write(&path, text).map_err(|e| Failed(format!("{}: {e}", path.display())))?;
+    if at.is_some() {
+        relock(&dir)?;
+        return Ok(true);
+    }
+    let mut manifest = loaded.package.manifest.clone();
+    manifest.items.push(Item {
+        kind: content::package::Kind::Edits,
+        source: Some(rel),
+        inputs: Vec::new(),
+        tag: None,
+        maps: content::package::Maps::Names(vec![map.to_owned()]),
+    });
+    if let Err(e) = commit(data, &dir, &manifest) {
+        let _ = std::fs::remove_file(&path);
+        return Err(e);
+    }
+    Ok(true)
 }
 
 // ---- the set file ----

@@ -677,22 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_scenario_click_switches_to_map() {
-        use crate::ToolKind;
-        let Some((_turn, mut h)) = headless() else { return };
-        let source = crate::app::map_cards_tests::Temp::new("legacy-scenario");
-        let mut app = App::new();
-        app.set_data_root(source.0.join("data"));
-        app.dispatch(Action::SetTool(ToolKind::Variants));
-        h.frames(&mut app, 3).unwrap();
-        let script = crate::script::parse("click ###tools>Scenario").unwrap();
-        h.step(&mut app, &script[0]).unwrap();
-        assert_eq!(app.tool, ToolKind::Scenario);
-        assert!(h.scene.find("##studio-bar>###tool-Map").is_ok());
-        assert!(h.scene.find("Open a disc or map...").is_ok());
-    }
-
-    #[test]
     fn the_toolbar_has_icon_buttons_and_visible_snap_steps() {
         let Some((_turn, mut h)) = headless() else { return };
         let source = crate::app::map_cards_tests::Temp::new("toolbar");
@@ -1173,7 +1157,8 @@ mod tests {
         let mut app = App::new();
         app.set_data_root(t.0.join("data"));
         app.dispatch(Action::OpenSource(map));
-        app.dispatch(Action::SavePackage(app.session.form_defaults()));
+        let form = app.session.form_defaults();
+        app.save_map_package(&form);
         app.dispatch(Action::SelectMap("example".into()));
         app.dispatch(Action::OpenPackageEntry("example-edit".into()));
         let manifest = app.session.maps_dir().join("example-edit/manifest.toml");
@@ -1190,7 +1175,6 @@ mod tests {
         h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
         h.step(&mut app, &Step::Key(Key::S, 1)).unwrap();
         h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
-        assert!(app.package_form.is_none());
         assert!(!app.is_dirty());
         assert_ne!(std::fs::read(manifest).unwrap(), first);
     }

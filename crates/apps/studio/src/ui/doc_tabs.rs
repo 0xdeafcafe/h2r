@@ -1,4 +1,4 @@
-//! The document tab strip in the bar between the tool tabs and the game
+//! The document tab strip in the bar before the game
 //! link (docs/editor/studio-redesign.md, "The shell"): one tab per open
 //! document, the front one in the accent colour, each with its close
 //! button. Clicks become [`Action::FocusDoc`] and [`Action::CloseDoc`],

@@ -536,7 +536,7 @@ pub fn fields(
         ui.text_wrapped(
             "Pick a tag on the left. Every field is shown: named ones by their name, the \
              rest by their type and offset under Unnamed fields. Edits save with the map \
-             (File, Save map as / Save as package). Import a tag bundle here to replace a \
+             (File, Save, or Export map). Import a tag bundle here to replace a \
              tag of the open map.",
         );
         if app.browsing().is_none() && doc.is_open() {

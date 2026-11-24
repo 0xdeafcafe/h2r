@@ -436,8 +436,8 @@ bytes and the bytes the game reports for fields it leaves alone. Choosing
 then reverts before closing the link. The journal contains field bytes. Reloading
 the map restores its original population of live objects and removes previews.
 
-Saving is the existing path and is not changed by pairing: **Save map
-as** and **Save as package** write the document
+Saving is the existing path and is not changed by pairing: **Save**
+and **Export map...** write the document
 (`scenario_edit::save::save_as`, `MapEditor`), never the game's memory
 read back. `edit.revert` on unpair is offered ("Put the game back as it
 loaded"), not done by default.

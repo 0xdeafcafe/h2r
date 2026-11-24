@@ -22,7 +22,7 @@
 //! build with its tag and the entry's line; nothing is dropped quietly.
 use content::Sha256;
 use map::FourCC;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 use tags::defs::{
     Defs, FieldDef, Kind as Fk, Record, Str, StructDef, Target, Val, default_record, from_built,
@@ -34,14 +34,14 @@ use crate::build::{Cx, Failure};
 use crate::builders::Job;
 
 /// One `set` line.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetLine {
     pub path: String,
     pub value: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Op {
     Add,
@@ -50,28 +50,48 @@ pub enum Op {
 
 /// One `block` line: add an element (a copy of element `like`, or the
 /// definition's defaults) or remove element `index`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlockLine {
     pub path: String,
     pub op: Op,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub like: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<usize>,
 }
 
 /// One entry of an edit file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TagEdit {
     pub tag: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub block: Vec<BlockLine>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub set: Vec<SetLine>,
+}
+
+impl SetLine {
+    /// A `set` line from the JSON value `tag.set` takes for `path`.
+    pub fn from_json(path: &str, value: &serde_json::Value) -> Result<Self, String> {
+        let value = serde_yaml_ng::to_value(value).map_err(|e| format!("{path}: {e}"))?;
+        Ok(Self {
+            path: path.to_owned(),
+            value,
+        })
+    }
+}
+
+/// An edit file's text for `edits`: the YAML list [`parse_edits`] reads
+/// back to the same entries. No entries is the empty text.
+pub fn edits_text(edits: &[TagEdit]) -> Result<String, String> {
+    if edits.is_empty() {
+        return Ok(String::new());
+    }
+    serde_yaml_ng::to_string(edits).map_err(|e| e.to_string())
 }
 
 pub(crate) fn text_of(source: &[u8]) -> Result<&str, Failure> {

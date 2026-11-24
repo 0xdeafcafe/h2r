@@ -151,8 +151,8 @@ definition names them, as the Tags tool has it.
 
 ## The layout
 
-The tool bar holds **Map**, **Variants**, **Playlists**, **UI** and
-**HUD**. Map keeps the viewport visible while you work with tags.
+The bar holds a tab for each open document, the map's among them. The map
+keeps the viewport visible while you work with tags.
 
 | Window | Where it docks |
 |---|---|

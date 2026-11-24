@@ -258,13 +258,11 @@ fn packages_save_and_open_through_actions() {
     let mut app = app_with(&t);
     app.dispatch(Action::OpenSource(p));
     move_flag(&mut app, 7.0);
-    app.open_package_form();
-    let mut form = app.package_form.clone().unwrap();
+    let mut form = app.session.form_defaults();
     assert_eq!(form.dir, "example-edit");
     form.name = "Studio test".into();
     form.dir = "example-studio".into();
-    app.dispatch(Action::SavePackage(form));
-    assert!(app.package_form.is_none(), "the form closes on success");
+    app.save_map_package(&form);
     assert!(!app.is_dirty());
     assert!(t.0.join("data/maps/example-studio").is_dir());
     move_flag(&mut app, 1.0);
@@ -585,7 +583,7 @@ fn the_maps_list_groups_user_packages_and_both_halo1_variants() {
     move_flag(&mut app, 7.0);
     let mut form = app.session.form_defaults();
     form.name = "Flag moved".into();
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     converted_package(&t, "00");
     app.refresh_packages();
     assert_eq!(
@@ -613,7 +611,7 @@ fn a_user_package_opens_over_its_disc_map_from_the_list() {
     app.dispatch(Action::OpenSource(p));
     move_flag(&mut app, 7.0);
     let form = app.session.form_defaults();
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     assert_eq!(app.opened_package(), Some("example-edit"));
     // Back to the disc's map, then the package from the list.
     app.dispatch(Action::SelectMap("example".into()));
@@ -640,7 +638,7 @@ fn save_rewrites_the_package_the_map_came_from() {
     std::fs::write(&image, b"\x89PNG\r\n\x1a\n").unwrap();
     form.image = Some(image.clone());
     let pkg = app.session.maps_dir().join(&form.dir);
-    app.dispatch(Action::SavePackage(form.clone()));
+    app.save_map_package(&form);
     let active = app.session.maps_dir().join("active.toml");
     let choice = std::fs::read(&active).unwrap();
     let mut manifest = app.session.packages().pop().unwrap().manifest;
@@ -664,7 +662,6 @@ fn save_rewrites_the_package_the_map_came_from() {
     assert_eq!(app.save_target(), SaveTarget::Package(pkg.clone()));
     move_flag(&mut app, 9.0);
     app.dispatch(Action::Save);
-    assert!(app.package_form.is_none());
     assert!(!app.is_dirty());
     assert_ne!(std::fs::read_to_string(manifest_path).unwrap(), first);
     assert_eq!(
@@ -690,7 +687,7 @@ fn save_rewrites_the_package_the_map_came_from() {
 }
 
 #[test]
-fn save_offers_a_named_package_for_a_read_only_base_map() {
+fn save_asks_for_an_edit_target_for_a_read_only_base_map() {
     let t = Temp::new("save-read-only");
     let map = t.map("example", &fixture::fixture());
     let mut permissions = std::fs::metadata(&map).unwrap().permissions();
@@ -700,13 +697,9 @@ fn save_offers_a_named_package_for_a_read_only_base_map() {
     assert_eq!(app.save_target(), SaveTarget::Nothing);
     app.dispatch(Action::OpenSource(map));
     move_flag(&mut app, 7.0);
-    assert_eq!(
-        app.save_target(),
-        SaveTarget::PackageForm { name: "example edit".into() }
-    );
+    assert_eq!(app.save_target(), SaveTarget::EditTarget(None));
     app.dispatch(Action::Save);
-    let form = app.package_form.as_ref().unwrap();
-    assert_eq!((form.name.as_str(), form.dir.as_str()), ("example edit", "example-edit"));
+    assert!(app.edits.picker.is_some());
     assert!(app.is_dirty());
     assert!(!app.session.maps_dir().exists());
 }
@@ -724,7 +717,6 @@ fn save_rewrites_the_last_standalone_output() {
     let first = std::fs::read(&output).unwrap();
     move_flag(&mut app, 9.0);
     app.dispatch(Action::Save);
-    assert!(app.package_form.is_none());
     assert!(!app.is_dirty());
     assert_ne!(std::fs::read(output).unwrap(), first);
     assert_eq!(std::fs::read(map).unwrap(), fixture::fixture());
@@ -767,7 +759,7 @@ fn a_converted_variant_opens_and_saves_as_a_new_derived_package() {
         form.dir, "h1_bloodgulch-edit",
         "not the import's own package"
     );
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     assert!(!app.is_dirty());
     // The new package is a derived map the resolver reads: the whole
     // converted map, then the edit.
@@ -1398,12 +1390,10 @@ fn a_map_pack_map_opens_edits_and_saves_over_the_halo_2_caches() {
 
     // Edit, save as a package named for the map, reopen it over the pack's map.
     move_flag(&mut app, 7.0);
-    app.open_package_form();
-    let mut form = app.package_form.clone().unwrap();
+    let mut form = app.session.form_defaults();
     assert_eq!(form.dir, "backwash-edit");
     form.name = "Pack edit".into();
-    app.dispatch(Action::SavePackage(form));
-    assert!(app.package_form.is_none(), "the form closes on success");
+    app.save_map_package(&form);
     assert!(t.0.join("data/maps/backwash-edit").is_dir());
     move_flag(&mut app, 1.0);
     app.dispatch(Action::Undo);
@@ -1465,9 +1455,7 @@ fn real_map_pack_opens_beside_the_disc_and_saves_a_package() {
     }
     let name = names[0].clone();
     app.dispatch(Action::SelectMap(name.clone()));
-    app.open_package_form();
-    let form = app.package_form.clone().unwrap();
-    app.dispatch(Action::SavePackage(form.clone()));
-    assert!(app.package_form.is_none());
+    let form = app.session.form_defaults();
+    app.save_map_package(&form);
     assert!(t.0.join("data/maps").join(&form.dir).is_dir());
 }

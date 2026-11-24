@@ -179,6 +179,9 @@ pub struct RulesEditor {
     pub typing: bool,
     /// Bring the window to the front next frame (set by every open).
     pub show: bool,
+    /// A script was opened and its tab not closed (`app::shell`,
+    /// `Doc::Rules`).
+    pub opened: bool,
     /// The text area the window last drew: x, y, width and height in
     /// points (`ui::game_script`). `None` before it is drawn.
     pub drawn: Option<[f32; 4]>,
@@ -220,6 +223,7 @@ impl Default for RulesEditor {
             marks: None,
             typing: false,
             show: false,
+            opened: false,
             drawn: None,
             watch: None,
             conflict: None,
@@ -354,6 +358,7 @@ impl RulesEditor {
         self.analysed = None;
         self.renaming = None;
         self.show = true;
+        self.opened = true;
         self.conflict = None;
         if self.watch.as_ref().is_some_and(|w| self.path.as_ref() != Some(&w.path)) {
             self.watch = None;

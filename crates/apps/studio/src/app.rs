@@ -35,6 +35,8 @@ pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
 pub mod assets;
+pub mod edit_lines;
+pub mod edit_target;
 pub mod package_doc;
 pub mod preview_switch;
 pub mod problems;
@@ -45,6 +47,7 @@ pub mod ui_screens;
 pub mod voices;
 pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};
+pub use edit_target::{EditChoice, EditState, Picker};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
     retail_sources,
@@ -53,7 +56,7 @@ pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
 pub use scripts::{ScriptAction, ScriptsTool};
-pub use shell::{Doc, Tab};
+pub use shell::{Doc, Surface, Tab};
 pub use navigation::{NavAction, NavHistory, NavLocation};
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
@@ -62,7 +65,7 @@ use editor_core::map_groups::MapGroup;
 use editor_core::{MapPack, MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
 use scenario_edit::layers::{LayerId, Layers};
-use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
+use scenario_edit::{BlockKind, MapSource as EditSource, Session};
 use variants::panel::Origin;
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
 
@@ -137,7 +140,9 @@ pub enum Selection {
 pub enum SaveTarget {
     File(PathBuf),
     Package(PathBuf),
-    PackageForm { name: String },
+    /// The edits are lines in the edit target: a package, or `None` while
+    /// there is none and Save asks for one.
+    EditTarget(Option<String>),
     Nothing,
 }
 
@@ -149,12 +154,13 @@ pub enum Action {
     OpenSource(PathBuf),
     /// Open a map from the source's list.
     SelectMap(String),
-    /// Save the map to its current destination or open the package form.
+    /// Save the map to its current destination, or write the edit lines to
+    /// the edit target (asking for one first when there is none).
     Save,
-    /// Write the edited map as a new `.map` file.
+    /// **Export map...**: write the edited map as a whole `.map` file.
     SaveMapAs(PathBuf),
-    /// Save the edits as a map package under the data root.
-    SavePackage(PackageForm),
+    /// The answer to the first-edit picker.
+    ChooseEditTarget(EditChoice),
     /// Open one of the open map's packages (by directory name).
     OpenPackage(String),
     /// Open a package from the Maps list (by [`PackageEntry::key`]): a
@@ -297,6 +303,9 @@ pub enum Action {
     Image(image_gen::ImageAction),
     /// Show another tool.
     SetTool(ToolKind),
+    /// Show an editor's surface: the View menu's editors and a document
+    /// brought forward.
+    Show(Surface),
     /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
     /// editor: on `map` (opened first when it is not the open one), else
     /// on the open map (`app::assets`).
@@ -498,6 +507,8 @@ impl Action {
             }
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
+            // The script's text stays in the editor when its tab closes.
+            Action::CloseDoc(Doc::Rules) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -562,10 +573,8 @@ pub struct App {
     quit: bool,
     /// The outliner's filter text.
     pub filter: String,
-    /// The "Save as package" form while it is open.
-    pub package_form: Option<PackageForm>,
-    /// The image path typed into that form.
-    pub package_image: String,
+    /// Where edits go and what waits for it (`app::edit_target`).
+    pub edits: EditState,
     /// The packages under the data root.
     packages: Vec<editor_core::packages::PackageEntry>,
     /// The package entry open in the scenario tool.
@@ -698,8 +707,7 @@ impl App {
             started: std::time::Instant::now(),
             quit: false,
             filter: String::new(),
-            package_form: None,
-            package_image: String::new(),
+            edits: EditState::default(),
             packages: Vec::new(),
             opened_package: None,
             mappack: None,
@@ -816,9 +824,7 @@ impl App {
         } else if let Some(dir) = self.session.package_dir() {
             SaveTarget::Package(self.session.maps_dir().join(dir))
         } else {
-            SaveTarget::PackageForm {
-                name: format!("{map} edit"),
-            }
+            SaveTarget::EditTarget(self.edit_target())
         }
     }
 
@@ -1094,13 +1100,7 @@ impl App {
                     self.saved_path = Some(path);
                 }
             }
-            Action::SavePackage(form) => {
-                self.push_bitmap_changes();
-                let r = self.session.save_package(&form);
-                if self.session_result(r).is_some() {
-                    self.package_saved();
-                }
-            }
+            Action::ChooseEditTarget(choice) => self.choose_edit_target(choice),
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
@@ -1306,6 +1306,11 @@ impl App {
             Action::Bitmap(a) => self.run_bitmap(a),
             Action::Image(a) => self.run_image(a),
             Action::SetTool(tool) => {
+                self.set_tool(tool);
+                self.follow_tool(tool);
+            }
+            Action::Show(surface) => {
+                let tool = surface.tool();
                 self.set_tool(tool);
                 self.follow_tool(tool);
             }
@@ -1580,6 +1585,7 @@ impl App {
             .session
             .set_tag_strings(self.tags.new_strings().to_vec());
         self.ok_or_log(r);
+        self.sync_edit_lines();
     }
 
     fn run_tag(&mut self, action: TagAction) {
@@ -1604,6 +1610,9 @@ impl App {
     }
 
     pub(crate) fn run_map_tag(&mut self, action: TagAction) {
+        let Some(action) = self.gate_tag_action(action) else {
+            return;
+        };
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {
@@ -1965,25 +1974,31 @@ impl App {
                     self.package_saved();
                 }
             }
-            SaveTarget::PackageForm { name } => {
-                let map = self
-                    .session
-                    .map_name()
-                    .expect("a package form needs an open map");
-                let form = PackageForm {
-                    dir: PackageForm::default_dir(map, "edit"),
-                    name,
-                    ..PackageForm::default()
-                };
-                self.show_package_form(form);
+            SaveTarget::EditTarget(Some(id)) => {
+                self.sync_edit_lines();
+                self.info(format!("the edits are lines in {id}"));
+            }
+            SaveTarget::EditTarget(None) => {
+                self.edits.picker.get_or_insert_with(Picker::default);
             }
             SaveTarget::Nothing => self.error("open an editable map first"),
         }
     }
 
+    /// Save the open map as a map package, as the scenario crate writes it
+    /// (the packages the tests open again; Studio's own edits are lines in
+    /// the edit target).
+    #[cfg(test)]
+    pub(crate) fn save_map_package(&mut self, form: &scenario_edit::PackageForm) {
+        self.push_bitmap_changes();
+        let r = self.session.save_package(form);
+        if self.session_result(r).is_some() {
+            self.package_saved();
+        }
+    }
+
     fn package_saved(&mut self) {
         self.saved_path = None;
-        self.package_form = None;
         self.refresh_packages();
         let dir = self
             .session
@@ -2024,20 +2039,6 @@ impl App {
             return name.to_owned();
         }
         format!("{}.map", self.loaded.as_deref().unwrap_or("untitled"))
-    }
-
-    /// Open the "Save as package" form with its defaults.
-    pub fn open_package_form(&mut self) {
-        if self.session.is_open() {
-            self.show_package_form(self.session.form_defaults());
-        } else {
-            self.error("open a map first");
-        }
-    }
-
-    fn show_package_form(&mut self, form: PackageForm) {
-        self.package_form = Some(form);
-        self.package_image.clear();
     }
 }
 

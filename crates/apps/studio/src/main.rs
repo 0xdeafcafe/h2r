@@ -23,7 +23,7 @@ const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--
 [--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|scripts|textures|variants|playlists|ui-screens|hud] [--hs-doc <hs_doc.txt>] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
 [--hud-map <map>|--hud-package <key>] [--hud <nhdt name>] [--hud-widget <name>] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
-[--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
+[--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|edit-target] \
 [--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
 [--crop <target>]... [--pad <points>] [--crop-height <points>] [--callout <target>=<badge>]...]
 --serve: the agent API with no window (docs/editor/agent-api.md); the window listens too, \
@@ -309,6 +309,8 @@ fn main() -> Result<()> {
         .unwrap_or_else(content::store::default_data_root);
     mem_watch::start(&data, option_env!("H2_BUILD_SHA"));
     let mut app = App::new();
+    // Edits are lines in the edit target (docs/editor/studio-redesign.md).
+    app.edits_to_target();
     if let Some(d) = &args.data {
         app.set_data_root(d.clone());
     }
@@ -457,7 +459,7 @@ fn main() -> Result<()> {
     }
     match args.dialog.as_deref() {
         None => {}
-        Some("package") => app.open_package_form(),
+        Some("edit-target") => app.edits.open_picker(),
         // An unsaved edit (the selection nudged, or a variant copy) and
         // Quit: the unsaved-changes prompt.
         Some("unsaved") => {

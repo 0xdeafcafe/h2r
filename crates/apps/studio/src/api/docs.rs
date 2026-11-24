@@ -471,12 +471,13 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
                 SaveTarget::Package(dir) => Ok(json!({
                     "saved": true, "path": dir.display().to_string(), "log": log,
                 })),
-                SaveTarget::PackageForm { .. } => {
-                    let form = app.package_form.as_ref().expect("Save opened the package form");
-                    Ok(json!({
-                        "saved": false, "package_form": {"name": form.name, "dir": form.dir}, "log": log,
-                    }))
-                }
+                SaveTarget::EditTarget(Some(id)) => Ok(json!({
+                    "saved": true, "edit_target": id, "log": log,
+                })),
+                SaveTarget::EditTarget(None) => Err(err(
+                    code::NO_TARGET,
+                    crate::app::edit_target::NO_TARGET,
+                )),
                 SaveTarget::Nothing => Err(err(code::NO_DOCUMENT, "no map is open")),
             }
         }

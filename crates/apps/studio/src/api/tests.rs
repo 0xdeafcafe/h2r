@@ -20,6 +20,7 @@ mod markers_tests;
 mod script_variants_tests;
 mod assets_tests;
 mod packages_tests;
+mod edit_target_tests;
 mod problems_tests;
 mod import_tests;
 mod shell_tests;
@@ -553,7 +554,7 @@ fn doc_save_rewrites_the_open_package() {
     let mut app = app(&t);
     let mut api = Api::new();
     let form = app.session.form_defaults();
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     call(
         &mut api, &mut app, m::SCENARIO_MOVE,
         json!({"block":"netgame_flags", "index":0, "position":[7, 3, 3]}),
@@ -562,7 +563,6 @@ fn doc_save_rewrites_the_open_package() {
     let result = call(&mut api, &mut app, m::DOC_SAVE, json!({"doc":"map"}));
     assert_eq!(result["saved"], true);
     assert_eq!(result["path"], path.display().to_string());
-    assert!(app.package_form.is_none());
     assert!(!app.is_dirty());
     app.dispatch(Action::SelectMap("example".into()));
     app.dispatch(Action::OpenPackageEntry("example-edit".into()));
@@ -2507,10 +2507,10 @@ fn outputs_stay_out_of_git_and_off_the_source() {
         std::fs::read(t.path("example.map")).unwrap(),
         fixture::fixture()
     );
-    let save = call(&mut api, &mut app, m::DOC_SAVE, json!({"doc": "map"}));
-    assert_eq!(save["saved"], false);
-    assert_eq!(save["package_form"], json!({"name":"example edit", "dir":"example-edit"}));
-    assert_eq!(app.package_form.as_ref().unwrap().dir, "example-edit");
+    assert_eq!(
+        code_of(api.call(&mut app, m::DOC_SAVE, json!({"doc": "map"}))),
+        code::NO_TARGET
+    );
     assert_eq!(std::fs::read(t.path("example.map")).unwrap(), fixture::fixture());
     let first = crate::app::UiScreens::tree()[0].0;
     call(&mut api, &mut app, m::UI_PICK, json!({"screen": first}));

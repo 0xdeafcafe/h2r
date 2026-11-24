@@ -753,6 +753,7 @@ impl TagFields {
         match method {
             m::TAG_READ => tag_api::read_tag(app.shown_tags(), id).map_err(failed),
             m::TAG_SET => {
+                no_target(app)?;
                 let path = p.str("path")?;
                 let value = p.get("value").cloned().unwrap_or(Value::Null);
                 let action = tag_api::set_field(app.shown_tags(), id, path, &value)
@@ -762,6 +763,7 @@ impl TagFields {
                 Ok(json!({ "value": tag_api::value(&app.tags, id, at, &f) }))
             }
             _ => {
+                no_target(app)?;
                 let path = p.str("path")?;
                 let op = match method {
                     m::TAG_BLOCK_ADD => match p.opt_usize("like")? {
@@ -784,6 +786,15 @@ impl TagFields {
                 Ok(json!({ "count": count }))
             }
         }
+    }
+}
+
+/// An edit with no edit target answers `NO_TARGET`: the window asks for one,
+/// the API does not.
+fn no_target(app: &App) -> Result<(), agent_proto::RpcError> {
+    match app.edit_refusal() {
+        Some(why) => Err(err(code::NO_TARGET, why)),
+        None => Ok(()),
     }
 }
 
