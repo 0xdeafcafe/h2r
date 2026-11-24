@@ -55,6 +55,12 @@ pub struct Stats {
     pub vector: VectorParity,
     #[serde(default)]
     pub context: VectorParity,
+    #[serde(default)]
+    pub flood: VectorParity,
+    #[serde(default)]
+    pub visit: VectorParity,
+    #[serde(default)]
+    pub query: VectorParity,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

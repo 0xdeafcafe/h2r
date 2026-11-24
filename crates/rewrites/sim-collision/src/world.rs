@@ -45,9 +45,11 @@ pub enum Entry {
     MoppRay,
     /// The object-reference sphere pretest in J.
     ObjectSphere,
+    /// J: the whole collision query.
+    Query,
 }
 
-pub const ENTRIES: usize = 10;
+pub const ENTRIES: usize = 11;
 /// Retained map arrays, BSP owners and address index capacity.
 pub const MAP_BUDGET: u64 = 8 << 20;
 /// Bounds address-index bookkeeping independently of decoded array size:
@@ -75,6 +77,7 @@ impl Entry {
         Entry::MoppBox,
         Entry::MoppRay,
         Entry::ObjectSphere,
+        Entry::Query,
     ];
 
     pub fn name(self) -> &'static str {
@@ -89,6 +92,7 @@ impl Entry {
             Entry::MoppBox => "mopp_box",
             Entry::MoppRay => "mopp_ray",
             Entry::ObjectSphere => "object_sphere",
+            Entry::Query => "query",
         }
     }
 
@@ -104,6 +108,7 @@ impl Entry {
             Entry::MoppBox => 0x0030_0150,
             Entry::MoppRay => 0x0030_1800,
             Entry::ObjectSphere => 0x0011_e5e0,
+            Entry::Query => 0x0016_97c0,
         }
     }
 }
@@ -148,6 +153,9 @@ pub struct VectorParity {
 pub struct Stats {
     pub vector: VectorParity,
     pub context: VectorParity,
+    pub query: VectorParity,
+    pub visit: VectorParity,
+    pub flood: VectorParity,
     pub entries: [EntryStats; ENTRIES],
     /// Entry I's parity arm.
     pub ray: RayParity,
@@ -218,6 +226,9 @@ struct Counters {
     ray: RayCounters,
     vector: Mutex<VectorParity>,
     context: Mutex<VectorParity>,
+    query: Mutex<VectorParity>,
+    visit: Mutex<VectorParity>,
+    flood: Mutex<VectorParity>,
 }
 
 #[derive(Default)]
@@ -668,6 +679,19 @@ impl CollisionWorld {
         Self::record_parity(&self.counters.context, result);
     }
 
+    pub fn record_query(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.query, result);
+    }
+
+    pub fn record_spatial(&self, entry: Entry, result: Result<Option<String>, Bail>) {
+        let counter = match entry {
+            Entry::ClusterFlood => &self.counters.flood,
+            Entry::ObjectVisit => &self.counters.visit,
+            _ => unreachable!("spatial parity is defined only for G and H"),
+        };
+        Self::record_parity(counter, result);
+    }
+
     fn record_parity(counter: &Mutex<VectorParity>, result: Result<Option<String>, Bail>) {
         let mut v = counter.lock().unwrap_or_else(|e| e.into_inner());
         match result {
@@ -732,6 +756,9 @@ impl CollisionWorld {
             ray,
             vector: c.vector.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             context: c.context.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            query: c.query.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            visit: c.visit.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            flood: c.flood.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             decodes: inner.decodes,
             decode_failures: inner.decode_failures,
             flushes: inner.flushes,

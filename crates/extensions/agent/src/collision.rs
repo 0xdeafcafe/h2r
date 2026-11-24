@@ -65,6 +65,9 @@ fn wire(s: &world::Stats) -> Stats {
         },
         vector: parity(&s.vector),
         context: parity(&s.context),
+        flood: parity(&s.flood),
+        visit: parity(&s.visit),
+        query: parity(&s.query),
         ray: RayParity {
             matched: s.ray.matched,
             mismatched: s.ray.mismatched,
@@ -120,7 +123,9 @@ mod tests {
                 "cluster_flood",
                 "object_visit",
                 "mopp_box",
-                "mopp_ray"
+                "mopp_ray",
+                "object_sphere",
+                "query",
             ]
         );
         assert_eq!(w.entries[8].addr, "00301800");
