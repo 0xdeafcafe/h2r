@@ -122,6 +122,7 @@ connection to hold `session.claim`.
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
 | `map.reload` | act | [Test maps](#test-maps) |
 | `maps.load`, `maps.test.list`, `create`, `load`, `remove` | act, read, act, act, act | [Test maps](#test-maps) |
+| `packages.list` | read | [Content packages](#content-packages) |
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
@@ -5268,6 +5269,45 @@ editor's switch. Blocks: `scenery`, `vehicles`, `equipment`, `weapons`,
 their spawn points) and tag references other than through a palette index
 are not covered. The user or coordinator loads the result (`H2_MAP_DIR`);
 agents do not.
+
+## Content packages
+
+The game's content packages: ours baked into `h2` from `content/<id>/`,
+then the user's under `<data>/packages/<id>/`, ordered and switched by
+`<data>/packages/set.toml` and the game's features, and what each map the
+game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
+"How the game consumes packages"). Registered by
+`crates/apps/boot/src/packages.rs`; the set and the rows are
+`workspace::GameSet`, the maps `workspace::PackageRewrite`'s record.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `packages.list` | read | `{}` → `{packages, problems, content_hash, local_only, maps}` |
+
+- `packages`: every package read, those on in load order, then those off
+  by id. Each row has `id`, `name`, `package_id` (the `PackageId`),
+  `origin` (`baked` or `local`), `dir` for a local one, `on`, `why` when
+  off (switched off in `set.toml`, a feature that is off, a `requires`
+  that is missing or off, a set that cannot be ordered), `always_on`
+  (`core` and `ui`), `signed` (baked packages are; a local one is not and
+  loads in local games only), `features`, `items` (a count by kind) and
+  `scopes` (`sim`, `client`, `live`, `per-feature`).
+- `problems`: the lines the boot printed: a package that did not read, a
+  local package with a baked one's id, a `set.toml` that is not used (it
+  does not parse, or it switches `core` or `ui` off), a cycle.
+- `content_hash`: the SHA-256 of the content set (the `PackageId`s of the
+  packages on with a `sim` item), or `null` when the set did not order.
+- `local_only`: why a Live or System Link session would be refused with
+  this set (an unsigned package with a `sim` item, named), or `null`.
+- `maps`: by map name, each map the rewrite was asked for: `scope` (its
+  header's class), `packages` applied in order, `held` (packages whose
+  tags the map has already, left out), `key` (the cache key), `hits` and
+  `builds`, `added` and `changed` tag counts, and `error` when the map
+  was served without its packages.
+
+```sh
+h2 agent packages.list
+```
 
 ## Rules and limits
 

@@ -39,8 +39,9 @@ before its slice starts.
 | Animation graphs read and sampled, every retail codec | built, no view | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)) |
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
-| Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, the load order, the content set | built, nothing reads it yet | `crates/formats/content/src/package/` |
-| The package build: the builder registry (`tag`, `edits`, `bitmap`), `build` of ordered packages on a `TagSet`, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2), nothing in the game reads it yet | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
+| Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
+| The package build: the builder registry (`tag`, `edits`, `bitmap`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
+| The game's side: the baked set (`content/`), `<data>/packages/`, `set.toml`, features, `PackageRewrite` with its cache, `packages.list` | built (PK3), beside the older rewrites; no package of ours is in `content/` yet | `crates/tools/workspace/src/{game,rewrite}.rs`, `crates/apps/boot/src/packages.rs`, `crates/apps/boot/build.rs` |
 | Projects, the other kits as build steps | design | [tag-workspace.md](tag-workspace.md) |
 
 Each piece of new content reaches the game by a path of its own
@@ -278,9 +279,10 @@ document id.
 A package is a folder with `package.toml` and the files it names. It is
 the unit of authoring, building, enabling, sharing and credit.
 
-- Ours live in Git under `content/<id>/` and are baked into `h2`
-  (`include_dir`-style, as `pogo_kit::source` and
-  `ui_kit::inject::ScreensRewrite::baked` bake theirs).
+- Ours live in Git under `content/<id>/` and are baked into `h2`: boot's
+  build script `include_bytes!`s every file of each folder that holds a
+  `package.toml` (`crates/apps/boot/build.rs`), read back through
+  `workspace::baked`.
 - The user's live under `<data>/packages/<id>/`; so do packages
   installed from Live.
 - A package holds **sources and data**, never code. What turns a source
@@ -381,8 +383,9 @@ the retail list, as it does for maps ([maps.md](../game/maps.md) section
   by the user's order (`<data>/packages/set.toml`, which also holds what
   is switched off), then by id. A cycle is refused, naming its members.
   Every package is on unless the set file turns it off. `core` and `ui`
-  are always on: the set file cannot name them, and no other package's
-  absence disables them.
+  are always on (`content::package::ALWAYS_ON`): a set file whose `off`
+  names one is refused by name (`SetError::AlwaysOn`), and they may not
+  `require` anything, so no other package's absence disables them.
 - **Conflicts.** Two packages that add the same tag path stop the build,
   naming both. Two edit lines on the same field: the later package wins
   and Problems lists the override. An edit whose path or `was` hash does
@@ -448,9 +451,14 @@ changed and overridden, and the cache key.
 
 ### How the game consumes packages
 
-`boot` builds one `content::package::Set` (baked packages, then
-`<data>/packages/`, then `set.toml`) and uses it in four places, which
-replace the paths in "What exists":
+`boot` builds one set, `workspace::GameSet` over a
+`content::package::Set` (`boot::packages::at_boot`): the baked packages,
+then each folder under `<data>/packages/` that holds a `package.toml`, by
+name, then `set.toml`. A local package with a baked one's id is not
+loaded; a `set.toml` that does not read, or that switches `core` or `ui`
+off, is not used and every package is on. Each such line goes to stderr
+and to `packages.list`. The set is used in four places, which replace the
+paths in "What exists":
 
 1. **Prepare**, before boot (`h2 play`, `h2 run`, `h2 serve`, in place
    of `h1_import::auto_import` and the Map Pack's automatic install):
@@ -459,21 +467,31 @@ replace the paths in "What exists":
    `<data>/maps/`. `new_maps::install_at_boot`, the resolver and `MapId`
    are unchanged: a map package stays the form the VFS loads and Live
    names.
-2. **Per-map items**: one `vfs::Rewrite`, `PackageRewrite`
-   (`crates/apps/boot/src/packages.rs`), is the whole chain. For a map
-   the game reads, it runs every enabled item whose `maps` matches, in
-   order, through `workspace::build` on a `TagSet`, and serves the
-   result from `<data>/packages/cache/<map sha>-<set fingerprint>.map`.
-   A second read is a cache hit. The four rewrites with caches of their
-   own (`PogoRewrite`, `ScreensRewrite`, `CardRewrite`, the font
-   rewrites) are deleted.
+2. **Per-map items**: one `vfs::Rewrite`, `workspace::PackageRewrite`
+   (`crates/tools/workspace/src/rewrite.rs`, made in
+   `crates/apps/boot/src/packages.rs`). For a `maps\<name>.map` the game
+   reads, it takes the packages with an item whose `maps` matches the
+   name or the header's class, leaves out a package whose added tags the
+   map already has (a map that holds the content), and runs the rest in
+   order through `workspace::build_map`, the path `h2 package build`
+   takes, so the bytes are the same. The result is served from
+   `<data>/packages/cache/<map sha>-<key>.map` (16 hex digits of each,
+   the key `workspace::cache_key`) with a `.json` receipt holding the
+   full key and the output's hash; a second read is a cache hit, and a
+   changed map, package or builder builds anew. A map that fails to
+   build is served unchanged and named once on stderr. It runs last in
+   boot's chain, after `PogoRewrite`, `ScreensRewrite`, `CardRewrite`
+   and the font rewrites; PK4, PK5 and PK12 move those into packages and
+   delete them, until the chain is `PackageRewrite` alone.
 3. **Set items**: `rules` items fill the registry `rules::builtin::ALL`
    is today; `variant` items are the built-in list entries
    `community_variants` builds; `hud` items are what `hud_kit::install`
    compiles against the loaded map; `playlist` items are merged into the
    default hopper by the server (`live-server/src/default_hopper.rs`).
 4. **Features**: a package whose `features` names a switch that is off
-   is skipped whole, so turning `pogo` off still removes the stick.
+   (`hooks::Switches::feature`, on unless switched off) is skipped whole,
+   and so is a package that requires it, so turning `pogo` off still
+   removes the stick. `core` and `ui` are never skipped for a feature.
 
 Studio's build of a map (`package.build`) calls the same
 `workspace::build`, with a package's sources read from its folder
@@ -541,7 +559,9 @@ the author's key (the `MapPublished` flow of `live_proto::maps`).
   lock on upload. A client verifies both again on install. Baked
   packages are trusted as part of the binary. A local, unsigned package
   loads in local games only: a Live or System Link session is refused
-  while the set holds one with a `sim` item, naming the package.
+  while the set holds one with a `sim` item, naming the package
+  (`workspace::GameSet::network_refusal`, `boot::packages::network_refusal`;
+  the session's call to it comes with PK14).
 - **Joining.** A session carries the content set's hash and its
   `PackageId`s beside `map_id`. A joiner missing one downloads it,
   rebuilds its cache and joins; one it cannot have (blocked, or its base
@@ -849,11 +869,11 @@ Rows are in build order.
 | PK1 | **Manifest and set** (built): `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
 | PK2 | **Builders and the build** (built): `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
 | SH2 | **The browser**: the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
-| PK3 | **The game's side**: `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
+| PK3 | **The game's side** (built): `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
 | PK11 | **HUDs as data**: the `hud` builder, HUD kit YAML for the superbounce and Firefight HUDs; `hud-kit-core/src/huds/*.rs` deleted | M | PK3 | each YAML compiles to the records its Rust definition compiled to (`hud-kit-core/src/tests.rs`' fixtures) |
 | PK4 | **Pogo as a package**: `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
 | PK5 | **Screens as a package**: `content/ui/`, the `screens` and `screen-edits` builders over `ui_kit::inject::tag::add_screens`; `ScreensRewrite` deleted; `ui.save` writes into the edit target | M | PK3 | `ui_kit::inject::tests` pass through the package; a screen saved from the window is a changed file in the package and nowhere else |
-| PK6 | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play; `core` and `ui` always on in `content::package::Set` | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
+| PK6 | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play, over the always-on rule `content::package::Set` keeps | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems**: one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
 | SH4 | **The preview switch**: `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
@@ -863,7 +883,7 @@ Rows are in build order.
 | PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
 | PK12 | **Kits**: `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
 | PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
-| PK14 | **Live, game and Studio**: install, the content set in a session, the join check, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
+| PK14 | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 | **Model poses** (rich-editors) | M | nothing | as there |
 | AN1 | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
 | AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |

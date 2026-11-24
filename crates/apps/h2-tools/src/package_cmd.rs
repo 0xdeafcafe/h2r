@@ -9,17 +9,14 @@
 //! same tag. `build` runs the same checks, then applies the packages to a
 //! base map the user names and writes the result.
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use content::Sha256;
 use content::package::{LOCK_FILE, MANIFEST_FILE, MapScope, Package, Set, SetFile};
-use map::build::TagSet;
-use map::{CacheType, Map};
 use workspace::{
-    Loaded, MapUnpin, Target, build, cache_key, check_package, check_set, forbidden_files,
-    lock_findings, read_lock,
+    Loaded, Target, build_map, cache_key, check_package, check_set, forbidden_files, lock_findings,
+    read_lock, scope_of_bytes,
 };
 
 const USAGE: &str = "usage: h2 package check <dir>...
@@ -206,16 +203,10 @@ fn build_cmd(args: Args) -> Result<()> {
     }
     let bytes = std::fs::read(base_path).with_context(|| base_path.display().to_string())?;
     let base_hash = Sha256::of(&bytes);
-    let mut map = Map::from_reader(Cursor::new(bytes.as_slice()))
-        .map_err(|e| anyhow::anyhow!("{}: not a map: {e}", base_path.display()))?;
     let scope = match &args.scope {
         Some(s) => scope_of(s)?,
-        None => match map.header().cache_type {
-            CacheType::Multiplayer => MapScope::Multiplayer,
-            CacheType::Campaign => MapScope::Campaign,
-            CacheType::MainMenu => MapScope::Mainmenu,
-            _ => MapScope::Shared,
-        },
+        None => scope_of_bytes(&bytes)
+            .ok_or_else(|| anyhow::anyhow!("{}: not a map", base_path.display()))?,
     };
     let name = args.map.clone().unwrap_or_else(|| {
         base_path
@@ -225,21 +216,9 @@ fn build_cmd(args: Args) -> Result<()> {
     });
     let target = Target { name: &name, scope };
 
-    let unpin = MapUnpin::new(&mut map).map_err(|e| anyhow::anyhow!(e))?;
-    let mut set =
-        TagSet::from_map(&mut map).map_err(|e| anyhow::anyhow!("decomposing the map: {e}"))?;
-    // A tag laid out anew can land past the old metadata's end; the same
-    // lift `ui_kit::retail_edits` makes, and the size check below still runs.
-    set.check_tag_memory = false;
-    if let Some(p) = set.pinned.as_mut() {
-        // Room in the index for the tags the packages add.
-        p.clear_index_tail();
-    }
     let ordered: Vec<Loaded> = r.loaded.iter().map(|(_, l)| l.clone()).collect();
-    let unpin: &dyn workspace::Unpin = &unpin;
-    let report =
-        build(&mut set, &ordered, &target, Some(unpin)).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let (out, _) = set.build().context("building the map")?;
+    let (out, report) = build_map(&bytes, &ordered, &target)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", base_path.display()))?;
     let key = cache_key(&base_hash, &ordered, &target);
     std::fs::write(out_path, &out).with_context(|| out_path.display().to_string())?;
 

@@ -25,7 +25,7 @@ pub use manifest::{
     Credit, Item, ItemScope, Kind, MANIFEST_FILE, Manifest, ManifestError, MapScope, Maps,
     PACKAGE_FORMAT, Package as Header, valid_slug,
 };
-pub use set::{Package, PackageError, Problem, Set, SetError, SetFile};
+pub use set::{ALWAYS_ON, Package, PackageError, Problem, Set, SetError, SetFile};
 
 /// The lock's file name, beside the manifest.
 pub const LOCK_FILE: &str = "package.lock";
