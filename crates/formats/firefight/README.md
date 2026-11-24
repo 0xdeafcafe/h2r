@@ -1,6 +1,6 @@
 # firefight
 
-Portable Firefight definitions and admission rules for a one-team Slayer match. A definition carries authored tuning and kit class names; `script` compiles it to a rules script whose running (`ScriptDirector`) is the director: it turns what the host observes into host commands.
+Portable Firefight definitions and admission rules for a one-team Slayer match. A definition carries authored tuning and kit class names; `ScriptDirector` loads it as data for `content/modes/rules/firefight.rules`, which turns the host’s observations into commands.
 
 ## Where it sits
 
@@ -10,7 +10,7 @@ Portable Firefight definitions and admission rules for a one-team Slayer match. 
 
 - `src/def.rs`, `src/validate.rs`: the definition and its admission rules.
 - `src/director.rs`: the director's interface types (settings, observations, commands, state).
-- `src/script.rs`: a definition compiled to a rules script, and the `ScriptDirector` that runs it.
+- `src/script.rs`: the wave-set data loader and the `ScriptDirector` that runs the script.
 - `src/scoring.rs`, `src/wire.rs`, `src/builtin.rs`: scoring, the wire form and the built-in definitions (the files of `content/modes/firefight/`).
 
 ## Tests

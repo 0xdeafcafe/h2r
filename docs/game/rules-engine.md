@@ -1470,7 +1470,7 @@ Actions:
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
 | `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)`, `hud_value_for(w, p, n)`; `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | the VM's show state (`RulesExt::show`), drawn from the objective HUDs after each tick (`rules/world/hud.rs`); a mark's audience is a player's slot's bit or the team's seated players' bits, resolved in the VM from the roster (`Game::players_of_team`); the state rides the show channel's `Show` record ([rules-world-api.md](rules-world-api.md#the-show-channel)) | named | `hud.widgets`, `hud.waypoints` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
-| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
+| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives(p, n)` (`none` for the shared pool), `ff_score`, `ff_respawn`, `ff_finish`; with two player teams `ff_target(s, team)`, `ff_team_lives(team, n)`, `ff_player_score(p, n)`, `ff_team_finish(winner)` (`none` a draw) | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
 | `sound_to(s, p)`, `sound_to_team(s, t)`, `sound_to_all(s)`: a `sound` of the map played in the ears of an audience | `SOUND_START_AT_MARKER` `0x1891d0` at each audience player's unit, and a sound cue to every machine (`rules/world/audio.rs`; [rules-world-api.md](rules-world-api.md#audio)). `say`, `sound_at`, `music`, `music_stop` and `announce` are listed and refused by name (R4, R5) | named | `audio.play` |
 | `bot_go(p, at)`, `bot_hold(p, zone)`, `bot_follow(p, q)`, `bot_attack(p, q)`, `bot_free(p)`: an outside order to a phantom bot, its brain's goal while it stands | the phantom registry (`bots::phantom::order`): a hint to the seat's brain on the host, with a zone resolved through the census and the scenario's netgame flags (`rules/world/bots.rs`). No guest entry: the pad replicates as any player's input. An order to a seat no phantom holds is a refused call | named | `bots.orders` |
 | `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
@@ -2153,21 +2153,14 @@ engines' hooks, observers and bot readers that parse per-engine globals
 
 ## Firefight, AI and bounces
 
-**Firefight is the first port, and runs as one.** `firefight::ScriptDirector`
-(`crates/formats/firefight/src/script.rs`) compiles the wave-set
-definition to one rules script — waves, rounds, lives, skulls and
-scoring — and runs it: the host runtime steps it each tick
-([firefight.md](firefight.md#the-director-as-a-rules-script)). The
-wave-set format stays the authoring format. `firefight::Def` is already
-validated, bounded and hashed, and the hopper tool offers definitions;
-`firefight::script::compile` builds the director script's IR from a
-`Def`, with the definition's squads, waves, rounds, caps, points and
-multipliers as constant tables. It builds IR, not source: the loops over
-the 16 squad slots unroll at build time and the blob depends on nothing
-but the definition, so a wave set is one blob with one hash, mode 1
-folds into mode 2, and the built-in sets need no rewrite by hand. The
-director's tests are its scenarios: every match the fake world plays is
-replayed through a fresh script for the same `Command` log.
+**Firefight runs as a script.** `content/modes/rules/firefight.rules`
+owns waves, rounds, lives, skulls and scoring. `firefight::ScriptDirector`
+(`crates/formats/firefight/src/script.rs`) supplies the validated
+`firefight::Def` as a module of constant tables and tuning, then steps
+the compiled script each tick. The script and wave set determine the
+blob's hash. The host adapts observations and queued calls to the
+director's `Command` stream, which the scenarios exercise
+([firefight.md](firefight.md#the-director-as-a-rules-script)).
 
 **AI is commanded by squad.** A script places a squad from the kit's
 palette at a label, sets its team and orders, reads how many of its

@@ -14,9 +14,9 @@ the 30 s game-thread CPU p99 (FF11), and Clankers on player teams holding,
 falling back to and regrouping on their home base and rearming between
 waves (FF16, `crates/live/bots/src/firefight.rs`) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
-Code: `crates/formats/firefight` defines and validates wave sets, compiles
-a definition to the director's rules script (`src/script.rs`, run by
-`ScriptDirector`) and holds the kill-point math its tests check against
+Code: `crates/formats/firefight` defines and validates wave sets, loads
+their data into `content/modes/rules/firefight.rules` (`src/script.rs`,
+run by `ScriptDirector`) and holds the kill-point math its tests check against
 (`src/scoring.rs`) and the director's interface types (`src/director.rs`).
 `crates/tools/firefight-kit` builds the map kit. The offline command lives
 in `crates/apps/h2-tools/src/firefight_cmd.rs`. The host runtime is
@@ -200,7 +200,7 @@ player kill scores the set's own points or `builtin::PLAYER_KILL_POINTS`
 ### The director
 
 `firefight::ScriptDirector` (`crates/formats/firefight/src/script.rs`)
-compiles the definition to a rules script and runs it on the rules VM. It
+loads the director script with the definition and runs it on the rules VM. It
 is a state machine with no I/O:
 
 ```rust
@@ -317,18 +317,18 @@ a one-team match.
 
 ### The director as a rules script
 
-`firefight::script` (`crates/formats/firefight/src/script.rs`) compiles
-a definition to a rules blob and runs it
-([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)); the host
-runtime runs the script, and the director's tests are its scenarios.
+`content/modes/rules/firefight.rules` defines the director's handlers.
+The runtime loads it with a wave set, and the director's tests are its
+scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
 
-- `compile(&def)` builds the IR directly. The squads, waves, rounds
-  (each round's skull schedule), actor caps, class points, difficulty
-  and skull multipliers are constant tables. The director's state is
-  global and per-player script variables, and the loops over the 16
-  squad slots are unrolled. The blob depends only on the definition, so
-  its hash is stable. A definition with more than 256 squads is refused
-  by name, since a rules table holds 256 rows.
+- `script::load(&def)` validates the definition, supplies the squads,
+  waves, round skull schedule, actor caps, points and multipliers as a
+  data module, then compiles and verifies the script. A definition with
+  more than 256 squads is refused by name, since a table holds 256 rows.
+- Global variables hold match progress, player variables hold lives
+  and registration, and object variables on the host's 16 `ff_slots`
+  records hold squad state. The wave-set data and source determine the
+  blob's hash.
 - The difficulty and the skulls on from the start are script options
   (`script::options`). The VM seeds its generator from the match seed
   and the blob's hash; `script::match_seed` hands it a seed that starts
@@ -351,7 +351,7 @@ runtime runs the script, and the director's tests are its scenarios.
 - Two teams run in the script too. Each team's pool and score are
   globals (`pool_0`, `pool_1`, `score_0`, `score_1`), the player's team
   a per-player variable `on join` fixes from `team_of`, and a slot's
-  target sits in its info word (times 256, above the count). `on kill`
+  target sits in its `squad_side` field. `on kill`
   scores player kills (only in a two-team blob with `player_kill` above
   0). The entries `zone_team_distance(z, team)`, `ff_target(s, team)`,
   `ff_team_lives(team, n)`, `ff_player_score(p, n)` and

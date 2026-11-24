@@ -319,7 +319,7 @@ fn the_modes_package_carries_the_four_wave_sets_the_game_builds_in() {
     assert_eq!(defs, firefight::builtin::definitions().to_vec());
     // The director's script builds from each, as a lobby builds it.
     for def in &defs {
-        firefight::script::compile(def).unwrap();
+        firefight::script::load(def).unwrap();
     }
     // The items add nothing to a map.
     assert!(modes

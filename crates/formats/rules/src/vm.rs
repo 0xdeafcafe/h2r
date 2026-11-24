@@ -1490,6 +1490,15 @@ impl Vm {
         Some(row[self.pos[slot] as usize])
     }
 
+    /// Reads an object variable by name, including its default before the
+    /// first write to the object.
+    pub fn object_var(&self, object: u32, name: &str) -> Option<i32> {
+        let slot = self.slot_named(name, Scope::Object)?;
+        Some(self.ext.objects.get(&object).map_or(self.ir.slots[slot].init, |row| {
+            row[self.pos[slot] as usize]
+        }))
+    }
+
     /// Writes a global by name, between ticks, for a host that holds the
     /// mode's state in the script (Firefight's pools). `false` when the
     /// script declares no global of that name.

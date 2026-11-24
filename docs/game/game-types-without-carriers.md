@@ -39,7 +39,7 @@ engine and settings. See [rules-variants.md](rules-variants.md#the-record-of-a-s
 
 Firefight already works this way: it is a Slayer game whose rules the
 host makes ([firefight.md](firefight.md)), and its director is a rules
-script (`firefight::script::compile`). Siege is a script on Slayer that
+script (`content/modes/rules/firefight.rules`). Siege is a script on Slayer that
 uses the map's own flags (`content/modes/rules/siege.rules`). This page makes the
 seven retail types the same.
 
