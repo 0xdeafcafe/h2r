@@ -8,6 +8,8 @@
 //! - [`model`]: a map's HUDs and who names them, one HUD's widgets;
 //! - [`render`]: the 640 by 480 preview from the map's bitmaps and the
 //!   disc's fonts;
+//! - [`overlay`]: the same walk as ordered overlay items, what the native
+//!   renderer's overlay stage draws;
 //! - [`checks`]: overlaps, art off the screen, text spilling out of its art;
 //! - [`session`]: edits, undo and redo, the patched-map save.
 //!
@@ -18,6 +20,7 @@ pub mod checks;
 pub mod fixture;
 pub mod layout;
 pub mod model;
+pub mod overlay;
 pub mod place;
 pub mod render;
 pub mod session;

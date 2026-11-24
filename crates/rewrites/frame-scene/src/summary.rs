@@ -9,7 +9,8 @@
 //! shadows (identity, groups), layer draws (layer, flags, remainder,
 //! material inputs, items with their owner, model, rows and lighting) and
 //! decorator draws (`crate::decorator::summary_words`), and the late passes
-//! (fog, water and post: `crate::late::summary_words`). A group hashes its
+//! (fog, water and post: `crate::late::summary_words`), then the overlay
+//! when it has items (`crate::overlay::summary_words`). A group hashes its
 //! layer, site, projection, remainder and entries (slot, record, owner,
 //! model, stream, pose with its rows, binding).
 //! Floats by their
@@ -250,6 +251,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         crate::decorator::summary_words(scene, v, &mut |w| h.word(w));
         crate::late::summary_words(scene, v, &mut |w| h.word(w));
     }
+    crate::overlay::summary_words(&scene.overlay, &mut |w| h.word(w));
     h.0
 }
 

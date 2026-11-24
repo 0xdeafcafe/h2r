@@ -137,7 +137,9 @@ From the measuring and drawing routines (`0x13ef40`, `0x13f0e0`, `0x13f700`):
   previous unit is in the header bit set. The amount is added before the glyph.
   A transparent leading glyph still advances the pen and becomes the previous
   unit for kerning. `font::render` lays out every glyph before compositing
-  its pixels.
+  its pixels; `font::layout` is that layout alone (each glyph's record
+  index and place, and the bitmap's size), for a renderer with its own
+  glyph atlas.
 * The text scanner (`0x13f5a0`) treats `0x0d` as a line break, `0x0a` as
   ignorable, `0x09` as a tab, `0xe405..0xe407` as alignment tokens, `|` as the
   start of an inline markup escape (`0x13fbd0`) and `0xe000..0xe3ff` as the

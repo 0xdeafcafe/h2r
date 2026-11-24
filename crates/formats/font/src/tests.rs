@@ -177,6 +177,24 @@ fn renders_text_with_kerning_and_lines() {
     assert!(render(&f, &u("\u{3042}A"), RenderOptions::default()).is_ok());
 }
 
+/// The layout is where `render` draws each glyph: a renderer with its own
+/// glyph atlas places the same pixels.
+#[test]
+fn the_layout_places_each_glyph_where_render_draws_it() {
+    let bytes = font_bytes();
+    let f = Font::parse(&bytes).unwrap();
+    let u = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    let l = layout(&f, &u("AV")).unwrap();
+    let b = render(&f, &u("AV"), RenderOptions::default()).unwrap();
+    assert_eq!((l.width, l.height), (b.width, b.height));
+    let at: Vec<_> = l.glyphs.iter().map(|g| (g.index, g.x, g.y)).collect();
+    assert_eq!(at, [(f.glyph_index(b'A' as u16), 0, 0), (f.glyph_index(b'V' as u16), 3, 0)]);
+    let lines = layout(&f, &u("A\r\nA")).unwrap();
+    assert_eq!(lines.glyphs[1].x, 0);
+    assert_eq!(lines.glyphs[1].y, 2, "one line down");
+    assert!(layout(&f, &[]).unwrap().glyphs.is_empty());
+}
+
 #[test]
 fn a_transparent_leading_glyph_keeps_its_advance_and_kerning() {
     let bytes = build(

@@ -300,6 +300,10 @@ entry, incompatible inputs and failed reservations.
 limit, texture commit or reservation reason. The standard per-copy
 resource, validation and replay counters still apply. The generated
 image must expose the instruction sites for the native walk.
+`native_ui_overlay_*` count the typed overlay stage, which draws from
+the scene and not from these producers
+([retire-d3d.md](retire-d3d.md#what-replaces-each-subsystem)); `render.stats`
+reports them.
 
 ### Post admission
 

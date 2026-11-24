@@ -27,7 +27,7 @@ pub mod patch;
 pub mod raster;
 pub mod ring;
 
-pub use raster::{Bitmap, RenderOptions, render};
+pub use raster::{Bitmap, GlyphAt, Layout, RenderOptions, layout, render};
 
 /// File offset of the header.
 pub const HEADER_OFFSET: usize = 0x200;

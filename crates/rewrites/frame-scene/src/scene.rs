@@ -24,6 +24,7 @@ use crate::light::{Light, LightStep};
 use crate::light_group::{LightEntry, LightGroup, ObjectShadow};
 use crate::node::NodeMatrix;
 use crate::object::{Defaults, ItemKey, Lighting};
+use crate::overlay::Overlay;
 
 /// One vertex constant register: a palette row is three of them, world
 /// space.
@@ -347,6 +348,9 @@ pub struct FrameScene {
     pub late_parts: Vec<LatePart>,
     /// The screen effects of the views' post passes; posts index ranges of it.
     pub post_effects: Vec<PostEffect>,
+    /// What is drawn over the views, in order: the HUD's and the UI's
+    /// quads, text runs and fills (`crate::overlay`).
+    pub overlay: Overlay,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -381,6 +385,7 @@ impl FrameScene {
         self.late_materials.clear();
         self.late_parts.clear();
         self.post_effects.clear();
+        self.overlay.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {
@@ -547,6 +552,7 @@ impl FrameScene {
         }
         crate::decorator::check(self)?;
         crate::late::check(self)?;
+        self.overlay.check()?;
         Ok(())
     }
 }
