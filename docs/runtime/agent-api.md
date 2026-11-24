@@ -2321,8 +2321,8 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
   its words were written. `status` is `native` or `d3d` from the
   registry, and `partial` for a layer draw a native stage draws some
   items of from the scene, skipping their guest draws
-  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 3, 5, 7, 8
-  and 20 and the first person's 1, 3, 7, 8 and 20); its `residual` is
+  (`residual_census::PARTIAL_LAYERS`: the scene's layers 1, 2, 3, 5, 7,
+  8, 17 and 20 and the first person's 1, 2, 3, 7, 8 and 20); its `residual` is
   what the stages left. `slot` is the carried slot the work lands in. `guest_ms` is
   the producer's exclusive time less its D3D time, `null` without
   `render-timing`; it ranks producers and is not a frame time.

@@ -174,13 +174,25 @@ impl SubpartRanges {
 }
 
 /// The world layers besides 3 whose passes an object item draws natively
-/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8, 20
-/// and 17 (`layer_pass::BLOOM_LAYER`), and from the sorted list's handlers the camouflage's 18 and 19
+/// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8, 20,
+/// the overlay layer 2 (`layer_pass::OVERLAY_LAYER`, the scene's and the
+/// first person's) and 17 (`layer_pass::BLOOM_LAYER`), and from the sorted list's handlers the camouflage's 18 and 19
 /// and the hologram's 21 (docs/graphics/native-water-fog.md). In layer 5 an item whose model has
 /// a PRT block draws its pass's PRT variant ([`LitLayerPass::prt`]) with
 /// the stream and constants the geometry draw adds
 /// (`frame_scene::PrtStream`).
-pub const OBJECT_LAYERS: [u8; 9] = [1, PRT_LAYER, 7, 8, 20, crate::layer_pass::BLOOM_LAYER, CAMO_LAYER, CAMO_MODULATE_LAYER, HOLOGRAM_LAYER];
+pub const OBJECT_LAYERS: [u8; 10] = [
+    1,
+    PRT_LAYER,
+    7,
+    8,
+    20,
+    crate::layer_pass::OVERLAY_LAYER,
+    crate::layer_pass::BLOOM_LAYER,
+    CAMO_LAYER,
+    CAMO_MODULATE_LAYER,
+    HOLOGRAM_LAYER,
+];
 
 /// Active camouflage, the layer the sorted handler `0x00041cc0` draws its
 /// records' camouflage passes in (`scene_extract::layout::world_layers::sorted_site`).
@@ -3061,6 +3073,64 @@ mod tests {
         let (m, layer, why) = &build.layer_refused[0];
         assert_eq!((*m, *layer), (0, 8));
         assert!(why.contains("only in layer 3"), "{why}");
+        assert!(build.input.valid_draw_references());
+    }
+
+    #[test]
+    fn a_materials_overlay_layer_2_pass_compiles_with_its_multiply_blend() {
+        use crate::object_program::tests::{lit, rigid_program};
+        use tags::material::{ResolvedLayer, ResolvedPass};
+        let mut bytes = Vec::new();
+        for k in 0..3 {
+            for v in [k as f32, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 1.0] {
+                bytes.extend(v.to_le_bytes());
+            }
+        }
+        let section = LitSection {
+            index: 1,
+            geometry: 0,
+            influences: 0,
+            decompression: [[1.0; 4]; 3],
+            streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
+            vertex_count: 3,
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
+            subparts: HashMap::new(),
+            listed: HashMap::new(),
+        };
+        let mut opaque = lit();
+        opaque.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
+        // The destination times the source: DestColor, Zero.
+        let mut multiply = lit();
+        multiply.render_states = vec![
+            state(RenderStateType::AlphaBlendEnable, 1),
+            state(RenderStateType::SrcBlend, gfx::state::BlendFactor::DestColor.xbox_value()),
+            state(RenderStateType::DestBlend, gfx::state::BlendFactor::Zero.xbox_value()),
+            state(RenderStateType::ZWriteEnable, 0),
+        ];
+        let pass = |implementations| ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations };
+        let material = tags::material::Material {
+            shader: map::TagId(0xe000_0020),
+            template: map::TagId(0xe000_0021),
+            inputs: Default::default(),
+            layers: vec![
+                ResolvedLayer { lod: 0, layer: crate::look::LIGHTMAP_LAYER, passes: vec![pass(vec![opaque])] },
+                ResolvedLayer { lod: 0, layer: usize::from(crate::layer_pass::OVERLAY_LAYER), passes: vec![pass(vec![multiply])] },
+            ],
+        };
+        assert!(OBJECT_LAYERS.contains(&crate::layer_pass::OVERLAY_LAYER));
+        let mut materials = HashMap::new();
+        materials.insert(0, LitMaterial { material, shader: ShaderValues::default(), properties: Vec::new() });
+        let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
+        let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
+        let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        assert_eq!(build.taken, vec![0], "{:?}", build.refused);
+        assert!(build.layer_refused.is_empty(), "{:?}", build.layer_refused);
+        assert_eq!(build.input.layers.len(), 1, "layer 2's part");
+        let p = &build.input.layers[0];
+        assert_eq!((p.layer, p.section, p.part, p.shader_tag), (crate::layer_pass::OVERLAY_LAYER, 1, 0, 0xe000_0020));
+        let (program, buffer) = p.passes[0].implementations[0].expect("compiled");
+        assert_eq!(buffer, 0, "over layer 3's buffer");
+        assert!(build.input.programs[program].pass.program.state.as_ref().unwrap().blend.is_some(), "its blend kept");
         assert!(build.input.valid_draw_references());
     }
 

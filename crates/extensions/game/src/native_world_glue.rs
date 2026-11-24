@@ -103,7 +103,7 @@ pub struct Ready {
     /// compiled layer-6 passes, their supplies and the parts the water
     /// pass draws.
     pub water: OnceLock<(Arc<crate::native_water_glue::WaterData>, StagePalettes)>,
-    /// The scene's layers 1, 5, 7, 8 and 20 of this load
+    /// The scene's layers 1, 2, 5, 7, 8, 17 and 20 of this load
     /// (`native_layers_glue`), when `frame-scene.layers` is placed.
     pub layers: OnceLock<(Arc<crate::native_layers_glue::LayersView>, StagePalettes)>,
     /// The model decorators' passes of this load (`native_decorators_glue`).

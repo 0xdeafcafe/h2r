@@ -784,7 +784,7 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_fog::NativeFog)
             .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
-        // World layers 1, 5, 7, 8 and 20 drawn from the scene's plan
+        // World layers 1, 2, 5, 7, 8, 17 and 20 drawn from the scene's plan
         // (frame-scene.layers, on with the native renderer;
         // docs/graphics/framescene.md, slice 4). The layer sets load with
         // the world (native_layers_glue).

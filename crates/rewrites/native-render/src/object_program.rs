@@ -197,7 +197,7 @@ pub fn object_pass(
 
 /// The passes of an object material's world layer `layer` (first level
 /// of detail, in the order `0x00016610` draws them), or why none: the
-/// layers 1, 5, 7, 8 and 20 an object item draws besides layer 3.
+/// layers an object item draws besides layer 3 (`object_program_gpu::OBJECT_LAYERS`).
 pub fn object_layer_passes(
     material: &tags::material::Material,
     layer: u8,
