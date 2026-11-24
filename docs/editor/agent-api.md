@@ -554,6 +554,26 @@ Notes on some:
   does not decode has a null `listing` too. A pass or implementation the
   shader lacks, or a tag that is not a `shad`, is `REFUSED`. It reads
   with the document's edits and writes nothing.
+  `shader.override {tag, pass?, implementation?, text?}` reads or edits the
+  WGSL of a pass's program (slice S5; `app::shader_override`): `base` is the
+  vertex and pixel programs linked into one module (`vs_main`, `fs_main`;
+  default options), `text` the draft (a string sets it, null discards it),
+  `check` the draft as the game parses it (`{ok: true}`, or `{ok: false,
+  error, line, column}`; null with no draft), `edited` whether it differs
+  from `base` and `pushed` the overrides sent from it, each
+  `{program, file, state, why}` with `state` one of `queued`, `sent`,
+  `loaded`, `refused` and `reverting`. `shader.push {tag, pass?,
+  implementation?, program, dir?}` queues the draft as the override of the
+  game program `program` (16 hex digits from `render.programs`): a missing
+  or unparsable draft is `REFUSED` with its line; the link then writes
+  `<program>_studio.wgsl` in `dir` (default the game's default override
+  directory on this machine) and calls `render.reload {dir}` on the paired
+  game. Not paired, or a game without `render.reload`, ends as `refused` and
+  writes no file. `shader.revert {tag, pass?, implementation?, program?}`
+  queues deleting the pass's pushed files (or the one `program`) and the
+  same reload; a program with no override pushed from here is `REFUSED`.
+  An override changes the game's renderer only; nothing is written into a
+  map.
 - **Curves.** `function.read {tag, path}` reads the function blob a
   `view=function` data field points at
   ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
@@ -2260,7 +2280,9 @@ the window and the API stay one path.
   is `app::tag_api::set_field` with `fields::colour::from_json`, a
   `TagAction::Write` of the field's own length, as the dialog writes.
 - **Shaders (rich editors S1, S2).** `api/shader.rs` registers `Shader` for
-  `shader.read`, `shader.set`, `shader.preview` and `shader.code`, over
+  `shader.read`, `shader.set`, `shader.preview`, `shader.code`,
+  `shader.override`, `shader.push` and `shader.revert` (S5; the link sends
+  the queued push in `play::send_shader_overrides`), over
   `app/shader.rs` (the Shader tab's read, on the shown map with the
   document's edits), `native_view::preview::material_at` (the preview clock),
   `native_view::animate` (the properties' values at a time) and

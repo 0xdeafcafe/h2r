@@ -859,6 +859,7 @@ impl Play {
         // Revalidate queued controls against the newest map, session and local unit.
         self.take_requests(app);
         self.send_rules_reload(app);
+        self.send_shader_overrides(app);
         self.auto_pair(app);
         self.remember_place(app);
         self.maybe_spawn(app);
@@ -1257,6 +1258,17 @@ impl Play {
                 app.info(format!("game: {what}"));
             }
             (Purpose::Rules, result) => self.rules_answer(app, result),
+            (Purpose::ShaderOverride(program), result) => {
+                let result = result.map_err(|e| e.message);
+                let line = match &result {
+                    Ok(_) => None,
+                    Err(why) => Some(format!("shader override: {why}")),
+                };
+                app.shader_overrides.answered(program, result);
+                if let Some(line) = line {
+                    app.error(line);
+                }
+            }
             (Purpose::Subject(ticket), result) => self.subject_answer(app, ticket, result),
             (Purpose::Other, _) if method == agent_proto::editor::method::MARKS => {}
             (_, Err(e)) => self.feedback.problem(app, format!("{method}: {e}")),
@@ -1284,6 +1296,44 @@ impl Play {
         match why {
             Some(why) => app.rules.reload = ReloadState::Refused(why),
             None => self.call(agent_proto::rules::method::RELOAD, params, Purpose::Rules),
+        }
+    }
+
+    /// Sends the Shader tab's queued override changes: the file is written
+    /// (or removed) here, then the game reads the directory again
+    /// (`render.reload {dir}`, docs/graphics/hot-iteration.md). Nothing is
+    /// written when the game cannot be told, so a refused push leaves no file.
+    fn send_shader_overrides(&mut self, app: &mut App) {
+        if !app.shader_overrides.waiting() {
+            return;
+        }
+        use agent_proto::hot::method::RENDER_RELOAD;
+        let why = if !self.is_paired() {
+            Some("pair with a running game first".to_string())
+        } else if !self.has_method(RENDER_RELOAD) {
+            Some(
+                "the paired game has no render.reload (a build without the render-overrides feature)"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        for out in app.shader_overrides.take_outgoing() {
+            let failed = match &why {
+                Some(why) => Some(why.clone()),
+                None => crate::app::shader_override::perform(&out).err(),
+            };
+            match failed {
+                Some(why) => app.shader_overrides.refused(&out, why),
+                None => {
+                    app.shader_overrides.sent(&out);
+                    self.call(
+                        RENDER_RELOAD,
+                        serde_json::json!({ "dir": out.dir.display().to_string() }),
+                        Purpose::ShaderOverride(out.program),
+                    );
+                }
+            }
         }
     }
 

@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), mouth curves, write (A4), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), Scripts, write (H3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), the Shader tab (S1) and shader code, read (S4), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/app/script_edit.rs`, `crates/formats/hs/src/table_writes.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` and `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1) and `crates/tools/scenario-edit/src/native_view/code.rs` (`pass_code`, S4). S4) S1). and `crates/tools/scenario-edit/src/native_view/animate.rs` (`value_at`, S2). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `app/script_edit_tests.rs`, `hs/src/table_writes_tests.rs` and scenario-edit's `the_script_tables_writes_save_with_the_scenario` (H3), `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1), `native_view::code::tests` and `shader_code_lists_both_programs_of_a_pass` (S4); (S1); `native_view::animate::tests` and `the_preview_clock_is_read_and_checked` (S2); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), mouth curves, write (A4), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), Scripts, write (H3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), the Shader tab (S1), shader code, read (S4) and WGSL overrides from the editor (S5), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/app/script_edit.rs`, `crates/formats/hs/src/table_writes.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` and `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1) and `crates/tools/scenario-edit/src/native_view/code.rs` (`pass_code`, `linked_code`, `check_override`, S4, S5) and `crates/apps/studio/src/app/shader_override.rs` (S5). S4) S1). and `crates/tools/scenario-edit/src/native_view/animate.rs` (`value_at`, S2). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `app/script_edit_tests.rs`, `hs/src/table_writes_tests.rs` and scenario-edit's `the_script_tables_writes_save_with_the_scenario` (H3), `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1), `native_view::code::tests` and `shader_code_lists_both_programs_of_a_pass` (S4); `app/shader_override_tests.rs`, `api/tests/shader_tests.rs` (`shader_override_*`, `shader_push_*`) and `play/tests/shader_override.rs` (S5); (S1); `native_view::animate::tests` and `the_preview_clock_is_read_and_checked` (S2); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -359,14 +359,35 @@ and stays a viewer with a working preview.
    any) shows the vertex program's disassembly (`vsh::disassemble`), the combiner listing
    (`psh::disassemble`), the translated WGSL (`vsh::wgsl::translate`,
    `psh::wgsl::translate`) and the translator's warnings.
-2. **Override the translation** (slice S5). The game already replaces a
-   translated program with a WGSL file from a watched directory
-   (`crates/platform/hot-render`, `render.dump`, `render.reload`,
-   [hot-iteration.md](../graphics/hot-iteration.md)). The Code section
-   edits such a file with the compile error under the text and sends it
-   to the connected game. It changes how our renderer draws, is saved in
-   the override directory, and is never written into a map; the section
-   says so.
+2. **Override the translation** (built, slice S5; `app::shader_override`).
+   The game replaces a translated program with a WGSL file from a watched
+   directory (`crates/platform/hot-render`, `render.dump`, `render.reload`,
+   [hot-iteration.md](../graphics/hot-iteration.md)). Each pass's Code
+   section has an **Override** box. Its text starts from the pass's vertex
+   and pixel programs linked into one module (`code::linked_code`:
+   `shaders::link` with default options, `vs_main` and `fs_main`), and is
+   checked as the game parses it (`code::check_override`: naga, then the
+   two entry points), with the line and column of a compile error under the
+   text. The game's own program carries the draw's options, so for an exact
+   start `render.dump` writes its translation. **Push** writes the text as
+   `<program>_studio.wgsl` in the override directory (the game's default,
+   on this machine) and sends `render.reload {dir}` on the game link;
+   **Revert** deletes the file and reloads, so the program draws its
+   translation; **Discard edits** drops the draft. A push shows as queued,
+   sent, `loaded` (the game lists the program) or refused with the game's
+   words; whether the program takes the text (the game compares its
+   interface with the program's, `hot_render::iface::check`) is
+   `render.overrides`' `applied`. The box says that the override changes
+   how our renderer draws and is never written into a map.
+   - *Program id.* The game's id is the pipeline cache's hash of a key with
+     draw-time options (`d3d::pipeline_store::program_id`), which the
+     editor cannot derive; the user names it from `render.programs`.
+   - *Preview.* The editor's own preview draws materials through the
+     native renderer, not WGSL, so an override is previewed by the game
+     it is pushed to. A push with no game paired, or to a game without
+     `render.reload`, is refused by name and writes no file.
+   - *Where.* The file and the directory are on this machine; a game on
+     another machine does not see them.
 3. **Write Xbox programs into the map** (slice S6). Feasible, with
    limits:
    - *Vertex programs.* `vsh::encode` builds microcode from `Inst` values
@@ -957,7 +978,7 @@ the first one whose needs are met.
 | K2 (built) | **Recordings, play**: the game's `recording.play`, the path in Scene | M | K1; live-mirror | on the fake game, **Play on unit...** sends the call and the streamed positions draw a path |
 | H4 | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator entry; a parse error returns the evaluator's text |
 | K3 (built) | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |
-| S5 | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |
+| S5 (built) | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |
 | N1 | **Strings, read**: every string by name and language, searched | S | nothing | an invented table lists and searches in each language |
 | K4 | **Re-record from input**: the game's `recording.capture`, the capture flow | L | K2, K3 | a capture on the fake game encodes to a stream that walks clean; the determinism check is in "Not verified" |
 | S6 | **Xbox shader programs, write**: the vertex assembler, the combiner encoder and parser, the writes | L | S4, X2 | `assemble(disassemble(p)) == p` and `encode(decode(d)) == d` on invented programs; over-limit and untranslatable programs are refused |
