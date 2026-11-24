@@ -14,6 +14,9 @@
 //!   scene gives the same lights every run whatever the candidates'
 //!   order. At most [`LIT_CAP`] in a frame, shared between the views of
 //!   split screen ([`view_caps`]).
+//! - **Host lights** (`Light::host`, docs/game/forge-monitor-appearance.md,
+//!   ML5) come after every game light, by seat: the first a view's cap
+//!   leaves unlit.
 //! - **The first-person pass** draws the first [`FIRST_PERSON_CAP`] of a
 //!   view's lit lights again over its first-person parts, as retail's
 //!   recorded-light pass does.
@@ -116,6 +119,15 @@ impl LightChoice {
     }
 }
 
+/// A candidate's place in its view's order.
+struct Rank {
+    own: bool,
+    host: Option<u8>,
+    score: f32,
+    handle: u32,
+    index: u32,
+}
+
 /// The lights E3 lights in `scene`.
 pub fn choose(scene: &FrameScene) -> LightChoice {
     let mut keys: Vec<ViewKey> = Vec::new();
@@ -132,7 +144,7 @@ pub fn choose(scene: &FrameScene) -> LightChoice {
             .iter()
             .position(|k| *k == view.key)
             .map_or(0, |k| caps[k]);
-        let mut ranked: Vec<(bool, f32, u32, u32)> = Vec::new();
+        let mut ranked: Vec<Rank> = Vec::new();
         let mut handles = HashSet::new();
         let lights = scene
             .lights
@@ -140,18 +152,27 @@ pub fn choose(scene: &FrameScene) -> LightChoice {
             .unwrap_or(&[]);
         for (k, light) in lights.iter().enumerate() {
             let Some(s) = score(light) else { continue };
-            if !handles.insert(light.handle) {
+            if !handles.insert((light.handle, light.host)) {
                 continue;
             }
-            ranked.push((own(light), s, light.handle, view.lights.start + k as u32));
+            ranked.push(Rank {
+                own: own(light),
+                host: light.host,
+                score: s,
+                handle: light.handle,
+                index: view.lights.start + k as u32,
+            });
         }
         ranked.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then(b.1.total_cmp(&a.1))
-                .then((a.2 & 0xffff).cmp(&(b.2 & 0xffff)))
-                .then(a.2.cmp(&b.2))
+            b.own
+                .cmp(&a.own)
+                .then(a.host.is_some().cmp(&b.host.is_some()))
+                .then(a.host.cmp(&b.host))
+                .then(b.score.total_cmp(&a.score))
+                .then((a.handle & 0xffff).cmp(&(b.handle & 0xffff)))
+                .then(a.handle.cmp(&b.handle))
         });
-        let lit: Vec<u32> = ranked.iter().take(cap).map(|r| r.3).collect();
+        let lit: Vec<u32> = ranked.iter().take(cap).map(|r| r.index).collect();
         out.first_of_key.push(seen_keys.insert(view.key));
         out.views.push(ViewChoice {
             view: index as u32,
@@ -312,6 +333,41 @@ mod tests {
         assert_eq!(lit[1], 1 << 16 | 19, "then the highest score");
         assert_eq!(handles(&s, &got.views[0].first_person)[0], 7 << 16 | 40);
         assert_eq!(got.over_cap(), 5);
+    }
+
+    /// Host lights (ML5) are lit after every game light whatever their
+    /// score, by seat, so they are the first a full view leaves unlit;
+    /// two seats' lights, with no datum to tell them apart, are both
+    /// candidates.
+    #[test]
+    fn host_lights_are_last_in_budget_order() {
+        let mut bright = Light::host_light(5, [1.0; 3], [0.0, 0.0, 1.0], 4.0);
+        bright.candidate.as_mut().unwrap().priority = Some(1000.0);
+        let dim = Light::host_light(2, [2.0; 3], [1.0, 0.0, 0.0], 2.0);
+        let mut lights = vec![bright, dim];
+        lights.extend((0..3).map(|k| light(k, 1, 1.0 + k as f32, 1.0)));
+        let s = scene(&[(0, lights.clone())]);
+        let lit = &choose(&s).views[0].lit;
+        let order: Vec<(u32, Option<u8>)> = lit
+            .iter()
+            .map(|&i| (s.lights[i as usize].handle, s.lights[i as usize].host))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (1 << 16 | 2, None),
+                (1 << 16 | 1, None),
+                (1 << 16, None),
+                (frame_scene::NO_DATUM, Some(2)),
+                (frame_scene::NO_DATUM, Some(5)),
+            ]
+        );
+        // Over budget: sixteen game lights leave both host lights unlit.
+        lights.extend((3..16).map(|k| light(k, 1, 1.0 + k as f32, 1.0)));
+        let s = scene(&[(0, lights)]);
+        let got = choose(&s);
+        assert!(got.views[0].lit.iter().all(|&i| s.lights[i as usize].host.is_none()));
+        assert_eq!(got.over_cap(), 2);
     }
 
     /// Split screen shares the sixteen: three views take six, five and

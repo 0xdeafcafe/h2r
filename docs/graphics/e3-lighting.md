@@ -406,7 +406,7 @@ record that the view test admitted (`view_eligible`) or that the guest
 drew. A light's score is its candidate's projected-size priority times
 its intensity. A missing, negative or non-finite product scores zero.
 The view's own lights come first, then the highest scores, ties by
-lower datum index, then by handle. This is a total order, so a scene
+lower datum index, then by handle, then the host lights by seat. This is a total order, so a scene
 gives the same lights in the same order whatever the candidates'
 order. The views of split screen share `LIT_CAP` (16) equally, the
 remainder going one each to the first views (`view_caps`: three views
@@ -415,6 +415,13 @@ once. The first `FIRST_PERSON_CAP` (8, retail's recorded-light count) of
 a view's lit lights are its first-person set. Under E3 the frame graph
 reports the choice as `lights_lit` and `lights_over_cap`.
 
+- **Host lights** (`frame_scene::Light::host_light`, `host: Some(seat)`)
+  have no datum and no `ligh` tag: the Forge monitors' lights
+  ([forge-monitor-appearance.md](../game/forge-monitor-appearance.md),
+  "Colours, tint and light"). The frame step adds them to each game view
+  after the game's candidates (`render_bridge::scene_step::set_host_lights`).
+  They rank after every game light whatever their score, so they are the
+  first a full view leaves unlit, and they carry no steps and no shadow.
 - **The view's own lights** are its first-person lights (definition bit
   5), which the view test admits only for the view's local first-person
   owner. The scene carries neither the view's unit nor an owner chain, so

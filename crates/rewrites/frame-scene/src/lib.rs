@@ -42,7 +42,7 @@ pub use layer::{
 };
 pub use light::{
     Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants,
-    LightVolume, SceneLight,
+    LightVolume, NO_DATUM, SceneLight,
 };
 pub use light_group::{
     GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow,
