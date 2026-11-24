@@ -4522,6 +4522,26 @@ state: it adds `fine` (fine movement on), `ui_up` (a screen is up) and
 `dirty` (edits not saved), and `screen` is the Forge screen of ours that
 is up, with its rows and focus.
 
+Choose **Edit area** in a goal's Properties before sending area
+input. While a draft is active, `forge.status.area_edit` gives
+`{target, shape, below, above, radius?, points?}` with numeric world
+units. It is `null` outside the editor. `forge.things` shows the
+committed area.
+
+| Input in the draft | Radius | Path |
+|---|---|---|
+| `accept` | Save | Drop a point, or close at the first point |
+| `properties` | Open the typed dimension rows | Remove the last point |
+| `area_shape` | Switch to an empty path | Switch to an equal-floor radius |
+| `area_close` | | Close and save the path |
+| `area_grab`, `area_release` | | Press or release A for a drag |
+| `back` | Cancel | Cancel |
+
+In a radius draft, the forward axis grows or shrinks the radius. In
+a path draft, use movement and look to aim at the floor.
+`forge.input` acknowledges the queued input. Read `forge.status.notice`
+for geometry refusals and `forge.log` for the area op written on save.
+
 A proposal uses the [Forge document's](../game/forge-design.md#the-document)
 portable op and optional prior-value digest. The local host supplies the
 author and sequence. Placement waits for the engine's creation result.

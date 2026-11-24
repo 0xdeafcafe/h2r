@@ -8,7 +8,7 @@
 //! concave and may not cross itself.
 use std::fmt;
 
-use crate::shapes::circle;
+use crate::{Mesh, Vec3, shapes::{circle, line, path}};
 
 /// The fewest points a path has.
 pub const MIN_POINTS: usize = 3;
@@ -249,6 +249,16 @@ impl Area {
     /// passed this, so [`Area::contains`] and [`Area::outline`] need no
     /// checks of their own.
     pub fn validate(&self) -> Result<(), AreaError> {
+        self.validate_with(false)
+    }
+
+    /// Check an edit in progress, including its first two points.
+    /// Three or more points must already make a valid closed path.
+    pub fn validate_draft(&self) -> Result<(), AreaError> {
+        self.validate_with(true)
+    }
+
+    fn validate_with(&self, draft: bool) -> Result<(), AreaError> {
         let shape_finite = match &self.shape {
             Shape::Radius(r) => r.is_finite(),
             Shape::Path(points) => points.iter().flatten().all(|c| c.is_finite()),
@@ -272,9 +282,21 @@ impl Area {
                     return Err(AreaError::Radius(*r));
                 }
             }
-            Shape::Path(points) => validate_path(points)?,
+            Shape::Path(points) => validate_path(points, draft)?,
         }
         Ok(())
+    }
+
+    /// The radius of a circle covering the same floor as this shape.
+    /// An unfinished path has no floor.
+    pub fn equal_floor_radius(&self) -> Option<f32> {
+        match &self.shape {
+            Shape::Radius(radius) => Some(*radius),
+            Shape::Path(points) if points.len() >= MIN_POINTS => {
+                Some((doubled_floor(points).abs() / (2.0 * std::f32::consts::PI)).sqrt())
+            }
+            Shape::Path(_) => None,
+        }
     }
 
     /// The outline across the floor, counter-clockwise, as offsets from
@@ -291,6 +313,29 @@ impl Area {
                 points
             }
         }
+    }
+
+    /// The lines of an unfinished path, with a dashed edge back to the
+    /// first point. Uses drop order so the closing edge stays the same
+    /// for either winding.
+    pub fn path_preview(&self, colour: [f32; 3]) -> Mesh {
+        let mut mesh = Mesh::default();
+        let Shape::Path(points) = &self.shape else { return mesh };
+        let level = |z| points.iter().map(|&[x, y]| [x, y, z]).collect::<Vec<_>>();
+        let bottom = level(-self.below);
+        let top = level(self.above);
+        for (&a, &b) in bottom.iter().zip(&top) {
+            line(&mut mesh, a, b, colour);
+        }
+        for edge in [&bottom, &top] {
+            path(&mut mesh, edge, false, colour);
+            if edge.len() >= MIN_POINTS
+                && let (Some(&first), Some(&last)) = (edge.first(), edge.last())
+            {
+                dashed(&mut mesh, last, first, colour);
+            }
+        }
+        mesh
     }
 
     /// Whether the world point `p` is in the area of a marker at
@@ -323,9 +368,18 @@ impl Area {
     }
 }
 
-fn validate_path(points: &[[f32; 2]]) -> Result<(), AreaError> {
+fn dashed(mesh: &mut Mesh, from: Vec3, to: Vec3, colour: [f32; 3]) {
+    let length = (to[0] - from[0]).hypot(to[1] - from[1]);
+    let count = (length / 0.4).ceil().clamp(2., 64.) as u32;
+    let at = |t: f32| std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t / count as f32);
+    for i in 0..count {
+        line(mesh, at(i as f32), at(i as f32 + 0.5), colour);
+    }
+}
+
+fn validate_path(points: &[[f32; 2]], draft: bool) -> Result<(), AreaError> {
     let n = points.len();
-    if !(MIN_POINTS..=MAX_POINTS).contains(&n) {
+    if n > MAX_POINTS || (!draft && n < MIN_POINTS) {
         return Err(AreaError::Points(n));
     }
     if let Some(i) = points
@@ -333,6 +387,14 @@ fn validate_path(points: &[[f32; 2]]) -> Result<(), AreaError> {
         .position(|p| p[0] * p[0] + p[1] * p[1] > MAX_REACH * MAX_REACH)
     {
         return Err(AreaError::Reach(i));
+    }
+    if n < MIN_POINTS {
+        if let [a, b] = points
+            && dot(*a, *b, *b) < MIN_EDGE * MIN_EDGE
+        {
+            return Err(AreaError::Edge(0));
+        }
+        return Ok(());
     }
     let next = |i: usize| points[(i + 1) % n];
     for i in 0..n {

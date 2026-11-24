@@ -144,6 +144,7 @@ struct Driver {
     /// ([`markers_world`]).
     marks: Arc<Vec<markers_world::Entry>>,
     marks_at: Option<u32>,
+    marks_preview: bool,
     /// The other seats' drawn bodies as the last tick left them, for the
     /// native renderer's object pass ([`monitor_bodies`]).
     bodies: Vec<forge::look::body::Draw>,
@@ -161,6 +162,7 @@ impl Driver {
         self.markers.clear();
         self.marks = Arc::default();
         self.marks_at = None;
+        self.marks_preview = false;
         markers_world::clear();
         self.bodies.clear();
         self.link.reset();
@@ -300,13 +302,15 @@ impl Driver {
             self.markers = e.monitor_markers(now);
             // The things are rebuilt a few times a second; the aimed and
             // held things move the selection every tick.
-            if self
+            let preview = e.marker_preview();
+            if preview || self.marks_preview || self
                 .marks_at
                 .is_none_or(|at| tick < at || tick - at >= MARKS_EVERY)
             {
                 self.marks = Arc::new(e.marker_entries());
                 self.marks_at = Some(tick);
             }
+            self.marks_preview = preview;
             let (aimed, held) = e.marker_pins();
             markers_world::publish(&self.marks, aimed, held);
             self.bodies = e.monitor_draws(now, now);
@@ -464,6 +468,7 @@ pub fn install(
         markers: Vec::new(),
         marks: Arc::default(),
         marks_at: None,
+        marks_preview: false,
         bodies: Vec::new(),
         reason: "Waiting for a local multiplayer map.".into(),
     }));

@@ -64,6 +64,8 @@ pub struct Entry {
     pub other_game: bool,
     /// The text over it: "Red spawn", "Hill 2".
     pub label: String,
+    /// The path is still in hand and has a dashed closing edge.
+    pub draft_path: bool,
 }
 
 /// What the markers are made from.
@@ -72,6 +74,8 @@ pub struct Facts<'a> {
     pub monitor: bool,
     pub things: &'a [Thing],
     pub ground: &'a [PlacedMarker],
+    pub labels: &'a BTreeMap<Endpoint, forge_doc::Label>,
+    pub areas: &'a BTreeMap<Endpoint, forge_doc::Area>,
     pub problems: &'a [GroundProblem],
     /// The session's game type, as `Tool::game`.
     pub game: Option<i32>,
@@ -155,10 +159,20 @@ fn entry(
         id,
         name,
         label: label_of(&kind, team, number),
+        place: Place::facing(at, if kind.area().is_some() { 0.0 } else { yaw }),
         marker: Marker::new(kind, team),
-        place: Place::facing(at, yaw),
         tone,
         other_game,
+        draft_path: false,
+    }
+}
+
+pub fn with_area(kind: Kind, area: Area) -> Kind {
+    match kind {
+        Kind::Hill(_) => Kind::Hill(area),
+        Kind::Territory(_) => Kind::Territory(area),
+        Kind::Site(_) => Kind::Site(area),
+        _ => kind,
     }
 }
 
@@ -174,7 +188,11 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
     let mut out = Vec::new();
     let mut hills: BTreeMap<i32, Vec<&Thing>> = BTreeMap::new();
     for t in f.things {
-        let other_game = !in_game(t, f.game);
+        let ground_label = t.block == forge::BlockKind::NetgameFlags
+            && f.labels.get(&t.id.identity()).is_some_and(|label| {
+                forge::GroundLabel::of(&label.text).is_some()
+            });
+        let other_game = !ground_label && !in_game(t, f.game);
         if other_game && f.show == Show::ThisGameType {
             continue;
         }
@@ -184,33 +202,42 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
         {
             continue;
         }
+        let mut area = f.areas.get(&t.id.identity()).map(forge_doc::Area::marker_area);
+        let mut number = None;
         let kind = match t.kind {
             ThingKind::Object => continue,
             ThingKind::StartingPoint => Kind::Spawn,
             ThingKind::ItemSpawner => Kind::Item(item_class(t)),
             ThingKind::Goal | ThingKind::Teleporter => {
-                let Some(label) = int(t, "type")
-                    .and_then(|ty| u16::try_from(ty).ok())
-                    .and_then(forge_doc::builtin_label)
-                else {
+                let Some(label) = forge::flag_label(t, f.labels) else {
                     continue;
                 };
+                number = label.number;
                 if label.text == "hill_corner" {
-                    hills.entry(label.number.unwrap_or(0)).or_default().push(t);
-                    continue;
-                }
-                match Kind::of_label(&label.text) {
-                    Some(kind) => kind,
-                    None => continue,
+                    if let Some(area) = area.take() {
+                        Kind::Hill(area)
+                    } else {
+                        hills.entry(number.unwrap_or(0)).or_default().push(t);
+                        continue;
+                    }
+                } else {
+                    match Kind::of_label(&label.text) {
+                        Some(kind) => kind,
+                        None => continue,
+                    }
                 }
             }
+        };
+        let kind = match area {
+            Some(area) => with_area(kind, area),
+            None => kind,
         };
         out.push(entry(
             Some(t.id),
             thing_name(t.id),
             kind,
             team_of(t),
-            None,
+            number,
             t.frame.position,
             t.frame.rotation[0],
             Tone::Normal,
@@ -256,6 +283,10 @@ pub fn entries(f: &Facts<'_>) -> Vec<Entry> {
         }
         let Some(kind) = Kind::of_label(m.label.text()) else {
             continue;
+        };
+        let kind = match f.areas.get(&Endpoint::Added(m.id)) {
+            Some(area) => with_area(kind, area.marker_area()),
+            None => kind,
         };
         let team = m.label.has_team().then_some(m.team);
         out.push(entry(
@@ -433,7 +464,12 @@ pub fn draw(
         } else {
             1.0
         };
-        let mesh = e.marker.kind.mesh(colour).placed(&e.place).faded(alpha);
+        let mesh = match e.marker.kind.area().filter(|_| e.draft_path) {
+            Some(area) => area.path_preview(colour),
+            None => e.marker.kind.mesh(colour),
+        }
+        .placed(&e.place)
+        .faded(alpha);
         let top = mesh.bounds().map_or(e.place.at[2], |(_, max)| max[2]);
         let anchor = [e.place.at[0], e.place.at[1], top + LABEL_LIFT];
         let area = e.marker.kind.area().is_some();

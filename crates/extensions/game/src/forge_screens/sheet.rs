@@ -222,10 +222,29 @@ impl Coordinate {
     }
 }
 
+/// The dimensions the area editor accepts from the Properties keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AreaField {
+    Radius,
+    Below,
+    Above,
+}
+
+impl AreaField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Radius => "Radius",
+            Self::Below => "Below",
+            Self::Above => "Above",
+        }
+    }
+}
+
 /// A typed number's destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumberField {
     Coordinate(Coordinate),
+    Area(AreaField),
     RespawnTime,
 }
 
@@ -244,6 +263,8 @@ pub enum Choice {
     /// Place the next ground marker of a label (the AI and objectives
     /// page).
     Marker(forge::GroundLabel),
+    Goal(forge::Goal),
+    EditArea(forge::Endpoint),
     /// **Build AI ground**.
     BuildGround,
     /// **Test waves**: build the ground when it is not current.
@@ -579,6 +600,78 @@ pub fn objects_with_ai(items: &[Item], selected: usize, ai: &[AiItem]) -> Option
     Some(sheet)
 }
 
+/// Offer objective centre flags in the Objects menu's Goals group.
+pub fn with_goals(s: Option<Sheet>) -> Sheet {
+    let mut sheet = s.unwrap_or(Sheet {
+        kind: Kind::Objects,
+        title: "OBJECTS".into(),
+        body: String::new(),
+        rows: Vec::new(),
+        focus: 0,
+    });
+    let title = Group::Goals.def().name;
+    let mut goals = PickSpec {
+        title: title.into(),
+        values: Vec::new(),
+        current: 0,
+        details: Vec::new(),
+        description: String::new(),
+        choices: Vec::new(),
+        closes: true,
+    };
+    let existing = sheet.rows.iter().position(|row| row.label == title);
+    if let Some(i) = existing
+        && let Act::Pick(pick) = &sheet.rows[i].act
+    {
+        goals = pick.clone();
+    }
+    for goal in forge::Goal::ALL {
+        goals.values.push(goal.title().into());
+        goals.details.push("Place a centre marker with a radius of 1.".into());
+        goals.choices.push(Choice::Goal(goal));
+    }
+    let row = SheetRow::new(title, Act::Pick(goals));
+    if let Some(i) = existing {
+        sheet.rows[i] = row;
+    } else {
+        let i = sheet.rows.iter().position(|row| row.label == AI_PAGE).unwrap_or(sheet.rows.len());
+        sheet.rows.insert(i, row);
+        if sheet.focus >= i && sheet.rows.len() > 1 {
+            sheet.focus += 1;
+        }
+    }
+    sheet
+}
+
+/// Add the entry point for a hill, territory or site's area editor.
+pub fn add_area_row(sheet: &mut Sheet, id: forge::Endpoint) {
+    sheet.rows.push(SheetRow::new("Edit area", Act::Choose(Choice::EditArea(id))));
+}
+
+/// The typed dimensions of a radius draft. Closing the page returns to
+/// the monitor with the draft still in hand.
+pub fn area_fields(area: &game_markers::Area) -> Sheet {
+    let mut fields = vec![(AreaField::Below, area.below), (AreaField::Above, area.above)];
+    if let game_markers::Shape::Radius(r) = &area.shape {
+        fields.insert(0, (AreaField::Radius, *r));
+    }
+    let rows = fields.into_iter().map(|(field, value)| {
+        let value = number(value);
+        SheetRow::new(field.label(), Act::Type(TypeSpec {
+            field: NumberField::Area(field),
+            initial: value.clone(),
+        }))
+        .value(&value)
+    }).collect();
+    Sheet {
+        kind: Kind::Properties,
+        title: "EDIT AREA".into(),
+        body: String::new(),
+        rows,
+        focus: 0,
+    }
+}
+
 /// `angle` in degrees as the rows write it: "45 degrees", "1 degree",
 /// "17.5 degrees".
 pub fn degrees(angle: f32) -> String {
@@ -652,7 +745,7 @@ pub fn properties_sheet(object: &str, thing: &Thing, heading: f32) -> Option<She
     })
 }
 
-pub(super) fn number(v: f32) -> String {
+pub(crate) fn number(v: f32) -> String {
     let text = format!("{v:.4}");
     text.trim_end_matches('0').trim_end_matches('.').into()
 }

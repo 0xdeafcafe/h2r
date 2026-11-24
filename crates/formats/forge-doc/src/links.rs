@@ -184,6 +184,21 @@ impl ForgeDoc {
         Pass::run(&self.ops, base_counts, None, None)?.resolve_labels()
     }
 
+    /// Active labels by placement identity, for the live editor.
+    pub fn label_targets(
+        &self,
+        base_counts: &BTreeMap<BlockKind, u32>,
+    ) -> Result<BTreeMap<Endpoint, Label>> {
+        if !self.ops.iter().any(|op| matches!(&op.edit, Edit::Forge(Forge::Label { .. }))) {
+            return Ok(BTreeMap::new());
+        }
+        Ok(Pass::run(&self.ops, base_counts, None, None)?
+            .labels
+            .into_iter()
+            .map(|(target, (_, label))| (target, label))
+            .collect())
+    }
+
     /// Resolve active areas to final netgame flag indices.
     pub fn areas(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<BTreeMap<u32, MarkerArea>> {
         if !has_area_ops(&self.ops) {
