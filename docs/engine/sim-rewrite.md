@@ -14,6 +14,8 @@ byte and result record against the guest ([entries C and D](collision-queries.md
 The outer BSP walk also compares the returned context. The native matcher
 caches edge origins and deltas for short surface rings and tests them
 four at a time ([ring layout](sim-rewrite-collision.md#44-rings-and-the-inside-test)).
+The whole query's object-reference sphere pretest runs through the Rust
+sphere kernel at its guest call site ([sphere pretest](collision-queries.md#object-reference-sphere-pretest)).
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
@@ -359,7 +361,7 @@ as runtime before).
   - collision query `1697c0`;
   - BSP segment `1de630` and `1de6d0`;
   - point to leaf `14a280`;
-  - geometry test `11e5e0`;
+  - geometry test `11e5e0` at the whole query's object-reference call site;
   - float MOPP ray `3009e0` with its Havok path `244980` → `2df720` →
     `301800` (1.80% of the thread, no caller inside the world step); the
     native walk (`sim_collision::mopp::ray`) follows `301800` as a parity

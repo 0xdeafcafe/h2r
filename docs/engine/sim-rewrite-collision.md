@@ -6,6 +6,8 @@ their entry controls and run lifted. C and D compare the native vector test with
 the lifted hit byte and result record. D also compares the outer walk’s context. The offline differential checks G
 and H’s native adapters. The vector entries keep the lifted scratch state. The [entry contracts](collision-queries.md)
 describe the implemented arithmetic, stack and register comparisons.
+J's object-reference sphere pretest runs through a Rust kernel at its
+guest call site.
 Remaining slices are specified below. Bar E requires the guest-visible
 bits to match the lifted path, and contract D requires the same bits on
 arm64 and x86-64. [Umbrella plan](sim-rewrite.md)
@@ -118,6 +120,7 @@ crates/rewrites/sim-collision/       no `runtime` dependency; depends on sim-cor
   src/instance.rs           instanced-geometry trace (244980 and below)
   src/flood.rs              sphere cluster flood (14a5b0, 14a370)
   src/objects.rs            object reference gather, sphere pretests
+  src/sphere.rs             segment–sphere pretest
   src/query.rs              the 1697c0 orchestration
   src/batch.rs              batched queries, ordered scatter
   src/store.rs              content-addressed mmapped cache (S10)
@@ -421,9 +424,10 @@ family.
 | I | `0x00301800` MOPP ray, general form | `ecx` ray VM, stack `collection, code, ray_input, parent_body, collector` in increasing address order, `ret 0x14` | `3009e0` | VM fields below and writes made by guest callbacks |
 | J | `0x001697c0` collision query | `flags, start, delta, ignore_a, ignore_b, out`; `-> al`; `ret 0x18` (P) | C, E, `16b500`, `168ae0`, `11e5e0`, `b8940`, `b89b0`, `169510`, `1eff40` and helpers, B | 5.4 |
 
-`0x0011e5e0` (segment against sphere) is not an entry of its own. It is a
-kernel function used inside E, H and J. Its remaining guest callers
-(`0x001691a0` when reached outside E, `0x001ddea0`) keep the lifted body.
+The segment–sphere kernel in `sim_collision::sphere` answers the
+`0x0011e5e0` call in J through the adapter in
+`engine::sim_collision::sphere`. The adapter keys on J's return PC,
+`0x00169d3f`. E and the volume query continue through the lifted function.
 
 #### The BSP result record R (entry C and D) (E)
 
@@ -633,7 +637,8 @@ append the handle, stop when the output is full.
    - bit 2: entry E for the cluster;
    - bit 3: the object references of the cluster (`b8940`, `b89b0`): mark
      test and set in `[0x4de300]`, type mask, the reference flags against
-     `0x16b500`'s bits, sphere pretest, the two ignore handles, then the
+     `0x16b500`'s bits, the [Rust sphere pretest](collision-queries.md#object-reference-sphere-pretest),
+     the two ignore handles, then the
      object test `0x00169510`.
    Under `0x10000000` the first hit ends the loops.
 7. Clear `[0x4de2f8]` (bit 3), `[0x4e7c18]` (bit 2) and `[0x4e7411]`.
@@ -888,7 +893,7 @@ on the coordinator's integration pass.
 | S4 | MOPP box | `mopp/boxq` single and packet; entry F; bail-rate report | 509 (`2ff8b0`, `300150`) | unit against `boxvm`, differential F, disc sweep boxes |
 | S5 | Cluster flood and object visit | `flood`, `objects`; entries G and H; `120850` and `23a160` in the kernel | 1,012 | unit, differential G and H with the two ports as third arms; adapters built, not installed |
 | S6 | General MOPP ray | `mopp::ray` (`RayWalk` over the bytecode); entry I's parity arm, the guest's answer kept; `collision.stats` `ray` | none until I answers natively | unit, recursive transcription, differential I with invented callees, a deliberate mismatch |
-| S7 | Whole query | port `169510`, `1eff40` and helpers (object models through node matrices); entry J as one call; `collision.trace`; batch API with the reference-list lanes | 1,025 | unit, differential J, run parity |
+| S7 | Whole query | Rust object-reference sphere pretest; port `169510`, `1eff40` and helpers (object models through node matrices); entry J as one call; `collision.trace`; batch API with the reference-list lanes | 1,025 | unit, differential J, run parity |
 | S8 | Layout tuning | DFS re-layout with a guest-index map, two-level point treelets, only where a profile pair shows a gain | — | cold/warm and re-layout on/off give equal bits |
 | S9 | Census entries | `1ddea0`, `16a8e0`, the structure child shapes `1ef950`/`1edd00` (with the Havok lane), by campaign census | 318 + campaign | as S2 |
 | S10 | Shared store | `store.rs`, mmapped per map | host RSS | stored equals lazily built, byte for byte |

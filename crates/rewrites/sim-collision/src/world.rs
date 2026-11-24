@@ -43,9 +43,11 @@ pub enum Entry {
     /// I: `0x00301800`, the float MOPP ray (observed; its walk runs as a
     /// parity arm, [`RayParity`]).
     MoppRay,
+    /// The object-reference sphere pretest in J.
+    ObjectSphere,
 }
 
-pub const ENTRIES: usize = 9;
+pub const ENTRIES: usize = 10;
 /// Retained map arrays, BSP owners and address index capacity.
 pub const MAP_BUDGET: u64 = 8 << 20;
 /// Bounds address-index bookkeeping independently of decoded array size:
@@ -72,6 +74,7 @@ impl Entry {
         Entry::ObjectVisit,
         Entry::MoppBox,
         Entry::MoppRay,
+        Entry::ObjectSphere,
     ];
 
     pub fn name(self) -> &'static str {
@@ -85,6 +88,7 @@ impl Entry {
             Entry::ObjectVisit => "object_visit",
             Entry::MoppBox => "mopp_box",
             Entry::MoppRay => "mopp_ray",
+            Entry::ObjectSphere => "object_sphere",
         }
     }
 
@@ -99,6 +103,7 @@ impl Entry {
             Entry::ObjectVisit => 0x000b_b050,
             Entry::MoppBox => 0x0030_0150,
             Entry::MoppRay => 0x0030_1800,
+            Entry::ObjectSphere => 0x0011_e5e0,
         }
     }
 }

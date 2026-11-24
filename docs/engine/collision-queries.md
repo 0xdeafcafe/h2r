@@ -1,7 +1,8 @@
 # Collision queries
 
-The native collision world answers point and location queries (A/B)
-and the MOPP box query (F). The vector queries and instance trace (C–E),
+The native collision world answers point and location queries (A/B),
+the MOPP box query (F) and the sphere pretest for J's object references.
+The vector queries and instance trace (C–E),
 the cluster flood (G) and the object spatial visit (H) run lifted with
 entry FP observers. C and outer D calls snapshot the caller’s result record,
 apply the segment kernel’s stores to the copy and compare AL and every record
@@ -32,15 +33,15 @@ A declined query resumes the lifted entry from its original state.
 | H | `0xbb050` object spatial visit | `OBJECT_SPATIAL_VISIT` | stack: list bits, type mask, location, centre, radius, out, capacity; `ret 0x1c`; count in `ax` | the handle list, the epochs, active bytes and marks described below |
 | I | `0x301800` MOPP ray | `COLLISION_MOPP_RAY` | `ecx` ray VM; stack: collection, code, ray input, parent body, collector; `ret 0x14` | none natively: the guest runs (below) |
 
-The installer gives the three implementations (A, B, F) and the six
-entry observers (C, D, E, G, H, I) to the collision switch, with I's
-parity observers at `0x3009e0` (`SIM_MOPP_RAY`), at `0x244bb0`
+The collision switch installs four implementations (A, B, F and the sphere
+pretest) and six entry observers (C, D, E, G, H, I). I adds parity
+observers at `0x3009e0` (`SIM_MOPP_RAY`), at `0x244bb0`
 (`COLLISION_INSTANCE_CHILD`) and after I returns. G and H have native
 adapters (`sim_collision::flood`) that the differential runs; they are not
 installed. The implementations use the owning executor because they update shared caches and subscriptions. The older
-per-function switches (`native_point_to_leaf`, `native_bsp_segment`) are
-skipped at these points while the collision switch is on. Their bodies stay
-as differential oracles.
+per-function switches (`native_point_to_leaf`, `native_bsp_segment`,
+`native_geometry_test`) yield these points to the collision switch when
+it is on. Their bodies serve as differential oracles.
 
 ### Entry B
 
@@ -273,6 +274,28 @@ The kernel (`sim_collision::flood`, `sim_collision::objects`) decodes the
 portal graph once per structure and version, and reads the reference
 lists live on every call. It bounds clusters below 512 and object slots
 below 0x800, so the marks it writes cannot reach other globals.
+
+### Object-reference sphere pretest
+
+The call at `0x169d3a` in J passes the sphere centre in EAX, the segment
+start in ECX, the delta in EDX and the radius at ESP+4. The result is AL
+and the function pops the radius. The adapter in
+`crates/rewrites/engine/src/sim_collision/sphere.rs` selects this call by
+its return PC. Other callers use the lifted function.
+
+`crates/rewrites/sim-collision/src/sphere.rs` computes the relative start
+and the squared distance from the sphere, with products summed in Z, Y, X
+order. A start strictly inside accepts without reading the delta. From
+outside, the projection, discriminant and endpoint comparisons keep the
+guest's rounding order and reject tangency and first contact exactly at
+the endpoint. The adapter restores the scratch registers and epilogue
+flags and replays the three direction spills when the delta is read.
+Unsupported float inputs, unreadable arguments and unsafe spill frames
+decline before any writes.
+
+Synthetic unit tests cover the strict boundaries and rounding order. The
+engine tests compare the transfer, CPU and memory with the per-function
+port and check that declined calls leave both CPU and memory intact.
 
 ### Records
 
