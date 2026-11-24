@@ -19,10 +19,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use serde_json::{Value, json};
-use tags::repo::extract::{self, MapWork, Plan, Why};
+use tags::repo::extract::{MapWork, Plan, Why};
 use tags::repo::store::PutReport;
 use tags::repo::store::Manifest;
-use tags::repo::{self, TagRepo};
+use tags::repo::TagRepo;
 use tags::schema::Schema;
 
 use crate::App;
@@ -247,20 +247,6 @@ struct Source {
     len: u64,
 }
 
-impl Source {
-    fn open(&self) -> repo::Result<map::Map<BufReader<File>>> {
-        Ok(map::Map::from_region(BufReader::new(File::open(&self.path)?), self.base, self.len)?)
-    }
-
-    /// SHA-256 of the map file's bytes (hex): the disc's identity.
-    fn file_hash(&self) -> Result<String, std::io::Error> {
-        use std::io::{Read, Seek, SeekFrom};
-        let mut f = File::open(&self.path)?;
-        f.seek(SeekFrom::Start(self.base))?;
-        extract::file_hash(f.take(self.len)).map_err(std::io::Error::other)
-    }
-}
-
 fn shared_file(stem: &str) -> Option<map::ResourceFile> {
     match stem {
         "mainmenu" => Some(map::ResourceFile::MainMenu),
@@ -378,9 +364,10 @@ fn resolve_disc(given: Option<&Path>, workspace: &Workspace) -> Option<PathBuf> 
 }
 
 /// Run the plan and extract, on the thread of the job that owns
-/// `shared`: hash the disc's map files, compare with the tree's record,
-/// extract what moved, then settle. Progress and the outcome go into
-/// `shared`.
+/// `shared`, through `tags::repo::compile::prepare` (the call `h2 build`
+/// makes): the map files' hashes from their stamps, the plan against the
+/// tree's record, what moved extracted, then settled. Progress and the
+/// outcome go into `shared`.
 fn extract_thread(
     disc: PathBuf,
     root: PathBuf,
@@ -406,30 +393,24 @@ fn extract_thread(
         if maps.is_empty() {
             return Err(format!("no maps to extract from {}", disc.display()));
         }
-        let mut repo = TagRepo::create(&root).map_err(|e| format!("{root:?}: {e}"))?;
-        let schema = Schema::builtin();
-        let layouts = extract::Layouts::new(schema);
-        let identity: Vec<(String, String)> = maps
+        // The same call `h2 build` and the pre-boot step make
+        // (tags::repo::compile): the stamps, the plan, the extraction.
+        let discs: Vec<tags::repo::compile::DiscMap> = maps
             .iter()
-            .map(|s| s.file_hash().map(|h| (s.stem.clone(), h)))
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("{}: {e}", disc.display()))?;
-        let plan = repo::plan(&repo, &layouts, &identity, false)
-            .map_err(|e| format!("planning against {}: {e}", root.display()))?;
-        {
+            .map(|s| tags::repo::compile::DiscMap {
+                stem: s.stem.clone(),
+                path: s.path.clone(),
+                base: s.base,
+                len: s.len,
+            })
+            .collect();
+        let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize, 0u64);
+        let started = std::time::Instant::now();
+        let mut on_plan = |plan: &Plan, _: tags::repo::compile::Input| {
             let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
             s.plan = Some(plan.clone());
             s.total = plan.maps.len();
-        }
-        let mut sh = tags::repo::SharedFiles::<BufReader<File>>::default();
-        for src in &maps {
-            if let Some(f) = shared_file(&src.stem) {
-                let m = src.open().map_err(|e| format!("{e}"))?;
-                sh.set(schema, f, m).map_err(|e| format!("{e}"))?;
-            }
-        }
-        let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize, 0u64);
-        let started = std::time::Instant::now();
+        };
         let mut on_map = |w: &MapWork, r: &PutReport| {
             let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
             s.done += 1;
@@ -447,24 +428,21 @@ fn extract_thread(
             totals.4 += r.refused.len();
             totals.5 += r.raw_new.1;
         };
-        let mut open = |stem: &str| -> repo::Result<map::Map<BufReader<File>>> {
-            let src = all
-                .iter()
-                .find(|s| s.stem == stem)
-                .ok_or_else(|| repo::Error::Invalid(format!("{stem}.map is not an input")))?;
-            src.open()
-        };
-        let done = repo::update(
-            &mut repo,
-            &plan,
-            &layouts,
-            schema,
-            &mut sh,
-            &mut open,
-            verify,
+        let prepared = tags::repo::compile::prepare(
+            &root,
+            Schema::builtin(),
+            Some(&discs),
+            &tags::repo::compile::Options {
+                verify,
+                force: false,
+                wanted: wanted.clone(),
+            },
+            &mut |_| {},
+            &mut on_plan,
             &mut on_map,
         )
-        .map_err(|e| format!("{e}"))?;
+        .map_err(|e| format!("extracting into {}: {e}", root.display()))?;
+        let done = prepared.updated.unwrap_or_default();
         Ok(json!({
             "maps": done.maps,
             "reset": done.reset,

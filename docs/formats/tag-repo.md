@@ -101,6 +101,9 @@ compare by content (`format::encode`, `format::decode`).
 <repo>/maps/<map>.extents        its extent table: every other range as offset, length, raw hash
 <repo>/conflicts.txt             per key with variants, the maps that differ
 <repo>/extract.toml              the disc's identity and the versions it was extracted under
+<repo>/stamps.txt               each disc map file's size, time, place and SHA-256 when last hashed
+<repo>/extract.lock              held while a caller writes the tree
+<repo>/reextract/                skeletons and extent tables copied aside by a re-extraction from the tree
 ```
 
 Path backslashes become directories. A group whose bytes are not all
@@ -254,6 +257,29 @@ update, moves maps that read the old main file to a variant of it,
 writes the first map's content as the main file, and points that map's
 entries at it, in that order, so it can be stopped and run again. Every
 map reads the same tags before and after.
+
+### Extraction on compile (`compile::prepare`)
+
+`tags::repo::compile::prepare` is the one call that brings a tree up to
+date: `h2 build`, the step before `h2 play`/`run`/`serve` and Studio's
+workspace make it ([asset-store.md](../engine/asset-store.md), "Extraction
+on compile"). It takes `extract.lock` (a second caller waits, then finds
+nothing stale), gives each disc map file its SHA-256, runs `extract::plan`,
+and runs `extract::update` for a plan that is not empty.
+
+- **The stat fast path.** `stamps.txt` holds, per map, the size and
+  modification time of the file read from (the image, for an entry), the
+  entry's offset and length, and the SHA-256 found then. While those match,
+  the hash is the recorded one and the file is not read; a file that does
+  not match is read once and its stamp rewritten. With nothing stale no
+  map is opened.
+- **No disc.** Given no disc, the maps are read from the tree
+  (`StoreFile` is `Read` and `Seek` over the same bytes), so a layout or
+  version change re-extracts without the image. A reset empties `maps/`,
+  so each map's skeleton and extent table are first copied to `reextract/`
+  (a map is there only when both are); a stopped run leaves it for the
+  next, and a finished run removes it. A map the tree has no skeleton for
+  needs the disc, and the error names it.
 
 ## Building (`h2 tags build`)
 

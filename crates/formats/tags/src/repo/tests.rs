@@ -913,3 +913,259 @@ fn extraction_writes_skeletons_and_the_plan_retakes_a_map_lacking_one() {
     assert!(repo.has_skeleton("beta"));
     assert!(run_update(&mut repo, &schema, &d, &[]).0.is_empty());
 }
+
+// --- Extraction on compile (`compile::prepare`) ---
+
+use compile::{DiscMap, Input, Options};
+
+/// An invented disc on disk: each map is `<stem>.map` in `dir`.
+fn disc_on_disk(dir: &std::path::Path, maps: &[(&str, Vec<u8>)]) -> Vec<DiscMap> {
+    std::fs::create_dir_all(dir).unwrap();
+    maps.iter()
+        .map(|(stem, bytes)| {
+            let path = dir.join(format!("{stem}.map"));
+            std::fs::write(&path, bytes).unwrap();
+            DiscMap {
+                stem: (*stem).to_owned(),
+                path,
+                base: 0,
+                len: bytes.len() as u64,
+            }
+        })
+        .collect()
+}
+
+/// `prepare` and the maps it did, in order.
+fn prepare_run(
+    root: &std::path::Path,
+    schema: &Schema,
+    disc: Option<&[DiscMap]>,
+) -> Result<(compile::Prepared, Vec<String>)> {
+    let mut done = Vec::new();
+    let p = compile::prepare(
+        root,
+        schema,
+        disc,
+        &Options::default(),
+        &mut |_| {},
+        &mut |_, _| {},
+        &mut |w, _| done.push(w.map.clone()),
+    )?;
+    Ok((p, done))
+}
+
+fn plan_maps(plan: &extract::Plan) -> Vec<(&str, extract::Why)> {
+    plan.maps
+        .iter()
+        .map(|w| (w.map.as_str(), w.why.clone()))
+        .collect()
+}
+
+fn reassembled(root: &std::path::Path, stem: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    TagRepo::create(root)
+        .unwrap()
+        .reassemble(stem, &mut out)
+        .unwrap();
+    out
+}
+
+/// Unchanged input opens no map and reads no map file: the stamps give
+/// the hashes. A touched file (same bytes, new time) is hashed once and
+/// plans nothing; a changed one is hashed once and taken alone.
+#[test]
+fn compile_trusts_stamps_and_takes_a_changed_map_alone() {
+    let dir = TempDir::new("compile-stamps");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    let root = dir.0.join("store");
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert_eq!((p.input, p.hashed, p.opened), (Input::Disc, 2, 2));
+    assert_eq!(done, ["alpha", "beta"]);
+
+    let before = snapshot(&root);
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.plan.is_empty() && p.updated.is_none());
+    assert_eq!((p.hashed, p.opened), (0, 0));
+    assert!(done.is_empty());
+    assert_eq!(snapshot(&root), before, "an empty plan wrote nothing");
+
+    // Touched: the time moves, the bytes do not.
+    let f = std::fs::File::options()
+        .write(true)
+        .open(&disc[1].path)
+        .unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    drop(f);
+    let (p, _) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(p.plan.is_empty());
+    assert_eq!((p.hashed, p.opened), (1, 0));
+    assert_eq!(prepare_run(&root, &schema, Some(&disc)).unwrap().0.hashed, 0);
+
+    // Changed: beta alone, hashed once, taken whole.
+    let mut disc = disc;
+    let nine = invented_map(9);
+    std::fs::write(&disc[1].path, &nine).unwrap();
+    disc[1].len = nine.len() as u64;
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert_eq!(plan_maps(&p.plan), [("beta", extract::Why::FileChanged)]);
+    assert_eq!((p.hashed, p.opened), (1, 1));
+    assert_eq!(done, ["beta"]);
+    for d in &disc {
+        assert_eq!(
+            reassembled(&root, &d.stem),
+            std::fs::read(&d.path).unwrap(),
+            "{}",
+            d.stem
+        );
+    }
+    assert!(
+        prepare_run(&root, &schema, Some(&disc))
+            .unwrap()
+            .0
+            .plan
+            .is_empty()
+    );
+}
+
+/// A run stopped at a map the disc could not give is finished by the
+/// next one, which takes only that map.
+#[test]
+fn compile_resumes_an_interrupted_run() {
+    let dir = TempDir::new("compile-resume");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let mut maps = vec![
+        ("alpha", invented_map(1)),
+        ("beta", invented_map(2)),
+        ("gamma", vec![0u8; 64]),
+    ];
+    let disc = disc_on_disk(&dir.0.join("disc"), &maps);
+    let root = dir.0.join("store");
+    assert!(
+        prepare_run(&root, &schema, Some(&disc)).is_err(),
+        "gamma is not a map"
+    );
+    let rec = TagRepo::create(&root)
+        .unwrap()
+        .extract_record()
+        .unwrap()
+        .unwrap();
+    assert_eq!(rec.maps.keys().collect::<Vec<_>>(), ["alpha", "beta"]);
+
+    maps[2].1 = invented_map(3);
+    let disc = disc_on_disk(&dir.0.join("disc"), &maps);
+    let (p, done) = prepare_run(&root, &schema, Some(&disc)).unwrap();
+    assert!(!p.plan.reset);
+    assert_eq!(plan_maps(&p.plan), [("gamma", extract::Why::New)]);
+    assert_eq!(done, ["gamma"]);
+    assert!(
+        prepare_run(&root, &schema, Some(&disc))
+            .unwrap()
+            .0
+            .plan
+            .is_empty()
+    );
+}
+
+/// With no disc the maps come from the store: a moved layout hash
+/// re-extracts that group from the skeleton and extents.
+#[test]
+fn compile_re_extracts_a_moved_layout_from_the_store() {
+    let dir = TempDir::new("compile-store-layout");
+    let a = Schema::parse(SCHEMA).unwrap();
+    let b = schema_with_matg_word();
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    let root = dir.0.join("store");
+    prepare_run(&root, &a, Some(&disc)).unwrap();
+    std::fs::remove_dir_all(dir.0.join("disc")).unwrap();
+    let (p, done) = prepare_run(&root, &b, None).unwrap();
+    assert_eq!(p.input, Input::Store);
+    assert!(!p.plan.reset);
+    assert_eq!(done, ["alpha", "beta"]);
+    for w in &p.plan.maps {
+        assert_eq!(w.why, extract::Why::Layouts);
+        assert_eq!(w.groups, Some(BTreeSet::from([g(b"matg")])));
+    }
+    assert!(prepare_run(&root, &b, None).unwrap().0.plan.is_empty());
+    for (stem, tweak) in [("alpha", 1u8), ("beta", 2)] {
+        assert_eq!(reassembled(&root, stem), invented_map(tweak), "{stem}");
+    }
+}
+
+/// An extractor version change empties the tree, and the whole store is
+/// taken again from its own skeletons, with no disc. A run stopped after
+/// the reset leaves the stash the next one reads.
+#[test]
+fn compile_re_extracts_everything_from_the_store_after_a_reset() {
+    let dir = TempDir::new("compile-store-reset");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    let root = dir.0.join("store");
+    prepare_run(&root, &schema, Some(&disc)).unwrap();
+    std::fs::remove_dir_all(dir.0.join("disc")).unwrap();
+
+    let mut repo = TagRepo::create(&root).unwrap();
+    let mut rec = repo.extract_record().unwrap().unwrap();
+    rec.extractor -= 1;
+    repo.put_extract_record(&rec).unwrap();
+    // A stopped run: stashed and reset, nothing extracted.
+    compile::stash(&root, &["alpha".to_owned(), "beta".to_owned()]).unwrap();
+    repo.reset(extract::EXTRACT_VERSION, format::VERSION)
+        .unwrap();
+    assert!(!repo.has_skeleton("alpha"));
+
+    let (p, done) = prepare_run(&root, &schema, None).unwrap();
+    assert_eq!(p.input, Input::Store);
+    assert_eq!(
+        plan_maps(&p.plan),
+        [("alpha", extract::Why::New), ("beta", extract::Why::New)]
+    );
+    assert_eq!(done, ["alpha", "beta"]);
+    assert!(
+        !root.join(compile::STASH_DIR).exists(),
+        "the stash is removed"
+    );
+    let repo = TagRepo::create(&root).unwrap();
+    let recorded = repo.extract_record().unwrap().unwrap();
+    for (stem, tweak) in [("alpha", 1u8), ("beta", 2)] {
+        assert_eq!(reassembled(&root, stem), invented_map(tweak), "{stem}");
+        assert!(repo.has_manifest(stem));
+        assert_eq!(
+            recorded.maps[stem].file,
+            extract::file_hash(Cursor::new(invented_map(tweak))).unwrap()
+        );
+    }
+    assert!(prepare_run(&root, &schema, None).unwrap().0.plan.is_empty());
+}
+
+/// A store with no skeleton for a map, and no disc, says it needs the disc
+/// and changes nothing; an empty store with no disc says so too.
+#[test]
+fn compile_without_a_disc_names_what_needs_one() {
+    let dir = TempDir::new("compile-needs-disc");
+    let schema = Schema::parse(SCHEMA).unwrap();
+    let root = dir.0.join("store");
+    let e = prepare_run(&root, &schema, None).unwrap_err().to_string();
+    assert!(e.contains("no disc"), "{e}");
+
+    let disc = disc_on_disk(
+        &dir.0.join("disc"),
+        &[("alpha", invented_map(1)), ("beta", invented_map(2))],
+    );
+    prepare_run(&root, &schema, Some(&disc)).unwrap();
+    std::fs::remove_file(root.join("maps").join("beta.extents")).unwrap();
+    let before = snapshot(&root);
+    let e = prepare_run(&root, &schema, None).unwrap_err().to_string();
+    assert!(e.contains("beta") && e.contains("disc image"), "{e}");
+    assert_eq!(snapshot(&root), before);
+}
