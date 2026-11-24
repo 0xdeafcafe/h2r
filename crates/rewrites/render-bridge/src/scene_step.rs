@@ -856,6 +856,13 @@ pub fn with_open<R>(f: impl FnOnce(Option<(&FrameScene, &View)>) -> R) -> R {
     with_step(|step| f(step.builder.open()))
 }
 
+/// Runs `f` on the overlay of the scene being written (`FrameScene::overlay`,
+/// docs/graphics/retire-d3d.md): `None` with no scene open. The step is
+/// held for the call: `f` must not come back here.
+pub fn with_overlay<R>(f: impl FnOnce(&mut frame_scene::Overlay) -> R) -> Option<R> {
+    with_step(|step| step.builder.overlay_mut().ok().map(f))
+}
+
 /// A host which joins the typed scene to the owned device work seen
 /// during the same begin/seal interval. Invoked without the builder lock.
 #[derive(Clone, Copy)]
@@ -945,6 +952,7 @@ pub fn forget() {
     crate::entry_census::forget();
     crate::residual_census::forget();
     crate::carried_slots::forget();
+    crate::native_hud::hud_overlay::forget();
 }
 
 /// The scene sealed last.

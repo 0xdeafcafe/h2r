@@ -360,6 +360,36 @@ impl Overlay {
         Ok(self.items.len() as u32 - 1)
     }
 
+    /// Adds `other`'s items after this list's, in their order: a producer
+    /// that builds its part apart (one HUD's widgets) and then joins the
+    /// scene's list. A list with no size takes `other`'s; one of another
+    /// size refuses it ([`OverlayError::NoTarget`]), as it does an `other`
+    /// that does not [`Overlay::check`] ([`OverlayError::Geometry`]). The
+    /// indices `other`'s items have in this list.
+    pub fn append(&mut self, other: &Overlay) -> Result<Range<u32>, OverlayError> {
+        let start = self.items.len() as u32;
+        if other.is_empty() {
+            return Ok(start..start);
+        }
+        if other.check().is_err() {
+            return Err(OverlayError::Geometry);
+        }
+        if self.size == [0, 0] {
+            self.size = other.size;
+        } else if self.size != other.size {
+            return Err(OverlayError::NoTarget);
+        }
+        let (v, g) = (self.vertices.len() as u32, self.glyphs.len() as u32);
+        self.vertices.extend_from_slice(&other.vertices);
+        self.glyphs.extend_from_slice(&other.glyphs);
+        self.items.extend(other.items.iter().map(|item| OverlayItem {
+            vertices: item.vertices.start + v..item.vertices.end + v,
+            glyphs: item.glyphs.start + g..item.glyphs.end + g,
+            ..item.clone()
+        }));
+        Ok(start..self.items.len() as u32)
+    }
+
     pub fn counts(&self) -> OverlayCounts {
         let mut c = OverlayCounts { items: self.items.len() as u32, ..OverlayCounts::default() };
         for item in &self.items {
@@ -594,6 +624,33 @@ mod tests {
         assert_ne!(crate::summary_hash(&scene), one, "a corner moved");
         scene.clear();
         assert!(scene.overlay.is_empty() && scene.overlay.size == [0, 0]);
+    }
+
+    #[test]
+    fn an_appended_list_keeps_its_order_after_the_items_before_it() {
+        let all = ClipRect::full([640, 480]);
+        let mut scene = Overlay::default();
+        let mut first = Overlay::new([640, 480]);
+        first.push_quad(sprite(), all, quad(0.0, 0.0)).unwrap();
+        assert_eq!(scene.append(&first), Ok(0..1));
+        assert_eq!(scene.size, [640, 480], "an empty list takes the part's size");
+        let mut second = Overlay::new([640, 480]);
+        let glyphs = [OverlayGlyph { index: 4, rect: [1.0, 2.0, 3.0, 4.0] }];
+        second.push_text_run(OverlayMaterial::text(6), all, [1.0; 4], &glyphs).unwrap();
+        second.push_quad(sprite(), all, quad(30.0, 0.0)).unwrap();
+        assert_eq!(scene.append(&second), Ok(1..3));
+        assert_eq!(scene.check(), Ok(()));
+        assert_eq!(scene.items[2].vertices, 4..8);
+        assert_eq!(scene.vertices_of(&scene.items[2])[0].position, [30.0, 0.0]);
+        assert_eq!(scene.glyphs_of(&scene.items[1]), &glyphs);
+        assert_eq!(scene.append(&Overlay::default()), Ok(3..3), "nothing to add");
+        let other = {
+            let mut o = Overlay::new([320, 240]);
+            o.push_quad(sprite(), ClipRect::full([320, 240]), quad(0.0, 0.0)).unwrap();
+            o
+        };
+        assert_eq!(scene.append(&other), Err(OverlayError::NoTarget));
+        assert_eq!(scene.items.len(), 3, "a refused part leaves the list as it was");
     }
 
     #[test]

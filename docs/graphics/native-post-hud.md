@@ -1,7 +1,7 @@
 # Native renderer stage 5: post and HUD
 
 Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items and the native UI and HUD are drawn natively; `0x0002df00` and `0x0002dd30` (the lens flares) are not, and parity with D3D is not verified.
-Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
+Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md).
@@ -304,6 +304,71 @@ image must expose the instruction sites for the native walk.
 the scene and not from these producers
 ([retire-d3d.md](retire-d3d.md#what-replaces-each-subsystem)); `render.stats`
 reports them.
+
+#### The HUD on the overlay
+
+The typed overlay stage ([retire-d3d.md](retire-d3d.md#what-replaces-each-subsystem))
+can draw a HUD draw in place of its quads. One HUD draw is `0x0013a532`
+drawing one `nhdt` (Code, `h2 disasm`): it computes the gate's words
+(`0x0013a050`), then gates and draws the root's `+0x20` block (stride
+`0x50`, `0x0022b8e2`, which draws screen effects through `0x0002d140`),
+its bitmap widgets (`+0x08`, `0x0022aff1`) and its text widgets (`+0x10`,
+`0x0022aa16`), in that order. The gate `0x0013ac87` takes word A, B and D
+on the stack, C in EDX and a record in ECX whose `+0x10` (a float),
+`+0x06` and `+0x08` (signed words) the widget's bytes `+0x18..+0x1a` set C's
+bits `0x08`, `0x10` and `0x20` against.
+
+At the gate call of a draw's first bitmap widget (return `0x0013a602`,
+`[ebp-0x14]` 0), before any bitmap widget is drawn and after the screen
+effects, `render_bridge::native_hud::hud_overlay` reads the words, the
+record, the `nhdt` (EDI) and the user (`[ebp+8]`) and asks the host
+(`Host::hud_bitmaps`, `game::hud_overlay::claim`). The host:
+
+1. Draws only the full screen: the HUD rectangle at `0x004b9dd0` (top,
+   left, bottom, right) must be 0, 0, 480, 640. Split-screen frames are
+   not read (`hud_edit::place::Frame::for_mode`).
+2. Finds the `nhdt` by its address among the map's, read on a thread of
+   its own at the map's first HUD draw.
+3. Reads the user's unit and held weapon into a `HudState` (shield, body,
+   grenade and counts, rounds, battery; not the magazine's size, the
+   heat or the zoom) and walks the `nhdt` with `Shading::Engine` and the
+   engine's gate (`hud_edit::state::shown_as_engine`).
+4. Claims the draw only when no shown widget is inexact
+   (`hud_edit::overlay::first_inexact`): drawn by a tag shader that does not
+   translate (`game::hud_overlay::translates`), a text widget, a widget
+   with effects, an anchor that is not a corner, or a widget not listed.
+5. Decodes the bitmap images the items name, adds the items to
+   `FrameScene::overlay`, and places a pass at this point in the frame
+   (`Device::external_pass_now`) that draws them with
+   `ui_gpu::OverlayGpu`, its images and glyph pages made resident by
+   `ui_gpu::OverlayResidency`.
+
+In a claimed draw each widget quad `0x0022a664` called from `0x0022b39c`'s
+call (a widget that is not the shield meter) by that draw's `0x0022aff1`
+(whose saved EBP, at `[ebp+0x68]`, is the claimed draw's) resumes at
+`0x0022a854` with nothing emitted. The shield meter's five layer calls
+and every other quad draw as before. The claim closes at the next draw's
+first bitmap gate or when the HUD scope leaves; a claim whose left-out
+quads are not the items its pass drew counts `hud_mismatch` and that
+`nhdt` is the game's for the rest of the map. A draw not claimed is the
+game's quads and counts its first reason (`render.stats`,
+`native_ui_overlay_hud_*`). The scene's overlay holds only claimed
+draws' items.
+
+No retail HUD draw is claimed: every retail bitmap widget is drawn by its
+tag shader and none translates, and a text widget's colour is its
+shader's. Translating a HUD shader needs, per template the HUDs use
+(`widget_legacy_meter`, the plain sprite templates, `text_flash`):
+
+- what the shader draw `0x0001bbf0` sets for it: the template pass's
+  combiner (`HUD_MATERIAL_PIXEL_SHADER` `0x0001b050`), its constants from
+  the shader's parameters (`HUD_MATERIAL_CONSTANTS` `0x00018ee0`), its blend
+  and the HUD's bitmap as the engine texture (`0x004e6978`);
+- `hud_input1`..`4` (`0x004e6980`, copied by `0x0022aff1` at `0x0022b181`
+  from `0x0013ad48`'s values) carried on each item, which the overlay's
+  items have no slot for yet;
+- a program per template in `ui_gpu` keyed by the shader, and a parity
+  check of its pixels against the game's quads on the lab.
 
 ### Post admission
 

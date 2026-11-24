@@ -560,6 +560,112 @@ impl OverlayGpu {
     }
 }
 
+/// The textures an overlay names, resident on one device: each bitmap
+/// image uploaded once, each font's glyph page uploaded when it first
+/// appears and written again when its version moves
+/// ([`crate::overlay::GlyphPages`]).
+#[derive(Default)]
+pub struct OverlayResidency {
+    /// The assets' generation what it holds came from.
+    generation: u64,
+    images: HashMap<(u32, u16), wgpu::TextureView>,
+    glyphs: HashMap<u16, (u64, wgpu::Texture, wgpu::TextureView)>,
+}
+
+fn overlay_texture(device: &wgpu::Device, label: &str, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn write_rgba(queue: &wgpu::Queue, texture: &wgpu::Texture, rgba: &[u8]) {
+    let size = texture.size();
+    queue.write_texture(
+        texture.as_image_copy(),
+        rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * size.width),
+            rows_per_image: Some(size.height),
+        },
+        size,
+    );
+}
+
+impl OverlayResidency {
+    /// Uploads what `assets` holds that is not resident, or has changed:
+    /// how many textures it wrote. Assets of another generation (another
+    /// map) replace all it holds. An image with no texels, or fewer than
+    /// its size needs, or past the device's largest texture, stays out
+    /// (its batches are refused as not resident).
+    pub fn sync(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &crate::overlay::OverlayAssets,
+    ) -> usize {
+        if assets.generation != self.generation {
+            self.images.clear();
+            self.glyphs.clear();
+            self.generation = assets.generation;
+        }
+        let largest = device.limits().max_texture_dimension_2d;
+        let mut wrote = 0;
+        for (&key, image) in &assets.images {
+            if self.images.contains_key(&key) {
+                continue;
+            }
+            let (w, h) = (image.width, image.height);
+            if w == 0 || h == 0 || w > largest || h > largest || image.rgba.len() < (w * h * 4) as usize {
+                continue;
+            }
+            let texture = overlay_texture(device, "native overlay bitmap", w, h);
+            write_rgba(queue, &texture, &image.rgba[..(w * h * 4) as usize]);
+            self.images.insert(key, texture.create_view(&Default::default()));
+            wrote += 1;
+        }
+        for font in assets.glyphs.fonts() {
+            let Some((side, rgba, version)) = assets.glyphs.page(font) else { continue };
+            if side == 0 || side > largest {
+                continue;
+            }
+            match self.glyphs.get_mut(&font) {
+                Some((resident, _, _)) if *resident == version => {}
+                Some((resident, texture, _)) => {
+                    write_rgba(queue, texture, rgba);
+                    *resident = version;
+                    wrote += 1;
+                }
+                None => {
+                    let texture = overlay_texture(device, "native overlay glyphs", side, side);
+                    write_rgba(queue, &texture, rgba);
+                    let view = texture.create_view(&Default::default());
+                    self.glyphs.insert(font, (version, texture, view));
+                    wrote += 1;
+                }
+            }
+        }
+        wrote
+    }
+}
+
+impl OverlayTextures for OverlayResidency {
+    fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
+        match texture {
+            frame_scene::OverlayTexture::None => None,
+            frame_scene::OverlayTexture::Bitmap { tag, image } => self.images.get(&(tag, image)),
+            frame_scene::OverlayTexture::Glyphs { font } => self.glyphs.get(&font).map(|(_, _, view)| view),
+        }
+    }
+}
+
 /// Adds an overlay's stats to `render.stats`' `native_ui_overlay_*`
 /// counters.
 pub fn count_overlay(stats: &crate::overlay::OverlayStats) {
@@ -698,6 +804,74 @@ mod tests {
         assert!(pixels.chunks(4).all(|p| p[3] == 0), "colour writes leave alpha alone");
         let wrong = crate::overlay::OverlayPlan::new(&overlay, [8, 8], &crate::overlay::NoGlyphs);
         assert!(gpu.prepare(&ctx.device, &view, &wrong, &textures).is_err(), "the plan is for another size");
+    }
+
+    /// The residency uploads a bitmap image and a glyph page from the host
+    /// assets: a blue sprite over the left half, then a text run of one
+    /// glyph (coverage 255 on its left texel, 0 on its right) in yellow
+    /// over the right half.
+    #[test]
+    fn the_overlay_draws_resident_images_and_glyph_pages() {
+        use frame_scene::{ClipRect, Combiner, Overlay, OverlayBlend, OverlayGlyph, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
+        use crate::overlay::{OverlayAssets, OverlayImage, OverlayPlan};
+
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test overlay"),
+            size: wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let mut assets = OverlayAssets::default();
+        assets.images.insert((7, 1), OverlayImage { width: 1, height: 1, rgba: vec![0, 0, 255, 255].into() });
+        assert!(assets.glyphs.insert(6, 3, 2, 1, &[255, 0]));
+        let mut residency = OverlayResidency::default();
+        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &assets), 2);
+        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &assets), 0, "nothing new");
+        assert!(residency.view(OverlayTexture::Bitmap { tag: 7, image: 0 }).is_none());
+        let sprite = OverlayMaterial {
+            program: Program::Fixed(Combiner::Texture),
+            texture: OverlayTexture::Bitmap { tag: 7, image: 1 },
+            sampler: Sampler { wrap: false, point: true },
+            blend: OverlayBlend::Off,
+        };
+        let corner = |x, y| OverlayVertex { position: [x, y], uv: [0.5, 0.5], color: [1.0; 4] };
+        let left = [corner(0.0, 0.0), corner(1.0, 0.0), corner(1.0, 2.0), corner(0.0, 2.0)];
+        let mut overlay = Overlay::new([2, 2]);
+        overlay.push_quad(sprite, ClipRect::full([2, 2]), left).unwrap();
+        let glyph = [OverlayGlyph { index: 3, rect: [1.0, 0.0, 2.0, 2.0] }];
+        overlay.push_text_run(OverlayMaterial::text(6), ClipRect::full([2, 2]), [1.0, 1.0, 0.0, 1.0], &glyph).unwrap();
+        let plan = OverlayPlan::new(&overlay, [4, 4], &assets.glyphs);
+        let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
+        let view = target.create_view(&Default::default());
+        let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &residency).unwrap();
+        assert_eq!((stats.batches, stats.refused_texture, stats.refused_glyph), (2, 0, 0));
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        (encoded.commands)(&mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        let pixels = gfx::readback::read_texture(&ctx, &target, wgpu::TextureAspect::All, 4, (4, 4));
+        let rgb = |x: usize, y: usize| {
+            let i = 4 * (y * 4 + x);
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+        for y in 0..4 {
+            assert_eq!(rgb(0, y), [0, 0, 255], "row {y}: the sprite");
+            assert_eq!(rgb(1, y), [0, 0, 255], "row {y}: the sprite");
+            assert_eq!(rgb(2, y), [255, 255, 0], "row {y}: the glyph's covered texel");
+            assert_eq!(rgb(3, y), [0, 0, 0], "row {y}: the glyph's empty texel blends to nothing");
+        }
+        // A grown page is written again; another map's assets start over.
+        assert!(assets.glyphs.insert(6, 4, 1, 1, &[9]));
+        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &assets), 1);
+        let next = OverlayAssets { generation: 1, ..OverlayAssets::default() };
+        assert_eq!(residency.sync(&ctx.device, &ctx.queue, &next), 0);
+        assert!(residency.view(OverlayTexture::Bitmap { tag: 7, image: 1 }).is_none());
     }
 
     #[test]
