@@ -217,7 +217,8 @@ loop's `0x0004a1e0` call left them and the flags it set
 (`LightGlobals::stored`, `stored_light_constants`), read rather than
 computed, since the light volume is a local of the loop's frame. At each
 of its layers 12 and 13 the gathered walk's build puts the light's
-sorted entries into the scene as a group of the light, and when the
+sorted entries into the scene as a group of the light, of its own site
+(`GroupSite::FirstPerson`), and when the
 scene holds the group whole the host draws it alone
 (`Glue::alone`, the same path as a dynamic light's whole group): the
 entry loop gets no entries and no handler runs. A group the scene does
@@ -491,7 +492,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 - On the resolved-draw path only structure geometry is drawn natively, and models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole group of layer 12 or 13, structure and model entries alike, is drawn from the scene with no handler.
 - A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state from a source other than the instance's scalar 21 or an unsupplied constant keeps its D3D passes (`light_look`).
-- The visible-light gather at `0x00031c80` runs as a Rust frame body when the lights stage is on, and hands each step it does not port to the guest ([native-light-gather.md](native-light-gather.md), L2); one light's passes (`0x00031170`) run as a Rust body too, each callee a guest call (L5). The object-model lights and the object-shadow call `0x00032350`'s lights run in the guest. The first-person lights' loop (`0x000404b0`) runs in the guest too: its list rebuild, constants, flags and layers 11 and 14; only its layers 12 and 13 whose groups the scene holds whole are drawn from the scene.
+- The visible-light gather at `0x00031c80` runs as a Rust frame body when the lights stage is on, and hands each step it does not port to the guest ([native-light-gather.md](native-light-gather.md), L2); one light's passes (`0x00031170`) run as a Rust body too, each callee a guest call (L5). The object-model lights and the object-shadow call `0x00032350`'s lights run in the guest. The first-person lights' loop (`0x000404b0`) and each slot's record replay (`0x000402b0`) run as Rust bodies, each callee a guest call (L6): layers 11 and 14 draw through D3D, and only layers 12 and 13 whose groups the scene holds whole are drawn from the scene.
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 
 ## Not verified

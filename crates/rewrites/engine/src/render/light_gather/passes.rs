@@ -288,23 +288,37 @@ pub struct LightPasses {
     pub additional_casters: bool,
 }
 
-/// Clears [`CALL`] when the call returns, or when the body is dropped in
-/// it (a load).
-struct Clear;
+/// Puts back the naming [`CALL`] held before a call when the call
+/// returns, or when the body is dropped in it (a load). A body whose
+/// entry is another body's named call (the first-person lights' record
+/// call, `super::first_person`) names its own calls inside it and leaves
+/// the outer one named after.
+struct Restore(Option<(u32, u32)>);
 
-impl Drop for Clear {
+impl Drop for Restore {
     fn drop(&mut self) {
-        CALL.set(None);
+        CALL.set(self.0);
     }
+}
+
+/// A guest call made `reserve` bytes below `entry_esp`, its return slot
+/// naming the guest's return `site` while it runs ([`return_site`]).
+pub(super) async fn named(
+    cx: &Cx,
+    entry_esp: u32,
+    reserve: u32,
+    site: u32,
+    call: GuestCall,
+) -> Result<Regs, EntryError> {
+    let call = call.reserve(reserve);
+    let _restore = Restore(CALL.replace(Some((call.esp(entry_esp), site))));
+    cx.call(call).await
 }
 
 /// A guest call below the frame, its return slot naming `site` while it
 /// runs.
 async fn guest(cx: &Cx, plan: &Plan, site: u32, call: GuestCall) -> Result<Regs, EntryError> {
-    let call = call.reserve(FRAME);
-    CALL.set(Some((call.esp(plan.entry_esp), site)));
-    let _clear = Clear;
-    cx.call(call).await
+    named(cx, plan.entry_esp, FRAME, site, call).await
 }
 
 /// Makes the passes. Returns as `0x00031170` does (`ret 0x10`, EAX what
@@ -531,7 +545,18 @@ mod tests {
         CALL.set(Some((0x1000, site::ITEMS)));
         assert_eq!(return_site(0x1000), Some(site::ITEMS));
         assert_eq!(return_site(0x0ff0), None, "a deeper call's slot");
-        drop(Clear);
+        drop(Restore(None));
         assert_eq!(return_site(0x1000), None);
+    }
+
+    #[test]
+    fn a_call_named_inside_another_puts_the_outer_naming_back() {
+        CALL.set(Some((0x1000, site::ITEMS)));
+        let inner = Restore(CALL.replace(Some((0x0f00, site::CONSTANTS))));
+        assert_eq!(return_site(0x0f00), Some(site::CONSTANTS));
+        assert_eq!(return_site(0x1000), None, "one call named at a time");
+        drop(inner);
+        assert_eq!(return_site(0x1000), Some(site::ITEMS));
+        drop(Restore(None));
     }
 }

@@ -1,6 +1,6 @@
 //! `engine::render::light_gather` against the original, lifted and run on
 //! the IR interpreter from the same seeded 64 MB state
-//! (docs/graphics/native-light-gather.md, slices L1 to L5).
+//! (docs/graphics/native-light-gather.md, slices L1 to L6).
 //!
 //! **The leaves (L1).** Each root runs lifted with its whole tree (no
 //! stub) to its return; the port runs on a copy and its writes are
@@ -30,6 +30,10 @@
 //!
 //! **One light's passes (L5).** See
 //! [`passes_transcripts_match_the_lifted_original`].
+//!
+//! **The first-person lights (L6).** See
+//! [`first_person_lights_match_the_lifted_original`] and
+//! [`first_person_records_match_the_lifted_original`].
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
@@ -2639,6 +2643,637 @@ fn passes_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
         "layer 13 drawn",
         "layer 14 drawn",
         "layer 14 reached only",
+    ] {
+        assert!(tally.get(need) > 0, "never {need}: {:#?}", tally.0);
+    }
+}
+
+// ---------------------------------------------------------------------
+// L6: the first-person lights and each slot's record replay.
+
+use engine::render::light_gather::first_person::{self, FirstPersonLights, SlotRecords};
+
+const FP_DEVICE: u32 = 0x0345_0000;
+const FP_GEOMETRY: u32 = 0x0346_0000;
+const FP_SCRATCH: u32 = 0x0347_0000;
+const FP_DEVICE_POINTER: u32 = 0x0040_7488;
+const FP_PUSH_BYTES: u32 = 0x0040_8648;
+const FP_RANGE: u32 = 0x0048_5adc;
+const FP_LAYER_WORDS: u32 = 0x0046_7130;
+const FP_TARGETS: u32 = 0x0048_58b4;
+const FP_LIGHT_ACTIVE: u32 = 0x0048_58bc;
+const FP_STENCIL_STATE: u32 = 0x004b_843c;
+const FP_PASSES: u32 = 0x004b_a018;
+const FP_OBJECT_RECORD: u32 = (0xe130 << 16) | OBJECT_TAG;
+
+/// A stub table: target, the registers the original hands it
+/// (`Cpu::gpr` indices), its stack arguments and the bytes it pops.
+type Stubs = &'static [(u32, &'static [usize], u32, u32)];
+
+/// `0x000404b0`'s callees, all stubbed but the light volume (lifted in
+/// both runs, as in the frame's differential).
+const FP_STUBS: Stubs = &[
+    (first_person::call::RECORDS, &[1, 2, 3, 6, 7], 1, 4),
+    (first_person::call::CONSTANTS, &[0, 1, 2, 3, 6, 7], 4, 16),
+    (first_person::call::TARGET, &[0, 3, 6, 7], 2, 8),
+    (first_person::call::CLIP_MODE, &[0, 3, 6, 7], 0, 0),
+    (first_person::call::RECEIVER_BLEND, &[3, 6, 7], 0, 0),
+    (first_person::call::STENCIL, &[3, 6, 7], 0, 0),
+    (first_person::call::LAYER_DRAW, &[3, 6, 7], 0, 0),
+    (first_person::call::LAYER_END, &[3, 6, 7], 0, 0),
+    (first_person::call::STENCIL_ENABLE, &[3, 6, 7], 1, 4),
+    (first_person::call::SCISSORS, &[3, 6, 7], 3, 12),
+    (first_person::call::PUSH_SPACE, &[0, 1, 3, 6, 7], 1, 4),
+    (first_person::call::PUSH_STATE, &[0, 3, 6, 7], 0, 0),
+];
+
+/// `0x000402b0`'s per-part callees, when stubbed.
+const RECORD_STUBS: Stubs = &[
+    (items::call::RECORD_GEOMETRY, &[0, 1, 2, 3, 6, 7], 1, 4),
+    (items::call::PART_MATERIAL, &[0, 1, 3, 6, 7], 2, 8),
+    (items::call::PART_VISIBLE, &[0, 3, 6, 7], 1, 4),
+    (items::call::PART_ITEMS, &[0, 1, 2, 3, 6, 7], 7, 0x1c),
+];
+
+fn stub_in(stubs: Stubs, target: u32) -> Option<(&'static [usize], u32, u32)> {
+    stubs
+        .iter()
+        .find(|s| s.0 == target)
+        .map(|&(_, regs, args, pop)| (regs, args, pop))
+}
+
+/// The lifted original from `entry` at `esp`, each callee in `stubs`
+/// answered by `effect`; its return site is the word the call pushed when
+/// `sites`, else 0 (the record replay's calls name none). Returns the
+/// transcript, EAX and ESP after the return.
+#[allow(clippy::too_many_arguments)]
+fn original_stubbed(
+    lifted: &mut Lifted<'_>,
+    m: &mut FlatMemory,
+    cpu: &mut Cpu,
+    entry: u32,
+    esp: u32,
+    stubs: Stubs,
+    sites: bool,
+    mut effect: impl FnMut(usize, &Callout, &mut FlatMemory) -> (u32, u32),
+) -> Result<(Vec<Callout>, u32, u32), String> {
+    put(m, esp, HARNESS_EXIT);
+    cpu.gpr[4] = esp;
+    cpu.eip = entry;
+    let mut transcript = Vec::new();
+    lifted.run(cpu, m, &[HARNESS_EXIT], |pc, cpu, m| {
+        let Some((regs, args, pop)) = stub_in(stubs, pc) else {
+            return false;
+        };
+        let sp = cpu.gpr[4];
+        let return_to = word(m, sp);
+        let c = Callout {
+            target: pc,
+            site: if sites { return_to } else { 0 },
+            regs: regs.iter().map(|&i| cpu.gpr[i]).collect(),
+            args: (0..args).map(|i| word(m, sp + 4 + 4 * i)).collect(),
+        };
+        let (eax, edx) = effect(transcript.len(), &c, m);
+        cpu.gpr[0] = eax;
+        cpu.gpr[2] = edx;
+        cpu.gpr[4] = sp + 4 + pop;
+        cpu.eip = return_to;
+        transcript.push(c);
+        true
+    })?;
+    Ok((transcript, cpu.gpr[0], cpu.gpr[4]))
+}
+
+/// A body driven as the runtime drives it: a guest call to one of
+/// `leaves` runs lifted, any other is the stub of `stubs` answered by
+/// `effect`, its return site the one its slot names
+/// ([`passes::return_site`]) when `sites`, else 0.
+#[allow(clippy::too_many_arguments)]
+fn port_stubbed(
+    lifted: &mut Lifted<'_>,
+    m: FlatMemory,
+    mut cpu: Cpu,
+    esp: u32,
+    body: impl FnOnce(engine::entry::Cx) -> engine::entry::EntryFuture,
+    leaves: &[u32],
+    stubs: Stubs,
+    sites: bool,
+    mut effect: impl FnMut(usize, &Callout, &mut FlatMemory) -> (u32, u32),
+) -> (Vec<Callout>, engine::entry::EntryResult, FlatMemory) {
+    use engine::entry::{Cx, GuestCall, Regs, Step, poll, resume};
+    let mem = Arc::new(Mutex::new(Ram(m)));
+    let cx = Cx::new(
+        Arc::clone(&mem),
+        Regs {
+            esp,
+            ..Regs::default()
+        },
+    );
+    let mut fut = body(cx.clone());
+    let mut transcript = Vec::new();
+    let result = loop {
+        match poll(&mut fut, &cx) {
+            Step::Done(r) => break r,
+            Step::Call(c) => {
+                let mut g = mem.lock().unwrap();
+                let m = &mut g.0;
+                let sp = c.esp(esp);
+                let set = |c: &GuestCall, i: usize| match i {
+                    0 => c.eax,
+                    1 => c.ecx,
+                    2 => c.edx,
+                    3 => c.ebx,
+                    6 => c.esi,
+                    7 => c.edi,
+                    _ => None,
+                };
+                for (i, &a) in c.args.iter().enumerate() {
+                    put(m, sp + 4 + 4 * i as u32, a);
+                }
+                let regs = if leaves.contains(&c.target) {
+                    put(m, sp, HARNESS_EXIT);
+                    for i in [0, 1, 2, 3, 6, 7] {
+                        if let Some(v) = set(&c, i) {
+                            cpu.gpr[i] = v;
+                        }
+                    }
+                    cpu.gpr[4] = sp;
+                    cpu.eip = c.target;
+                    lifted
+                        .run(&mut cpu, m, &[HARNESS_EXIT], |_, _, _| false)
+                        .unwrap_or_else(|e| panic!("leaf {:#x}: {e}", c.target));
+                    cpu.gpr
+                } else {
+                    let (declared, _, _) = stub_in(stubs, c.target)
+                        .unwrap_or_else(|| panic!("an unknown callee {:#x}", c.target));
+                    put(m, sp, STUB_RETURN);
+                    let callout = Callout {
+                        target: c.target,
+                        site: if sites {
+                            passes::return_site(sp).unwrap_or(0)
+                        } else {
+                            0
+                        },
+                        regs: declared
+                            .iter()
+                            .map(|&i| set(&c, i).unwrap_or(0xdead_beef))
+                            .collect(),
+                        args: c.args.clone(),
+                    };
+                    let (eax, edx) = effect(transcript.len(), &callout, m);
+                    transcript.push(callout);
+                    let mut gpr = cpu.gpr;
+                    gpr[0] = eax;
+                    gpr[2] = edx;
+                    gpr
+                };
+                drop(g);
+                resume(
+                    &cx,
+                    Regs {
+                        eax: regs[0],
+                        ecx: regs[1],
+                        edx: regs[2],
+                        ebx: regs[3],
+                        esp,
+                        ebp: regs[5],
+                        esi: regs[6],
+                        edi: regs[7],
+                        xmm0: 0,
+                    },
+                );
+            }
+        }
+    };
+    drop(fut);
+    drop(cx);
+    let m = Arc::try_unwrap(mem)
+        .ok()
+        .expect("the body kept no memory")
+        .into_inner()
+        .unwrap()
+        .0;
+    (transcript, result, m)
+}
+
+fn assert_transcripts(label: &str, original: &[Callout], port: &[Callout]) {
+    for (i, (x, y)) in original.iter().zip(port).enumerate() {
+        assert_eq!(x, y, "{label}: callout {i} (original, then port)");
+    }
+    assert_eq!(original.len(), port.len(), "{label}: the number of callouts");
+}
+
+/// What a first-person light's callee writes that the loop reads after
+/// it, seeded by the call's place: the light's list's mask (the record
+/// replay, and again at a stencil call with the draw byte), colour B
+/// (the constants, a NaN among them), the flags (a layer's end), the
+/// table's count (at most eight), and the push buffer's pointers.
+fn fp_effect(seed: u64, k: usize, c: &Callout, m: &mut FlatMemory, draws_at: u32) -> (u32, u32) {
+    let mut r = Rng(seed ^ ((k as u64) << 32) ^ u64::from(c.target));
+    match c.target {
+        first_person::call::RECORDS => {
+            put(m, PASS_LIGHT_MASK, (r.u32() & 0xf) << 11);
+            if r.chance(8) {
+                put(m, FIRST_PERSON_COUNT, r.below(9));
+            }
+        }
+        first_person::call::CONSTANTS => {
+            for i in 0..3 {
+                let v = match r.below(6) {
+                    0 => 0.0,
+                    1 => -r.float(0.0, 1.0),
+                    2 => f32::NAN,
+                    3 => -0.0,
+                    _ => r.float(0.0, 1.0),
+                };
+                putf(m, PASS_COLOUR_B + 4 * i, v);
+            }
+        }
+        first_person::call::STENCIL if r.chance(4) => {
+            put(m, PASS_LIGHT_MASK, (r.u32() & 0xf) << 11);
+            put8(m, draws_at, r.below(2) as u8);
+        }
+        first_person::call::LAYER_END if r.chance(4) => {
+            let f = word(m, PASS_FLAGS) ^ (r.u32() & 0x3);
+            put(m, PASS_FLAGS, f);
+        }
+        first_person::call::PUSH_SPACE | first_person::call::PUSH_STATE => {
+            return (r.u32(), r.u32());
+        }
+        _ => put(m, FP_SCRATCH + 4 * (k as u32 & 0xfff), r.u32()),
+    }
+    (r.u32(), r.u32())
+}
+
+/// The first-person table over the world's lights: its count (past eight
+/// sometimes), every slot's light and count (none, one, some, 32, and
+/// negative), the mode, the lists' mask, colour B, the flags, the layer
+/// words and targets, and the device with a push buffer that has room
+/// or not.
+fn fp_world(w: &mut World, r: &mut Rng, esp: u32) {
+    let m = &mut w.mem;
+    put(
+        m,
+        FIRST_PERSON_COUNT,
+        [0, 1, 1, 3, 8, 9, u32::MAX][r.below(7) as usize],
+    );
+    for s in 0..8 {
+        let slot = FIRST_PERSON_TABLE + 0x408 * s;
+        put(m, slot + 0x400, light_datum(r.below(w.lights)));
+        put16(
+            m,
+            slot + 0x404,
+            [0, 1, r.below(33), 32, 0xffff][r.below(5) as usize] as u16,
+        );
+    }
+    put(m, esp + 4, [0, 1, 2, 3][r.below(4) as usize]);
+    put(m, PASS_LIGHT_MASK, r.u32());
+    for i in 0..3 {
+        putf(m, PASS_COLOUR_B + 4 * i, r.float(-1.0, 1.0));
+    }
+    put(m, PASS_FLAGS, r.u32());
+    put8(m, FP_PASSES, r.u32() as u8);
+    for i in 0..3 {
+        put(m, FP_LAYER_WORDS + 4 * i, r.u32());
+    }
+    put(m, FP_TARGETS, r.u32());
+    put(m, PASS_VIEW_TARGET, r.u32());
+    put8(m, FP_LIGHT_ACTIVE, r.u32() as u8);
+    put(m, FP_STENCIL_STATE, r.u32());
+    put(m, FP_RANGE, r.u32());
+    put(m, FP_RANGE + 4, r.u32());
+    put(m, FP_DEVICE_POINTER, FP_DEVICE);
+    let end = 0x1000 + r.below(0x1000);
+    put(
+        m,
+        FP_DEVICE,
+        if r.chance(3) { end + r.below(16) } else { end - 1 - r.below(0x800) },
+    );
+    put(m, FP_DEVICE + 4, end);
+    fill(m, r, FP_DEVICE + 0x1c10, 12);
+    put(m, FP_PUSH_BYTES, r.below(0x400));
+}
+
+/// `light_gather::first_person::run` against `0x000404b0` lifted with
+/// every callee stubbed but the light volume `0x000c17f0` (lifted in both
+/// runs): equal transcripts (target, return site, the registers each
+/// callee is handed, its stack arguments), equal EAX and `ret 4`, and
+/// equal memory outside the dead stack, over no slot, one, eight and a
+/// count a callee changes, empty and negative slots, each layer's mask
+/// bit and a draw byte a callee changes, a kind-0 volume, colour B dark,
+/// negative, NaN or bright, and a push buffer with room or without.
+#[test]
+fn first_person_lights_match_the_lifted_original() {
+    if !with_image(first_person_cases) {
+        eprintln!("SKIPPED first_person_lights_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn first_person_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    let mut tally = Tally::default();
+    for seed in seeds() {
+        for n in 0..120u32 {
+            let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(n) ^ 0x04b0);
+            let mut w = World::new(image, &mut r, [4, 16, 40][(n % 3) as usize]);
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4] - 4;
+            fp_world(&mut w, &mut r, esp);
+            put(&mut w.mem, esp, HARNESS_EXIT);
+            let label = format!("seed {seed} case {n}");
+            let case_seed = r.next();
+            let draws_at = esp - first_person::slot::DRAWS;
+
+            let plan = match first_person::plan(&Ram(w.mem.clone()), esp, FPU) {
+                Ok(plan) => plan,
+                Err(why) => {
+                    tally.add(format!("refused {why:?}"));
+                    continue;
+                }
+            };
+            let out: Arc<Mutex<Option<FirstPersonLights>>> = Arc::new(Mutex::new(None));
+            let kept = Arc::clone(&out);
+            let body = move |cx: engine::entry::Cx| -> engine::entry::EntryFuture {
+                Box::pin(async move {
+                    let (ret, lights) = first_person::run(&cx, plan).await?;
+                    *kept.lock().unwrap() = Some(lights);
+                    Ok::<_, engine::entry::EntryError>(ret)
+                })
+            };
+            let (port_calls, result, port) = port_stubbed(
+                &mut lifted,
+                w.mem.clone(),
+                c.clone(),
+                esp,
+                body,
+                &[LIGHT_VOLUME],
+                FP_STUBS,
+                true,
+                |k, callout, m| fp_effect(case_seed, k, callout, m, draws_at),
+            );
+            let mut a = w.mem;
+            let (calls, eax, after) = original_stubbed(
+                &mut lifted,
+                &mut a,
+                &mut c,
+                first_person_entry(),
+                esp,
+                FP_STUBS,
+                true,
+                |k, callout, m| fp_effect(case_seed, k, callout, m, draws_at),
+            )
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(after, esp + 8, "{label}: ESP after the original");
+            assert_transcripts(&label, &calls, &port_calls);
+            assert_eq!(
+                result.map(|ret| (ret.eax, ret.pop)),
+                Ok((eax, 4)),
+                "{label}: the return"
+            );
+            compare(&label, &a, &port, esp);
+            tally.add("native");
+            let lights = out.lock().unwrap().take().expect("what it did");
+            tally.add(format!("{} lights", lights.lights.len().min(2)));
+            if lights.lights.len() == 8 {
+                tally.add("8 lights");
+            }
+            for l in &lights.lights {
+                tally.add(format!("volume {:?}", l.volume));
+                tally.add(format!("flags {}", l.flags));
+                for layer in [11, 12, 13, 14] {
+                    if l.drawn & 1 << layer != 0 {
+                        tally.add(format!("layer {layer} drawn"));
+                    } else if l.reached & 1 << layer != 0 {
+                        tally.add(format!("layer {layer} reached only"));
+                    }
+                }
+            }
+            if calls.iter().any(|c| c.target == first_person::call::PUSH_SPACE) {
+                tally.add("push space");
+            }
+        }
+    }
+    eprintln!("first-person lights: {:#?}", tally.0);
+    assert!(tally.get("native") >= 200, "too few answered: {:#?}", tally.0);
+    for need in [
+        "0 lights",
+        "1 lights",
+        "2 lights",
+        "refused Unsupported",
+        "flags 0",
+        "flags 2",
+        "flags 3",
+        "layer 11 drawn",
+        "layer 11 reached only",
+        "layer 12 drawn",
+        "layer 13 drawn",
+        "layer 13 reached only",
+        "layer 14 drawn",
+        "layer 14 reached only",
+        "push space",
+    ] {
+        assert!(tally.get(need) > 0, "never {need}: {:#?}", tally.0);
+    }
+}
+
+fn first_person_entry() -> u32 {
+    engine::points::FIRST_PERSON_LIGHTS.base
+}
+
+fn first_person_records_entry() -> u32 {
+    engine::points::FIRST_PERSON_LIGHT_RECORDS.base
+}
+
+/// A stubbed per-part callee's answer: a geometry of up to four parts or
+/// none, a part material written into the scratch (or no shader) and its
+/// answer, a subpart answer.
+fn record_effect(seed: u64, k: usize, c: &Callout, m: &mut FlatMemory) -> (u32, u32) {
+    let mut r = Rng(seed ^ ((k as u64) << 32) ^ u64::from(c.target));
+    match c.target {
+        items::call::RECORD_GEOMETRY => {
+            if r.chance(5) {
+                return (0, r.u32());
+            }
+            let at = FP_GEOMETRY + 0x10 * (k as u32 & 0xff);
+            put(m, at, r.below(5));
+            return (at, r.u32());
+        }
+        items::call::PART_MATERIAL => {
+            let scratch = c.regs[0];
+            put(
+                m,
+                scratch,
+                if r.chance(5) {
+                    NONE
+                } else {
+                    shader_datum(r.below(SHADERS))
+                },
+            );
+            return ((r.u32() & !0xff) | r.below(2), r.u32());
+        }
+        items::call::PART_VISIBLE => return ((r.u32() & !0xff) | r.below(2), r.u32()),
+        _ => put(m, FP_SCRATCH + 0x4000 + 4 * (k as u32 & 0xfff), r.u32()),
+    }
+    (r.u32(), r.u32())
+}
+
+/// One slot's records over [`items_world`]: the world's light records
+/// moved into slot `slot` (up to 32, or none, or a count that is not
+/// above zero), the record tail where they go overwritten. With
+/// `objects`, every record is an object's, so the guest's per-part calls
+/// make each and they can be stubbed.
+fn records_world(w: &mut World, r: &mut Rng, slot: u32, objects: bool) {
+    let (start, end) = items_world(w, r, 1);
+    let m = &mut w.mem;
+    let base = FIRST_PERSON_TABLE + 0x408 * slot;
+    let made = end - start;
+    let count: u16 = match r.below(6) {
+        0 => 0,
+        1 => 0xfffe,
+        2 => made.min(32) as u16,
+        _ => r.below(made.min(32) + 1) as u16,
+    };
+    for t in 0..u32::from(count).min(32) {
+        let from = SCENE_RECORDS + 0x20 * (start + t);
+        for b in 0..0x20 {
+            let v = m.bytes[(from + b) as usize];
+            put8(m, base + 0x20 * t + b, v);
+        }
+        if objects {
+            put(m, base + 0x20 * t + 4, FP_OBJECT_RECORD);
+        }
+    }
+    put16(m, base + 0x404, count);
+    fill(m, r, SCENE_RECORDS + 0x20 * start, 0x20 * made.max(1));
+    put(m, RECORD_COUNT, r.u32());
+}
+
+/// `light_gather::first_person::run_records` against `0x000402b0`,
+/// twice: with its per-part callees (`0x000449e0`, `0x00045ce0`,
+/// `0x000460d0`, `0x00041040` and what they call) lifted in both runs
+/// over the item lists' synthetic structure, where the port appends the
+/// structure records in Rust; and with them stubbed over objects'
+/// records, where the transcripts (target, the registers, the stack
+/// arguments, among them the pixel dword with the frame's stale bytes and
+/// the light's kind 1) must be equal. Equal EAX and `ret 4` and equal
+/// memory outside the dead stack in both, over the three modes, an empty
+/// slot, a slot of 32 and a count below zero.
+#[test]
+fn first_person_records_match_the_lifted_original() {
+    if !with_image(first_person_records_cases) {
+        eprintln!("SKIPPED first_person_records_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn first_person_records_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    let mut tally = Tally::default();
+    for seed in seeds() {
+        for n in 0..96u32 {
+            let mut r = Rng(seed.wrapping_mul(0x5851_f42d_4c95_7f2d) ^ u64::from(n) ^ 0x02b0);
+            let mut w = World::new(image, &mut r, 4);
+            let slot = r.below(8);
+            let stubbed = n % 2 == 1;
+            records_world(&mut w, &mut r, slot, stubbed);
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4] - 8;
+            let mode = [0, 1, 2, 3][r.below(4) as usize];
+            put(&mut w.mem, esp + 4, mode);
+            put(&mut w.mem, esp, HARNESS_EXIT);
+            c.gpr[2] = slot;
+            let eax = c.gpr[0];
+            let label = format!(
+                "seed {seed} case {n} (slot {slot}, mode {mode}, {})",
+                if stubbed { "stubbed" } else { "lifted" }
+            );
+            let case_seed = r.next();
+
+            let plan = match first_person::plan_records(&Ram(w.mem.clone()), esp, eax, slot, FPU) {
+                Ok(plan) => plan,
+                Err(why) => {
+                    tally.add(format!("refused {why:?}"));
+                    continue;
+                }
+            };
+            let out: Arc<Mutex<Option<SlotRecords>>> = Arc::new(Mutex::new(None));
+            let kept = Arc::clone(&out);
+            let body = move |cx: engine::entry::Cx| -> engine::entry::EntryFuture {
+                Box::pin(async move {
+                    let (ret, records) = first_person::run_records(&cx, plan).await?;
+                    *kept.lock().unwrap() = Some(records);
+                    Ok::<_, engine::entry::EntryError>(ret)
+                })
+            };
+            let (stubs, leaves): (Stubs, &[u32]) = if stubbed {
+                (RECORD_STUBS, &[])
+            } else {
+                (&[], &ITEM_LEAVES)
+            };
+            let (port_calls, result, port) = port_stubbed(
+                &mut lifted,
+                w.mem.clone(),
+                c.clone(),
+                esp,
+                body,
+                leaves,
+                stubs,
+                false,
+                |k, callout, m| record_effect(case_seed, k, callout, m),
+            );
+            let mut a = w.mem;
+            let (calls, eax, after) = original_stubbed(
+                &mut lifted,
+                &mut a,
+                &mut c,
+                first_person_records_entry(),
+                esp,
+                stubs,
+                false,
+                |k, callout, m| record_effect(case_seed, k, callout, m),
+            )
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(after, esp + 8, "{label}: ESP after the original");
+            assert_transcripts(&label, &calls, &port_calls);
+            assert_eq!(
+                result.map(|ret| (ret.eax, ret.pop)),
+                Ok((eax, 4)),
+                "{label}: the return"
+            );
+            compare(&label, &a, &port, esp);
+            tally.add("native");
+            let records = out.lock().unwrap().take().expect("what it did");
+            let count = word(&a, FIRST_PERSON_TABLE + 0x408 * slot + 0x404) as u16 as i16;
+            tally.add(match count {
+                i16::MIN..=0 => "an empty slot",
+                32 => "a slot of 32",
+                _ => "a slot",
+            });
+            tally.add(format!("mode {}", mode.min(2)));
+            for &(_, made) in &records.made {
+                tally.add(match made {
+                    Made::Rust => "a record in Rust".to_string(),
+                    Made::Guest(why) => format!("a record by the guest ({why:?})"),
+                });
+            }
+            if stubbed && calls.iter().any(|c| c.target == items::call::PART_ITEMS) {
+                tally.add("a part's items stubbed");
+            }
+            if !stubbed && word(&a, items::LISTS + 0x1c) as i32 > 0 {
+                tally.add("receivers");
+            }
+        }
+    }
+    eprintln!("first-person records: {:#?}", tally.0);
+    assert!(tally.get("native") >= 150, "too few answered: {:#?}", tally.0);
+    for need in [
+        "an empty slot",
+        "a slot of 32",
+        "a slot",
+        "mode 0",
+        "mode 1",
+        "mode 2",
+        "a record in Rust",
+        "a record by the guest (Unsupported)",
+        "a part's items stubbed",
+        "receivers",
     ] {
         assert!(tally.get(need) > 0, "never {need}: {:#?}", tally.0);
     }

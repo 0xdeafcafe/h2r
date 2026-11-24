@@ -9,10 +9,13 @@
 //! `RENDER_LIGHT_PASSES`. Under the body the scene's light is made from its
 //! hand-off and the item body's lists ([`handoff`]); the guest loop's
 //! lights are read at their passes' entry. The first-person lights
-//! (`0x000404b0`) go into the first person's view at their first layer
-//! draw, and their layers 12 and 13 whose groups the scene holds whole
-//! are drawn from it alone ([`FIRST_PERSON_LAYERS`]). On with the native
-//! renderer (`impl.render.native`, on by default).
+//! (`0x000404b0`) and each slot's record replay run as bodies too
+//! ([`first_person`]); a first-person light goes into the first person's
+//! view at its first layer draw, its groups are of their own site
+//! (`GroupSite::FirstPerson`), and its layers 12 and 13 whose groups the
+//! scene holds whole are drawn from it alone ([`FIRST_PERSON_LAYERS`]).
+//! On with the native renderer (`impl.render.native`, on by default).
+mod first_person;
 mod frame;
 mod handoff;
 mod items;
@@ -64,7 +67,9 @@ pub const SPLIT_LAYERS: [(u32, u32); 3] = [(14, 0x0003_13e2), (12, 0x0003_144f),
 /// 14 (`0x000406ab`), 12 (`0x00040718`) and 13 (`0x0004079c`). Their 12
 /// and 13 are drawn from the scene alone when the scene holds the group
 /// whole (`walk`); every other draw, and a group the host refuses, keeps
-/// its handlers. The resolved-draw path takes none of them.
+/// its handlers. The resolved-draw path takes none of them. Under the
+/// first-person body ([`first_person`]) the draw's caller is read through
+/// `passes::caller`.
 pub const FIRST_PERSON_LAYERS: [(u32, u32); 4] = [
     (11, 0x0004_0642),
     (14, 0x0004_06ab),
@@ -754,6 +759,7 @@ impl Feature for NativeLights {
         frame::install(b);
         items::install(b);
         passes::install(b);
+        first_person::install(b);
         b.raw()
             .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| {
                 if !Stage::Lights.standing_down() {

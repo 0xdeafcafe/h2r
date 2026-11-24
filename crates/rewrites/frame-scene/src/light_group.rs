@@ -31,6 +31,10 @@ pub enum GroupSite {
     /// An object shadow `0x00032350`: its layers 10 and 11, into
     /// [`FrameScene::shadow_groups`].
     ObjectShadow,
+    /// The first-person lights `0x000404b0`: a light's layers 11, 14, 12
+    /// and 13 on its list rebuilt from its slot's records, in the first
+    /// person's view (docs/graphics/native-light-gather.md, slice L6).
+    FirstPerson,
 }
 
 /// How a part's indices draw (the emitter `0x0004daa0`).
