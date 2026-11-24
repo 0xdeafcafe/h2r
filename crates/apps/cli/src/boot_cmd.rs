@@ -261,6 +261,12 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             };
             boot::build_for(&xbe, &out, jobs, arch)?;
         }
+        // The store is extracted on compile, once the image is built
+        // (docs/engine/asset-store.md, "Extraction on compile"). A host
+        // slim build has no data root of its own to fill.
+        if !slim {
+            crate::store_prepare::on_build(&disc, &data)?;
+        }
         return Ok(());
     }
     // `serve` never builds, and runs clang's module unless told otherwise.

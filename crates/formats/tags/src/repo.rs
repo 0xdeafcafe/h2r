@@ -18,6 +18,7 @@ use map::FourCC;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 pub mod build;
+pub mod compile;
 pub mod extract;
 pub mod format;
 pub mod skeleton;
