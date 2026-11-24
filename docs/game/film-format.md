@@ -139,10 +139,15 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   so its slice, tick and call counts are exact, and at most 150 ticks of
   the game are lost. Everything past that mark is dropped, including
   checkpoints and call batches recorded past it, so a replay is never
-  asked for state the tape does not hold. A recovered film has no
-  map, variant or scores, and opens at boot; Theater's list shows games
-  only (a film with no map and no players is left out), so it is on disk
-  and not listed; a tape with no such mark —
+  asked for state the tape does not hold. The recorder
+  appends a header naming the game when it starts and when its roster
+  changes (`Session::describe_tape`: map, variant, players), and an empty
+  one when the game is cut or left; recovery takes the game from the
+  tape's last header, so a game a crash cut off is listed with its map and
+  players, without scores, and opens at boot. A tape of menus, or one
+  whose game was already cut into its own film, recovers with no map and
+  no players; Theater's list shows games only, so it is on disk and not
+  listed; a tape with no such mark —
   a session that died outside a game — is deleted, as a session that
   played no game leaves no film.
 

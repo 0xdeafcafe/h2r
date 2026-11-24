@@ -153,6 +153,9 @@ struct Recording {
     upload: Option<UploadTarget>,
     /// Wall time of the current game's first tick: a cut film's start.
     game_started_ms: Option<u64>,
+    /// What the last header appended to the tape said of the game, so a
+    /// new game, a join or a leave appends another.
+    described: Option<metadata::Described>,
 }
 
 struct UploadTarget {
@@ -485,6 +488,7 @@ impl Session {
                     disk: Arc::new(Mutex::new(disk)),
                     upload,
                     game_started_ms: None,
+                    described: None,
                 }),
                 header,
                 1.,
@@ -706,6 +710,9 @@ impl Session {
                 Session::check_replay_tick(&mut s, guest, hash);
             }
             if s.failure.is_none() {
+                Session::describe_tape(&mut s);
+            }
+            if s.failure.is_none() {
                 s.measure_match_start(tick);
             }
         }
@@ -723,6 +730,34 @@ impl Session {
         }
         s.finish_warm_tick(tick);
         s.completed_transport_tick(reached_target);
+    }
+
+    /// Append a header naming the game on the tape (its map, variant and
+    /// players) when that changes, and an empty one when the game is gone, so
+    /// a tape a hard kill leaves is recovered as the game it held
+    /// (`film::recover_tape`). A session in menus appends none.
+    fn describe_tape(s: &mut State) {
+        if s.header.version < 3 {
+            return;
+        }
+        let Mode::Record(rec) = &mut s.mode else { return };
+        let now = rec.meta.description();
+        if now == rec.described || (now.is_none() && rec.described.is_none()) {
+            return;
+        }
+        rec.described = now.clone();
+        let mut header = s.header.clone();
+        if let Some(game) = now {
+            header.meta.map = game.map;
+            header.meta.variant = game.variant;
+            header.meta.players = game.players;
+        }
+        if let Mode::Record(rec) = &mut s.mode
+            && let Some(out) = rec.out.as_mut()
+            && let Err(e) = out.chunk(film::HEAD, &header)
+        {
+            s.fail(format!("writing the tape's game header: {e:#}"));
+        }
     }
 
     /// The guest-arena hash and HLE call cursor share the 30-tick checkpoint.
