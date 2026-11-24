@@ -7,8 +7,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use content::package::{Item, Kind, Maps};
-use game::bot_mark::GearRewrite;
-use game::campaign_cards::{Card, CardRewrite, MAINMENU, TEMPLATE, Table, tag_name};
+use ::game::bot_mark::GearRewrite;
+use ::game::campaign_cards::{Card, CardRewrite, MAINMENU, TEMPLATE, Table, tag_name};
 use map::build::{Block, RawRef, TagPayload, TagSet};
 use map::{CacheType, FourCC, TagId};
 use tags::rgba_bitmap;

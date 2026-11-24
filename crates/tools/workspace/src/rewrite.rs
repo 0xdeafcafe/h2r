@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use content::Sha256;
 use content::package::Maps;
-use game::bot_mark::GearRewrite;
-use game::campaign_cards::{CardRewrite, MAINMENU};
+use ::game::bot_mark::GearRewrite;
+use ::game::campaign_cards::{CardRewrite, MAINMENU};
 use map::Map;
 use serde::{Deserialize, Serialize};
 use vfs::Rewrite as _;
