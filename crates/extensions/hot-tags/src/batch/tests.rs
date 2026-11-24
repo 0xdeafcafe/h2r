@@ -336,3 +336,35 @@ fn a_new_map_releases_the_arena() {
     drop(held);
     assert!(g.u32(arena::WINDOW.start).is_err(), "its pages are unmapped");
 }
+
+#[test]
+fn a_move_and_its_revert_report_the_displaced_block() {
+    use std::sync::{Arc, Mutex};
+
+    let mut g = level();
+    let (mut ed, _) = editor(&g);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    ed = ed.with_tag_writes(Box::new(move |_, notice| {
+        sink.lock().unwrap().push(notice.clone());
+    }));
+
+    let batch = grow_colors(&g, 7, None);
+    let event = ed.batch_with(&mut g, &[], &batch, None).unwrap();
+    let id = event["id"].as_u64().unwrap();
+    ed.revert(&mut g, Some(id)).unwrap();
+
+    let notices = seen.lock().unwrap();
+    assert_eq!(notices.len(), 2);
+    for (notice, (revert, previous)) in notices.iter().zip([
+        (false, (2, COLORS_AT)),
+        (true, (3, arena::WINDOW.start)),
+    ]) {
+        assert_eq!(notice.tag, SHAD);
+        assert_eq!(notice.revert, revert);
+        assert_eq!(notice.range, colors_root()..colors_root() + 8);
+        // A root move still doesn't send the pair to the metadata overlay.
+        assert!(notice.spans.is_empty());
+        assert_eq!(notice.moved_blocks, [BlockRepoint { root: colors_root(), previous }]);
+    }
+}

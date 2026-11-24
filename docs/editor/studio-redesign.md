@@ -40,10 +40,11 @@ before its slice starts.
 | Announcer lines and voice cloning | built | [announcer.md](announcer.md), [voice-cloning.md](voice-cloning.md) |
 | Animation graphs read and sampled, every retail codec, and a graph's clips posed on the model that uses it (M1) | built | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)); the pose view `crates/apps/studio/src/{app,ui,api}/anim.rs` |
 | Animation key editing, curve handles, gizmo keying, and in-memory clip checks (AN3) | built | `crates/tools/anim-edit`, Studio `app/anim/document.rs`, `ui/anim.rs`, `ui/anim/edit.rs` and `api/anim/edit.rs` |
+| Animation package source and graph writeback (AN4) | built | `crates/tools/anim-edit/src/source.rs`, `crates/tools/workspace/src/animation.rs`, Studio `app/anim/save.rs` and `api/anim/save.rs` |
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
-| The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `sound`, `data`, `hud`, `screens`, `screen-edits`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
+| The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `animation`, `sound`, `data`, `hud`, `screens`, `screen-edits`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
 | The game's side: the baked set (`content/`), `<data>/packages/`, `set.toml`, features, `PackageRewrite` with its cache, `packages.list` | built (PK3); `content/pogo` and `content/ui` supply per-map items | `crates/tools/workspace/src/{game,rewrite}.rs`, `crates/apps/boot/src/packages.rs`, `crates/apps/boot/build.rs` |
 | Projects, the other kits as build steps | design | [tag-workspace.md](tag-workspace.md) |
 
@@ -364,7 +365,7 @@ maps = "multiplayer"
 | `edits` | an edit file: `set` and `block` lines on tags that exist | changed fields | sim |
 | `model` | our primitive YAML (`content/pogo/models/*.yaml`'s form) or glTF | `bitm`, `shad`, `mode`, `phmo`, `hlmt` (built: the primitive YAML, with the atlas it names) | sim |
 | `bitmap` | PNG | `bitm` | client |
-| `animation` | `.anim.yaml` or glTF clips, with the graph and action they join | animations in a `jmad` | sim |
+| `animation` | `.anim.yaml` with the graph, skeleton, key tracks and replace or add operation | animation records and streams in a `jmad` | sim |
 | `sound` | WAV and an optional `.sound.yaml` (permutations, class, edits, mouth curve) | `snd!`, the gestalt merged (built: an item with a `tag` is written as a `snd!`; one with none is checked and a game feature plays the file) | client |
 | `screens` | screen YAML and `design.yaml` | `wgit` tags and `wgtz` rows ([ui-in-maps.md](../game/ui-in-maps.md)) | client |
 | `screen-edits` | retail screen edit files | changed `wgit` fields | client |
@@ -691,9 +692,8 @@ command line, for the coordinator and CI.
 
 ## The animation editor
 
-Opening a `jmad` gives the animation editor. It poses the graph's model
-and edits an in-memory clip on a timeline. AN4 covers package source and
-graph writeback.
+Opening a `jmad` gives the animation editor. It poses the graph's model,
+edits clips on a timeline and saves authored keys to a local package.
 
 ```
 +----------------+---------------------------------------------------+-----------------+
@@ -743,9 +743,10 @@ interpolation. Opening a retail clip reduces its dense frames with
 `tags::anim_keys::reduce`. Its Ramer-Douglas-Peucker reduction measures
 rotation as an angle, translation as a distance and scale as a
 difference. The timeline shows the source tolerance. Each document has
-its own undo and redo history. The decoder's source and its graph stay
-on disk. The AN4 package source is `.anim.yaml`, with the graph, mode,
-class and action, node names and authored keys.
+its own undo and redo history. **Save to package** writes a named
+`animation` item for the current map. Opening a source clip gives a
+replacement item. A new or duplicated clip takes an action and can
+specify a mode, class and weapon type.
 
 **Curves (AN3, built).** The Curves tab shares the curve editor's plot
 with a frame axis. It shows rotation as three unwrapped angles while
@@ -772,32 +773,47 @@ lists unmatched nodes and channels dropped.
 is the "own animation" row of
 [forge-features.md](../game/forge-features.md).
 
-**Writing the tag.** The encoder is the converter's, lifted to
-`crates/formats/tags/src/anim_write.rs` (new): a static stream (codec 1)
-for channels that do not move and the 8-byte quantised codec (codec 3)
-for those that do. `decode(encode(clip))` equals the clip within the
-codec's quantisation. The keyframe codecs are a later size saving and
-change no behaviour. A build bakes keys to dense frames and:
+**Writing the tag (AN4, built).** The `animation` builder
+(`crates/tools/workspace/src/animation.rs`) reads `.anim.yaml`, matches
+the source skeleton to the graph by node order, name and parent, and
+bakes integer frames with `anim_edit::encode`. A base clip puts constant
+channels in codec 1 and moving channels in codec 3. Overlay and
+replacement clips use codec 3 for their keyed channels. Unkeyed
+channels keep their skeleton fallback.
 
-- **replaces** an animation: its record and its raw stream, grown
-  through `TagDoc::resize_data` and `MapEditor::append_raw` in an `onto`
-  build, or as a loose tag in a `fresh` one;
-- **adds** one: a new record, and an action under its mode and class.
+The source names the graph path, clip name, frame count and nodes.
+`operation` takes `{op: replace, animation: <clip name>}` or
+`{op: add, mode, class, weapon_type?, action, kind?}`. A channel names
+its `node` index and `channel` (rotation, translation or scale). Each
+key has a `frame`, `value` and optional `interp` and `tangent`.
+Values and tangents use the same coordinates as `anim.read`.
 
-Refused, by name: a graph that inherits from a parent graph (the parent
-reference of [animation.md](../formats/animation.md), whose meaning is
-**S**); a graph in a shared cache; an animation with inline data; a
-frame-info type other than none until root movement is decoded.
+- **Replace** keeps the existing clip's index, kind, links, checksums
+  and events. The builder allocates new raw bytes and changes the
+  selected record's stream fields. If no other clip uses its resource
+  slot, the builder reuses the slot. A shared slot and its bytes stay
+  intact, and the edited clip gets a separate resource.
+- **Add** appends a record and resource and adds the action under the
+  selected mode, class and weapon type. Overlay actions join the
+  overlay list. The lookup tables use the engine's packed string-ID
+  order.
 
-**In the running game.** A written `jmad` reaches a paired game as a tag
-edit; the game drops its decoded clips for that tag
-(`engine::sim_anim::STORE.flush_range`,
-[realtime-edits.md](realtime-edits.md), "Tag-write notices") and decodes
-the new ones. `pair.preview {what: "animation", target, animation}`
-spawns the object as `what: "object"` does, plays the animation on it
-and captures frames at chosen ticks. Starting a named animation on an
-object from the host needs a game method (`world.object.animate`), and
-which guest entry it calls is **E first**.
+Both paths use the package build's `TagSet`, whether it starts from
+built tags or decomposes an existing map. Builds refuse inheriting
+graphs, shared caches, inline clip data and frame-info modes with root
+movement. Replacing an aim screen or shortening a clip past a
+retained event or loop start is also refused.
+
+**In the running game.** A package build with new animation resources
+takes effect on map load. The guest animation cache can keep its own
+resident copy of the old resource while the map is loaded.
+For live metadata edits, `hot_glue::tag_written` flushes the decoded
+clips whose keys belong to the graph's current animation block and
+any block it displaces. See [realtime-edits.md](realtime-edits.md),
+"Tag-write notices".
+`pair.preview {what: "animation", target, animation}` is AN6. It
+spawns the object, plays the animation and captures frames at chosen
+ticks. The guest entry used to start a named animation remains **E first**.
 
 | Method | Does |
 |---|---|
@@ -806,6 +822,7 @@ which guest entry it calls is **E first**.
 | `anim.read {tag, animation, tolerance?, keys?}` or `anim.read {doc, keys?}` | the source reduction and its document ID, or the document's current keys |
 | `anim.key {doc, node, channel, frame, value?, interp?, remove?}` | set or remove a key |
 | `anim.new {tag, name, frames}`, `anim.duplicate {tag, animation, name}` or `anim.duplicate {doc, name}` | create a new animation document |
+| `anim.save {doc, package, mode?, class?, weapon_type?, action?}` | save a map-scoped `.anim.yaml` item in a local package |
 | `anim.check {doc, model?}` | per-node codec quantisation and loop seam, and feet under the model-space ground plane |
 | `anim.retarget {from, to, map?}`, `anim.import {file}` | retarget or import keys (AN5) |
 
@@ -983,7 +1000,7 @@ Rows are in build order.
 | AN1 (built) | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
 | AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
 | AN3 (built) | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document, a drag is one undo step, and a rotation survives the angle view unchanged. `api/anim/read_tests.rs`, `ui/anim/edit.rs` and `crates/tools/anim-edit/src/tests.rs` |
-| AN4 | **Write back**: the `animation` builder, replace and add in a `jmad`, the refusals, the live flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced differs only in that record and stream; an added one is reachable by its action; an inheriting graph is refused by name |
+| AN4 (built) | **Write back**: `anim.save`, the `animation` builder, replace and add in a `jmad`, the refusals, the live metadata flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced keeps its other records and streams, an added one is reachable by its action, and an inheriting graph is refused by name. `crates/tools/workspace/src/animation/tests.rs` |
 | AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |
 | AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
 | A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |

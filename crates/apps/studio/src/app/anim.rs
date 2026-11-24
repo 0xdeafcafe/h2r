@@ -49,6 +49,7 @@ use tags::sound::ResourceReader;
 use super::App;
 
 mod document;
+pub use document::save::{AnimationPlacement, SavedAnimation};
 
 /// The renders' background, sRGB-encoded: `model.render`'s own.
 pub(crate) const BACKGROUND: [f64; 3] = [0.10, 0.11, 0.13];

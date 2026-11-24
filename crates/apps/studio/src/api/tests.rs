@@ -12,6 +12,7 @@ use studio_proto::{code, method as m};
 use super::*;
 use crate::app::{Action, PlaylistEdit, Selection};
 
+mod anim_save_tests;
 mod bitmaps_tests;
 mod playtest_tests;
 mod image_gen_tests;
@@ -435,11 +436,19 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             app.dispatch(Action::OpenSource(map));
         }
         // The invented two-bone graph for the animation editor.
-        m::ANIM_READ | m::ANIM_NEW | m::ANIM_DUPLICATE | m::ANIM_KEY | m::ANIM_CHECK => {
+        m::ANIM_READ
+        | m::ANIM_NEW
+        | m::ANIM_DUPLICATE
+        | m::ANIM_KEY
+        | m::ANIM_CHECK
+        | m::ANIM_SAVE => {
             let map = t.path("timeline.map");
             std::fs::write(&map, super::anim::read_tests::read_map()).unwrap();
             app.dispatch(Action::OpenSource(map));
-            if matches!(name, m::ANIM_KEY | m::ANIM_CHECK) {
+            if name == m::ANIM_SAVE {
+                import_tests::package(&t.path("data/packages/mine"), "mine");
+            }
+            if matches!(name, m::ANIM_KEY | m::ANIM_CHECK | m::ANIM_SAVE) {
                 let opened = call(
                     api,
                     app,

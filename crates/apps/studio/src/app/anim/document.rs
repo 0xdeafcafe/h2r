@@ -5,6 +5,9 @@ use map::TagId;
 use tags::anim_keys::Tolerance;
 use tags::anim_sample::{NodeTransform, Pose};
 
+#[path = "save.rs"]
+pub(super) mod save;
+
 use super::{
     Anim, AnimError, AnimRead, AnimSummary, App, GraphKey, Loaded, PoseAnswer, Raw, model_defaults,
 };

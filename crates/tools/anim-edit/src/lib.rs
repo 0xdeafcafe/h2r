@@ -9,11 +9,15 @@ use tags::anim_sample::{NodeDefault, NodeTransform, Pose};
 
 mod angles;
 mod check;
+mod source;
 
 pub use angles::{
     angles_near, angles_to_rotation, rotation_to_angles, tangent_from_angles, tangent_to_angles,
 };
 pub use check::{Check, FootContact, NodeCheck};
+pub use source::{
+    ClipKind, Encoded, Operation, Source, SourceChannel, SourceKey, SourceKind, SourceNode, encode,
+};
 
 /// A graph node, indexed by its position in the graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +28,8 @@ pub struct Node {
 
 /// Interpolation from a key to the next key. Outside the keyed interval
 /// the channel holds the nearest key.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Interp {
     Step,
     #[default]

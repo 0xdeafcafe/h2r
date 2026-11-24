@@ -33,6 +33,8 @@ pub struct TagWrite {
     /// A move's root pair is in [`Self::range`] but not here: it points
     /// into the edit arena, which no file holds.
     pub spans: Vec<Range<u32>>,
+    /// Block pairs repointed by the edit, including the displaced storage.
+    pub moved_blocks: Vec<BlockRepoint>,
     /// Whether the edit was a revert.
     pub revert: bool,
 }
@@ -44,6 +46,14 @@ impl TagWrite {
     }
 }
 
+/// A block pair written by a move or its revert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockRepoint {
+    pub root: u32,
+    /// Count and address from before this pair was written.
+    pub previous: (u32, u32),
+}
+
 /// Takes the notices of an applied edit, the guest still held.
 pub type TagWriteSink = Box<dyn FnMut(&mut Guest, &TagWrite) + Send>;
 
@@ -51,8 +61,14 @@ pub type TagWriteSink = Box<dyn FnMut(&mut Guest, &TagWrite) + Send>;
 #[derive(Default)]
 pub(crate) struct Notices {
     revert: bool,
-    /// Per tag: its datum, its range so far, its field spans.
-    tags: Vec<(u32, Range<u32>, Vec<Range<u32>>)>,
+    tags: Vec<ChangedTag>,
+}
+
+struct ChangedTag {
+    datum: u32,
+    range: Range<u32>,
+    spans: Vec<Range<u32>>,
+    moved_blocks: Vec<BlockRepoint>,
 }
 
 impl Notices {
@@ -60,34 +76,37 @@ impl Notices {
         Notices { revert, tags: Vec::new() }
     }
 
-    fn add(&mut self, tag: u32, at: u32, len: u32, span: bool) {
-        if len == 0 {
-            return;
-        }
+    fn add(&mut self, tag: u32, at: u32, len: u32) -> &mut ChangedTag {
         let end = at.saturating_add(len);
-        let i = match self.tags.iter().position(|(t, ..)| *t == tag) {
+        let i = match self.tags.iter().position(|entry| entry.datum == tag) {
             Some(i) => i,
             None => {
-                self.tags.push((tag, at..end, Vec::new()));
+                self.tags.push(ChangedTag {
+                    datum: tag,
+                    range: at..end,
+                    spans: Vec::new(),
+                    moved_blocks: Vec::new(),
+                });
                 self.tags.len() - 1
             }
         };
-        let (_, range, spans) = &mut self.tags[i];
-        range.start = range.start.min(at);
-        range.end = range.end.max(end);
-        if span {
-            spans.push(at..end);
-        }
+        let entry = &mut self.tags[i];
+        entry.range.start = entry.range.start.min(at);
+        entry.range.end = entry.range.end.max(end);
+        entry
     }
 
     /// A field write of `len` bytes at `at` in tag `tag`.
     pub(crate) fn field(&mut self, tag: u32, at: u32, len: u32) {
-        self.add(tag, at, len, true);
+        if len != 0 {
+            let entry = self.add(tag, at, len);
+            entry.spans.push(at..at.saturating_add(len));
+        }
     }
 
     /// A moved block's root pair at `root` in tag `tag`.
-    pub(crate) fn root(&mut self, tag: u32, root: u32) {
-        self.add(tag, root, 8, false);
+    pub(crate) fn root(&mut self, tag: u32, root: u32, previous: (u32, u32)) {
+        self.add(tag, root, 8).moved_blocks.push(BlockRepoint { root, previous });
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -110,15 +129,16 @@ impl Editor {
         }
         let Ok(idx) = self.index(g) else { return };
         let revert = notices.revert;
-        for (tag, range, spans) in notices.tags {
-            let Ok(e) = index::by_datum(g, &idx, tag) else { continue };
+        for change in notices.tags {
+            let Ok(e) = index::by_datum(g, &idx, change.datum) else { continue };
             let notice = TagWrite {
                 group: e.group,
-                tag,
+                tag: change.datum,
                 address: e.address,
                 size: e.size,
-                range,
-                spans,
+                range: change.range,
+                spans: change.spans,
+                moved_blocks: change.moved_blocks,
                 revert,
             };
             if let Some(sink) = self.tag_writes.as_mut() {

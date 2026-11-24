@@ -32,19 +32,30 @@ impl MapUnpin {
         self.preserve = preserve;
         self
     }
-}
 
-impl Unpin for MapUnpin {
-    fn tree(&self, id: TagId) -> Result<Block, String> {
+    fn checked_tree(&self, id: TagId, own_arrays: bool) -> Result<Block, String> {
         if let Err(d) = self.relocator.check(id) {
             return Err(format!(
                 "the tag schema cannot lay the tag out anew: {} (block path {:x?}, offset {:#x}, value {:#x})",
                 d.refusal, d.path, d.offset, d.value
             ));
         }
-        self.relocator
-            .to_built_among(id, &HashSet::from([id]))
-            .map_err(|r| format!("the tag schema cannot lay the tag out anew: {r}"))
+        let tree = if own_arrays {
+            self.relocator.to_built(id)
+        } else {
+            self.relocator.to_built_among(id, &HashSet::from([id]))
+        };
+        tree.map_err(|r| format!("the tag schema cannot lay the tag out anew: {r}"))
+    }
+}
+
+impl Unpin for MapUnpin {
+    fn tree(&self, id: TagId) -> Result<Block, String> {
+        self.checked_tree(id, false)
+    }
+
+    fn owned_tree(&self, id: TagId) -> Result<Block, String> {
+        self.checked_tree(id, true)
     }
 
     fn relocate(&self, set: &mut TagSet, id: TagId) -> Result<(), String> {

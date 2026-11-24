@@ -327,6 +327,7 @@ pub mod method {
     pub const ANIM_DUPLICATE: &str = "anim.duplicate";
     pub const ANIM_KEY: &str = "anim.key";
     pub const ANIM_CHECK: &str = "anim.check";
+    pub const ANIM_SAVE: &str = "anim.save";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

@@ -543,8 +543,9 @@ After an `edit.set`, an `edit.batch` or an `edit.revert` applies,
 changed to the sink given by `Editor::with_tag_writes`
 (`crates/extensions/hot-tags/src/notice.rs`): the tag's group, datum and
 metadata allocation, the guest range from the first changed byte to past
-the last (a moved block's root pair included), each field write's span,
-and whether it was a revert. Unchanged bytes and refused batches send
+the last, each field write's span, and whether it was a revert. A
+moved block adds its root pair to the range and records the count and
+address the move displaced. Unchanged bytes and refused batches send
 nothing. The notice is sent with the guest still held, so a subscriber
 reads the new bytes and writes its own copy at the same boundary.
 `hot_glue::tag_written` hands each notice to the host copies:
@@ -552,7 +553,7 @@ reads the new bytes and writes its own copy at the same boundary.
 | Group | Subscriber | What it does |
 |---|---|---|
 | every tag | `native_edits::push(Edit::Tag)` | queues the tag for the native copies |
-| `jmad` | `engine::sim_anim::STORE.flush_range` | drops the clips keyed inside the tag's allocation; the next lookup decodes them from the guest |
+| `jmad` | `engine::sim_anim::STORE.flush_range` | drops the clips keyed in the graph's animation record array, including arrays displaced by a move or revert. The next lookup decodes them from the guest |
 | `nhdt` | `hud_kit::tag_written` | copies each retail widget block the range overlaps into the HUD kit's copy the root points at (`hud_kit::recopy`) |
 | `weap`, `matg` | `aim_assist::tag_written` | adopts each edited aim-assist field as retail; later activations leave it unscaled while it holds the edit's bits |
 | `sbsp` | `bots::cache::mark_stale` | marks the loaded bot data stale (`bots::cache::stale` says why) until the next map's data replaces it |
