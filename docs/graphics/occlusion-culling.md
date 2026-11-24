@@ -32,7 +32,8 @@ render_view_scene 0x0002ba10
                    (EAX 1 = 0x0054aa68); stores it to [0x004c0b80]; ret 0x1c
         0x00132b80   sets the mode: 0 portal flood 0x00173130 from the
                      start cluster (clusters with clipped frusta), 1 sphere
-                     0x00132d60, 2 everything 0x001733e0
+                     0x00132d60, 2 the start cluster's potentially
+                     visible set 0x001733e0 (native-visibility.md)
         0x00132220   gather: per visible cluster, both object
                      cluster-reference partitions -> 0x00133050 per object
       0x0003f33c..   appends the view's player unit to the object list
