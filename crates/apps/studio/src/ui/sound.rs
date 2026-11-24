@@ -398,7 +398,6 @@ fn body(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi, id: TagId, 
         }
         drop(off);
     }
-    }
     if let Some(p) = &st.problem {
         ui.text_colored(theme::ERROR, format!("{} {p}", icon::ALERT));
     }

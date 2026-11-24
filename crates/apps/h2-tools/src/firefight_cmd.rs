@@ -121,7 +121,7 @@ fn read_disc_map(disc: &std::path::Path, name: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("opening the disc {}", disc.display()))?
         .host_file(&format!("maps\\{name}.map"))
         .with_context(|| format!("{} has no maps/{name}.map", disc.display()))?;
-    MapSource::region(file.path, Some((file.offset, file.len))).read_base()
+    Ok(MapSource::region(file.path, Some((file.offset, file.len))).read_base()?)
 }
 
 fn parse(words: Vec<String>) -> Result<Option<Args>> {
