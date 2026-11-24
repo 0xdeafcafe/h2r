@@ -301,7 +301,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "screen_effect",
         entry: 0x0002_d140,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
@@ -1316,11 +1316,26 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                Status::D3d,
-                "{}: no fixed producer is replaced",
+                if r.name == "screen_effect" { Status::Partial } else { Status::D3d },
+                "{}",
                 r.name
             );
         }
+    }
+
+    #[test]
+    fn screen_effects_charge_claimed_and_guest_draws_to_the_partial_producer() {
+        let effect = Producer::Fixed(row("screen_effect").unwrap());
+        let mut c = open(true, 1);
+        c.frame_begin();
+        c.enter(effect);
+        c.call(&entry(DRAW, 0x1200, tally(3, 2, 1, 0)), None);
+        c.leave(|p| p == effect);
+        c.frame_end();
+        let report = close(c, 8);
+        let work = report.producers.unwrap()[&effect].work;
+        assert_eq!(effect.status(), Status::Partial);
+        assert_eq!((work.draws, work.claimed, work.residual), (3, 2, 1));
     }
 
     #[test]

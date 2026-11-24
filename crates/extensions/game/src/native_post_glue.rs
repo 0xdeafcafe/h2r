@@ -110,11 +110,10 @@ pub enum Missing {
     /// or that binds an engine texture the native pass does not supply
     /// ([`pass_drawable`]).
     TemplatePass,
-    /// A pass into target 1 (at the window's size, a half or a quarter)
-    /// that is the call's last, or has no size, or a convolution drawn
-    /// after the last pass: the native pass is issued into the target
-    /// bound at the last draw, which must be the call's.
+    /// A pass into target 1 without a usable guest size.
     PassTarget,
+    /// No strip draws to target 0, so the call cannot pin its view slot.
+    ViewTarget,
     /// A blur convolution (`0x000211a0`) without its quads' frame
     /// ([`quad_frame`]).
     Blur,
@@ -135,9 +134,10 @@ pub enum Missing {
 }
 
 impl Missing {
-    pub const ALL: [Missing; 6] = [
+    pub const ALL: [Missing; 7] = [
         Missing::TemplatePass,
         Missing::PassTarget,
+        Missing::ViewTarget,
         Missing::Blur,
         Missing::Wide,
         Missing::StandIns,
@@ -405,20 +405,15 @@ pub fn missing(
     blurs: bool,
 ) -> Vec<Missing> {
     let mut m = Vec::new();
-    let last = effect.passes.len().saturating_sub(1);
-    for (i, p) in effect.passes.iter().enumerate() {
+    if !effect.passes.is_empty() && !effect.passes.iter().any(|p| p.kind == 0) {
+        m.push(Missing::ViewTarget);
+    }
+    for p in &effect.passes {
         if !drawable(p) {
             m.push(Missing::TemplatePass);
         }
         let sized = matches!(dest(p), Some(Dest::Target1 { guest: (w, h) }) if w > 0 && h > 0);
-        if p.kind != 0 && (i == last || !sized) {
-            m.push(Missing::PassTarget);
-        }
-        // The native pass is issued at the call's last draw, into the
-        // target bound then: a convolution drawn after the last pass's
-        // strips would leave a stand-in bound.
-        let drawn = |c: &Convolution| !matches!(c, Convolution::Kept { .. });
-        if i == last && p.convolutions.iter().any(drawn) {
+        if p.kind != 0 && !sized {
             m.push(Missing::PassTarget);
         }
         for c in &p.convolutions {
@@ -447,7 +442,7 @@ pub fn missing(
 }
 
 /// The most corners a call's plan reads.
-pub const MAX_CORNERS: u32 = 64;
+pub use native_render::post::MAX_CORNERS;
 
 /// The plan of the call `c` and its values: its values and corners read,
 /// then `engine::screen_effect::plan`.
@@ -456,21 +451,9 @@ pub fn plan_effect(
     c: ScreenEffect,
     fp: Fp,
 ) -> Result<Option<(Effect, [u32; 4])>, String> {
-    let n = c
-        .columns
-        .checked_mul(c.rows)
-        .filter(|&n| n <= MAX_CORNERS)
-        .ok_or("too many corners")?;
-    let word = |a: u32| mem.u32(a).map_err(err("a value or corner"));
-    let mut values = [0u32; 4];
-    for (i, v) in values.iter_mut().enumerate() {
-        *v = word(c.values.wrapping_add(4 * i as u32))?;
-    }
-    let mut corners = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let at = c.corners.wrapping_add(16 * i);
-        corners.push([word(at)?, word(at + 4)?, word(at + 8)?, word(at + 12)?]);
-    }
+    let (values, corners) = native_render::post::screen_inputs(
+        &Ro(mem), c.values, c.corners, c.columns, c.rows,
+    )?;
     let effect = screen_effect::plan(
         mem,
         c.datum,
@@ -490,6 +473,22 @@ static EFFECT_REFUSED: [AtomicU64; Missing::ALL.len()] =
 static EFFECT_LOGGED: [AtomicBool; Missing::ALL.len()] =
     [const { AtomicBool::new(false) }; Missing::ALL.len()];
 static EFFECT_PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Screen-effect preflight refusals for the frame scene's counter map.
+pub(crate) fn refusal_counters() -> impl Iterator<Item = (String, u64)> {
+    Missing::ALL.into_iter().zip(&EFFECT_REFUSED).map(|(cause, count)| {
+        let name = match cause {
+            Missing::TemplatePass => "template_pass",
+            Missing::PassTarget => "pass_target",
+            Missing::ViewTarget => "view_target",
+            Missing::Blur => "blur",
+            Missing::Wide => "wide",
+            Missing::StandIns => "stand_ins",
+            Missing::TemplateSkipped => "template_skipped",
+        };
+        (format!("post_effect_refused_{name}"), count.load(Ordering::Relaxed))
+    })
+}
 
 /// A call refused for `m`: counted, and logged once per reason.
 fn refused(m: Missing) {
@@ -549,7 +548,7 @@ pub fn screen_call(
                 .collect();
             Some((
                 key,
-                dest(p).unwrap_or(Dest::Bound),
+                dest(p)?,
                 strips,
                 screen_convolutions(p, grid)?,
             ))
@@ -1921,8 +1920,7 @@ mod tests {
             vec![],
             "a kept one draws nothing"
         );
-        // Target 1, then back into the bound target: the native pass is
-        // issued at the last strip, into the call's target.
+        // Both destinations are pinned independently of their order.
         let into_1 = screen_effect::Pass {
             size: Some((320, 240)),
             ..pass(2, vec![])
@@ -1933,8 +1931,13 @@ mod tests {
         );
         assert_eq!(
             missing(&effect(vec![pass(0, vec![]), into_1.clone()]), yes, false),
-            vec![Missing::PassTarget],
+            vec![],
             "target 1 last"
+        );
+        assert_eq!(
+            missing(&effect(vec![into_1.clone()]), yes, false),
+            vec![Missing::ViewTarget],
+            "no strip pins the framebuffer slot"
         );
         let unsized_1 = screen_effect::Pass {
             size: Some((0, 240)),
@@ -2017,8 +2020,7 @@ mod tests {
             vec![],
             "drawn into the stand-ins"
         );
-        // A convolution drawn after the last pass would leave a stand-in
-        // bound for the native pass.
+        // A terminal convolution writes its own slot after the view strip.
         let first = || screen_effect::Pass {
             size: Some((320, 240)),
             ..pass(2, vec![])
@@ -2030,11 +2032,15 @@ mod tests {
                 vec![Convolution::Blur {
                     size: (320, 240),
                     args,
-                    blur: blur.clone(),
+                    blur: game_glow::Blur {
+                        draws: vec![game_glow::BlurDraw { source: 0, dest: 0x19, spread: 0 }],
+                        result: 0x19,
+                        copy: None,
+                    },
                 }],
             ),
         ]);
-        assert_eq!(missing(&last, yes, true), vec![Missing::PassTarget]);
+        assert_eq!(missing(&last, yes, true), vec![]);
         let kept_last = effect(vec![
             first(),
             pass(0, vec![Convolution::Kept { result: 0 }]),
@@ -2827,7 +2833,7 @@ mod tests {
         assert!(
             plan_effect(&m, unreadable, fp)
                 .unwrap_err()
-                .starts_with("a value or corner")
+                .starts_with("unreadable screen values")
         );
     }
 

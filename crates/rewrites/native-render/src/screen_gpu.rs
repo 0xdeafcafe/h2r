@@ -1328,10 +1328,17 @@ mod tests {
             convolutions: [None; 3],
             z_scale: 1.0,
         };
-        let draws = [draw((0, 0, 0), &red, &left[..], red.state.into()), draw((0, 0, 0), &blue, &right[..], blue.state.into())];
-        assert_eq!(ScreenSet::new().encode(target, &mut encoder, &draws, None, &mut |_| None), Ok(2));
+        let draws = [
+            ScreenDraw { dest: Dest::Bound, ..draw((0, 0, 0), &red, &left[..], red.state.into()) },
+            draw((0, 0, 0), &red, &left[..], red.state.into()),
+            draw((0, 0, 0), &blue, &right[..], blue.state.into()),
+        ];
+        assert_eq!(ScreenSet::new().encode(target, &mut encoder, &draws, None, &mut |_| None), Ok(3));
         arena.flush(&ctx.queue);
         ctx.queue.submit([encoder.finish()]);
+        let framebuffer = gfx::readback::read_texture(&ctx, &main, wgpu::TextureAspect::All, 4, size);
+        assert_eq!(&framebuffer[..4], [255, 0, 0, 0]);
+        assert_eq!(&framebuffer[28..32], [0; 4], "the terminal blue strip belongs to target 1");
         let px = gfx::readback::read_texture(&ctx, &level, wgpu::TextureAspect::All, 4, size);
         assert_eq!(&px[..4], [51, 102, 255, 204], "the second pass kept the first pass and its other channels");
         assert_eq!(&px[16..20], original, "the gap kept its existing pixels");
@@ -1407,17 +1414,22 @@ mod tests {
         let frame = QuadFrame { window: [0.0, 0.0, 8.0, 8.0], signs: [-0.5, 0.5], combiner };
         let mut opaque: StripRaster = back.state.into();
         opaque.opaque_view = true;
-        let draws = [
-            ScreenDraw {
-                key: (0, 0, 0), program: &copy, strips: &strips, raster: copy.state.into(),
-                dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &blur,
-            },
-            ScreenDraw {
-                key: (0, 1, 0), program: &back, strips: &strips, raster: opaque,
-                dest: Dest::Bound, values: [0; 4], convolutions: &[],
-            },
-        ];
-        let run = |prepared: bool| {
+        let tail = [ScreenConvolution {
+            size: (4, 4),
+            draws: vec![ConvolutionDraw { source: 0, dest: 0x19, spread: 0.0, grid: None }],
+            result: 0x19,
+        }];
+        let run = |prepared: bool, terminal: bool| {
+            let draws = [
+                ScreenDraw {
+                    key: (0, 0, 0), program: &copy, strips: &strips, raster: copy.state.into(),
+                    dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &blur,
+                },
+                ScreenDraw {
+                    key: (0, 1, 0), program: &back, strips: &strips, raster: opaque,
+                    dest: Dest::Bound, values: [0; 4], convolutions: if terminal { &tail } else { &[] },
+                },
+            ];
             let (color, target1, stand_in) = (texture(size), texture(size), texture((4, 4)));
             fill(&color, &view_pixels);
             fill(&target1, &[1, 2, 3, 4].repeat(64));
@@ -1437,7 +1449,7 @@ mod tests {
             let mut encoder = ctx.device.create_command_encoder(&Default::default());
             let ranges = if prepared {
                 let commands = set.prepare(target, &draws, Some(&frame), &mut |_| None).unwrap();
-                assert_eq!(commands.passes(), 4, "two passes, the quad and the opaque copy's alpha");
+                assert_eq!(commands.passes(), 4 + usize::from(terminal));
                 let mut scratch = ctx.device.create_command_encoder(&Default::default());
                 commands.record(&mut scratch);
                 drop(scratch.finish());
@@ -1450,10 +1462,15 @@ mod tests {
             ctx.queue.submit([encoder.finish()]);
             (ranges, read(&color), read(&target1), read(&stand_in))
         };
-        let (own, prepared) = (run(false), run(true));
+        let (own, prepared) = (run(false, false), run(true, false));
         assert_eq!(own, prepared);
         assert_eq!(own.0, 3, "two strips and a quad");
         assert_ne!(&own.1[..4], &view_pixels[..4], "the second pass drew over the view");
+        let terminal = run(true, true);
+        assert_eq!(terminal.0, 4);
+        assert_eq!(terminal.1, own.1, "the terminal quad preserves the framebuffer");
+        assert_eq!(terminal.2, own.2, "target 1 remains available to later draws");
+        assert_ne!(terminal.3, own.3, "the terminal quad updates the live stand-in");
     }
 
     #[test]
