@@ -66,6 +66,14 @@ are no team. The game holds no tag paths, so the host's census has no
 tags; no entry a host makes takes a tag. A test builds both from one
 fixture and asserts they are equal.
 
+**Code.** A script's `tag_int` and `tag_fixed` reads are checked beside
+the labels: `Runtime::start` and `Runtime::swap` run
+`rules::fields::check` against the loaded map's tag index
+(`world::map_tags`, read from the map file at `GAME_ACTIVATE`), and a
+tag or field the map or our definitions lack is a problem of the same
+block ([rules-world-api.md](rules-world-api.md#advanced-data)). The lobby's
+and Live's checks do not run it.
+
 ## Where it runs
 
 | Where | Function or hook | Census | On a problem |

@@ -610,8 +610,8 @@ pub const ENTRIES: &[Entry] = &[
     // naming it. A float field is rounded once to `fixed`. The host's
     // read of a tag instance from the loaded map is not built, so a host
     // refuses a script that calls either by name.
-    read(id::TAG_INT, "tag_int", &[Tag, Text], Int, NotBuilt),
-    read(id::TAG_FIXED, "tag_fixed", &[Tag, Text], Fixed, NotBuilt),
+    read(id::TAG_INT, "tag_int", &[Tag, Text], Int, Named),
+    read(id::TAG_FIXED, "tag_fixed", &[Tag, Text], Fixed, Named),
     // Actor state beyond what the agent API's `world.ai` snapshot reads is
     // not traced, so a host refuses a script that reads either by name.
     read(id::SQUAD_FIGHTING, "squad_fighting", &[Squad], Bool, Untraced),

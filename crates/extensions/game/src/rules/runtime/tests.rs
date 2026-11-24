@@ -21,6 +21,8 @@ mod gate;
 mod audio;
 /// Zones, the roster's events and loadouts.
 mod world;
+/// Tag reads: the gate's tag check and the host's read of a tag's data.
+mod tag_reads;
 /// A script game on the script index and its engine object.
 mod script_index;
 

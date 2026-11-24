@@ -58,7 +58,7 @@
 //! that is gone (a full restore) stops the script with a refusal.
 
 use std::collections::VecDeque;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use ::rules::caps::{self, Kind, Status as EntryStatus, id};
 use ::rules::ir::{Event, Ir, Op, TagGroup};
@@ -75,6 +75,7 @@ use variants::ext::{Ext, Mode};
 use super::census::{self, Table};
 use super::guest;
 use super::world::data;
+use super::world::map_tags::{self, TagIndex};
 use super::world::zones::{self, Change, Seen, Zones};
 use sim_state::SimEvent;
 use crate::firefight::runtime::read_players;
@@ -140,6 +141,12 @@ pub const READS: &[u16] = &[
     // An object's position and velocity (`super::world::objects`).
     id::OBJECT_POS,
     id::OBJECT_VEL,
+    // A unit's vitality (`super::world::data::vitality`).
+    id::OBJECT_HEALTH,
+    id::OBJECT_SHIELD,
+    // A field of a tag the map holds (`super::world::map_tags::read`).
+    id::TAG_INT,
+    id::TAG_FIXED,
 ];
 /// The action entries this runtime makes.
 pub const ACTIONS: &[u16] = &[
@@ -237,6 +244,12 @@ pub type LocalScripts = dyn Fn([u8; 8]) -> Option<Vec<u8>> + Send + Sync;
 /// script's label reads. In the game it is [`census::things`]: the loaded
 /// scenario's netgame flags and starting locations in guest memory.
 pub type CensusSource = dyn Fn(&dyn GuestMemory) -> Result<Vec<LabelledThing>, String> + Send + Sync;
+
+/// The loaded map's tag paths, for the start gate's tag reads and the
+/// script's `tag_int` and `tag_fixed`. In the game it is
+/// [`map_tags::current`]: the index read from the map file at
+/// `GAME_ACTIVATE`.
+pub type TagSource = dyn Fn() -> Arc<TagIndex> + Send + Sync;
 
 /// No fetch: refused by name.
 pub fn no_fetch(prefix: [u8; 8]) -> Result<Vec<u8>, String> {
@@ -603,6 +616,8 @@ pub struct GuestGame<'a> {
     /// The map's zones, for `inside` and `ticks_held`; none reads as a map
     /// with none (`super::world::zones`).
     pub zones: Option<&'a Zones>,
+    /// The map's tag paths, for `tag_int` and `tag_fixed`; none reads 0.
+    pub tags: Option<&'a TagIndex>,
 }
 
 impl<'a> GuestGame<'a> {
@@ -615,7 +630,14 @@ impl<'a> GuestGame<'a> {
             table: None,
             film: false,
             zones: None,
+            tags: None,
         }
+    }
+
+    /// The same game whose tag paths are `tags`.
+    pub fn with_tags(mut self, tags: &'a TagIndex) -> Self {
+        self.tags = Some(tags);
+        self
     }
 
     /// The same game whose zones are `zones`.
@@ -771,6 +793,21 @@ impl Game for GuestGame<'_> {
                 }),
                 _ => 0,
             },
+            // A field of a tag the map holds, from the tag's data in guest
+            // memory; a tag or field the map lacks reads 0 (the start gate
+            // blocked a script that names one).
+            id::TAG_INT | id::TAG_FIXED => match (call.args.first(), call.args.get(1), self.tags) {
+                (Some(Arg::Tag(Some(tag))), Some(Arg::Text(field)), Some(index)) => super::world::map_tags::read(
+                    m,
+                    index,
+                    tags::defs::Defs::builtin(),
+                    call.entry.id,
+                    tag,
+                    field,
+                )
+                .unwrap_or(0),
+                _ => 0,
+            },
             id::PLAYER_OF => match call.args.first() {
                 Some(Arg::Object(Some(o))) => zones::player_of(m, *o).map_or(::rules::ty::NONE, i32::from),
                 _ => ::rules::ty::NONE,
@@ -906,6 +943,9 @@ pub struct Running {
     /// against them again.
     census: ::rules::labels::Census,
     teams: Vec<u8>,
+    /// The map's tag paths at the start: a swapped-in script's tag reads
+    /// are checked against them, and the VM's reads go through them.
+    tags: Arc<TagIndex>,
     /// The `uses` script the record names, when `vm` runs the built-in it
     /// uses.
     pub carried: Option<Carried>,
@@ -968,6 +1008,25 @@ fn for_carried(carried: Option<&Carried>, running: &Ir, why: String) -> String {
     }
 }
 
+/// The problems the map's tags give a script's `tag_int` and `tag_fixed`
+/// reads (`::rules::fields::check`): a tag the map lacks, a group or field
+/// our definitions lack, a field of the wrong kind. A map whose tag paths
+/// could not be read is one problem for a script that reads any.
+fn tag_problems(ir: &Ir, index: &TagIndex) -> Vec<String> {
+    if ::rules::fields::uses(ir).is_empty() {
+        return Vec::new();
+    }
+    if index.is_empty() {
+        return vec![format!(
+            "the map's tag paths could not be read, and {} reads tag fields",
+            ir.header.name
+        )];
+    }
+    let defs = tags::defs::Defs::builtin();
+    let schema = data::DefsSchema { group: |tag: &str| index.definition(defs, tag) };
+    ::rules::fields::check(ir, &schema).into_iter().map(|p| p.text).collect()
+}
+
 /// Whether a script runs in this game, and why not.
 pub enum Status {
     Idle(&'static str),
@@ -1000,6 +1059,8 @@ pub struct Runtime {
     context: Context<'static>,
     /// The map's labelled things at a start.
     census: Box<CensusSource>,
+    /// The map's tag paths at a start.
+    tags: Box<TagSource>,
     /// This run plays a film back (Theater): the start gate does not run,
     /// since the film's host passed it.
     film: bool,
@@ -1074,6 +1135,7 @@ impl Runtime {
             fetch,
             context: Context::Custom,
             census: Box::new(census::things),
+            tags: Box::new(map_tags::current),
             film: false,
             forge: false,
             walled: false,
@@ -1091,6 +1153,12 @@ impl Runtime {
     /// The same runtime with `census` for the map's labelled things.
     pub fn with_census(mut self, census: Box<CensusSource>) -> Self {
         self.census = census;
+        self
+    }
+
+    /// The same runtime with `tags` for the map's tag paths.
+    pub fn with_tags(mut self, tags: Box<TagSource>) -> Self {
+        self.tags = tags;
         self
     }
 
@@ -1354,7 +1422,11 @@ impl Runtime {
         } else {
             Vec::new()
         };
-        let (things, problems) = self.gate(m, &ir, &teams);
+        let tags = (self.tags)();
+        let (things, mut problems) = self.gate(m, &ir, &teams);
+        if !self.film {
+            problems.extend(tag_problems(&ir, &tags));
+        }
         let table = Table::new(&things, &ir);
         if !problems.is_empty() {
             return self.block(hash, problems, table);
@@ -1397,6 +1469,7 @@ impl Runtime {
             let mut g = GuestGame::new(m, &mut pending)
                 .with_table(&table)
                 .with_zones(&zones)
+                .with_tags(&tags)
                 .with_film(self.film);
             // The first round began inside `GAME_ACTIVATE` (its round
             // reset, `ENGINE_ROUND_RESET`, ran before this observer), so
@@ -1431,6 +1504,7 @@ impl Runtime {
             seen: Seen::default(),
             census,
             teams,
+            tags,
             carried,
         };
         if let Err(why) = save(&mut running, &mut *self.store) {
@@ -1505,11 +1579,13 @@ impl Runtime {
                 pending,
                 table,
                 zones,
+                tags,
                 ..
             } = &mut **r;
             let mut g = GuestGame::new(m, pending)
                 .with_table(table)
                 .with_zones(zones)
+                .with_tags(tags)
                 .with_film(self.film);
             vm.flush_queue(&mut g);
         }
@@ -1580,11 +1656,13 @@ impl Runtime {
                 pending,
                 table,
                 zones,
+                tags,
                 ..
             } = &mut **r;
             let mut g = GuestGame::new(m, pending)
                 .with_table(table)
                 .with_zones(zones)
+                .with_tags(tags)
                 .with_film(self.film);
             f(vm, &mut g);
             (g.start_line, g.error)
@@ -1855,6 +1933,15 @@ impl Runtime {
                 return Err(format!(
                     "the map does not have what the script needs: {}",
                     texts.join("; ")
+                ));
+            }
+        }
+        if !film {
+            let problems = tag_problems(&ir, &r.tags);
+            if !problems.is_empty() {
+                return Err(format!(
+                    "the map does not have what the script needs: {}",
+                    problems.join("; ")
                 ));
             }
         }
