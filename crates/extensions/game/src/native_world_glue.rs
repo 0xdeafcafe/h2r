@@ -1518,9 +1518,7 @@ fn load_ready(
     let empty_lights = {
         let _scope = mem_watch::scope("native.lights.load");
         let _setup = Setup::Lights.worker();
-        let lights = if native.is_empty() { None } else {
-            crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, &accepts, decoder.palettes())
-        };
+        let lights = crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, decoder.palettes());
         if let Some(lights) = lights {
             let lights = Arc::new(lights);
             let set = lights.upload_engine_textures(&device, &queue);

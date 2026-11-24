@@ -3,6 +3,7 @@
 mod host;
 mod materials;
 pub mod models;
+mod residency;
 pub(crate) mod typed;
 pub mod walk;
 
@@ -1992,29 +1993,25 @@ impl LightsWorld {
     }
 }
 
-/// Whether `material` draws anything in layers 10 to 14 (first level of
-/// detail).
-fn lit_layers(material: &Material) -> bool {
-    material.layers.iter().any(|l| {
-        l.lod == 0
-            && matches!(
-                l.layer,
-                CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER | DIFFUSE_LAYER | SPECULAR_LAYER
-            )
-            && !l.passes.is_empty()
-    })
+/// Diffuse and specular dispatch select their pass from the sorted entry.
+/// The shadow pass resolvers use the first level of detail.
+fn light_layer(lod: usize, layer: usize) -> bool {
+    matches!(layer, DIFFUSE_LAYER | SPECULAR_LAYER)
+        || lod == 0 && matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER)
 }
 
-/// At load, before the world drops the materials left to D3D: the lights'
-/// part of `world` (`shaders` the BSP's shader per material, `native` the
-/// materials the native world draws). `None` when the shader tags do not
+fn lit_layers(material: &Material) -> bool {
+    material.layers.iter().any(|l| light_layer(l.lod, l.layer) && !l.passes.is_empty())
+}
+
+/// Load light programs and their geometry from the complete BSP.
+/// `shaders` gives the full shader datum of each material. `None` when the shader tags do not
 /// read. Says on stderr what loaded.
 pub fn load<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
     shaders: &[TagId],
     world: &World,
-    native: &dyn Fn(&WorldDraw) -> bool,
     palettes: &StagePalettes,
 ) -> Option<LightsWorld> {
     let mut lib = match ShaderLibrary::read(map) {
@@ -2032,50 +2029,31 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let mut palettized = HashSet::new();
     // Each material once, with default inputs: what any light's pass may
     // need that does not depend on the light (programs, bitmaps).
-    let native_materials: HashSet<_> = world
-        .draws
-        .iter()
-        .filter(|d| native(d))
-        .map(|d| d.material)
-        .collect();
-    let mut lit_of: HashMap<u16, Option<bool>> = HashMap::new();
+    let mut lit_shaders = HashMap::new();
     let mut ids: Vec<u16> = world.materials();
     ids.extend(world.transparent_materials());
     ids.sort_unstable();
     ids.dedup();
     for m in ids {
         let Some(&shader) = shaders.get(usize::from(m)) else {
-            lit_of.insert(m, None);
             continue;
         };
         let Ok(instance) = lib.shader(shader).map(|s| EngineInputs::for_shader(&s)) else {
-            lit_of.insert(m, None);
             continue;
         };
         let Ok(material) = lib.material(shader, None) else {
-            lit_of.insert(m, None);
             continue;
         };
         let lit = lit_layers(&material);
-        lit_of.insert(m, Some(lit));
         materials.insert(m, LitMaterial { shader, instance });
-        if !lit || !native_materials.contains(&m) {
+        if !lit {
             continue;
         }
+        lit_shaders.insert(m, shader);
         for imp in material
             .layers
             .iter()
-            .filter(|l| {
-                l.lod == 0
-                    && matches!(
-                        l.layer,
-                        CASTER_LAYER
-                            | RECEIVER_LAYER
-                            | OPACITY_LAYER
-                            | DIFFUSE_LAYER
-                            | SPECULAR_LAYER
-                    )
-            })
+            .filter(|l| light_layer(l.lod, l.layer))
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
         {
@@ -2102,58 +2080,16 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             }
         }
     }
-    // Opaque parts of native materials are drawn; any other surface that
-    // has (or may have) lit layers keeps the lights meeting it on D3D.
-    let mut clusters = HashMap::new();
-    // Why each surface is left to D3D: opaque and drawn by D3D (the world
-    // left its material there), opaque with a shader that does not read,
-    // transparent with lit layers, transparent with a shader that does not
-    // read.
-    let mut why = [0usize; 4];
-    for d in &world.draws {
-        match lit_of.get(&d.material).copied().flatten() {
-            Some(true)
-                if native(d) && matches!(d.owner, Owner::Cluster(_) | Owner::Instance(_)) =>
-            {
-                clusters.insert((d.owner, d.part), (shaders[usize::from(d.material)], *d));
-            }
-            Some(false) => {}
-            Some(true) => {
-                why[0] += 1;
-            }
-            None => {
-                why[1] += 1;
-            }
-        }
-    }
-    for t in &world.transparents {
-        match lit_of.get(&t.material).copied().flatten() {
-            Some(false) => {}
-            Some(true) => {
-                why[2] += 1;
-            }
-            None => {
-                why[3] += 1;
-            }
-        }
-    }
+    let (clusters, unread) = residency::structure_parts(world, &lit_shaders, &materials);
     let (normalization, attenuation) = light_textures(map, lib.metadata(), files);
     let gels = gels(map, &lib, files);
     eprintln!(
-        "native-lights: {} lit parts, {} surfaces left to D3D ({} opaque D3D draws, {} opaque unread shaders, {} transparent lit, {} transparent unread; a whole light containing one stays on D3D), {} vertex programs, {} stage images, {} gels",
+        "native-lights: {} resident lit structure parts, {unread} structure parts with unread materials, {} vertex programs, {} stage images, {} gels",
         clusters.len(),
-        why.iter().sum::<usize>(),
-        why[0],
-        why[1],
-        why[2],
-        why[3],
         microcode.len(),
         images.len(),
         gels.len()
     );
-    if clusters.is_empty() {
-        return None;
-    }
     Some(LightsWorld {
         resolver: materials::Resolver::new(lib, microcode),
         materials,
