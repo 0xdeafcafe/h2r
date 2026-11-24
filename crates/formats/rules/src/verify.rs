@@ -108,6 +108,8 @@ pub enum Fault {
     Label(u16),
     #[error("label {0} names starting locations, which a loop cannot visit")]
     SpawnSet(u16),
+    #[error("label {0} names a flight path, whose points a loop cannot visit")]
+    PathSet(u16),
     #[error("API entry {0} does not exist in this API version")]
     Entry(u16),
     #[error("{entry} takes {want} arguments, given {got}")]
@@ -655,6 +657,17 @@ fn labels(list: &[LabelDef]) -> Result<(), Refusal> {
         if l.kind == LabelKind::Spawn && (l.single() || l.per_team()) {
             return bad("starting locations are a set with no per team");
         }
+        if l.kind == LabelKind::Path {
+            // A flight visits point 0, 1, 2 ... of a set the gate has
+            // checked (`labels::check`): at least two points, numbered
+            // with no range to state, no team.
+            if l.single() || l.per_team() || l.range().is_some() {
+                return bad("a path is a set of numbered points with no per team and no number range");
+            }
+            if !l.numbered() || l.min < 2 {
+                return bad("a path is numbered and needs at least 2 points");
+            }
+        }
         match l.range() {
             Some(_) if !l.numbered() => return bad("a number range needs numbered"),
             Some(_) if l.lo > l.hi => return bad("its number range is not ordered"),
@@ -850,6 +863,9 @@ impl Cx<'_> {
                     let def = self.ir.labels.get(l as usize).ok_or(Fault::Label(l))?;
                     if def.kind == LabelKind::Spawn {
                         return Err(Fault::SpawnSet(l));
+                    }
+                    if def.kind == LabelKind::Path {
+                        return Err(Fault::PathSet(l));
                     }
                 }
                 if let Some(n) = set.pick {
@@ -1516,6 +1532,68 @@ mod tests {
                 pc: 4,
                 fault: Fault::SpawnSet(0)
             })
+        );
+    }
+
+    #[test]
+    fn a_loop_cannot_visit_a_flight_path() {
+        let mut ir = sample();
+        ir.labels[0] = LabelDef {
+            kind: LabelKind::Path,
+            min: 2,
+            flags: crate::ir::label_flags::NUMBERED,
+            ..LabelDef::objects(ir.labels[0].text.clone())
+        };
+        assert_eq!(
+            verify(&ir),
+            Err(Refusal::Op {
+                handler: 0,
+                pc: 4,
+                fault: Fault::PathSet(0)
+            })
+        );
+    }
+
+    #[test]
+    fn a_path_label_is_a_numbered_set_of_at_least_two_points() {
+        use crate::ir::label_flags::*;
+        let refuse = |f: &dyn Fn(&mut LabelDef)| {
+            let mut ir = sample();
+            ir.labels[1] = LabelDef {
+                kind: LabelKind::Path,
+                min: 2,
+                flags: NUMBERED,
+                ..LabelDef::objects(ir.labels[1].text.clone())
+            };
+            f(&mut ir.labels[1]);
+            verify(&ir)
+        };
+        assert!(refuse(&|_| {}).is_ok());
+        let label = |reason| Err(Refusal::Label { index: 1, reason });
+        assert_eq!(
+            refuse(&|l| l.min = 1),
+            label("a path is numbered and needs at least 2 points")
+        );
+        assert_eq!(
+            refuse(&|l| l.flags = 0),
+            label("a path is numbered and needs at least 2 points")
+        );
+        let reason = "a path is a set of numbered points with no per team and no number range";
+        assert_eq!(refuse(&|l| l.flags |= PER_TEAM), label(reason));
+        assert_eq!(
+            refuse(&|l| {
+                l.flags |= RANGE;
+                l.hi = 3;
+            }),
+            label(reason)
+        );
+        assert_eq!(
+            refuse(&|l| {
+                l.flags = SINGLE;
+                l.max = 1;
+                l.min = 1;
+            }),
+            label(reason)
         );
     }
 

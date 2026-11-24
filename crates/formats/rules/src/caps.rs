@@ -58,6 +58,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("objects.delete", "removes objects", false),
     cap("objects.move", "moves objects", false),
     cap("ai.squads", "places and commands AI", false),
+    cap("vehicles.drive", "flies and loads vehicles", false),
     cap("bots.orders", "gives bots orders", false),
     cap("hud.message", "shows messages", false),
     cap(
@@ -216,7 +217,7 @@ use self::Order::{Now, Queued};
 /// The carriers of the entries one engine's routine makes.
 const ON_ODDBALL: &[u8] = &[3];
 
-use self::Status::{Named, Traced, Untraced};
+use self::Status::{Named, NotBuilt, Traced, Untraced};
 use crate::ty::Ty::{Bool, Class, Fixed, Int, Label, Object, Player, Squad, Tag, Team, Text};
 
 pub mod id {
@@ -300,6 +301,14 @@ pub mod id {
     pub const SET_BODY: u16 = 76;
     pub const SHOW_AREA: u16 = 77;
     pub const HIDE_AREA: u16 = 78;
+    pub const FLY: u16 = 79;
+    pub const HOVER: u16 = 80;
+    pub const SEAT: u16 = 81;
+    pub const EJECT: u16 = 82;
+    pub const PLACE_SQUAD_IN: u16 = 83;
+    pub const UNLOAD: u16 = 84;
+    pub const VEHICLE_RIDERS: u16 = 85;
+    pub const VEHICLE_DRIVER: u16 = 86;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -471,6 +480,42 @@ pub const ENTRIES: &[Entry] = &[
     // (`game::rules::world::walls`). A display only, so no capability.
     act(id::SHOW_AREA, "show_area", &[Object, Team], None, Now, Named),
     act(id::HIDE_AREA, "hide_area", &[Object], None, Now, Named),
+    // Vehicles and drop ships (docs/game/rules-world-api.md, "Vehicles and
+    // drop ships"). The vehicle is an `object` a host checks at the call:
+    // one that is no vehicle is a refused call. No entry here is named
+    // yet, so a host refuses a script that calls one, by name
+    // (`runtime::unhostable_refusal`); the fake models them all.
+    //
+    // `fly(v, path, t)`: the vehicle moves along the `path` label's points
+    // in number order in `t` ticks, facing the tangent of its segment
+    // (`crate::vehicles::Flight`). It is the world API's mover on a
+    // vehicle, which is not built, and whether a vehicle's Havok body
+    // accepts a transform every tick without fighting it is not read (R7).
+    act(id::FLY, "fly", &[Object, Label, Int], Some("vehicles.drive"), Queued, NotBuilt),
+    // `hover(v, on)`: holds the vehicle where it is. `vehicle_hover` is
+    // known by its evaluator number only (docs/halo1/scripts.md).
+    act(id::HOVER, "hover", &[Object, Bool], Some("vehicles.drive"), Queued, Untraced),
+    // `seat(p, v)` and `eject(p)`: the player's unit enters the vehicle's
+    // first free seat (the driver's first) and leaves it. The vehicle
+    // entry routine `0x11ade0` behind `unit_enter_vehicle` (`0x2a3ad0`) and
+    // the biped action `0x1e` of the teleport path (`0xe68c0`) are
+    // addresses in a doc, not points.
+    act(id::SEAT, "seat", &[Player, Object], Some("vehicles.drive"), Queued, Traced),
+    act(id::EJECT, "eject", &[Player], Some("vehicles.drive"), Queued, Traced),
+    // `place_squad_in(s, class, n, v)`: `place_squad` with the squad's
+    // actors put in the vehicle's free seats, at most as many as there are
+    // (loading is the vehicles capability's, not the squads').
+    // `AI_SQUAD_PLACE` (`0x201520`) has a seat attempt behind its third
+    // stack word; which vehicle it tries is not read (R6).
+    act(id::PLACE_SQUAD_IN, "place_squad_in", &[Squad, Class, Int, Object], Some("vehicles.drive"), Queued, Traced),
+    // `unload(v)`: everyone aboard leaves. `vehicle_unload` is not traced
+    // (R6).
+    act(id::UNLOAD, "unload", &[Object], Some("vehicles.drive"), Queued, Untraced),
+    // What is aboard (the driver and every rider, players and AI) and the
+    // driver's player, or none: the unit's seat list (`UNIT_SEATS_BEGIN`
+    // `0xd0620`, `UNIT_SEATS_NEXT` `0xd0690`). A non-vehicle has none.
+    read(id::VEHICLE_RIDERS, "vehicle_riders", &[Object], Int, Traced),
+    read(id::VEHICLE_DRIVER, "vehicle_driver", &[Object], Player, Traced),
 ];
 
 /// The word `message(to, text)` takes for everyone.

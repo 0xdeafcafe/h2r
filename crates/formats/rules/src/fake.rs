@@ -76,7 +76,75 @@ pub struct FakeGame {
     /// a zone object and the team of its wall's colour, in the order first
     /// shown (`vm::RulesExt::shown`).
     pub shown: Vec<(u32, Option<u8>)>,
+    /// The tick [`FakeGame::begin_tick`] last began: a flight starts on it.
+    pub tick: u32,
+    /// Where placed objects are, in 16.16 world units: a path's points,
+    /// and a vehicle as it flies.
+    pub object_at: BTreeMap<u32, crate::vehicles::Vec3>,
+    /// Which way a flying vehicle faces: the unit tangent of its path.
+    pub facing: BTreeMap<u32, crate::vehicles::Vec3>,
+    /// The vehicles of the map, by object; any other object is no vehicle
+    /// and a vehicle entry called on it is refused.
+    pub vehicles: BTreeMap<u32, FakeVehicle>,
+    /// Objects whose flight ended since [`FakeGame::take_arrived`], in the
+    /// order they ended: what the world API's `on arrive` reports.
+    pub arrived: Vec<u32>,
+    /// Squads put in vehicles that were then unloaded: `(vehicle, squad,
+    /// actors)`, in call order.
+    pub unloaded: Vec<(u32, u8, u8)>,
+    /// Calls the game refused, as `(entry name, why)`; each is in
+    /// [`FakeGame::calls`] too and changed nothing.
+    pub refused: Vec<(&'static str, &'static str)>,
     pub script_error: Option<ScriptError>,
+}
+
+/// A vehicle of the fake game: its seats and what is in them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FakeVehicle {
+    /// The seats, the driver's included.
+    pub seats: u8,
+    pub driver: Option<u8>,
+    /// Players in the other seats, in the order they boarded.
+    pub riders: Vec<u8>,
+    /// Squads placed in it: `(squad, actors)`, one seat for each actor.
+    pub squads: Vec<(u8, u8)>,
+    /// `hover(v, true)`.
+    pub hovering: bool,
+    /// The flight in progress, if any.
+    pub flight: Option<crate::vehicles::Flight>,
+}
+
+impl FakeVehicle {
+    /// A parked vehicle with `seats` seats, all free.
+    pub fn new(seats: u8) -> FakeVehicle {
+        FakeVehicle {
+            seats,
+            driver: None,
+            riders: Vec::new(),
+            squads: Vec::new(),
+            hovering: false,
+            flight: None,
+        }
+    }
+
+    /// Everyone aboard: the driver, the other players and every actor.
+    pub fn aboard(&self) -> i32 {
+        i32::from(self.driver.is_some())
+            + self.riders.len() as i32
+            + self.squads.iter().map(|&(_, n)| i32::from(n)).sum::<i32>()
+    }
+
+    /// Seats nobody is in.
+    pub fn free(&self) -> i32 {
+        (i32::from(self.seats) - self.aboard()).max(0)
+    }
+
+    fn leave(&mut self, p: u8) {
+        if self.driver == Some(p) {
+            self.driver = None;
+        }
+        self.riders.retain(|&r| r != p);
+    }
 }
 
 /// The two ways a type announces itself on the host.
@@ -273,14 +341,169 @@ impl FakeGame {
 
     /// A new tick begins: the round clock counts down one, to 0.
     pub fn begin_tick(&mut self, tick: u32) {
+        self.tick = tick;
         if tick > 0 {
             self.round_time_left = (self.round_time_left - 1).max(0);
         }
+        self.fly(tick);
+    }
+
+    /// Moves each flying vehicle to where its path puts it at `tick`,
+    /// facing the tangent; a flight that has run its ticks ends there and
+    /// the vehicle is reported by [`FakeGame::take_arrived`], in object
+    /// order.
+    fn fly(&mut self, tick: u32) {
+        for (&object, v) in &mut self.vehicles {
+            let Some(flight) = &v.flight else { continue };
+            let pose = flight.at(tick);
+            self.object_at.insert(object, pose.position);
+            self.facing.insert(object, pose.facing);
+            if flight.done(tick) {
+                v.flight = None;
+                self.arrived.push(object);
+            }
+        }
+    }
+
+    /// The objects whose flight ended since the last call: the scenario
+    /// layer reports each as the world API's `on arrive`.
+    pub fn take_arrived(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.arrived)
+    }
+
+    /// Puts a parked vehicle of `seats` seats at `object`.
+    pub fn add_vehicle(&mut self, object: u32, seats: u8, at: crate::vehicles::Vec3) {
+        self.vehicles.insert(object, FakeVehicle::new(seats));
+        self.object_at.insert(object, at);
+    }
+
+    /// The vehicle player `p` is aboard.
+    pub fn vehicle_of(&self, p: u8) -> Option<u32> {
+        self.vehicles
+            .iter()
+            .find(|(_, v)| v.driver == Some(p) || v.riders.contains(&p))
+            .map(|(&o, _)| o)
+    }
+
+    /// The points of the `path` label in number order, as positions;
+    /// `None` when a point has none placed.
+    fn path_points(&self, label: &str) -> Option<Vec<crate::vehicles::Vec3>> {
+        let mut points: Vec<(i32, u32)> = self
+            .labelled
+            .get(label)?
+            .iter()
+            .map(|p| (self.numbers.get(&p.object).copied().unwrap_or(0), p.object))
+            .collect();
+        points.sort_unstable();
+        points.iter().map(|(_, o)| self.object_at.get(o).copied()).collect()
+    }
+
+    /// A vehicle entry: the call's effect on the vehicles, or the reason
+    /// the game refuses it (a vehicle entry through a handle that is no
+    /// vehicle, a flight with no path, a seat that does not exist). A
+    /// refused call changes nothing.
+    fn drive(&mut self, call: &Call) -> Result<(), &'static str> {
+        let object = |i: usize| match call.args.get(i) {
+            Some(Arg::Object(Some(o))) => Some(*o),
+            _ => None,
+        };
+        let player = |i: usize| match call.args.get(i) {
+            Some(Arg::Player(Some(p))) => Some(*p),
+            _ => None,
+        };
+        match call.entry.id {
+            id::FLY => {
+                let (Some(o), Some(Arg::Label(label)), Some(&Arg::Int(ticks))) =
+                    (object(0), call.args.get(1), call.args.get(2))
+                else {
+                    return Err("no vehicle");
+                };
+                if !self.vehicles.contains_key(&o) {
+                    return Err("not a vehicle");
+                }
+                let ticks = u32::try_from(ticks).ok().filter(|&t| t > 0).ok_or("a flight takes at least 1 tick")?;
+                let points = self.path_points(label).ok_or("a point of the path is not placed")?;
+                let flight = crate::vehicles::Flight::new(points, self.tick, ticks).map_err(|e| match e {
+                    crate::vehicles::Refusal::TooFewPoints => "a path has at least 2 points",
+                    crate::vehicles::Refusal::TooManyPoints => "a path has too many points",
+                    crate::vehicles::Refusal::NoTicks => "a flight takes at least 1 tick",
+                })?;
+                self.vehicles.get_mut(&o).ok_or("not a vehicle")?.flight = Some(flight);
+            }
+            id::HOVER => {
+                let (Some(o), Some(&Arg::Bool(on))) = (object(0), call.args.get(1)) else {
+                    return Err("no vehicle");
+                };
+                self.vehicles.get_mut(&o).ok_or("not a vehicle")?.hovering = on;
+            }
+            id::SEAT => {
+                let (Some(p), Some(o)) = (player(0), object(1)) else {
+                    return Err("no player or vehicle");
+                };
+                if !self.players.get(&p).is_some_and(|q| q.alive) {
+                    return Err("the player is not alive");
+                }
+                let v = self.vehicles.get(&o).ok_or("not a vehicle")?;
+                // Boarding the vehicle the player is already in changes
+                // nothing; another vehicle must have a seat before the
+                // player leaves the first.
+                if v.driver == Some(p) || v.riders.contains(&p) {
+                    return Ok(());
+                }
+                if v.free() == 0 {
+                    return Err("the vehicle has no free seat");
+                }
+                for other in self.vehicles.values_mut() {
+                    other.leave(p);
+                }
+                if let Some(v) = self.vehicles.get_mut(&o) {
+                    if v.driver.is_none() {
+                        v.driver = Some(p);
+                    } else {
+                        v.riders.push(p);
+                    }
+                }
+            }
+            id::EJECT => {
+                let Some(p) = player(0) else {
+                    return Err("no player");
+                };
+                for v in self.vehicles.values_mut() {
+                    v.leave(p);
+                }
+            }
+            id::UNLOAD => {
+                let o = object(0).ok_or("no vehicle")?;
+                let v = self.vehicles.get_mut(&o).ok_or("not a vehicle")?;
+                v.driver = None;
+                v.riders.clear();
+                for (squad, n) in std::mem::take(&mut v.squads) {
+                    self.unloaded.push((o, squad, n));
+                }
+            }
+            id::PLACE_SQUAD_IN => {
+                let (Some(&Arg::Squad(s)), Some(&Arg::Int(n)), Some(o)) = (call.args.first(), call.args.get(2), object(3))
+                else {
+                    return Err("no squad or vehicle");
+                };
+                if n <= 0 {
+                    return Err("a squad is at least 1 actor");
+                }
+                let v = self.vehicles.get_mut(&o).ok_or("not a vehicle")?;
+                let n = u8::try_from(n.min(v.free())).ok().filter(|&n| n > 0).ok_or("the vehicle has no free seat")?;
+                v.squads.push((s, n));
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// A dead or departed player stands in no zone and carries nothing.
     fn down(&mut self, p: u8) {
         self.inside.retain(|&(q, _)| q != p);
+        for v in self.vehicles.values_mut() {
+            v.leave(p);
+        }
         for carrier in self.objectives.values_mut() {
             if *carrier == Some(p) {
                 *carrier = None;
@@ -488,6 +711,13 @@ impl Game for FakeGame {
             id::PLAYER_OF => object(0)
                 .and_then(|o| self.units.get(&o))
                 .map_or(-1, |&p| i32::from(p)),
+            id::VEHICLE_RIDERS => object(0)
+                .and_then(|o| self.vehicles.get(&o))
+                .map_or(0, FakeVehicle::aboard),
+            id::VEHICLE_DRIVER => object(0)
+                .and_then(|o| self.vehicles.get(&o))
+                .and_then(|v| v.driver)
+                .map_or(-1, i32::from),
             id::LABEL_NUMBER => object(0).and_then(|o| self.numbers.get(&o).copied()).unwrap_or(0),
             id::INSIDE => match (call.args.first(), object(1)) {
                 (Some(Arg::Player(Some(p))), Some(z)) => self.living_inside(*p, z) as i32,
@@ -522,6 +752,15 @@ impl Game for FakeGame {
         if crate::caps::is_message(call.entry.id) {
             let message = FakeMessage::of(self, call);
             self.messages.extend(message);
+            return;
+        }
+        if matches!(
+            call.entry.id,
+            id::FLY | id::HOVER | id::SEAT | id::EJECT | id::UNLOAD | id::PLACE_SQUAD_IN
+        ) {
+            if let Err(why) = self.drive(call) {
+                self.refused.push((call.entry.name, why));
+            }
             return;
         }
         if call.entry.id == id::REGISTER_OBJECTIVE

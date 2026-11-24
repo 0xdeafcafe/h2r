@@ -290,6 +290,26 @@ fn a_script_naming_a_weapon_off_the_list_is_refused_by_its_path() {
     assert!(why.contains("set_loadout"), "{why}");
 }
 
+/// The vehicle entries are not named points yet: a host refuses a script
+/// that calls one, by name and by why (docs/game/rules-world-api.md,
+/// "Vehicles and drop ships"), before its game starts.
+#[test]
+fn a_script_that_flies_a_ship_is_refused_by_the_entry_it_calls() {
+    for (name, call, status) in [
+        ("fly", "fly(ship, run_in, 10t)", "not built"),
+        ("unload", "unload(ship)", "untraced"),
+        ("hover", "hover(ship, true)", "untraced"),
+        ("eject", "if let p = first(players q) { eject(p) }", "traced but not a named point"),
+    ] {
+        let src = format!(
+            "rules \"Drop\" 1\ntype slayer\nrequires vehicles.drive\nlabel ship: object\nlabel run_in: path\non tick {{ {call} }}\n"
+        );
+        let ir = ::rules::compile(&src).unwrap_or_else(|e| panic!("{call}: {e:?}"));
+        let why = host_refusal(&ir).unwrap();
+        assert!(why.contains(name) && why.contains(status), "{call}: {why}");
+    }
+}
+
 /// Every listed script a host scores runs here: none is listed only to be
 /// refused when the game starts.
 #[test]

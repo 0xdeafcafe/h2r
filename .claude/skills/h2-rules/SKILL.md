@@ -132,7 +132,7 @@ own powers.
 The fixed list (`h2 rules caps`): `game.traits`, `player.traits`,
 `player.team`, `player.spawn`, `player.weapons`, `player.disguise`,
 `player.camera`, `objects.create`, `objects.delete`, `objects.move`,
-`ai.squads`, `hud.message`, `firefight.director`, and the four
+`ai.squads`, `vehicles.drive`, `hud.message`, `firefight.director`, and the four
 **grantable** `forge.move`, `forge.delete`, `forge.place`, `forge.scale`.
 
 - Only a `forge.*` capability can be given to a player:
@@ -424,6 +424,15 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   (Superbounce, Siege, Gun Game, Race, VIP) run on a host; the rest is
   proven by scenario. Name the entries
   your script waits on in a comment at the top, as the built-ins do.
+- **Vehicles and drop ships.** `label run_in: path` is a flight: at least
+  two placements numbered from 0, none missing and none twice (a gap
+  blocks the start, naming the number). `fly(ship, run_in, 12s)` flies it
+  in the stated ticks facing its tangent; `seat`, `eject`, `unload`,
+  `place_squad_in(s, class, n, ship)` and `vehicle_riders` and
+  `vehicle_driver` load and read it. All of them run on the fake game and
+  a host refuses a script that calls one, by name, until the research in
+  docs/game/rules-world-api.md ("Vehicles and drop ships") names them.
+  A vehicle entry on an object that is no vehicle is a refused call.
 - **`message(to, text)`.** `to` is a player, a team or `all`; `h2 rules
   caps` lists the three forms under the one name. The text may hold up
   to four `{name}` holes (a player, team, int, time or enum in scope;

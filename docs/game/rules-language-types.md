@@ -65,6 +65,7 @@ the compiler cannot disagree.
 | `timer` | a global variable's type; it reads and writes as `time` | `Timer` |
 | `T?` | `T` or `none`, for `player`, `team`, `object`, `zone`, `tag`, `weapon` | the IR type of `T` |
 | `objects`, `zones`, `spawns`, `players`, `teams` | sets: not values, used where a set is read | none (`SetBase`) |
+| label kind `path` | a flight path: points numbered from 0, passed to `fly` and nowhere else | a label (`LabelKind::Path`) |
 
 Three conversions are implicit and nothing else is: `zone` to `object`,
 `weapon` to `tag`, and `T` to `T?`. A whole-number literal reads as
@@ -94,6 +95,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `set_body(t, body)` | `team, tag?` (`none` gives the players their own) |
 | `show_area(z, t)`, `hide_area(z)` | `zone, team?` (`none` is neutral); `zone` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
+| `fly(v, p, t)` | `object, path, time`; the vehicle is an `object` the host checks, since `vehicle` is not a front-end type ([rules-world-api.md](rules-world-api.md#vehicles-and-drop-ships)) |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |
 | `on enter(z, o)`, `on leave(z, o)`, `on bounce(p, spot, chain, monster)` | `zone, object`; `player, zone, int, bool` |
@@ -131,6 +133,7 @@ identifier and is the map's label text unless `= "..."` gives another
 | `object?`, `zone?` | one value or `none` | none or one |
 | `objects`, `zones` | a set | any number, unless a requirement says otherwise |
 | `spawns` | a set of starting locations, with no members to visit | any number, unless a requirement says otherwise |
+| `path` | the points of a flight, with no members to visit; passed to `fly` | at least 2, numbered from 0 with none missing and none twice; a count requirement may raise the least or state a most |
 
 | Requirement | On | Meaning |
 |---|---|---|
@@ -138,6 +141,14 @@ identifier and is the map's label text unless `= "..."` gives another
 | `numbered` | a set | every member has a number |
 | `numbered a..b` | a set | every member's number is in `a..b`, and each number in it has at least one member |
 | `per team` | `objects`, `zones` | each team in play has at least one member whose team it is |
+
+A `path` is numbered already: `numbered`, `per team` and `path?` are
+declaration errors, and a count below 2 is raised to 2. The start gate
+(`labels::check`) names the first number missing below the path's last
+(`ProblemKind::PathGap`), a number used twice (`PathDuplicate`) and a point
+with no number, so a hole in a flight blocks the start instead of
+skipping a leg. A path's points are objects of the map (any placement but
+a starting location); where each is comes from the map at run time.
 
 A label's kind is checked against the placement's class, which the map
 decides and the label does not store:
@@ -148,6 +159,7 @@ decides and the label does not store:
 | flag | a netgame flag, with its own label or the built-in one for its type (`forge_doc::builtin_label`) | `object`, `zone` |
 | volume | a Forge trigger volume | `object`, `zone` |
 | spawn | a starting location | `spawns` |
+| object, flag or volume, numbered | a point of a flight | `path` |
 
 Squads, emitters and devices get kinds of their own when a script can
 act on one; the kind byte has room.
@@ -183,7 +195,8 @@ into the event's one IR handler, in source order, each body under
 stands. A handler may leave trailing arguments unnamed: `on enter(goal)`.
 
 **A fn takes a set** when its parameter's type is `objects`, `zones` or
-`spawns`; the argument is a label's name. Functions are inlined, so the
+`spawns`; the argument is a label's name. (A `path` parameter is not
+built: `fly` takes a label directly.) Functions are inlined, so the
 set is still a constant index. Sets are not variables or table columns.
 
 A label is named only by its declaration. `objects labelled "x"`,
@@ -488,7 +501,7 @@ numbered.
 | `label.set-as-one` | `barrier is a set of objects, and delete takes one. Loop with "for each barrier b", or take one with first(barrier) or barrier[n].` | Wrap in `for each` |
 | `label.one-as-set` | `goal is one zone, not a set. Use it directly, or declare it as zones.` | Change the declaration to `zones` |
 | `label.kind` | `core is an object, and inside takes a zone. If the map's core is a volume, declare it "label core: zone".` | Change the declaration to `zone` |
-| `label.spawns` | `attack names spawn areas, which have no objects to visit. Pass it to spawn_areas.` | none |
+| `label.spawns` | `attack names spawn areas, which have no objects to visit. Pass it to spawn_areas.`; `run_in names a flight path, whose points are not objects to visit. Pass it to fly.` | none |
 | `label.index` | `barrier is not numbered, so barrier[n] has no meaning. Add "numbered" to its declaration.` | Add `numbered` |
 | `label.same-text` | `capture and zone both name the map label "zone". Keep one.` | none |
 | `label.unused` (warning) | `label core is declared but never used; a map would still need one.` | Remove the declaration |
@@ -647,7 +660,7 @@ does not verify.
 
 | Table | Holds, in encoding order |
 |---|---|
-| label (`LabelDef`) | text (a string); kind, a byte (`LabelKind`: 1 object, 2 zone, 3 spawn); `min` and `max` members, two `u16`s, `max` at most 256 (`ty::MAX_LABELLED`, which states no limit); flags, a byte (`ir::label_flags`: 1 single, 2 numbered, 4 number range, 8 per team); the number range `lo` and `hi`, two `i32`s, inclusive, both 0 without the range flag |
+| label (`LabelDef`) | text (a string); kind, a byte (`LabelKind`: 1 object, 2 zone, 3 spawn, 4 path); `min` and `max` members, two `u16`s, `max` at most 256 (`ty::MAX_LABELLED`, which states no limit); flags, a byte (`ir::label_flags`: 1 single, 2 numbered, 4 number range, 8 per team); the number range `lo` and `hi`, two `i32`s, inclusive, both 0 without the range flag |
 | tag (`TagDef`) | path (a string); group, a byte (`TagGroup`: 0 any object, 1 weapon) |
 
 A single label is `max` 1 with the single flag and no other, and `min` 0

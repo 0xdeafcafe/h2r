@@ -46,7 +46,7 @@ impl Label {
         match self.def.kind {
             LabelKind::Object => Some(Handle::Object),
             LabelKind::Zone => Some(Handle::Zone),
-            LabelKind::Spawn => None,
+            LabelKind::Spawn | LabelKind::Path => None,
         }
     }
 
@@ -56,6 +56,7 @@ impl Label {
             LabelKind::Object => SetKind::Objects,
             LabelKind::Zone => SetKind::Zones,
             LabelKind::Spawn => SetKind::Spawns,
+            LabelKind::Path => SetKind::Paths,
         }
     }
 }
@@ -957,11 +958,12 @@ impl<'s> Cx<'s> {
             ("objects", false) => (LabelKind::Object, false),
             ("zones", false) => (LabelKind::Zone, false),
             ("spawns", false) => (LabelKind::Spawn, false),
+            ("path", false) => (LabelKind::Path, false),
             _ => {
                 self.err(
                     "decl",
                     l.kind.pos,
-                    "a label is object, zone, object?, zone?, objects, zones or spawns",
+                    "a label is object, zone, object?, zone?, objects, zones, spawns or path",
                 );
                 return;
             }
@@ -1034,6 +1036,10 @@ impl<'s> Cx<'s> {
                     Req::AtMost(n) => (None, Some(n)),
                     Req::Exactly(n) => (Some(n), Some(n)),
                     Req::Between(a, b) => (Some(a), Some(b)),
+                    Req::Numbered(_) if kind == LabelKind::Path => {
+                        self.err("decl", rpos, "a path's points are numbered from 0 already; leave numbered out");
+                        continue;
+                    }
                     Req::Numbered(range) => {
                         if numbered {
                             self.err("decl", rpos, "numbered is given twice");
@@ -1059,7 +1065,9 @@ impl<'s> Cx<'s> {
                         continue;
                     }
                     Req::PerTeam => {
-                        if kind == LabelKind::Spawn {
+                        if kind == LabelKind::Path {
+                            self.err("decl", rpos, "per team is for objects and zones, not a path");
+                        } else if kind == LabelKind::Spawn {
                             self.err(
                                 "decl",
                                 rpos,
@@ -1080,6 +1088,12 @@ impl<'s> Cx<'s> {
                 }
                 min = min.or(lo);
                 max = max.or(hi);
+            }
+            if kind == LabelKind::Path {
+                // A flight needs a start and an end, and the points are
+                // numbered from 0 with none missing (`labels::check`).
+                def.flags |= label_flags::NUMBERED;
+                min = Some(min.unwrap_or(0).max(2));
             }
             let (lo, hi) = (min.unwrap_or(0), max.unwrap_or(MAX_LABELLED as i64));
             if lo > hi {
@@ -1898,7 +1912,8 @@ impl<'s> Cx<'s> {
                 let (name, member) = (self.labels[ix].name.clone(), self.labels[ix].member());
                 match member {
                     None => {
-                        let m = format!("{name} names spawn areas; on {event} takes {} label.", want.a());
+                        let what = if self.labels[ix].def.kind == LabelKind::Path { "a flight path" } else { "spawn areas" };
+                        let m = format!("{name} names {what}; on {event} takes {} label.", want.a());
                         self.err("event.label", pos, m);
                         return;
                     }
@@ -2695,8 +2710,8 @@ impl<'s> Cx<'s> {
                 self.err("label.kind", pos, format!("{n} is {}, and {who} takes {}.", kind.words(), w.words()));
                 None
             }
-            _ if kind == SetKind::Spawns => {
-                let m = format!("{n} names spawn areas, which have no objects to visit. Pass it to spawn_areas.");
+            _ if kind.unvisited(n, "visit").is_some() => {
+                let m = kind.unvisited(n, "visit").unwrap_or_default();
                 self.err("label.spawns", pos, m);
                 None
             }
@@ -2874,7 +2889,7 @@ impl<'s> Cx<'s> {
         let l = self.labels[ix].clone();
         let name = &l.name;
         let Some(member) = l.member() else {
-            let m = format!("{name} names spawn areas, which have no objects to visit. Pass it to spawn_areas.");
+            let m = l.set().unvisited(name, "visit").unwrap_or_default();
             self.err("label.spawns", pos, m);
             return None;
         };
@@ -2938,8 +2953,7 @@ impl<'s> Cx<'s> {
             self.unknown_label(l, lpos);
             return None;
         };
-        if self.labels[ix].def.kind == LabelKind::Spawn {
-            let m = format!("{l} names spawn areas, which have no objects to test. Pass it to spawn_areas.");
+        if let Some(m) = self.labels[ix].set().unvisited(l, "test") {
             self.err("label.spawns", lpos, m);
             return None;
         }
@@ -3056,14 +3070,14 @@ impl<'s> Cx<'s> {
     }
 
     fn set_named(&mut self, n: &str, pos: Pos) -> Option<Type> {
-        let spawns = |cx: &mut Self| {
-            let m = format!("{n} names spawn areas, which have no objects to visit. Pass it to spawn_areas.");
+        let spawns = |cx: &mut Self, kind: SetKind| {
+            let m = kind.unvisited(n, "visit").unwrap_or_default();
             cx.err("label.spawns", pos, m);
             None
         };
         if let Some(id) = self.lookup(n) {
             return match self.binds[id].ty {
-                BindTy::Set(SetKind::Spawns) => spawns(self),
+                BindTy::Set(k @ (SetKind::Spawns | SetKind::Paths)) => spawns(self, k),
                 BindTy::Set(k) => k.member().map(|h| Type::H(h, false)),
                 BindTy::Err => None,
                 _ => {
@@ -3078,7 +3092,8 @@ impl<'s> Cx<'s> {
             return None;
         };
         let l = &self.labels[ix];
-        let Some(member) = l.member() else { return spawns(self) };
+        let kind = l.set();
+        let Some(member) = l.member() else { return spawns(self, kind) };
         if l.single {
             let w = member.name();
             let m = format!("{n} is one {w}, not a set. Use it directly, or declare it as {w}s.");
