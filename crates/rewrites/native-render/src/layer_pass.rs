@@ -74,7 +74,7 @@ pub const BLOOM_LAYER: u8 = 17;
 /// Layer 2, the late overlay: the scene draws it after the dynamic lights
 /// and the decals of mode 1 (the layer draw at `0x0002c05b`, returning
 /// `0x0002c060`), the first person after its layer 7 when its begin says
-/// so (`0x00040284`, returning `0x00040289`). Both take their setup from
+/// so (`0x00040284`, returning `0x00040289`). The alternate view draws it at `0x0002bda3`. All three take their setup from
 /// the general layer begin `0x00044370`, as layers 5, 7, 8 and 20 do; its
 /// items draw under the device's stencil ([`item_stencil`]). Its passes
 /// multiply the destination (S: the materials' blend, not the layer's).
@@ -1229,6 +1229,19 @@ pub(crate) mod tests {
         assert!(all.iter().all(|&l| planned(l)));
         for other in [3, 6, 15, 16, 18, 19, 21] {
             assert!(!planned(other), "layer {other} is another stage's");
+        }
+    }
+
+    #[test]
+    fn overlay_uses_the_current_views_inputs_for_each_layer_call() {
+        let reads = InputReads { scalars: 1 << 12, ..Default::default() };
+        let mut lib = library(material(2, vec![vec![implementation(0, reads, Vec::new())]], own_inputs()));
+        let placement = item(LayerOwner::Placement(1), 0, None);
+        for value in [0.25_f32, 0.75] {
+            let mut inputs = view_inputs();
+            inputs.set_scalar(12, value.to_bits());
+            let draw = plan_item(&pass(OVERLAY_LAYER, inputs), &placement, &mut lib).unwrap();
+            assert_eq!(draw.inputs.scalars[12], value);
         }
     }
 

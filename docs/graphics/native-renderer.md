@@ -394,10 +394,10 @@ grid used for object culling.
 With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The original GPU query supplies visibility feedback.
 
 **Residual geometry.** Layer 2's items at the main scene's call
-(`0x0002c05b`) and the first person's (`0x00040284`) draw from the scene's
+(`0x0002c05b`), the alternate view's (`0x0002bda3`) and the first person's (`0x00040284`) draw from the scene's
 plan as layers 1, 5, 7, 8 and 20 do (`frame-scene.layers`,
 `layer_pass::OVERLAY_LAYER`; [framescene.md](framescene.md), slice 4); its
-outcomes are `layer_plan_2_*` and `layer_plan_fp2_*` in `render.scene`.
+outcomes are `layer_plan_2_*`, `layer_plan_alt2_*` and `layer_plan_fp2_*` in `render.scene`.
 The sky model's indexed strip (`0x0004c976`) and the standard layer-2
 geometry the plan leaves at the main-scene and alternate-scene layer sites
 are admitted. Guest order, transforms, shader inputs and stencil setup stay.
