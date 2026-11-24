@@ -10,6 +10,11 @@ use std::path::PathBuf;
 use tags::collision::{BSP_SIZE, Bsp as TagBsp, COLL, COLL_ROOT_SIZE};
 use tags::geometry::TagView;
 
+#[path = "disc/programs.rs"]
+pub(super) mod programs;
+#[path = "disc/segments.rs"]
+mod segments;
+
 const SBSP: FourCC = FourCC(*b"sbsp");
 const STRUCTURE_POINTS: u32 = 10_000;
 const OBJECT_POINTS: u32 = 1_000;
@@ -141,7 +146,7 @@ fn same_memory(native: &Ram<'_>, guest: &Ram<'_>, label: &str, n: u32) {
             assert_eq!(
                 native.get(p),
                 guest.get(p),
-                "{label} point {n}: byte at {p:#x}"
+                "{label} sample {n}: byte at {p:#x}"
             );
         }
     }
@@ -150,7 +155,7 @@ fn same_memory(native: &Ram<'_>, guest: &Ram<'_>, label: &str, n: u32) {
 fn same_cpu(c: &CpuAbi, ret: TransferAbi, expected: &Cpu, label: &str, n: u32) {
     let mut native = ir_cpu(c);
     native.eip = ret.target_pc;
-    assert_eq!(&native, expected, "{label} point {n}: CPU");
+    assert_eq!(&native, expected, "{label} sample {n}: CPU");
 }
 
 /// Maxima sampled after each BSP and (separately) cluster-table admission.
@@ -342,28 +347,9 @@ fn every_disc_bsp_point_matches_the_guest() {
         common::xbe_path().is_some(),
         "set H2_XBE to run the disc sweep"
     );
-    let disc = std::env::var_os("H2_DISC")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../disc/halo2.iso")
-        });
     with_oracle("collision point disc sweep", |oracle, image| {
-        let mut iso = xiso::Xiso::open(BufReader::new(File::open(&disc).unwrap())).unwrap();
-        let part = iso.partition_offset();
-        let mut entries = iso.entries().unwrap();
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
         let (mut structure_points, mut object_points, mut locations) = (0, 0, 0);
-        for file in entries {
-            let path = file.path.to_ascii_lowercase();
-            if file.is_dir || !path.starts_with("/maps/") || !path.ends_with(".map") {
-                continue;
-            }
-            let mut map = Map::from_region(
-                BufReader::new(File::open(&disc).unwrap()),
-                part + u64::from(file.sector) * xiso::SECTOR,
-                u64::from(file.size),
-            )
-            .unwrap();
+        for_each_map(|path, map| {
             let mut tags: Vec<_> = map
                 .tags()
                 .iter()
@@ -493,12 +479,61 @@ fn every_disc_bsp_point_matches_the_guest() {
             locations += structure.locations;
             structure_points += structure.native;
             object_points += objects.native;
-        }
+        });
         assert!(
             structure_points > 0,
             "no structure point reached the oracle"
         );
         assert!(object_points > 0, "no object point reached the oracle");
         assert!(locations > 0, "no location reached the oracle");
+    });
+}
+
+fn for_each_map(mut visit: impl FnMut(&str, &mut Map<BufReader<File>>)) {
+    let disc = std::env::var_os("H2_DISC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../disc/halo2.iso"));
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&disc).unwrap())).unwrap();
+    let part = iso.partition_offset();
+    let mut entries = iso.entries().unwrap();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    for file in entries {
+        let path = file.path.to_ascii_lowercase();
+        if !file.is_dir && path.starts_with("/maps/") && path.ends_with(".map") {
+            let mut map = Map::from_region(
+                BufReader::new(File::open(&disc).unwrap()),
+                part + u64::from(file.sector) * xiso::SECTOR,
+                u64::from(file.size),
+            ).unwrap();
+            visit(&path, &mut map);
+        }
+    }
+}
+
+/// Structures have individual address spaces. Ordinary tags can alias a
+/// root or share children beyond their tag index entry's byte extent.
+fn for_each_tag(groups: &[FourCC], mut visit: impl FnMut(&str, FourCC, &TagView<'_>, u32)) {
+    for_each_map(|path, map| {
+        let tags: Vec<_> = map.tags().iter()
+            .filter(|t| groups.contains(&t.group))
+            .filter_map(|t| Some((t.id, t.group, t.location?)))
+            .collect();
+        let metadata = tags.iter().any(|(_, g, _)| *g != SBSP).then(|| {
+            let space = map.metadata_space().expect("ordinary tag address space");
+            (space.virtual_base, map.read_file_range(space.file_offset, u64::from(space.size)).unwrap())
+        });
+        let mut seen = BTreeSet::new();
+        for (id, group, loc) in tags {
+            let raw;
+            let view = if group == SBSP {
+                raw = map.read_tag_bytes(id).unwrap();
+                TagView::new(&raw, loc.address)
+            } else {
+                if !seen.insert((group.0, loc.address)) { continue; }
+                let (base, bytes) = metadata.as_ref().unwrap();
+                TagView::new(bytes, *base)
+            };
+            visit(&format!("{path} {group} {id}"), group, &view, loc.address);
+        }
     });
 }
