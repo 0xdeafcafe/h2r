@@ -288,6 +288,17 @@ impl Kind {
         }
     }
 
+    /// The boundary of `area` alone, in the centre marker's own space, in
+    /// `c`: the wall a game draws for a zone in play
+    /// (docs/game/gametype-markers.md, "The boundary in play"), with none
+    /// of a hill's or a site's pip. For an outline of k points: 3k lines,
+    /// 2k faces.
+    pub fn wall(area: &Area, c: [f32; 3]) -> Mesh {
+        let mut m = Mesh::default();
+        shapes::prism(&mut m, &area.outline(), -area.below, area.above, c);
+        m
+    }
+
     /// The kind's lines and faces in the marker's own space, in `c`.
     /// Each arm's comment counts what it adds.
     pub fn mesh(&self, c: [f32; 3]) -> Mesh {

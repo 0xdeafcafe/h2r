@@ -408,7 +408,8 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   `respawn`, `role_traits`, `reset_objective`, `set_loadout` (the
   multiplayer weapon list's tags only), `spawn_areas` and `spawn_near`
   (a team's spawn rule, read at each spawn), `set_body` (a team's body,
-  Spartan or Elite, at each spawn) and the `bot_*` orders
+  Spartan or Elite, at each spawn), `show_area` and `hide_area` (a zone's
+  boundary drawn in play, at most eight) and the `bot_*` orders
   (a `bot_*` order to a seat no phantom holds is a refused call), and
   `message`, `message_team` and `message_all`, which it shows to the host's
   own players and sends to clients as a show cue

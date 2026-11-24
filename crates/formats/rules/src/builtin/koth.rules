@@ -23,8 +23,12 @@ player var on_hill: time = 0t
 // Someone of another team, or with no teams anyone else.
 fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team) or (not variant.team_play and a != b)
 
+// The hill in play shows its boundary (`show_area`), one at a time: the
+// last one's comes off when the hill moves.
 fn start_hill(n: int) {
+    if let old = hill_corner[hill] { hide_area(old) }
     hill = n
+    if let zone = hill_corner[hill] { show_area(zone, none) }
     // Never moves when the setting is 0 (0x2bd747).
     if variant.king_moving_hill > 0 { moves = seconds(variant.king_moving_hill) }
 }

@@ -324,7 +324,7 @@ kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 `label_of`, `zone_id`, `object_team`), `inside` and `player_of`; an
 action other than `score`, `end_round`, `set_lives`, `respawn`,
 `role_traits`, `reset_objective`, the bot orders, the messages,
-`set_loadout`, `spawn_areas`, `spawn_near` and `set_body`; a variant field other than `team_play`, `score_limit`,
+`set_loadout`, `spawn_areas`, `spawn_near`, `set_body`, `show_area` and `hide_area`; a variant field other than `team_play`, `score_limit`,
 `time_limit` and `lives`, whose record offsets are not traced; a
 `grant`; a script that calls `set_loadout` and names a weapon off the
 multiplayer weapon list (`rules::weapons`), by the weapon's path.
@@ -1386,6 +1386,7 @@ Actions:
 | `give(p, tag)`: a weapon into a living player's hands | no entry proven. The pickup's attach routine `0x10ca80` (item, new unit) is on record as an observer only (**E**, [bots.md](bots.md) "Weapon taken") | untraced | `player.weapons` |
 | `take(p, weapon)` | the inventory removal `0xce920`, reached from the drop path `0xe8de0` (**E**, bots.md, the dual-wield drop); a call outside a drop is not proven | traced | `player.weapons` |
 | `set_body(team, tag)`: the team's players spawn as the Spartan or the Elite; `none` lifts it | the rule in the VM's state; the model byte (player `+0x88`) that `PLAYER_SPAWN` `0x14f2e0` and its representation pick `0x14f040` read, written for the spawn and put back after it (`rules/world/body.rs`) | named | `player.disguise` |
+| `show_area(zone, team)`, `hide_area(zone)`: a zone's boundary drawn in play in the team's colour (`none`: neutral), at most eight at once | the shown zones in the VM's state (`RulesExt::shown`); the runtime hands their shapes to the world-line source after each tick (`rules/world/walls.rs`, [gametype-markers.md](../game/gametype-markers.md) "When a marker shows"). No engine call | named | none |
 | `hide(p)`, `show(p)`: a player's biped not drawn, not hit | no entry known. The native renderer can skip the draw; hitboxes and collision are the engine's | untraced | `player.disguise` |
 | `attach(o, to)`: an object follows another | no entry known; the object datum has a parent field (`guest-layout` `object.rs`) | untraced | `objects.move` |
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |

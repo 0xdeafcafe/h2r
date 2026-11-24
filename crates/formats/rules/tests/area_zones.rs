@@ -86,3 +86,55 @@ fn a_zone_with_no_area_is_moved_by_events_alone() {
     assert!(g.move_to(0, [0.0; 3]).is_empty());
     assert_eq!(g.positions[&0], [0.0; 3]);
 }
+
+fn hills() -> Scenario {
+    let hill = |number: i32, object: u32| ScenarioLabel {
+        number: Some(number),
+        class: Some(Class::Flag),
+        ..ScenarioLabel::new("hill_corner", object)
+    };
+    Scenario {
+        players: vec![seat(0, 100)],
+        variant: [("king_moving_hill".to_string(), 1)].into_iter().collect(),
+        map: Some(vec![hill(0, HILL), hill(1, HILL + 1)]),
+        ..Scenario::default()
+    }
+}
+
+/// The hill in play shows its boundary, one area at a time: the last
+/// hill's comes off as the hill moves (docs/game/gametype-markers.md,
+/// "The boundary in play").
+#[test]
+fn koth_shows_the_hill_in_play_and_one_area_at_a_time_as_it_moves() {
+    let ir = rules::build(builtin::KING).unwrap().0;
+    let mut game = game_of(&ir, &hills()).unwrap();
+    game.carrier = ir.header.engine();
+    let mut vm = Vm::new(ir, 0, 0).unwrap();
+    let mut seen = Vec::new();
+    for t in 0..200 {
+        step(&mut vm, &mut game, t, true, &[]);
+        assert!(game.shown.len() <= 1, "tick {t}: {:?}", game.shown);
+        assert_eq!(game.shown, vm.shown_areas(), "the fake keeps what the VM does");
+        if seen.last() != Some(&game.shown) {
+            seen.push(game.shown.clone());
+        }
+    }
+    assert_eq!(
+        seen[..3],
+        [vec![(HILL, None)], vec![(HILL + 1, None)], vec![(HILL, None)]],
+        "{seen:?}"
+    );
+}
+
+/// A script that never calls `show_area` shows none.
+#[test]
+fn a_script_that_never_calls_show_area_shows_none() {
+    let ir = rules::build(builtin::SLAYER).unwrap().0;
+    let mut game = game_of(&ir, &hills()).unwrap();
+    let mut vm = Vm::new(ir, 0, 0).unwrap();
+    for t in 0..40 {
+        step(&mut vm, &mut game, t, true, &[]);
+    }
+    assert!(game.shown.is_empty());
+    assert!(vm.shown_areas().is_empty());
+}

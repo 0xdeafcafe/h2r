@@ -418,3 +418,16 @@ fn a_hills_corners_make_the_area_the_host_makes_of_them() {
     assert!(Area::of_corners(&[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]).is_none());
     assert_eq!(area::hull(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]).len(), 2);
 }
+
+#[test]
+fn a_wall_is_the_boundary_alone() {
+    // 105 lines for the default hill: its wall is 3k of them, k the
+    // outline's points, with no ring and no post of the pip.
+    let area = Area::default();
+    let k = area.outline().len();
+    let wall = Kind::wall(&area, [1.0; 3]);
+    assert_eq!(wall.lines.len(), 3 * k);
+    assert_eq!(wall.tris.len(), 2 * k);
+    // The same box as the hill's mesh: the pip stays inside the wall.
+    assert_eq!(wall.bounds(), Kind::Hill(area).mesh([1.0; 3]).bounds());
+}

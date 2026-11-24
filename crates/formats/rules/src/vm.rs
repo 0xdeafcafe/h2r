@@ -31,6 +31,8 @@ pub const MAX_QUEUE: usize = 128;
 pub const MAX_OBJECT_RECORDS: usize = MAX_LABELLED;
 /// Zones `ticks_held` counts for at once.
 pub const MAX_HELD_ZONES: usize = 32;
+/// Areas `show_area` keeps drawn at once.
+pub const MAX_SHOWN_AREAS: usize = 8;
 
 /// A value handed to the game, resolved from the blob's tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +201,8 @@ pub enum ErrorKind {
     Zones,
     /// `set_body` named a tag that is no body of `crate::bodies::LIST`.
     Body,
+    /// More than [`MAX_SHOWN_AREAS`] areas shown at once (`show_area`).
+    Areas,
 }
 
 impl ErrorKind {
@@ -215,6 +219,7 @@ impl ErrorKind {
             4 => ErrorKind::Squad,
             5 => ErrorKind::Zones,
             6 => ErrorKind::Body,
+            7 => ErrorKind::Areas,
             _ => return None,
         })
     }
@@ -278,6 +283,11 @@ pub struct RulesExt {
     /// spawn in; `None`, their own. The host's spawn hook reads it at each
     /// spawn; it ends at the round's end.
     pub bodies: [Option<Body>; MAX_TEAMS],
+    /// The areas a script shows in play (`show_area`), in the order it
+    /// first showed them, at most [`MAX_SHOWN_AREAS`]: a zone object and
+    /// the team whose colour its wall takes (`None` for neutral). Every
+    /// machine, and a film, draws the same walls from them.
+    pub shown: Vec<(u32, Option<u8>)>,
 }
 
 /// A team's spawn rule: the starting locations its players' spawns may
@@ -318,8 +328,8 @@ pub enum StateError {
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
-/// bodies.
-const STATE_VERSION: u8 = 3;
+/// bodies; 4 the shown areas.
+const STATE_VERSION: u8 = 4;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -433,6 +443,11 @@ impl RulesExt {
             for c in counts {
                 w.extend_from_slice(&c.to_le_bytes());
             }
+        }
+        w.push(self.shown.len() as u8);
+        for (zone, team) in &self.shown {
+            w.extend_from_slice(&zone.to_le_bytes());
+            w.push(team.unwrap_or(NO_TEAM));
         }
         w
     }
@@ -571,6 +586,25 @@ impl RulesExt {
             }
             held.insert(zone, counts);
         }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        if n > MAX_SHOWN_AREAS {
+            return Err(StateError::Malformed(at));
+        }
+        let mut shown: Vec<(u32, Option<u8>)> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let at = r.at;
+            let zone = r.u32()?;
+            let team = match r.u8()? {
+                NO_TEAM => None,
+                t if (t as usize) < MAX_TEAMS => Some(t),
+                _ => return Err(StateError::Malformed(at)),
+            };
+            if shown.iter().any(|(z, _)| *z == zone) {
+                return Err(StateError::Malformed(at));
+            }
+            shown.push((zone, team));
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -589,9 +623,13 @@ impl RulesExt {
             held,
             spawns,
             bodies,
+            shown,
         })
     }
 }
+
+/// A shown area's neutral team, in the state's bytes.
+const NO_TEAM: u8 = 0xff;
 
 struct StateReader<'a> {
     bytes: &'a [u8],
@@ -728,6 +766,7 @@ impl Vm {
             held: BTreeMap::new(),
             spawns: [None; MAX_TEAMS],
             bodies: [None; MAX_TEAMS],
+            shown: Vec::new(),
         };
         Ok(Vm {
             ir,
@@ -753,6 +792,7 @@ impl Vm {
             && ext.objects.len() <= MAX_OBJECT_RECORDS
             && ext.queue.len() <= MAX_QUEUE
             && ext.held.len() <= MAX_HELD_ZONES
+            && ext.shown.len() <= MAX_SHOWN_AREAS
             && ext.spawns.iter().all(|r| match r {
                 Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
                 _ => true,
@@ -1042,7 +1082,8 @@ impl Vm {
     }
 
     /// Grants end at the player's quit and at the round's end; the
-    /// `ticks_held` counters and the spawn rules end at the round's end.
+    /// `ticks_held` counters, the spawn rules, the bodies and the shown
+    /// areas end at the round's end.
     fn after(&mut self, input: &Input) {
         match *input {
             Input::Quit(p) => self.ext.grants.retain(|g| g.player != p),
@@ -1051,6 +1092,7 @@ impl Vm {
                 self.ext.held.clear();
                 self.ext.spawns = [None; MAX_TEAMS];
                 self.ext.bodies = [None; MAX_TEAMS];
+                self.ext.shown.clear();
             }
             _ => {}
         }
@@ -1066,6 +1108,12 @@ impl Vm {
             }),
             Spawns::Near { zone, count } => Some(SpawnRule::Near { zone, count }),
         }
+    }
+
+    /// The areas shown in play (`show_area`): each zone object and the team
+    /// whose colour its wall takes, `None` for neutral.
+    pub fn shown_areas(&self) -> &[(u32, Option<u8>)] {
+        &self.ext.shown
     }
 
     /// Team `team`'s body (`set_body`): what the host's spawn hook makes its
@@ -1597,6 +1645,34 @@ impl<'a> Run<'a> {
     /// `none` gives the team its own bodies. A `set_body` tag that is no
     /// body is a script error.
     fn stand(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        // The areas shown in play lead with a zone, not a team: `show_area`
+        // shows it in a team's colour (neutral for `none`) or recolours it,
+        // and `hide_area` takes it off. `none` for the zone does nothing; a
+        // ninth area is a script error.
+        match entry {
+            caps::id::SHOW_AREA => {
+                let Some(zone) = raw.first().and_then(|&z| object_id(z)) else {
+                    return Ok(());
+                };
+                let team = raw
+                    .get(1)
+                    .and_then(|&t| u8::try_from(t).ok())
+                    .filter(|&t| (t as usize) < MAX_TEAMS);
+                match self.ext.shown.iter_mut().find(|(z, _)| *z == zone) {
+                    Some(row) => row.1 = team,
+                    None if self.ext.shown.len() >= MAX_SHOWN_AREAS => return Err(ErrorKind::Areas),
+                    None => self.ext.shown.push((zone, team)),
+                }
+                return Ok(());
+            }
+            caps::id::HIDE_AREA => {
+                if let Some(zone) = raw.first().and_then(|&z| object_id(z)) {
+                    self.ext.shown.retain(|(z, _)| *z != zone);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         let Some(team) = raw
             .first()
             .and_then(|&t| usize::try_from(t).ok())
@@ -1794,6 +1870,7 @@ mod tests {
                 None,
             ],
             bodies: [Some(Body::Elite), Some(Body::Spartan), None, None, None, None, None, None],
+            shown: vec![(0x4001_0003, Some(1)), (0x4001_0007, None)],
         }
     }
 
@@ -1909,6 +1986,74 @@ mod tests {
         assert_eq!(vm.body(1), Some(Body::Elite), "the refused call changed nothing");
     }
 
+    /// `show_area` and `hide_area` keep at most eight areas in the state, in
+    /// the order first shown: showing one again recolours it, `none` is
+    /// neutral, the round's end clears them and a ninth stops the script.
+    #[test]
+    fn shown_areas_stand_in_the_state_until_the_round_ends() {
+        let src = "rules \"Walls\" 1\ntype slayer\nteams 2\n\
+                   label goal: zones numbered\nglobal var phase: int = 0\n\
+                   on round_start { for each goal z { show_area(z, team 1) }\n\
+                   if let first = goal[0] { show_area(first, none) } }\n\
+                   on tick { phase = phase + 1\n if phase == 1 { if let second = goal[1] { hide_area(second) } }\n\
+                   if phase == 2 { for each goal z { show_area(z, team 0) } } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        for n in 0..3 {
+            g.label("goal", 0x4001_0000 + n as u32, n, 2);
+        }
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(
+            vm.shown_areas(),
+            [(0x4001_0000, None), (0x4001_0001, Some(1)), (0x4001_0002, Some(1))],
+            "the first recoloured to neutral, in the order first shown"
+        );
+        assert_eq!(g.shown, vm.shown_areas(), "the fake keeps the same");
+        // The record carries them: a resume has the same walls.
+        let back = Vm::resume(vm.ir().clone(), 0, RulesExt::decode(&vm.ext().encode()).unwrap()).unwrap();
+        assert_eq!(back.shown_areas(), vm.shown_areas());
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        assert_eq!(vm.shown_areas(), [(0x4001_0000, None), (0x4001_0002, Some(1))]);
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(
+            vm.shown_areas(),
+            [(0x4001_0000, Some(0)), (0x4001_0002, Some(0)), (0x4001_0001, Some(0))]
+        );
+        vm.fire(&mut g, Input::RoundEnd);
+        assert!(vm.shown_areas().is_empty());
+        assert!(g.shown.is_empty());
+    }
+
+    #[test]
+    fn a_ninth_shown_area_stops_the_script() {
+        let src = "rules \"Walls\" 1\ntype slayer\nlabel goal: zones numbered\n\
+                   on round_start { for each goal z { show_area(z, none) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(1);
+        for n in 0..9 {
+            g.label("goal", 0x4001_0000 + n as u32, n, 2);
+        }
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        assert_eq!(g.script_error.map(|e| e.kind), Some(ErrorKind::Areas));
+        assert_eq!(vm.shown_areas().len(), MAX_SHOWN_AREAS);
+    }
+
+    #[test]
+    fn state_refuses_a_shown_area_twice_or_too_many() {
+        let mut e = ext();
+        e.shown = vec![(1, None), (1, Some(0))];
+        assert!(RulesExt::decode(&e.encode()).is_err());
+        let mut e = ext();
+        e.shown = (0..MAX_SHOWN_AREAS as u32 + 1).map(|z| (z, None)).collect();
+        assert!(RulesExt::decode(&e.encode()).is_err());
+    }
+
     #[test]
     fn state_refuses_unsorted_grants() {
         let mut e = ext();
@@ -1950,6 +2095,7 @@ mod tests {
             held: (0..MAX_HELD_ZONES as u32).map(|z| (z, [u32::MAX; MAX_TEAMS])).collect(),
             spawns: [Some(Spawns::Near { zone: u32::MAX, count: u8::MAX }); MAX_TEAMS],
             bodies: [Some(Body::Elite); MAX_TEAMS],
+            shown: (0..MAX_SHOWN_AREAS as u32).map(|z| (z, Some(7))).collect(),
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

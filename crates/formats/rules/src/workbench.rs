@@ -718,6 +718,10 @@ fn kind_words(kind: ErrorKind) -> String {
             vm::MAX_HELD_ZONES
         ),
         ErrorKind::Body => "set_body names a tag that is no player body".into(),
+        ErrorKind::Areas => format!(
+            "more than {} areas are shown at once; hide_area takes one off",
+            vm::MAX_SHOWN_AREAS
+        ),
     }
 }
 

@@ -9,6 +9,12 @@
 //! few ticks and [`publish`]es them. The render owner's capture ([`Source`])
 //! orders them by the eye's distance, builds the lines of the nearest
 //! ([`draw`]) and keeps what it drew for `render.markers`.
+//!
+//! A running game's rules script shows the walls of the areas it names
+//! (`show_area`, docs/game/gametype-markers.md, "The boundary in play"):
+//! the rules runtime publishes them ([`publish_walls`]) and the same
+//! source draws each alone, with no pip and no label ([`draw_walls`]),
+//! whether or not a Forge session has markers.
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,7 +23,7 @@ use agent::Access;
 use agent_proto::{MarkersParams, RpcError, code, method};
 use forge::tool::{Show, in_game};
 use forge::{Endpoint, GroundProblem, PlacedMarker, Thing, ThingKind, Value};
-use game_markers::{Area, Item, Kind, Marker, Palette, Place};
+use game_markers::{Area, Item, Kind, Marker, Palette, Place, Tint};
 use serde_json::{Value as Json, json};
 
 /// The most markers a view draws; the nearest are kept.
@@ -300,6 +306,32 @@ struct Published {
 
 static PUBLISHED: Mutex<Option<Published>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+static WALLS: Mutex<Vec<Wall>> = Mutex::new(Vec::new());
+static WALLS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// An area's wall a running script shows in play
+/// (docs/game/gametype-markers.md, "The boundary in play"): the area round
+/// its centre marker's place, in the colour of a team, or neutral.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wall {
+    /// `render.markers`' `thing`: the zone object, `zone:<hex>`.
+    pub name: String,
+    pub team: Option<u8>,
+    pub at: [f32; 3],
+    pub area: Area,
+}
+
+/// The walls the window draws from now on, in place of the last ones; none
+/// when no script shows any.
+pub fn publish_walls(walls: Vec<Wall>) {
+    WALLS_ACTIVE.store(!walls.is_empty(), Ordering::Release);
+    *WALLS.lock().unwrap_or_else(|e| e.into_inner()) = walls;
+}
+
+#[cfg(any(feature = "gpu", test))]
+fn walls() -> Vec<Wall> {
+    WALLS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 
 /// The markers the window draws from now on, and the things aimed at and
 /// held, which are drawn selected and never fade.
@@ -372,13 +404,54 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// How far an area's wall reaches from its centre marker.
 fn reach(kind: &Kind) -> f32 {
-    kind.area().map_or(0.0, |a| {
-        a.outline()
-            .iter()
-            .map(|p| p[0].hypot(p[1]))
-            .fold(0.0, f32::max)
-    })
+    kind.area().map_or(0.0, reach_of)
 }
+
+fn reach_of(area: &Area) -> f32 {
+    area.outline()
+        .iter()
+        .map(|p| p[0].hypot(p[1]))
+        .fold(0.0, f32::max)
+}
+
+/// The groups of `walls` as seen from `eye`, and what they show for
+/// `render.markers` (kind `wall`): each wall alone in its team's colour
+/// (the neutral colour for none), fading over [`AREA_FADE`], with no label
+/// and no pip, and not counted against [`BUDGET`] (a script shows at most
+/// eight). A wall past its fade is not drawn. With no eye every wall draws.
+pub fn draw_walls(walls: &[Wall], eye: Option<[f32; 3]>, palette: &Palette) -> (Vec<Group>, Vec<Shown>) {
+    let mut groups = Vec::with_capacity(walls.len());
+    let mut shown = Vec::with_capacity(walls.len());
+    for w in walls {
+        if eye.is_some_and(|eye| distance(eye, w.at) > AREA_FADE.1 + reach_of(&w.area)) {
+            continue;
+        }
+        let colour = palette.colour(Tint::Team, w.team);
+        let mesh = Kind::wall(&w.area, colour).placed(&Place::facing(w.at, 0.0));
+        let top = mesh.bounds().map_or(w.at[2], |(_, max)| max[2]);
+        let anchor = [w.at[0], w.at[1], top];
+        groups.push(Group {
+            edges: mesh.lines.iter().map(|l| [l.a, l.b]).collect(),
+            anchor,
+            colour,
+            alpha: mesh.lines.first().map_or(1.0, |l| l.colour[3]),
+            fade: Some(AREA_FADE),
+            label: None,
+        });
+        shown.push(Shown {
+            thing: w.name.clone(),
+            kind: WALL,
+            team: w.team,
+            anchor,
+            lines: mesh.lines.len(),
+            faded: false,
+        });
+    }
+    (groups, shown)
+}
+
+/// `render.markers`' kind of a wall a script shows.
+pub const WALL: &str = "wall";
 
 /// The groups of `entries` as seen from `eye`, and the report of them.
 /// The aimed and held things come first, drawn white and never faded; the
@@ -488,7 +561,8 @@ fn answer(params: Json, report: &Report) -> Result<Json, RpcError> {
     let p: MarkersParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
     if let Some(kind) = &p.kind {
-        let names: Vec<&str> = Kind::samples().iter().map(Kind::name).collect();
+        let mut names: Vec<&str> = Kind::samples().iter().map(Kind::name).collect();
+        names.push(WALL);
         if !names.contains(&kind.as_str()) {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
@@ -548,18 +622,17 @@ mod gpu {
 
     impl WorldLineSource for Source {
         fn active(&self) -> bool {
-            ACTIVE.load(Ordering::Acquire)
+            ACTIVE.load(Ordering::Acquire) || WALLS_ACTIVE.load(Ordering::Acquire)
         }
 
         fn capture(&self, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {
-            let p = published()?;
-            let (groups, report) = draw(
-                &p.entries,
-                [&p.aimed, &p.held],
-                eye(),
-                &palette(guest),
-                BUDGET,
-            );
+            let p = published().unwrap_or_default();
+            let (eye, palette) = (eye(), palette(guest));
+            let (mut groups, mut report) = draw(&p.entries, [&p.aimed, &p.held], eye, &palette, BUDGET);
+            let (walls, shown) = draw_walls(&walls(), eye, &palette);
+            report.shown += walls.len();
+            report.markers.extend(shown);
+            groups.extend(walls);
             *LAST.lock().unwrap_or_else(|e| e.into_inner()) = report;
             if groups.is_empty() {
                 return None;

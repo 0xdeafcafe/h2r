@@ -381,3 +381,51 @@ fn a_teams_body_is_the_model_byte_for_its_players_spawns() {
     // A player already in the body is left alone.
     assert_eq!(body::put(&mut m, 1, Body::Spartan).unwrap(), None);
 }
+
+const WALLS: &str = r#"
+rules "Walls" 1
+type slayer
+teams 2
+label site: zones at least 1 = "territory"
+global var phase: int = 0
+on tick {
+    phase = phase + 1
+    if phase == 1 { for each site s { show_area(s, team 1) } }
+    if phase == 2 {
+        if let z = first(site where true) { show_area(z, none) }
+    }
+    if phase == 3 { for each site s { hide_area(s) } }
+}
+"#;
+
+/// A script's `show_area` puts the zone's own area in the walls the
+/// runtime hands the window, in its team's colour, one at a time as the
+/// script hides and shows; a zone with no area of its own has the default
+/// cylinder round its flag.
+#[test]
+fn a_shown_area_is_a_wall_of_the_zones_shape_until_it_is_hidden() {
+    let ir = ::rules::compile(WALLS).unwrap();
+    assert_eq!(host_refusal(&ir), None);
+    let flags = [([0.0, 0.0, 0.0], TERRITORY, 0), ([20.0, 0.0, 0.0], TERRITORY, 0)];
+    let (mut m, s, _) = world(&ir, &flags, [[0.2, 0.0, 0.5], [10.0, 0.0, 0.0]]);
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running);
+    assert!(s.lock().walls().is_empty(), "a script that has not called it shows none");
+
+    tick(&s, &mut m, 1);
+    let walls = s.lock().walls();
+    assert_eq!(walls.len(), 2);
+    assert!(walls.iter().all(|w| w.team == Some(1)));
+    let mut at: Vec<f32> = walls.iter().map(|w| w.at[0]).collect();
+    at.sort_by(f32::total_cmp);
+    assert_eq!(at, [0.0, 20.0]);
+    assert_eq!(walls[0].area, game_markers::Area::default());
+
+    tick(&s, &mut m, 2);
+    let walls = s.lock().walls();
+    assert_eq!(walls.iter().filter(|w| w.team.is_none()).count(), 1, "one recoloured to neutral");
+    assert_eq!(walls.len(), 2);
+
+    tick(&s, &mut m, 3);
+    assert!(s.lock().walls().is_empty(), "hidden");
+}

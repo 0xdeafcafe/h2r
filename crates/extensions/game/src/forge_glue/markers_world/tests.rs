@@ -443,3 +443,60 @@ fn publishing_turns_the_source_on_and_clearing_turns_it_off() {
     clear();
     assert!(published().is_none());
 }
+
+fn wall(zone: u32, team: Option<u8>, at: [f32; 3]) -> Wall {
+    Wall {
+        name: format!("zone:{zone:x}"),
+        team,
+        at,
+        area: Area::default(),
+    }
+}
+
+#[test]
+fn a_wall_is_the_boundary_alone_in_its_teams_colour_with_no_label() {
+    let walls = [wall(1, Some(1), [0.; 3]), wall(2, None, [10., 0., 0.])];
+    let palette = Palette::default();
+    let (groups, shown) = draw_walls(&walls, eye0(), &palette);
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].colour, palette.teams[1]);
+    assert_eq!(groups[1].colour, palette.neutral);
+    for g in &groups {
+        assert_eq!(g.label, None, "no label");
+        assert_eq!(g.fade, Some(AREA_FADE));
+        assert_eq!(g.edges.len(), 3 * Area::default().outline().len(), "no pip");
+    }
+    assert_eq!(shown.iter().map(|s| s.kind).collect::<Vec<_>>(), ["wall", "wall"]);
+    assert_eq!(shown[0].thing, "zone:1");
+    assert_eq!(shown[0].team, Some(1));
+    assert_eq!(shown[1].team, None);
+    assert_eq!(shown[0].lines, groups[0].edges.len());
+}
+
+#[test]
+fn a_wall_past_its_fade_is_not_drawn_and_with_no_eye_every_wall_is() {
+    let near = wall(1, None, [0.; 3]);
+    let far = wall(2, None, [500., 0., 0.]);
+    let (groups, shown) = draw_walls(&[near.clone(), far.clone()], eye0(), &Palette::default());
+    assert_eq!((groups.len(), shown.len()), (1, 1));
+    assert_eq!(shown[0].thing, near.name);
+    let (groups, _) = draw_walls(&[near, far], None, &Palette::default());
+    assert_eq!(groups.len(), 2);
+}
+
+#[test]
+fn render_markers_lists_the_walls_shown_and_filters_by_the_wall_kind() {
+    let (_, shown) = draw_walls(&[wall(7, Some(0), [0.; 3])], eye0(), &Palette::default());
+    let report = Report {
+        shown: 1,
+        hidden_by_budget: 0,
+        markers: shown,
+    };
+    let r = answer(json!({"kind": "wall"}), &report).unwrap();
+    assert_eq!(r["markers"].as_array().unwrap().len(), 1);
+    assert_eq!(r["markers"][0]["kind"], "wall");
+    assert_eq!(r["markers"][0]["thing"], "zone:7");
+    let r = answer(json!({"kind": "hill"}), &report).unwrap();
+    assert_eq!(r["markers"], json!([]));
+    assert_eq!(r["shown"], 1);
+}

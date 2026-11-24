@@ -92,6 +92,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `set_loadout(p, a, b)`, `give(p, w)` | `player, weapon?, weapon?`; `player, weapon` |
 | `spawn_areas(t, areas, n)`, `spawn_near(t, z, n)` | `team, spawns, int`; `team, zone?, int` (`none` lifts the rule) |
 | `set_body(t, body)` | `team, tag?` (`none` gives the players their own) |
+| `show_area(z, t)`, `hide_area(z)` | `zone, team?` (`none` is neutral); `zone` |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |
