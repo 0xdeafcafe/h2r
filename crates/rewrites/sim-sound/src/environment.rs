@@ -205,3 +205,19 @@ pub fn portal_obstruction(stack: &mut X87Abi, distance: u32, unit: u32, offset: 
     abi::store_commit(stack, result.status, true);
     result.value
 }
+
+/// Convert a positive bounded magnitude into decibels. The lower limit is
+/// compared to the extended result before rounding the output to binary32.
+pub fn log_gain(stack: &mut X87Abi, magnitude: u32, scale: u32, floor: u32) -> (u32, bool) {
+    abi::ld_f32(stack, magnitude);
+    abi::ld_const(stack, 5); // log10(2)
+    abi::xch(stack, 1);
+    abi::unary(stack, unary_op::YL2X);
+    abi::arith(stack, arith_op::MUL, 0, src_kind::F32, u64::from(scale));
+    let (_, output) = abi::st_f32(stack, 0);
+    abi::store_commit(stack, output.status, false);
+    abi::ld_f32(stack, floor);
+    let comparison = abi::cmp(stack, 0, src_kind::ST, 1, 1, true);
+    abi::st_st(stack, 0, true);
+    (output.value, comparison & 0x41 == 0)
+}

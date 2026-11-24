@@ -9,6 +9,15 @@ const RESPONSE: u32 = ARENA + 0x3000;
 const WEIGHTS: u32 = ARENA + 0x3800;
 
 pub(super) fn cases(entry: u32) -> Vec<Case> {
+    if entry == 0x2197f0 {
+        return (0..9)
+            .map(|seed| Case {
+                setup: gain,
+                reply,
+                seed,
+            })
+            .collect();
+    }
     if entry != 0x222150 {
         return Vec::new();
     }
@@ -46,4 +55,19 @@ fn reply(g: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
         }
         _ => panic!("unexpected portal callout {target:#x}"),
     }
+}
+
+fn gain(_: &mut Guest, c: &mut Cpu, seed: u32) {
+    let bits = [
+        0.0f32.to_bits(),
+        (-0.0f32).to_bits(),
+        1,
+        (-4.0f32).to_bits(),
+        0.25f32.to_bits(),
+        1.0f32.to_bits(),
+        4.0f32.to_bits(),
+        f32::INFINITY.to_bits(),
+        f32::NAN.to_bits(),
+    ];
+    c.xmm[0] = (77_u128 << 64) | u128::from(bits[seed as usize]);
 }

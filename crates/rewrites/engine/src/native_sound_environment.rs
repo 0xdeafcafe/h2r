@@ -96,7 +96,23 @@ pub const PORTAL_RESPONSE: Point = Point::new(
     DOC,
 )
 .with_flags(&[Flag::Optional]);
+pub const DECIBELS: Point = Point::new(
+    "SOUND_DECIBELS",
+    0x2197f0,
+    Sig::Fn {
+        args: &[("magnitude", Loc::Xmm0)],
+        ret: Some(Loc::Eax),
+        pop: 0,
+    },
+    DOC,
+)
+.with_flags(&[Flag::Optional, Flag::Hot]);
 pub const BODIES: &[Body] = &[
+    Body {
+        point: &DECIBELS,
+        sites: &[],
+        run: decibels,
+    },
     Body {
         point: &PORTAL_RESPONSE,
         sites: &[0x222162, 0x222188],
@@ -330,5 +346,65 @@ fn distance(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
         }
     }
     c.edi = frame::pop(c, g)?;
+    Ok(Next::Ret { pop: 0 })
+}
+
+/// Bounded linear gain -> dB, for returning a spatial result to a channel
+/// or ambience palette. The final compare in both units changes EFLAGS.
+fn decibels(cx: &mut Cx<'_>, _: u32) -> Result<Next> {
+    const FLOOR: u32 = 0x0044_a0b4;
+    const UNIT: u32 = 0x0045_dbc0;
+    const DB_SCALE: u32 = 0x0045_dc08;
+    const BELOW_FLOOR: u32 = 0x0021_985f;
+    let (c, g) = (&mut *cx.cpu, &mut *cx.g);
+    frame::push(c, g, c.ecx)?;
+    let magnitude = sse::lane0(c, 0);
+    sse::zero(c, 1);
+    sse::comiss(c, 0, magnitude);
+    let bounded = if sse::below_or_equal(c) {
+        let unit = g.u32(UNIT)?;
+        sse::comiss(c, magnitude, unit);
+        if sse::below_or_equal(c) {
+            magnitude
+        } else {
+            unit
+        }
+    } else {
+        0
+    };
+    frame::set_slot(c, g, 0, bounded)?;
+    sse::comiss(c, magnitude, 0);
+    let floor = g.u32(FLOOR)?;
+    sse::load(c, 2, floor);
+    let gain = if sse::below_or_equal(c) {
+        floor
+    } else {
+        let mut fpu = spatial::load_fpu(c);
+        let (rounded, below_floor) =
+            sim_sound::environment::log_gain(&mut fpu.0, bounded, g.u32(DB_SCALE)?, floor);
+        frame::set_slot(c, g, 0, rounded)?;
+        spatial::finish_fpu(c, g, fpu, 0x21983e, FLOOR)?;
+        if below_floor {
+            floor
+        } else {
+            sse::comiss(c, rounded, 0);
+            if sse::below_or_equal(c) { rounded } else { 0 }
+        }
+    };
+    sse::load(c, 0, gain);
+    sse::comiss(c, floor, gain);
+    frame::set_slot(c, g, 0, gain)?;
+    c.eax = if sse::below_or_equal(c) {
+        sse::comiss(c, gain, 0);
+        if sse::below_or_equal(c) {
+            gain
+        } else {
+            logic(c, 0, 1 << 31);
+            0
+        }
+    } else {
+        g.u32(BELOW_FLOOR)?
+    };
+    c.ecx = frame::pop(c, g)?;
     Ok(Next::Ret { pop: 0 })
 }
