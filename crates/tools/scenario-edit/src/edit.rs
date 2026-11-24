@@ -61,6 +61,12 @@ pub enum Op {
         index: usize,
         label: Option<crate::FlagLabel>,
     },
+    /// Give the data reference whose `(size, address)` pair is at virtual
+    /// address `pair` the payload `bytes` ([`Scenario::resize_data`]).
+    Data {
+        pair: u32,
+        bytes: Vec<u8>,
+    },
 }
 
 /// A user action: one or more operations, undone as one step.
@@ -118,6 +124,19 @@ impl Command {
             merge: None,
         }
     }
+    /// Give the data reference at `pair` the payload `bytes`, of any
+    /// length.
+    pub fn resize_data(pair: u32, bytes: Vec<u8>, label: &str) -> Self {
+        Self {
+            label: if label.is_empty() {
+                format!("resize data at {pair:#010x}")
+            } else {
+                format!("resize {label}")
+            },
+            ops: vec![Op::Data { pair, bytes }],
+            merge: None,
+        }
+    }
     pub fn merging(mut self, key: u64) -> Self {
         self.merge = Some(key);
         self
@@ -159,6 +178,11 @@ enum Undo {
     Label {
         index: usize,
         label: Option<crate::FlagLabel>,
+    },
+    /// The data reference's old edit (`None`: the source's bytes).
+    Data {
+        pair: u32,
+        bytes: Option<Vec<u8>>,
     },
 }
 
@@ -343,6 +367,12 @@ fn apply_all(
                     index: *index,
                     label: old,
                 }),
+            Op::Data { pair, bytes } => scenario
+                .resize_data(*pair, bytes.clone())
+                .map(|old| Undo::Data {
+                    pair: *pair,
+                    bytes: old,
+                }),
             Op::VolumeAdd { kind, entry } => {
                 scenario
                     .add_volume(*kind, entry.clone())
@@ -385,6 +415,7 @@ fn revert(scenario: &mut Scenario, before: &[Undo]) -> Result<()> {
             Undo::Label { index, label } => {
                 scenario.write_label(*index, *label)?;
             }
+            Undo::Data { pair, bytes } => scenario.write_data(*pair, bytes.clone()),
         }
     }
     Ok(())
