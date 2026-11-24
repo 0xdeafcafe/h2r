@@ -172,3 +172,102 @@ fn each_ready_round_posts_the_record_scripts_line_on_the_host() {
         GuestCall::new(points::GAME_TICK.base),
     ]);
 }
+
+/// A record whose options sit at [`OPTIONS`] in a multiplayer game, as the
+/// start hands them to `GAME_ACTIVATE`.
+const OPTIONS: u32 = 0x1007_0000;
+
+fn options_with(record: [u8; variants::record::RECORD_SIZE]) -> FakeGuest {
+    let mut m = FakeGuest::new();
+    m.map(OPTIONS, 0x300)
+        .put_u32(OPTIONS, MODE_MULTIPLAYER)
+        .put(OPTIONS + crate::variant_ext::OPTIONS_VARIANT, &record);
+    m
+}
+
+fn record_at(m: &FakeGuest) -> [u8; variants::record::RECORD_SIZE] {
+    let mut raw = [0; variants::record::RECORD_SIZE];
+    m.read(OPTIONS + crate::variant_ext::OPTIONS_VARIANT, &mut raw).unwrap();
+    raw
+}
+
+fn on_script_index(m: &mut FakeGuest) -> [u8; LEN] {
+    let jugg = crate::rules::record::no_mode_juggernaut();
+    assert_eq!(crate::rules::record::move_onto_script_index(m, OPTIONS, jugg), Ok(true));
+    let raw = record_at(m);
+    let v = variants::GameVariant::from_bytes(&raw).unwrap();
+    assert_eq!(v.game_type(), variants::GameType::Script);
+    assert!(variants::record::check(&v).is_empty());
+    raw[variants::ext::AT..variants::ext::AT + LEN].try_into().unwrap()
+}
+
+#[test]
+fn a_saved_slayer_record_starts_on_the_script_index_and_scores_once() {
+    let mut raw = variants::GameVariant::stock(variants::GameType::Slayer).unwrap().to_bytes();
+    let block = block(prefix(&slayer().id), 2);
+    raw[variants::ext::AT..variants::ext::AT + LEN].copy_from_slice(&block);
+    let mut options = options_with(raw);
+    let moved = on_script_index(&mut options);
+    assert_eq!(moved, block, "the script reference stays");
+
+    // The game starts the script index's engine: the kill is the script's
+    // one score, and no carrier's kill routine is called.
+    let store = Local::default();
+    let s = shared(&store, Box::new(no_fetch));
+    let (m, datums) = script_game(moved);
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running);
+    s.lock().kill(&m, 0, Some(1));
+    let work = s.lock().pre_tick(&m).unwrap();
+    let calls = drive(&s, m, work, true);
+    let scores: Vec<_> = calls.iter().filter(|c| c.target == points::SCORE_ADD.base).collect();
+    assert_eq!(scores, [&GuestCall::new(points::SCORE_ADD.base).eax(3).args([datums[1]])]);
+    assert!(calls.iter().all(|c| ![points::SLAYER_KILL.base, points::JUGGERNAUT_KILL.base].contains(&c.target)));
+}
+
+#[test]
+fn a_no_mode_juggernaut_record_starts_its_built_in_on_the_script_index_and_scores_at_most_once() {
+    let raw = variants::GameVariant::stock(variants::GameType::Juggernaut).unwrap().to_bytes();
+    let mut options = options_with(raw);
+    let moved = on_script_index(&mut options);
+    let ported = builtins().iter().find(|b| b.engine == 7).unwrap();
+    let script = variants::ext::Ext::in_effect(&moved).script;
+    assert_eq!((script.mode, script.prefix), (variants::ext::Mode::Rules, prefix(&ported.id)));
+
+    let store = Local::default();
+    let s = shared(&store, Box::new(no_fetch));
+    let (m, _) = script_game(moved);
+    s.lock().start(&m, false);
+    let state = s.lock().state();
+    assert!(state.running, "{state:?}");
+    assert_eq!(state.script.as_deref(), Some("Juggernaut"));
+    s.lock().kill(&m, 0, Some(1));
+    let work = s.lock().pre_tick(&m).unwrap();
+    let calls = drive(&s, m, work, true);
+    // The kill scores at most the script's one point; no retail kill,
+    // tick or role routine runs beside it.
+    let scores = calls.iter().filter(|c| c.target == points::SCORE_ADD.base).count();
+    assert!(scores <= 1, "{calls:?}");
+    for target in [
+        points::SLAYER_KILL.base,
+        points::JUGGERNAUT_KILL.base,
+        points::JUGGERNAUT_TICK.base,
+        points::JUGGERNAUT_ROLE_SET.base,
+    ] {
+        assert!(calls.iter().all(|c| c.target != target), "{target:#x}: {calls:?}");
+    }
+}
+
+#[test]
+fn only_a_multiplayer_games_options_move_and_a_retail_record_stays() {
+    use crate::rules::record::{move_onto_script_index, no_mode_juggernaut};
+    let slayer_raw = variants::GameVariant::stock(variants::GameType::Slayer).unwrap().to_bytes();
+    let mut options = options_with(slayer_raw);
+    assert_eq!(move_onto_script_index(&mut options, OPTIONS, None), Ok(false));
+    assert_eq!(record_at(&options), slayer_raw, "no script: retail Slayer");
+    let mut jugg = options_with(variants::GameVariant::stock(variants::GameType::Juggernaut).unwrap().to_bytes());
+    let was = record_at(&jugg);
+    jugg.put_u32(OPTIONS, 1);
+    assert_eq!(move_onto_script_index(&mut jugg, OPTIONS, no_mode_juggernaut()), Ok(false));
+    assert_eq!(record_at(&jugg), was, "a campaign start");
+}

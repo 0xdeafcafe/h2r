@@ -24,6 +24,9 @@
 //!   under Slayer's content category (`variants::record::content_category`)
 //!   on a save or a list add; the game's body would jump through a zero
 //!   entry. Any other record goes to the game's body.
+//! - `GAME_ACTIVATE`, a `before` in the last class: the record about to
+//!   start moves onto the script index when it would play beside a retail
+//!   engine's own rules ([`move_onto_script_index`]).
 //!
 //! The differential test against the lifted original is
 //! `crates/rewrites/engine/tests/variant_record_differential.rs`.
@@ -147,11 +150,78 @@ pub fn decode(
     Ok(Some(u8::from(answer == wire::Decoded::Kept)))
 }
 
+/// A multiplayer game's options at `options`: the record to start is at
+/// `options + variant_ext::OPTIONS_VARIANT`, and the mode at `+0`.
+const MODE_MULTIPLAYER: u32 = crate::skulls_mp::MODE_MULTIPLAYER;
+
+/// Juggernaut's built-in, with its default options, as a record's script
+/// reference; none when this build does not run it for a no-mode record
+/// (`runtime::PORTED`).
+pub fn no_mode_juggernaut() -> Option<variants::ext::Script> {
+    let engine = u8::try_from(super::roles::JUGGERNAUT).ok()?;
+    if !super::runtime::PORTED.contains(&engine) {
+        return None;
+    }
+    let built = super::runtime::builtins().iter().find(|b| b.engine == engine)?;
+    let (ir, _) = ::rules::verify::load(&built.blob).ok()?;
+    Some(variants::ext::Script {
+        mode: variants::ext::Mode::Rules,
+        prefix: built.id.0[..8].try_into().ok()?,
+        options: ir.default_options(),
+    })
+}
+
+/// Before a multiplayer game starts, the record at `options` moves onto
+/// the script index when a retail engine would otherwise score beside its
+/// script: a saved Slayer record that names a script, and a Juggernaut
+/// record with no mode, whose built-in then runs (`jugg`;
+/// [`record::onto_script_index`]). Every machine does it from the record
+/// it was given, so each starts the same engine; the script index's
+/// object has no scoring slot, so the script is the one scorer.
+/// Whether the record moved.
+pub fn move_onto_script_index(
+    m: &mut dyn GuestMemory,
+    options: u32,
+    jugg: Option<variants::ext::Script>,
+) -> Result<bool, engine::MemFault> {
+    if m.u32(options)? != MODE_MULTIPLAYER {
+        return Ok(false);
+    }
+    let at = options.wrapping_add(crate::variant_ext::OPTIONS_VARIANT);
+    let mut raw = [0u8; RECORD_SIZE];
+    m.read(at, &mut raw)?;
+    if !record::onto_script_index(&mut raw, jugg) {
+        return Ok(false);
+    }
+    m.write(at, &raw)?;
+    Ok(true)
+}
+
 /// The hooks. No other feature hooks these points. The content
 /// category is answered for the script index only; the protocol map for
 /// every index.
 pub fn register(b: &mut hooks::Builder) {
     use hooks::Flow;
+    // After the other start hooks, as the engine object's: the Live
+    // guest's block from its host is written first, and the engine start
+    // after them all reads the record.
+    b.raw()
+        .before(
+            &points::GAME_ACTIVATE,
+            "rules: a record that scores beside its engine starts on the script index",
+            move |c| {
+                let options = c.cpu.eax;
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                if let Ok(true) = move_onto_script_index(m, options, no_mode_juggernaut()) {
+                    eprintln!("rules: the record starts on the script index");
+                }
+                Ok(Flow::Continue)
+            },
+        )
+        .last()
+        .after_feature(crate::skulls_mp::FEATURE);
     b.raw().before(
         &points::VARIANT_CLEAN_UP,
         "rules: the record clean-up keeps a script record",

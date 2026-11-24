@@ -1,12 +1,11 @@
-//! What a script game changes in the carrier engine on the host: its own
-//! scoring stands down while a script runs on the authority
-//! (`rules::scoring`), `role_traits` sets Juggernaut's role through the
-//! engine (`rules::roles`), and the objective set, its carriers and
+//! What a script game drives in the carrier engine on the host:
+//! `role_traits` sets Juggernaut's role through the engine
+//! (`rules::roles`), and the objective set, its carriers and
 //! `reset_objective` read and drive the engine's registry
 //! (`rules::objectives`).
 
 use super::*;
-use crate::rules::{objectives, roles, scoring};
+use crate::rules::{objectives, roles};
 
 const JUGGERNAUT: i32 = 7;
 const ODDBALL: i32 = 3;
@@ -51,48 +50,6 @@ fn oddball_guest(block: [u8; LEN], tick: u32, carrier: Option<u32>) -> (FakeGues
     m.put_u32(record + engine::objectives::RECORD_UNIT, u32::MAX);
     m.put_u32(record + engine::objectives::RECORD_PLAYER, carrier.unwrap_or(u32::MAX));
     (m, datums)
-}
-
-#[test]
-fn the_carrier_scores_until_the_engine_names_this_machine_its_authority() {
-    let site = scoring::CARRIER_SCORE_SITES[0].0 + scoring::CALL_LEN;
-    let store = Local::default();
-    let s = shared(&store, Box::new(no_fetch));
-    assert!(!scoring::script_scores(&s.lock()), "no game");
-    let (m, _) = guest(block(prefix(&slayer().id), 2), SLAYER);
-    s.lock().start(&m, false);
-    assert!(
-        !scoring::script_scores(&s.lock()),
-        "the engine keeps its rules until the first boundary asks for the authority"
-    );
-    assert!(!scoring::drops_score(&s.lock(), site));
-    let work = s.lock().pre_tick(&m).unwrap();
-    drive(&s, m, work, true);
-    assert!(scoring::script_scores(&s.lock()));
-    assert!(scoring::drops_score(&s.lock(), site));
-    // The script's own calls come from no carrier site.
-    assert!(!scoring::drops_score(&s.lock(), 0x0012_3456));
-    s.lock().ended();
-    assert!(!scoring::script_scores(&s.lock()), "the game ended");
-}
-
-#[test]
-fn a_guest_and_a_refused_script_leave_the_carriers_scoring_on() {
-    let site = scoring::CARRIER_SCORE_SITES[3].0 + scoring::CALL_LEN;
-    // Another machine is the authority: the script is dropped here.
-    let store = Local::default();
-    let s = shared(&store, Box::new(no_fetch));
-    let (m, _) = guest(block(prefix(&slayer().id), 2), SLAYER);
-    s.lock().start(&m, false);
-    let work = s.lock().pre_tick(&m).unwrap();
-    drive(&s, m, work, false);
-    assert!(!scoring::script_scores(&s.lock()));
-    assert!(!scoring::drops_score(&s.lock(), site));
-    // A refused script plays the carrier's own rules.
-    let (m, _) = guest(block([9; 8], 0), SLAYER);
-    s.lock().start(&m, false);
-    assert!(s.lock().state().refused.is_some());
-    assert!(!scoring::script_scores(&s.lock()));
 }
 
 const CROWN: &str = "rules \"Crown\" 1\ntype juggernaut\n\non kill(victim, killer) {\n    if killer != none and killer != victim { role_traits(killer, true) }\n    role_traits(victim, false)\n}\n";

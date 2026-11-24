@@ -217,11 +217,12 @@ round-start line.
   entity (types 0 to 5, **E**, [notes/ai-networking.md](notes/ai-networking.md))
   for whatever its HUD draws from it.
 
-On the host, in a script game with a retail index, the `rules` feature
-answers the retail engine's scoring and role-making routines in place, so the script is the
-game's one scorer ("One scorer", under "The host runtime"); the script's
-handlers run beside the engine's other work and make their calls at the
-next tick boundary. No guest memory is patched.
+On the host, a script game on the script index runs on an engine object
+whose rule slots are empty, so the script is the game's one scorer ("One
+scorer", under "The host runtime"); on another retail index the carrier's
+own routines score beside it. The script's handlers run beside the
+engine's other work and make their calls at the next tick boundary. No
+guest memory is patched but the record the game starts.
 
 The engine table `0x55e4d0[index]` holds one static object per engine,
 and the object's `+0` is its vtable: CTF and Assault `0x459d18`, Slayer
@@ -253,7 +254,10 @@ in `runtime::PORTED`, runs that engine's built-in script, chosen by
 engine index from a table compiled in. An engine is in `PORTED` when this
 host delivers every event its built-in answers and makes every entry it
 calls: Juggernaut (7). No port has had a parity run. Saved variants, hopper slots
-and copies an older build edited are script games with no byte changed.
+and copies an older build edited are script games with no stored byte
+changed: the game starts a Juggernaut one on the script index with the
+built-in's reference in its block ("One scorer"), so the start below
+reads it as a record of mode 2.
 The host puts the built-in's hash in the session's `rules` field as for
 any script, and a film records which ran: its `simulation_hooks` SHA
 differs with the feature and it stores the blob. The rule covers Live,
@@ -347,9 +351,8 @@ any script does, and starts with the built-in's default options (the
 script has none, so the record's option bits are not read). The
 `uses` script's name, hash and source stay with the running game
 (`Running::carried`, `runtime::Carried`); everything else reports the
-built-in: `rules.state` (`scoring: carrier`, the wire's word for a `uses` script), `Runtime::hash` (the Live
-session's script, which every build has built in) and the "One scorer"
-answers. Its `requires` still turn their modes on, since those are read
+built-in: `rules.state` (`scoring: carrier`, the wire's word for a `uses` script) and `Runtime::hash` (the Live
+session's script, which every build has built in). Its `requires` still turn their modes on, since those are read
 from the record's script reference
 (`rules::header::script_asks_superbounce`). A built-in this host cannot
 run yet (`runtime::host_refusal`) is refused before the start gate, so a
@@ -553,34 +556,42 @@ refused call. The evidence is in
 
 #### One scorer
 
-While a script runs on this machine and `GAME_ENGINE_AUTHORITATIVE` has
-answered true for it (`scoring::script_scores`), the feature answers the
-carrier's own scoring and role-making in place (`rules/scoring.rs`), with
-`before` hooks in the default class; no other feature hooks these
-points:
+A script game on the script index (`rules::SCRIPT_INDEX`, 6) runs on
+the host-owned engine object (`rules/engine_object.rs`;
+[game-types-without-carriers.md](game-types-without-carriers.md), "No
+retail engine object"). Its kill slot `+0x78` and Slayer's other rule
+slots are empty bodies, so no retail engine's scoring or role-making
+runs and the script's `score` is the only source of points. The feature
+hooks none of the carriers' routines (`SLAYER_KILL`, `JUGGERNAUT_KILL`,
+`JUGGERNAUT_TICK`, `SCORE_ADD`); the boot registration test
+`the_rules_runtime_hooks_no_retail_scoring_site` holds it to that.
 
-| Point | Answer | What the engine no longer does |
-|---|---|---|
-| `SLAYER_KILL` `0x2bc000` | returns, popping 16 bytes | Slayer's kill, suicide, death and bonus points, which is all it does |
-| `JUGGERNAUT_KILL` `0x1922a0` | returns, popping 16 bytes | the Juggernaut's +1 a kill and its event `0x27`; the -1 for a kill between two others with type-area flag bit 3; the role passing to the Juggernaut's killer, with a kill record (type 8, subtype 2) and event `0x26`; a new Juggernaut drawn after a suicide |
-| `JUGGERNAUT_TICK` `0x192530` | returns | taking the role from a Juggernaut whose player record `+2` bits mark it gone or out of lives, and drawing a new one when none is left |
-| `SCORE_ADD` `0x15b7c0`, returning to one of its ten call sites (`scoring::CARRIER_SCORE_SITES`) | AL 0, popping 4 bytes | Oddball's, King's, Territories' and CTF's points; their per-tick and per-player slots still run the ball, the hill, the territories and the flags |
+Two records that would score beside a retail engine start on the
+script index: a saved Slayer record that names a script, and a Juggernaut
+record with no mode, whose built-in runs
+(`rules::record::move_onto_script_index`, a `before` of `GAME_ACTIVATE`
+on every machine; `variants::record::onto_script_index`). The record the
+game is about to copy changes in memory only: its index becomes 6, its
+type area is zeroed and, for Juggernaut, its block takes the built-in's
+reference and default options; the stored record is not rewritten. A
+Juggernaut record's own type-area settings (movement, role flags) are not
+carried; GT7 maps them.
 
-The script gives and moves the Juggernaut role with `role_traits` and
-scores with `score`, whose calls come from no carrier site. It deals the
-role in `on round_start`; a player who leaves loses the role bit through
-the engine's own slot `+0x1c` (`0x1921f0`, from `ENGINE_PLAYER_LEFT`,
-which no feature answers), and the script names the next Juggernaut from
-`on quit` and `on tick`. A Juggernaut out of lives keeps the role: only
-the answered `JUGGERNAUT_TICK` took it. The evidence for both hooks is in
-[notes/2026-11-23-round-start-and-player-quit.md](../engine/notes/2026-11-23-round-start-and-player-quit.md). What the script API does not
-cover yet: the kill record and events `0x26` and `0x27` have no script
-call (the role setter posts its
-own new-Juggernaut event). `PLAYER_KILLED`'s kill feed, medals and
-statistics, the objective engines' kill callbacks (they post events
-only), and their objects and traits run as in a lifted game. Before the
-first tick boundary asks for the authority, on a guest, for a refused or
-idle script and after the game's end, every routine is the engine's.
+Any other script record on a retail index runs on that engine's own
+object, and every routine of it runs: Juggernaut's kill callback and tick
+move the role, and Oddball's, King's, Territories' and CTF's slots score
+through `SCORE_ADD`. GE5 of game-types-without-carriers.md moves those
+records to the script index; until it lands, such a script is not the
+game's one scorer.
+
+`role_traits` gives and takes the Juggernaut role through the engine's
+setter on a Juggernaut record. A player who leaves loses the role bit
+through the engine's own slot `+0x1c` (`0x1921f0`, from
+`ENGINE_PLAYER_LEFT`, which no feature answers). The evidence for the
+role and quit paths is in
+[notes/2026-11-23-round-start-and-player-quit.md](../engine/notes/2026-11-23-round-start-and-player-quit.md)
+and [notes/2026-11-22-script-scoring-and-roles.md](../engine/notes/2026-11-22-script-scoring-and-roles.md).
+`PLAYER_KILLED`'s kill feed, medals and statistics run on every index.
 
 **Authority.** The first tick boundary's body also calls
 `GAME_ENGINE_AUTHORITATIVE` (`0x15b2f0`). A machine it answers false for
@@ -2150,8 +2161,8 @@ Both find the script by the record's prefix among the compiled-in
 scripts (`runtime::compiled_in`) and in the game-variant store. With the
 `rules` feature off the HUD still turns on and Slayer's lifted rules
 score the game; with it on, the script runs beside them ("The host
-runtime"), so its kill scoring adds to the lifted carrier's until
-Slayer's callbacks are answered in place.
+runtime"), so on a retail index its kill scoring adds to the lifted
+carrier's ("One scorer").
 
 **Options the host reads.** After its scoring options the Superbounce
 script declares the HUD's pieces: `targets` (an enum, `common`, `likely`
@@ -2344,13 +2355,11 @@ the ReachVariantTool importer follows phase 10.
   engine event, or the client's own engine vtable. This is the largest
   unknown; it decides the display half of every port and of every new
   mode.
-- **Answering a carrier engine's callbacks.** The slots that make rules
-  are on record ("Which engine index a script rides"), and the kill
-  callbacks, Juggernaut's tick and the carriers' `SCORE_ADD` calls are
-  answered in place in a script game ("One scorer"); no run has shown
-  that doing so leaves the replicated globals entity and each client's
-  HUD consistent, nor whether a handler can run inside a callback with an
-  async body. Of the
+- **The script index's engine object.** The slots that make rules are
+  on record ("Which engine index a script rides"), and a script game on
+  the script index calls none of them ("One scorer"); no run has shown
+  that its replicated globals entity and each client's HUD stay
+  consistent. Of the
   Slayer kill callback's arguments, the flag's meaning (when
   `PLAYER_KILLED` sets it) and the kind's are not read, nor the
   CTF and Assault capture path's slot at `0x242741`.

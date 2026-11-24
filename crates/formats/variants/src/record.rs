@@ -797,6 +797,50 @@ pub fn clean_up(raw: &mut [u8; RECORD_SIZE]) -> CleanUp {
     CleanUp::ResetAsSlayer
 }
 
+/// Moves a record that would play beside a retail engine's own rules onto
+/// the script index, in place; whether it moved. Two records qualify:
+///
+/// - a Slayer record (index 2) whose block names a script (mode 2), saved
+///   before scripts that ride Slayer took the script index. No script
+///   writes a Slayer type-area setting, so the area is dropped.
+/// - a Juggernaut record (index 7) with no script mode, when the build
+///   runs Juggernaut's built-in for it (`no_mode_juggernaut`, that
+///   script's reference): the block takes the reference, and the type
+///   area, whose settings the script does not read, is dropped.
+///
+/// The index, the type area and the block change; every common setting,
+/// the name and the block's other options stay. A record that is neither,
+/// or whose block is ignored, is not touched.
+pub fn onto_script_index(
+    raw: &mut [u8; RECORD_SIZE],
+    no_mode_juggernaut: Option<crate::ext::Script>,
+) -> bool {
+    use crate::ext::{AT, Block, Ext, LEN, Mode};
+    let engine = i32::from_le_bytes(raw[ENGINE_AT..ENGINE_AT + 4].try_into().unwrap());
+    let block: [u8; LEN] = raw[AT..AT + LEN].try_into().unwrap();
+    match (engine, Ext::decode(&block)) {
+        (2, Block::Ext(e)) if e.script.mode == Mode::Rules => {}
+        (7, state) => {
+            let (Some(script), Some(mut e)) = (
+                no_mode_juggernaut,
+                match state {
+                    Block::None => Some(Ext::default()),
+                    Block::Ext(e) if e.script.mode == Mode::None => Some(e),
+                    _ => None,
+                },
+            ) else {
+                return false;
+            };
+            e.script = script;
+            raw[AT..AT + LEN].copy_from_slice(&e.encode());
+        }
+        _ => return false,
+    }
+    raw[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&SCRIPT_INDEX.to_le_bytes());
+    raw[TYPE_AREA].fill(0);
+    true
+}
+
 /// The registers the clean-up leaves when it returns without changing the
 /// record (`0x19de4b`): EAX 1, and ECX and EDX 0 from the compare loop and
 /// the routine's zero register. A native answer that returns leaves these,
@@ -1329,6 +1373,87 @@ mod tests {
         assert!(stock.bytes()[TYPE_AREA].iter().all(|&b| b == 0));
         assert!(refused(&stock).is_empty());
         assert!(!GameType::ALL.contains(&ty), "goof lists only retail engines");
+    }
+
+    fn script_block(mode: crate::ext::Mode) -> [u8; crate::ext::LEN] {
+        crate::ext::Ext {
+            gravity: 50,
+            script: crate::ext::Script { mode, prefix: [7; 8], options: 3 },
+            ..crate::ext::Ext::default()
+        }
+        .encode()
+    }
+
+    fn stock_on(ty: GameType, block: [u8; crate::ext::LEN]) -> [u8; RECORD_SIZE] {
+        let mut b = GameVariant::stock(ty).unwrap().to_bytes();
+        b[crate::ext::AT..crate::ext::AT + crate::ext::LEN].copy_from_slice(&block);
+        b
+    }
+
+    #[test]
+    fn a_slayer_record_that_names_a_script_moves_onto_the_script_index() {
+        let was = stock_on(GameType::Slayer, script_block(crate::ext::Mode::Rules));
+        assert_ne!(was[TYPE_AREA.start], 0, "Slayer's stock type area is not empty");
+        let mut b = was;
+        assert!(onto_script_index(&mut b, None));
+        let v = GameVariant::from_bytes(&b).unwrap();
+        assert_eq!(v.game_type(), GameType::Script);
+        assert!(check(&v).is_empty(), "{:?}", check(&v));
+        // Only the index and the type area changed.
+        let mut want = was;
+        want[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&SCRIPT_INDEX.to_le_bytes());
+        want[TYPE_AREA].fill(0);
+        assert_eq!(b, want);
+        // It is on the script index, so a second move is a no-op.
+        assert!(!onto_script_index(&mut b, None));
+    }
+
+    #[test]
+    fn a_retail_slayer_record_and_one_with_an_ignored_block_stay() {
+        for block in [[0u8; crate::ext::LEN], script_block(crate::ext::Mode::None)] {
+            let was = stock_on(GameType::Slayer, block);
+            let mut b = was;
+            assert!(!onto_script_index(&mut b, None));
+            assert_eq!(b, was);
+        }
+        let mut broken = script_block(crate::ext::Mode::Rules);
+        broken[5] ^= 1;
+        let was = stock_on(GameType::Slayer, broken);
+        let mut b = was;
+        assert!(!onto_script_index(&mut b, None));
+        assert_eq!(b, was);
+        // Another engine's script record is not Slayer's to move.
+        let was = stock_on(GameType::Oddball, script_block(crate::ext::Mode::Rules));
+        let mut b = was;
+        assert!(!onto_script_index(&mut b, Some(crate::ext::Script::default())));
+        assert_eq!(b, was);
+    }
+
+    #[test]
+    fn a_no_mode_juggernaut_record_takes_the_built_ins_reference_on_the_script_index() {
+        use crate::ext::{Mode, Script};
+        let jugg = Script { mode: Mode::Rules, prefix: [9; 8], options: 1 };
+        for block in [[0u8; crate::ext::LEN], script_block(Mode::None)] {
+            let was = stock_on(GameType::Juggernaut, block);
+            let mut b = was;
+            // A build that runs no Juggernaut port leaves the record.
+            assert!(!onto_script_index(&mut b, None));
+            assert_eq!(b, was);
+            assert!(onto_script_index(&mut b, Some(jugg)));
+            let v = GameVariant::from_bytes(&b).unwrap();
+            assert_eq!(v.game_type(), GameType::Script);
+            assert!(check(&v).is_empty(), "{:?}", check(&v));
+            assert_eq!(v.ext().script, jugg);
+            // The block's other options, and the common settings, stay.
+            let kept = GameVariant::from_bytes(&was).unwrap().ext();
+            assert_eq!(v.ext().gravity, kept.gravity);
+            assert_eq!(&b[0x4c..0xe0], &was[0x4c..0xe0]);
+        }
+        // A Juggernaut record that names a script plays that script.
+        let named = stock_on(GameType::Juggernaut, script_block(Mode::Rules));
+        let mut b = named;
+        assert!(!onto_script_index(&mut b, Some(jugg)));
+        assert_eq!(b, named);
     }
 
     #[test]
