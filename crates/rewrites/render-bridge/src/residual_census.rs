@@ -319,7 +319,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "transparents",
         entry: 0x0001_e370,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
@@ -1383,7 +1383,15 @@ mod tests {
                 r.status,
                 if matches!(
                     r.name,
-                    "water_teardown" | "sky" | "scene_clear" | "target_select" | "screen_effect"
+                    "water_teardown"
+                        | "sky"
+                        | "scene_clear"
+                        | "target_select"
+                        | "transparents"
+                        | "screen_effects"
+                        | "colour_pass"
+                        | "screen_effect"
+                        | "fade"
                 ) {
                     Status::Partial
                 } else {

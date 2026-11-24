@@ -17,7 +17,9 @@ use timeline::native::{Metric, Stage};
 
 pub const ID: &str = "native-transparents";
 
-use points::scene_effects::{GEOMETRY_RANGE_READY, SCENE_TRANSPARENTS_END};
+use points::scene_effects::{
+    GEOMETRY_RANGE_READY, SCENE_TRANSPARENTS_END, SUBPART_DRAWS, WATER_INDEX_END, WATER_INDEX_READY,
+};
 const GEOMETRY_RANGE_TAIL: u32 = 0x0004_dae0;
 const GEOMETRY_EMITTER_CALLER: u32 = 0x0004_d626;
 const TRANSPARENT_DRAW_CALLER: u32 = 0x0004_1010;
@@ -113,7 +115,6 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     }
 }
 
-/// The guest has evaluated the current subpart and flushed its textures.
 fn subpart_range(mem: &dyn GuestRead, esp: u32) -> Option<IndexRange> {
     let topology = match mem.read_u32(esp)? {
         5 => IndexTopology::List,
@@ -297,7 +298,7 @@ pub struct NativeTransparents;
 
 impl Feature for NativeTransparents {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "Ordered native vertex bindings for sorted transparents")
+        Manifest::new(ID, "Ordered native indexed draws for sorted transparents")
             .doc("docs/graphics/native-renderer.md")
     }
 
@@ -308,7 +309,6 @@ impl Feature for NativeTransparents {
         if !on(b.switches()) {
             return Ok(());
         }
-        use points::scene_effects::{WATER_INDEX_READY, WATER_INDEX_END};
         b.raw().before(&WATER_INDEX_READY, "native_water_composite", |c| {
             let rt = Arc::clone(c.ctx.runtime());
             let can_resume = rt.read_dispatch(|dispatch| dispatch.has_resume(WATER_INDEX_END));
@@ -337,14 +337,19 @@ impl Feature for NativeTransparents {
             }
             Ok(Flow::Continue)
         }).context_only().optional();
-        for (site, resume) in points::scene_effects::SUBPART_DRAWS {
+        for (site, resume) in SUBPART_DRAWS {
             b.raw().before(site, "native_late_subpart_draw", move |c| {
-                let Some(emitter_esp) = c.cpu.esp.checked_add(12) else { return Ok(Flow::Continue) };
+                // The three DrawIndexedVertices arguments sit below the emitter frame.
+                let Some(emitter_esp) = c.cpu.esp.checked_add(12) else {
+                    return Ok(Flow::Continue);
+                };
                 let rt = Arc::clone(c.ctx.runtime());
                 let can_resume = rt.read_dispatch(|dispatch| dispatch.has_resume(resume));
                 let mut mem = rt.memory();
                 let read = ReadMemory(&*mem);
-                let Some(stage @ (Stage::Fog | Stage::Water)) = walk_stage(&read, emitter_esp) else {
+                let Some(stage @ (Stage::Transparents | Stage::Fog | Stage::Water)) =
+                    walk_stage(&read, emitter_esp)
+                else {
                     return Ok(Flow::Continue);
                 };
                 if !can_resume {
@@ -426,6 +431,47 @@ mod walk_tests {
     use super::*;
     use engine::memory::FlatMemory;
     use native_render::skip::CURRENT_LIST;
+
+    #[test]
+    fn subpart_walk_requires_the_live_sorted_layer_15_handler() {
+        let mut mem = FlatMemory::new(0x0040_0000, 0x0021_0000);
+        let scene = 0x005f_1000;
+        let handler = scene - 0x100;
+        let stack = handler - 0x200;
+        let data = 0x0060_0000 + transparent::DATA_OFFSET;
+        for (addr, value) in [
+            (points::GAME_GLOBALS.base, 0x005e_0000),
+            (crate::native_world::ACTIVE_BSP, 0x005d_0000),
+            (scene, 0x1234),
+            (handler, SORTED_HANDLER_RETURN),
+            (handler + 4, data),
+            (data - 4, transparent::GEOMETRY_HANDLER),
+            (native_render::skip::RENDER_RECORDS + 4, u32::MAX),
+            (stack, 6),
+            (stack + 4, 7),
+            (stack + 8, 0x005a_0000),
+            (stack + 12 + 0x18, GEOMETRY_EMITTER_CALLER),
+            (stack + 12 + 0x68, TRANSPARENT_DRAW_CALLER),
+            (stack + 12 + 0x78, 15),
+        ] {
+            mem.set_u32(addr, value).unwrap();
+        }
+        let read = ReadMemory(&mem);
+        let frame = stack + 12;
+        let mut scope = Scope::default();
+        scope.begin_view(&read, scene);
+        scope.begin_entry(&read, handler);
+        SCOPE.set(scope);
+        WALK_DATA.set(Some(data));
+        assert_eq!(walk_stage(&read, frame), Some(Stage::Transparents));
+        WALK_DATA.set(Some(data + ENTRY_BYTES));
+        assert_eq!(walk_stage(&read, frame), None);
+        WALK_DATA.set(Some(data));
+        mem.set_u32(frame + 0x78, 7).unwrap();
+        assert_eq!(walk_stage(&ReadMemory(&mem), frame), None);
+        WALK_DATA.set(None);
+        SCOPE.set(Scope::default());
+    }
 
     #[test]
     fn sorted_data_uses_live_indices_and_refuses_stale_entries() {
