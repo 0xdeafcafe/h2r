@@ -223,7 +223,18 @@ fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineI
     look.stage_states = applied.stage_states;
     let mut state = pass_state(&applied.render_states).map_err(Refusal::State)?;
     if state.blend.is_some() {
-        return Err(Refusal::Blended);
+        // The world issues opaque parts together. A replacement blend is
+        // independent of the destination only when the operation is known.
+        use gfx::state::{BlendOp, RenderStateType as R};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let operation = applied.render_states.iter().rev()
+            .find(|s| R::from_guest_index(&table, u32::from(s.state)) == Some(R::BlendOp));
+        if state.blend != Some(wgpu::BlendState::REPLACE)
+            || operation.map(|s| s.value) != Some(BlendOp::Add.xbox_value())
+        {
+            return Err(Refusal::Blended);
+        }
+        state.blend = None;
     }
     let inherits_cull = !sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
     if inherits_cull {
@@ -675,6 +686,19 @@ mod tests {
         let p = layer3_pass(&m).unwrap();
         assert_eq!(p.state.alpha_test, Some((wgpu::CompareFunction::Less, 64)));
         assert_eq!(f32::from_bits(p.look.stage_states[0].mip_lod_bias), 64.0);
+    }
+
+    #[test]
+    fn a_world_replacement_blend_needs_an_explicit_operation() {
+        use gfx::state::{BlendFactor, BlendOp, RenderStateType as R};
+        let mut states = vec![(R::AlphaBlendEnable, 1), (R::SrcBlend, BlendFactor::One.xbox_value()),
+            (R::DestBlend, BlendFactor::Zero.xbox_value())];
+        let build = |states: &[_]| layer3_pass(&material(3, vec![vec![opaque(implementation(0, true), states)]]));
+        assert_eq!(build(&states).unwrap_err(), Refusal::Blended);
+        states.push((R::BlendOp, BlendOp::Add.xbox_value()));
+        assert_eq!(build(&states).unwrap().state.blend, None);
+        states.push((R::BlendOp, BlendOp::Max.xbox_value()));
+        assert_eq!(build(&states).unwrap_err(), Refusal::Blended);
     }
 
     #[test]

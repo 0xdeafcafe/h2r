@@ -291,6 +291,19 @@ definitions. Model loads and uploads stay lazy when definitions exist.
 An empty map result logs once per stage. The hooks then return at an
 atomic flag check until the next map activation or snapshot restore.
 
+The structure's layer-3 pass accepts an explicit One/Zero/Add blend as
+opaque. Layer-3 object and first-person draws also accept that combination
+when the live device supplies its inherited fields. Scene object packets
+carry the resolved stencil reference. Object templates can leave blend and
+depth writes to the live state check. They take render and
+sampler bindings driven by the shader instance's scalar input. The model
+loader retains the effective state writes for the device-state checks.
+
+Layer 5 accepts a PRT declaration with the compiled registers and compatible
+fetches. A three-component packed byte, short or normalized short can feed
+a four-component input by supplying the encoded one in W. A shader that
+forces W to one also accepts a narrower input with the same numeric type.
+
 ## Native scene walks for effects and overlays
 
 The walks are on whenever the native renderer is. The effects walk shares the particles renderer.
