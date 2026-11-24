@@ -9,6 +9,8 @@
 //! <repo>/raw/<hh>/<hash>           raw resource bytes, by SHA-256
 //! <repo>/maps/<map>.txt            what a retail map holds (manifest)
 //! <repo>/maps/<map>.header         its 0x800-byte header
+//! <repo>/maps/<map>.skel           its skeleton: the bytes not in raw files (skeleton.rs)
+//! <repo>/maps/<map>.extents        its extent table: every other range by raw hash
 //! <repo>/extract.toml              versions and disc identity ([`ExtractRecord`])
 //! <repo>/conflicts.txt             keys with variants and the maps that differ
 //! ```
@@ -485,7 +487,7 @@ impl TagRepo {
         p
     }
 
-    fn raw_path(&self, hash: &str) -> PathBuf {
+    pub(crate) fn raw_path(&self, hash: &str) -> PathBuf {
         self.root.join("raw").join(&hash[..2]).join(hash)
     }
 
@@ -904,7 +906,7 @@ impl TagRepo {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(d) = path.parent() {
         fs::create_dir_all(d)?;
     }
@@ -965,4 +967,7 @@ pub struct PutReport {
     pub refused: Vec<(TagKey, String)>,
     /// Raw resources new to the store, and their bytes.
     pub raw_new: (usize, u64),
+    /// The map's skeleton and extent table, when the whole map was taken
+    /// ([`super::extract::store_skeleton`]).
+    pub skeleton: Option<super::skeleton::SkeletonReport>,
 }

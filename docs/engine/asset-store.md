@@ -1,8 +1,8 @@
 # The asset store: levels assembled from shared assets
 
-Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"); the skeleton, the store-backed map file, level images, mod patches and `LevelId` are not. "Decisions" lists what the owner has to choose.
-Code: `crates/formats/tags/src/repo` (the store's files and extraction), `crates/runtime/vfs/src/store_map.rs` (new: the map file served from the store), `crates/tools/workspace/src/level.rs` (new: level manifests and images), `crates/formats/content/src/package/` (packages and mods), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
-Switch: `store-maps` (a feature, on once slice AS2 is accepted), to be listed in [switches.md](../runtime/switches.md).
+Status: Design. The tag repository, the package build and the per-map rewrite it stands on are built ("What exists"), and so are slices AS1 and AS2: the skeleton and extent table, `h2 tags reassemble`, and the store-backed map file behind `store-maps`, proven on invented maps; their disc runs are not done ("Not verified"). Level images, mod patches and `LevelId` are not built. "Decisions" lists the owner's choices.
+Code: `crates/formats/tags/src/repo` (the store's files and extraction; `repo/skeleton.rs` the skeleton, the extent table and `StoreFile`), `crates/runtime/vfs/src/store_map.rs` (the map file served from the store), `crates/apps/boot/src/store_status.rs` (`store.status`), `crates/tools/workspace/src/level.rs` (new: level manifests and images), `crates/formats/content/src/package/` (packages and mods), `crates/apps/boot/src/packages.rs` (the game's side). Tests: each slice names its own.
+Switch: `store-maps` (`H2_FEATURES`, off until slice AS2 is accepted; [switches.md](../runtime/switches.md)).
 
 Every tag of every map on the user's discs is extracted once into one
 deduplicated store on the user's machine. A level the game loads is
@@ -32,12 +32,15 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 | A stale cache slot dropped when its source changes | `crates/extensions/game/src/map_slots.rs` ([cache-slots.md](../runtime/cache-slots.md), "Changed maps") | built |
 | Live edits of a loaded map's tags | `crates/extensions/hot-tags`, `edit.batch` ([live-mirror.md](../editor/live-mirror.md)) | built |
 | A level's identity on Live and in a film | `content::MapId`, the content set of `PackageId`s, a film's `DESC` map digest ([maps.md](../game/maps.md), [film-format.md](../game/film-format.md)) | built, the content set's session check is PK14 |
+| A map given back from the store byte for byte | `maps/<map>.skel` and `.extents`, `tags::repo::StoreFile`, `TagRepo::check_reassembly` at extraction, `h2 tags reassemble` ([tag-repo.md](../formats/tag-repo.md)) | built (AS1); not run on the disc |
+| The disc's maps served from the store | `vfs::store_map::StoreMapBackend` under `store-maps`, `store.status` | built (AS2); no boot from the store yet |
 
-What is missing: the store cannot give a map back exactly (`sbsp`,
-`ltmp` and `scnr` are lossy in it), the game reads maps from the disc
-and from whole-map caches, an asset's identity differs between maps for
-reasons that are not content (a sound's indices into its map's sound
-table), and a mod can only add tags or set fields.
+What is missing: the level tags (`sbsp`, `ltmp`, `scnr`) are lossy in
+the store, so a retail level is its skeleton and cannot be rebuilt from
+tags; packages still reach the game as whole-map caches; an asset's
+identity differs between maps for reasons that are not content (a
+sound's indices into its map's sound table); and a mod can only add tags
+or set fields.
 
 ## How it works
 
@@ -52,8 +55,8 @@ worktree on the machine; only the extractor writes to it.
 <store>/tags/<path>.<group>[~<h>]   an asset: a loose tag (tag-repo.md, "The repository on disk")
 <store>/raw/<hh>/<sha256>           a raw resource, by hash
 <store>/maps/<map>.txt              a level's manifest
-<store>/maps/<map>.skel             its skeleton (new)
-<store>/maps/<map>.extents          its extent table (new)
+<store>/maps/<map>.skel             its skeleton
+<store>/maps/<map>.extents          its extent table
 <store>/assets.idx                  the catalogue (new; derived, deleted and rebuilt freely)
 <store>/extract.toml                the disc's identity and the extraction versions
 <data>/store/layers/<PackageId>/    tags a package's builders made, in the store's format
@@ -101,16 +104,22 @@ and the assembler's "which levels does this change touch".
 - the level's name, class, scenario and globals, and every tag in slot
   order as key and variant (as built, `maps/<map>.txt`);
 - its **skeleton**: the bytes of the map file that are not raw
-  resources, at their offsets: the header, the BSP regions, the tag
-  index and the tag metadata. `maps/<map>.skel` holds them, compressed;
+  resources, at their offsets: the header, the BSP regions, the string
+  tables, the tag index and the tag metadata. `maps/<map>.skel` holds
+  them, deflate-compressed;
 - its **extent table**: every other byte range of the file as
-  `(offset, length, raw hash)`. The extractor's raw starts already tile
-  the raw region; a range no tag names is an extent of its own.
+  `(offset, length, raw hash)` (`maps/<map>.extents`, text). Each local
+  raw resource a tag names is an extent of its own file; a range no tag
+  names (padding, bytes past the declared size) is stored in `raw/` by
+  hash as an extent of its own ([tag-repo.md](../formats/tag-repo.md),
+  "Skeletons and extent tables").
 
 The rule the skeleton and the extents keep: together they give the disc
-map back byte for byte. The extractor checks this for every map against
-the file hash in `extract.toml` before it records the map
-(`TagRepo::reassemble`, new). The skeleton is what makes the store whole
+map back byte for byte. The extractor reads every map back through them
+(`tags::repo::StoreFile`) and checks the SHA-256 against the map file's
+before it records the map (`TagRepo::check_reassembly`); a store
+extracted before skeletons existed is taken again map by map
+(`extract::Why::Skeleton`). The skeleton is what makes the store whole
 while the level tags are lossy: nothing the schema cannot describe is
 lost, because it is still there as the disc's bytes.
 
@@ -141,8 +150,8 @@ screen. Studio's first start is the same call (`workspace.extract`).
   everything, and a stopped run redoes one map.
 - **From the store itself.** Because the skeleton and extents give each
   map back exactly, a re-extraction after the first reads the maps from
-  the store (`MapSource` over `store_map::StoreFile`) when the disc is
-  not there. The disc image is needed once.
+  the store (`MapSource` over `tags::repo::StoreFile`, which is `Read`
+  and `Seek`) when the disc is not there. The disc image is needed once.
 - **The rest of the disc.** The executable, the movies and the font
   files are not assets. The first extraction copies them under
   `<data>/disc/` (about 560 MB, **V** by the directory of the owner's
@@ -195,6 +204,14 @@ guest:
 
 **A level with nothing over it** is its skeleton and its extents: the
 disc's bytes, the disc's SHA-256, the retail `MapId`. No build runs.
+`StoreMapBackend` serves it under the `store-maps` feature from the
+store at `<data>/tags`, below every other map layer
+(`game::map_override::mount`): the disc's map files are never read, a
+map the store lacks is `ObjectNameNotFound` with a line naming the store
+and the map, and a raw file that is missing fails the read naming its
+hash. The listing of `maps` is the store's maps. A map's extent table
+that changes while the game runs is a changed map (`map_changed`),
+served anew from its next open with no handle on the old one.
 
 **A level with layers** (a package item whose `maps` takes it) gets an
 image from `workspace::level::assemble` (new):
@@ -419,11 +436,11 @@ is **S**, slice AS8's test). A level with nothing over it also has a
 | Caller | Call | Does |
 |---|---|---|
 | `h2 build`, `h2 play`, `h2 run`, `h2 serve`, Studio | `tags::repo::extract::update`, then `store::catalogue::write` | the plan, the extraction, the catalogue |
-| The VFS | `vfs::store_map::StoreFile::{len, read_at}` | a level's bytes from an image or a skeleton and the raw files |
+| The VFS | `vfs::store_map::StoreMapBackend` over `StoreFile::{len, read_at}` | a level's bytes from an image or a skeleton and the raw files |
 | `boot::packages::prepare_maps`, Studio's `package.build` | `workspace::level::assemble(store, set, level) -> Level {id, image, extents, report}` | the image for a level under a set |
-| The game's agent API | `packages.list` (built), `store.status` (new): the store's path, maps, sizes, images, what is stale | read |
+| The game's agent API | `packages.list`, `store.status` (built): the store's path, whether its maps are served, each map's length, SHA-256, skeleton size and extents, what is stale; images with AS4 | read |
 | Studio's API | `workspace.status`, `workspace.extract`, `workspace.prune` (built); `asset.fork`, `asset.revert`, `package.diff`, `package.import` (new) | above |
-| `h2 tags` | `extract --update` (built), `reassemble <map> -o FILE`, `level <map> [--set FILE]` (new) | the coordinator's and CI's entry |
+| `h2 tags` | `extract --update`, `reassemble MAP --out FILE`, `reassemble --all [--compare DISC]` (built), `level <map> [--set FILE]` (new) | the coordinator's and CI's entry |
 
 ## Rules and limits
 
@@ -478,7 +495,13 @@ is **S**, slice AS8's test). A level with nothing over it also has a
 `reassemble` equal to the disc for all 30 maps, and the game booting a
 retail level through `vfs::store_map` with the disc's maps hidden. It
 changes no tag and no identity, needs no builder work, and settles
-risks 1 and 6 and the real size of the store.
+risks 1 and 6 and the real size of the store. The disc check:
+
+```sh
+h2 tags extract disc/halo2.iso --out <data>/tags --update
+h2 tags reassemble --repo <data>/tags --all --compare disc/halo2.iso
+H2_FEATURES=store-maps h2 run ...   # then: h2 agent store.status
+```
 
 ## Build slices
 
@@ -489,7 +512,7 @@ them. Tests are headless on invented maps unless marked disc
 | # | Slice | Needs | Files | Tests | Accepted when |
 |---|---|---|---|---|---|
 | AS1 | **Skeleton and extents.** The extractor writes `maps/<map>.skel` and `.extents`; `TagRepo::reassemble`; the plan re-extracts a map lacking them; `h2 tags reassemble` | nothing | `crates/formats/tags/src/repo/{skeleton.rs (new), extract.rs, store.rs, tests.rs}`, `crates/apps/h2-tools/src/tag_repo_cmd.rs`, [tag-repo.md](../formats/tag-repo.md) | an invented map with shared pointers, an unnamed raw range and two BSPs reassembles to its bytes; a missing raw file is a named error; disc: all 30 maps reassemble to their SHA-256 | the disc test passes and prints the store's size by part |
-| AS2 | **The map file from the store.** `vfs::store_map` (length, ranged reads, a level by name), wired into boot's backend chain under `store-maps`; `store.status` | AS1 | `crates/runtime/vfs/src/{store_map.rs (new), lib.rs}`, `crates/runtime/vfs/tests/store_map.rs` (new), `crates/apps/boot/src/lib.rs`, `crates/extensions/agent` (`store.status`), [agent-api.md](../runtime/agent-api.md), [switches.md](../runtime/switches.md) | reads across extent borders equal the reassembled bytes at every offset class; a store lacking a level falls to a named error, never to another file; `map_changed` fires when a level's extents change | a retail level boots and plays from the store with the image's maps hidden, and its film's map digest equals the disc run's |
+| AS2 | **The map file from the store.** `vfs::store_map` (length, ranged reads, a level by name), wired into boot's backend chain under `store-maps`; `store.status` | AS1 | `crates/runtime/vfs/src/{store_map.rs (new), lib.rs}`, `crates/runtime/vfs/tests/store_map.rs` (new), `crates/apps/boot/src/{lib.rs, store_status.rs (new)}`, `crates/extensions/game/src/map_override.rs`, [agent-api.md](../runtime/agent-api.md), [switches.md](../runtime/switches.md) | reads across extent borders equal the reassembled bytes at every offset class; a store lacking a level falls to a named error, never to another file; `map_changed` fires when a level's extents change | a retail level boots and plays from the store with the image's maps hidden, and its film's map digest equals the disc run's |
 | AS3 | **Extraction on compile.** `h2 build` and the pre-boot plan call `extract::update`; the stat fast path; the non-map files copied to `<data>/disc/`; re-extraction from the store; progress | AS1 | `crates/apps/cli/src/{build_cmd, package_prepare.rs}`, `crates/formats/tags/src/repo/extract.rs`, [building.md](../runtime/building.md), [storage.md](../runtime/storage.md) | unchanged input opens no map; a touched map file is hashed once and taken alone; a moved layout hash re-extracts from the store with no disc; an interrupted run resumes | `h2 build` on a fresh data root leaves a store that AS1's disc test accepts, and a second run does nothing |
 | AS4 | **Level images.** `workspace::level::{assemble, LevelId}`: `build_map` on the skeleton, raw as extents, the checksum from per-file sums, the image cache and its cap; `PackageRewrite` and `<data>/packages/cache/` removed | AS2 | `crates/tools/workspace/src/{level.rs (new), rewrite.rs, build.rs, game.rs}`, `crates/formats/content/src/id.rs`, `crates/apps/boot/src/packages.rs`, [studio-redesign.md](../editor/studio-redesign.md) | the image and extents read back equal `build_map`'s whole map byte for byte; golden `LevelId`s on invented hashes; a set change gives another id and the first image is still a hit; an image over the tag memory bound is refused naming the assets | a multiplayer level with the Pogo loads from an image and `<data>/packages/cache/` is not written |
 | AS5 | **Normal forms and the catalogue.** `tags::repo::normal` for sounds, bitmaps and padded raw; the asset hash; `assets.idx`; Studio's In maps and Where used from it | AS1 | `crates/formats/tags/src/repo/{normal.rs (new), catalogue.rs (new)}`, `crates/tools/workspace/src/hash.rs`, `crates/apps/studio/src/app/assets.rs`, `docs/formats/notes/` (the variant counts) | two invented maps with one sound at different table indices give one asset hash and another when a sample differs; the catalogue rebuilt from manifests equals the one kept | the note records the disc's variant counts by group before and after |
@@ -504,6 +527,7 @@ them. Tests are headless on invented maps unless marked disc
 | AS14 (later) | **Retail levels built whole.** With W10, a retail level assembles `fresh` and its skeleton is dropped | W10 | as W10 | as W10 | a retail level with no skeleton loads |
 | AS15 (later, **E first**) | **No slot copy.** The guest's slot answered as warm and its reads routed to the store file | AS2; a read of the status and resource-read functions | `crates/extensions/game/src/map_copy.rs` | the kernel cache-slot test with the route on | a level load copies nothing and `<data>/disk/` shrinks |
 
+AS1 and AS2 are built; their disc checks are the coordinator's (above).
 AS1, AS3 and AS5 run together; AS2 follows AS1; AS4 follows AS2; AS6,
 AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
 
@@ -561,11 +585,18 @@ AS8, AS10, AS11, AS12 and AS13 follow AS4 side by side.
   root (**V**: the image's directory listing, `du`).
 - Skeleton sizes, the store's total, and the converted levels' size as
   layers are **S**: AS1 and AS10 measure them.
-- `LevelId`, the conflict table, `from`, `replaces`, `tag-delta`, the
-  image and the extent shim are **Design**.
+- The skeleton, the extent table, `StoreFile` and `StoreMapBackend` give
+  invented maps back byte for byte at every offset class (**Test**,
+  `crates/formats/tags/src/repo/tests.rs`,
+  `crates/runtime/vfs/tests/store_map.rs`).
+- `LevelId`, the conflict table, `from`, `replaces`, `tag-delta` and the
+  image are **Design**.
 
 ## Not verified
 
+- That all 30 disc maps reassemble to their SHA-256, and a retail level
+  boots and plays under `store-maps` with a film digest equal to the
+  disc run's (AS1 and AS2's acceptance).
 - That the header checksum of a level can be made from per-file sums.
 - That the guest's slot copy through thousands of small files is as
   fast as from one file.

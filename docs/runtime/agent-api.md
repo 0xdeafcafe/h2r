@@ -127,6 +127,7 @@ connection to hold `session.claim`.
 | `map.reload` | act | [Test maps](#test-maps) |
 | `maps.load`, `maps.test.list`, `create`, `load`, `remove` | act, read, act, act, act | [Test maps](#test-maps) |
 | `packages.list` | read | [Content packages](#content-packages) |
+| `store.status` | read | [The tag store](#the-tag-store) |
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
@@ -5567,6 +5568,34 @@ game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
 
 ```sh
 h2 agent packages.list
+```
+
+## The tag store
+
+The tag store at `<data>/tags` and the maps it can give back byte for
+byte from their skeletons and extent tables
+([asset-store.md](../engine/asset-store.md)). With the `store-maps`
+feature on, the game reads the disc's maps from it and never from the
+disc. Registered by `crates/apps/boot/src/store_status.rs`; the maps are
+`vfs::store_map::status`, read from the extent tables.
+
+| Method | Access | Params and result |
+|---|---|---|
+| `store.status` | read | `{}` → `{root, exists, served, maps, stale, broken}` |
+
+- `root`: the store's directory; `exists`: whether it is a tag
+  repository.
+- `served`: whether this boot serves the disc's maps from it
+  (`store-maps`).
+- `maps`: each map it can serve: `map`, `length`, `sha256` (the file it
+  was extracted from), `skeleton_bytes` (the skeleton file, compressed),
+  `extents` and `extent_bytes`.
+- `stale`: maps `extract.toml` records with no skeleton or extent table
+  (`h2 tags extract --update` takes them again).
+- `broken`: maps whose extent table does not read, with `why`.
+
+```sh
+h2 agent store.status
 ```
 
 ## Rules and limits

@@ -13,6 +13,8 @@ mod controller_lights;
 mod idle_audio;
 // The game's content packages and `packages.list` (packages.rs).
 pub mod packages;
+// `store.status`: the tag store and the maps it serves (store_status.rs).
+pub mod store_status;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 #[cfg(feature = "test-maps")]
@@ -230,6 +232,10 @@ fn run_configured(
     #[cfg(not(feature = "desktop-runtime"))]
     anyhow::ensure!(host_light, "the host binary requires the light host profile");
     let coalesce_host_ticks = host_light && switches.feature("host-light.tick-pacing", false);
+    // `store-maps`: the disc's maps served from the tag store at
+    // <data>/tags (docs/engine/asset-store.md, AS2); off until AS2 is
+    // accepted.
+    let store_maps = switches.feature("store-maps", false);
     let replaying = replay.is_some();
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
@@ -497,6 +503,7 @@ fn run_configured(
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
     cfg.map_guest_reads = options.map_guest_reads;
+    cfg.store_maps = store_maps.then(|| store_status::root(&opts.data_root));
     if host_light {
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
@@ -1417,6 +1424,11 @@ fn run_configured(
             Arc::clone(&content_packages.set),
             content_packages.served.clone(),
         );
+    }
+    // store.status: the tag store and whether its maps are served
+    // (store_status.rs).
+    if let Some(a) = &agent {
+        store_status::install(&a.agent, &opts.data_root, store_maps);
     }
     // game.menu: leave the game for the main menu through the agent's
     // guest calls (game_menu.rs, docs/runtime/agent-api.md).

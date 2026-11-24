@@ -20,12 +20,14 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 pub mod build;
 pub mod extract;
 pub mod format;
+pub mod skeleton;
 pub mod store;
 
 pub use build::{BuildOptions, to_tag_set};
 pub use extract::{
     EXTRACT_VERSION, Layouts, MapSource, Plan, SharedFiles, compare, plan, store_map, update,
 };
+pub use skeleton::StoreFile;
 pub use store::{ExtractRecord, TagRepo};
 
 /// What can go wrong reading, writing or building tags.
@@ -41,6 +43,15 @@ pub enum Error {
     Invalid(String),
     #[error("tag file: {0}")]
     Format(String),
+    /// A raw file a map's extent table names is not in the store
+    /// ([`skeleton::StoreFile`]).
+    #[error("store map {map}: raw {hash} ({len} bytes at {offset:#x}) is missing from the store")]
+    MissingRaw {
+        map: String,
+        hash: String,
+        offset: u64,
+        len: u64,
+    },
 }
 
 /// Result for the repository.

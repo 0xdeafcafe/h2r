@@ -8,6 +8,8 @@ license.workspace = true
 map.workspace = true
 thiserror.workspace = true
 sha2 = { workspace = true }
+# A map's skeleton in the store, compressed (repo/skeleton.rs).
+flate2 = "1"
 
 [dev-dependencies]
 xiso.workspace = true
