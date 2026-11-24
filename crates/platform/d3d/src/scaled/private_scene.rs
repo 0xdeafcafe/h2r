@@ -230,6 +230,28 @@ impl<'a> MixedPrivatePass<'a> {
         let image = self.backend.image(self.surface(key)?);
         self.backend.view.read_scene_target(image)
     }
+
+    /// Completes a display frame drawn here and hands its `presented`
+    /// target, on the borrowed backend's display grid, to the caller, which
+    /// shows it (`GfxBackend::show_between`, or a Swap's
+    /// `present_with_outputs_showing`; both keep it until the next one).
+    /// Its guest-size handles and the other attachments go with the pass.
+    pub fn into_image(mut self, presented: TargetRef) -> Result<SurfaceId, String> {
+        self.commands.check_private_lightmaps()?;
+        let surface = self.surface(presented)?;
+        if surface.view.is_none() {
+            return Err(format!("{presented:?} is not on the display grid"));
+        }
+        let image = self.backend.image(surface);
+        if surface.guest == Some(image) {
+            return Err(format!("{presented:?} has no display-grid image"));
+        }
+        self.backend.view.flush()?;
+        self.targets.remove(&presented);
+        // Everything but the display-grid image.
+        self.backend.destroy_surface(Surface { view: None, ..surface })?;
+        Ok(image)
+    }
 }
 
 impl Drop for MixedPrivatePass<'_> {

@@ -420,6 +420,10 @@ impl<B: Backend> Worker<B> {
     }
 
     pub(super) fn owner_present(&mut self, present: Present<B>) {
+        // The metadata is this thread's present around this call
+        // (`Worker::exec`): the draw and a display-rate loop read the
+        // guest's image from it (`present_camera::guest_image`) to place
+        // the marks of the display frames they show.
         let Present { n, surface, flags, gamma, candidate, generation, events, metadata: _ } = present;
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
         let accepted = candidate.and_then(|submission| {

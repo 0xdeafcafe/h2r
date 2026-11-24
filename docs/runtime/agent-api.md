@@ -1493,6 +1493,8 @@ headless run lock it). Its fields, counted since the loop was installed:
 | `moved_draws` | carried draws drawn on a blended camera |
 | `moved_stages` | typed stages drawn on a blended camera |
 | `held_stages` | typed stages in a game view drawn at their tick's camera |
+| `marks_moved` | views on display frames whose world marks were moved onto the camera the frame drew them with |
+| `marks_held` | views on display frames whose world marks kept their image's camera (no drawn view at their viewport) |
 
 At `--fps 60` and above with the frame owner on, `blended` rises with
 play; at 30 it stays 0 and `swaps` still counts. The loop is in
