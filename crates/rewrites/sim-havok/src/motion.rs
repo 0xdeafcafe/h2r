@@ -50,7 +50,7 @@ fn dot3(fp: &Checked, a: Vector, b: Vector) -> f32 {
     )
 }
 
-fn rotate(fp: &Checked, columns: &Basis, v: Vector) -> Vector {
+pub fn rotate(fp: &Checked, columns: &Basis, v: Vector) -> Vector {
     std::array::from_fn(|i| {
         let xy = fp.add(fp.mul(columns[0][i], v[0]), fp.mul(columns[1][i], v[1]));
         fp.add(xy, fp.mul(columns[2][i], v[2]))
