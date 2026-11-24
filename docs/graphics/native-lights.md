@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Dynamic lights' layers 12 and 13 over cluster and model geometry for a group drawn from the scene, all three shadow layers drawn from the scene, the object filter, the light passes and their gathered groups typed into the frame scene, the gathered light and shadow geometry walk, the shadow replacements and the first-person lights' layers 12 and 13 drawn from the scene are built; the visible-light gather, the first-person lights' layers 11 and 14 and parity with D3D are not.
-Code: `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
+Status: Partly built. Rust gathers visible lights and their lists. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
+Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).
@@ -87,9 +87,14 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
 
 ### Gathered light and shadow geometry
 
-At `RENDER_LIGHT_PASSES` the game has chosen the light, receivers and
-casters. It still computes the projection and scissor and produces the
-gel. Immediately before `LAYER_BUILD` runs, Rust reads the active
+At `RENDER_LIGHT_PASSES` the game has chosen the light. Its item walk
+builds the receiver and caster lists. Whole-pass admission uses these
+lists, the light's projected bounds and its pass flags. The graph's
+view-target draws use the viewport their target setup establishes. A
+shader gel, shadow projection, off-target draw or additional caster
+with geometry leaves the light on the per-layer path. The per-layer
+path computes the projection and produces the gel before its draws.
+Immediately before `LAYER_BUILD` runs, Rust reads the active
 interval of the appropriate gathered list. Layers 11–14 use receivers
 and layer 10 uses casters. The caller identifies the dynamic light, an
 additional caster, or an object shadow. Each candidate must have the
@@ -208,7 +213,12 @@ object shadows outside a dynamic light.
 
 ### First-person lights from the scene
 
-At a first-person light's first layer draw
+Whole-pass admission reads each slot after the loop poses its volume
+and replays its records. A slot with only supported view-target groups,
+including an empty slot with records, can issue its constants, draws
+and tail together.
+
+On the per-layer path, at a first-person light's first layer draw
 (`native_lights::first_person_layer`; the loop's light index and entry
 pointer read from its frame, `first_person_entry`), the light goes into
 the first person's view of the frame scene with its steps
@@ -239,16 +249,43 @@ the layers drawn this way in `scene_first_person_light_layers_alone`
   from the scene takes models too ("Gathered groups in the scene").
 - **Shading.** Each draw takes its view constants and W range at issue,
   the light's 36 frame words in `c[31..39]`, material colours and
-  inherited device culling. The guest runs the sphere projection and
-  rounds its rectangle before this hook. The host reads that integer
-  device scissor, intersects the viewport and scales the half-open
-  rectangle independently for each copy. Empty rectangles cover no pixels.
+  inherited device culling. The sphere projection supplies six float
+  words in guest memory. The device scissor comes from the render state
+  at the draw. Binding the view target for layers 12 and 13 resets it
+  to the viewport. The host intersects it with the viewport and scales the
+  half-open pixel rectangle independently for each copy. Empty
+  rectangles cover no pixels.
 
 - **Shadows.** Layer 10's casters draw into a depth texture of our own from the light's projection (`0x00048ee0`, ported as a pure function), as [native-shadows.md](native-shadows.md) describes. Applying the shadow term inside the light's own pass (`GREATER`, one tap as the D3D path's), instead of layer 11's alpha marks, is not built; layers 10, 11 and 14 are the shadow stage's or D3D's, in their place before layers 12 and 13.
 
 ### The light's constants
 
-`engine::light_constants::light_globals` returns the whole `0x0004a1e0` block (with `0x000497a0`'s frame) reading guest memory and writing none, and `LightGlobals::write` stores it. `engine::shadow_constants::shadow_globals` does the same for `0x00048ee0`. The arithmetic is the original's instruction for instruction, SSE through the `simd` crate under the caller's MXCSR and the special frame's x87 block through `x87::abi` under its control word, so the words are bit-equal (NaNs, rounding modes and precisions included); the image's constants are read at their addresses. `0x001650a0` (the sphere's screen bounds) is the caller's to answer, and `0x0003a550` (the scissor) the caller's to run after. `engine/tests/light_constants_differential.rs` runs the original, lifted, on the IR interpreter from seeded states and compares all memory; `engine/tests/light_constants.rs` checks invented lights. `engine/tests/shadow_constants_differential.rs` and `shadow_constants.rs` do the same for the shadow block. What the trace found:
+`light_constants::projected_light_globals` computes the light block for
+`0x0004a1e0`, including the frame from `0x000497a0` and the sphere's
+screen bounds from `0x001650a0`. SSE runs under the guest's MXCSR and
+the special frame's x87 arithmetic uses its control word. The functions
+read their constants from the image. An offscreen sphere takes the
+guest's whole-viewport fallback. A projection fault refuses the typed
+pass before it writes memory.
+
+`light_gather::typed::plan` reads the block, the site's flags, any
+shadow projection and the five shader-input masks marked dirty by
+`0x0001be50`. The shadow calculation consumes this light's frame rows,
+falloff and pass flags before any of them reach guest RAM. A shadow
+with a live cached texture keeps the original setup, whose
+`0x0001cf50` unbinds the texture. After whole-pass admission,
+`Globals::write` publishes the light block, dirty masks, flags and
+projection in site order. Object shadows apply their weight to the
+first falloff word after projection.
+
+`engine/tests/light_constants_differential.rs` and
+`engine/tests/shadow_constants_differential.rs` compare seeded guest
+memory against the lifted setup functions. `screen_bounds_match_the_lifted_original` in
+`engine/tests/light_gather_differential.rs` compares the sphere projection
+with the retail instructions.
+`engine/tests/light_constants.rs` covers all three callers' flag and
+weight rules, complete setup memory and refusal before publication.
+
 - `0x0004a1e0` (`ret 0x10`, about 250 instructions): EAX the light
   record's `+0x84` (so `[EAX+0x50]` is the record's colour A at
   `+0xd4`, `+0x5c` colour B, `+0x68`..`+0x84` the record's words
@@ -265,7 +302,9 @@ the layers drawn this way in `scene_first_person_light_layers_alone`
   byte at `0x00485a44`, and calls `0x000497a0` (about 560
   instructions, `ret 0x20`: the light's frustum and gel projection
   into `0x0048597c`, `0x00485a0c`, `0x00485a1c`, `0x00485a2c`) and
-  `0x0003a550` (the scissor from that rectangle, through D3D).
+  `0x0003a550`, which updates shader input masks, uploads the light
+  frame and renders the gel for a valid shader reference. The device
+  scissor is inherited through this call.
 - `0x000497a0` builds a 31-word frame block: the origin (the
   context's `+0x2c`, or, for a definition with flags `0x20` and
   `0x40000`, the globals at `0x004b9da0` moved along the light's axes
@@ -365,13 +404,13 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
     memory; both choosers' answers and stack) and
     `engine/tests/light_passes.rs`.
 - **Engine constants.** The light's vertex constants are uploaded by
-  `0x0003a550` (the last call of `0x0004a1e0`), not by the pass: the
-  frame block and the five words after it, 36 dwords from `0x0048597c`
+  `0x0003a550`, the last call of `0x0004a1e0`. It sends the frame
+  block and the five words after it, 36 dwords from `0x0048597c`
   to `c[31]`..`c[39]` (`0x003f7330` takes ECX the first register in
   hardware numbering and the dword count on the stack: it writes the
   push-buffer methods `0x1ea4` and `0x0b80`). The shadow block goes to
-  `c[40]`..`c[48]` the same way. The original constants call runs
-  before admission. The host checks its 36 frame words against
+  `c[40]`..`c[48]` the same way. On the per-layer path the original
+  constants call runs before admission. The host checks its 36 frame words against
   `LightGlobals::frame_constants` before taking any dispatches. The
   same function then, for a definition with a `shad` at `+0xdc`/`+0xe0`,
   draws that shader into render target 13 (shader layer 1, pass -1,
@@ -492,7 +531,7 @@ The host takes each of layers 12 and 13 a light's steps draw, shadowed or not, w
 
 - On the resolved-draw path only structure geometry is drawn natively, and models keep their D3D handlers. A split may consume a contiguous native prefix; the remaining entries run in guest order. A whole group of layer 12 or 13, structure and model entries alike, is drawn from the scene with no handler.
 - A light that samples a shadow map (engine textures 13 and 8), an animated input, an engine-driven state from a source other than the instance's scalar 21 or an unsupplied constant keeps its D3D passes (`light_look`).
-- The visible-light gather at `0x00031c80` runs as a Rust frame body when the lights stage is on, and hands each step it does not port to the guest ([native-light-gather.md](native-light-gather.md), L2); one light's passes (`0x00031170`) run as a Rust body too, each callee a guest call (L5). Object-model lights run in the guest. The object-shadow gather and admitted mask casters run in `light_gather::object_shadows` (L7), with guest calls for visibility, projection, targets and layer draws. The first-person lights' loop (`0x000404b0`) and each slot's record replay (`0x000402b0`) run as Rust bodies, each callee a guest call (L6): layers 11 and 14 draw through D3D, and only layers 12 and 13 whose groups the scene holds whole are drawn from the scene.
+- The visible-light gather, first-person record replay and ranked object-shadow list run as Rust bodies. The dynamic pass body offers the current light after its item lists are ready. A complete admission takes every supported draw and the tail together. A refusal continues at the next guest step with the same lists. The per-layer path keeps the original calls for shader setup, targets and draws. See [native-light-gather.md](native-light-gather.md).
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, and the surfaces left to D3D; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 
 ## Not verified

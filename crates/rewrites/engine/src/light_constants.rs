@@ -46,7 +46,7 @@ pub const LIGHT_FRAME_CLEANUP: u32 = 0x20;
 pub const SCREEN_BOUNDS: u32 = 0x0016_50a0;
 pub const SCREEN_BOUNDS_CLEANUP: u32 = 4;
 /// `0x0003a550`: dirty inputs, upload the light frame and draw the shader gel.
-pub const SCISSOR: u32 = 0x0003_a550;
+pub const UPLOAD_LIGHT_FRAME: u32 = 0x0003_a550;
 
 /// The globals the call reads and writes.
 pub mod global {
