@@ -89,7 +89,7 @@ fn install_table(b: &mut Builder, table: &'static Table) {
 }
 
 /// The original at an entry, or its resume at a site.
-fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, site: bool) -> Result<TransferAbi, GuestFault> {
+pub(crate) fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, site: bool) -> Result<TransferAbi, GuestFault> {
     let original = if site {
         ctx.runtime().resolve_original_resume(pc)
     } else {
