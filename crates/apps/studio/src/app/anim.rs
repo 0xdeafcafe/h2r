@@ -1,5 +1,5 @@
 //! Model poses: a `jmad` tag's animations listed, and one sampled on the
-//! model that uses it (docs/editor/rich-editors.md, "Model poses", slice
+//! model that uses it (docs/editor/agent-api.md, "Model poses", slice
 //! M1). The Animation window ([`crate::ui`]) and the agent API
 //! (`anim.list`, `anim.pose`, [`crate::api::anim`]) both go through the
 //! `App` methods here, so they are one path.
