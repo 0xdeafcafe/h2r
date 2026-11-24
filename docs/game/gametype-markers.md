@@ -1,7 +1,7 @@
 # Game type markers
 
-Status: Partly built. The marker set and the area model exist (MK1), and Studio draws the markers and answers `markers.list` and `markers.render` (MK4); the area in the document, the zone read, the drawing in the game and the editing are design.
-Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`. Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`.
+Status: Partly built. The marker set and the area model exist (MK1), Studio draws the markers and answers `markers.list` and `markers.render` (MK4), and Forge draws them as world lines and answers `render.markers` (MK6); the area in the document, the zone read, the skin and the editing are design.
+Code: `crates/formats/game-markers/src/lib.rs` (`Marker::mesh`), `crates/formats/game-markers/src/area.rs` (`Area`), `crates/tools/scenario-edit/src/marker_view.rs` (`placed`, `overlays`), `crates/apps/studio/src/api/markers.rs`, `crates/extensions/game/src/forge_glue/markers_world.rs` (Forge's source, `render.markers`). Tests: `crates/formats/game-markers/src/tests.rs`, `marker_view.rs`, `crates/apps/studio/src/api/tests/markers_tests.rs`, `crates/extensions/game/src/forge_glue/markers_world/tests.rs`.
 Switch: none.
 
 A game type's parts are rows of a scenario with no body: a player
@@ -23,13 +23,13 @@ plus **C**: the retail games as publicly documented.
 
 | Part | Stored as | Forge draws | Studio draws |
 |---|---|---|---|
-| Player spawn | a player starting location: position, facing, team ([forge.md](forge.md) 1.2) | nothing; the Objects tool aims at its place ([forge-map-variants.md](forge-map-variants.md), "Things") | its `Spawn` marker in the team's colour |
-| Flag stand and return, bomb spawn and goal, ball spawn, territory | a netgame flag by type and team; its built-in label (`forge_doc::builtin_label`) | nothing | the marker of its flag type (`marker_view::flag_kind`) |
-| Hill | netgame flags of types 11 to 18, one hill a type, each flag a corner (`hill_corner`, numbered by hill) | nothing | three or more corners of one hill and number are one `Hill` with their hull's area; fewer are a `Hill` with the default area each |
-| Teleporter | netgame flags of the two teleporter types and a channel | nothing; the Links tool lists them | the sender's or receiver's marker (a line between linked ends is not drawn) |
-| Item spawner | a netgame equipment row | the object it last made | the item's model, else its `Item` marker |
+| Player spawn | a player starting location: position, facing, team ([forge.md](forge.md) 1.2) | its marker, with the monitor on | its `Spawn` marker in the team's colour |
+| Flag stand and return, bomb spawn and goal, ball spawn, territory | a netgame flag by type and team; its built-in label (`forge_doc::builtin_label`) | its marker | the marker of its flag type (`marker_view::flag_kind`) |
+| Hill | netgame flags of types 11 to 18, one hill a type, each flag a corner (`hill_corner`, numbered by hill) | one `Hill` marker, at the corners' centre with `Area::of_corners` for three or more, else at each flag with the default area | three or more corners of one hill and number are one `Hill` with their hull's area; fewer are a `Hill` with the default area each |
+| Teleporter | netgame flags of the two teleporter types and a channel | its marker; the Links tool lists them | the sender's or receiver's marker (a line between linked ends is not drawn) |
+| Item spawner | a netgame equipment row | its marker, the outline of its class (the item tag's group) | the item's model, else its `Item` marker |
 | Trigger volume, kill trigger, BSP switch | the scenario's trigger volumes and the blocks that name them (`scenario_edit::volumes`) | nothing | a `Volume` marker box by kind (`LayerId::Volume`) |
-| Script label | a label op on a netgame flag (`forge_doc::GroundLabel`; [rules-engine.md](rules-engine.md#forge-labels)) | a ring in the label's colour painted on the HUD canvas (`Editor::ground_rings`, `forge_glue::marker`) | not drawn |
+| Script label | a label op on a netgame flag (`forge_doc::GroundLabel`; [rules-engine.md](rules-engine.md#forge-labels)) | the label's marker (`ff_drop`, `siege_site`, ...), in orange when the last ground build could not honour it | not drawn |
 
 A script's zone is made of the flags alone (`game::rules::world::zones`):
 three or more flags of one label and number are the convex hull of
@@ -246,12 +246,16 @@ lengths and a `Place` at the box's middle on the volume's axes.
 The markers are a world-line source
 (`crates/extensions/game/src/world_lines.rs`, `WorldLineSource`), as the
 HUD kit's world marks and the superbounce guide are:
-`forge_glue::markers_world` (new) takes the session's things
-(`Session::things`), labels and areas, builds the meshes and gives the
-window's world-line pass their lines, under the HUD, each marker's label
-text ("Red spawn", "Hill 2") over its anchor. The rings painted on the
-HUD canvas (`Editor::ground_rings`, `forge_glue::marker` for ground
-labels) go; another seat's monitor keeps its ring.
+`forge_glue::markers_world` turns the session's things
+(`Session::things`), its ground labels and the problems of the last
+ground build into `Entry`s (`Editor::marker_entries`, rebuilt every
+third tick), and its `Source` builds the mesh of each in the capture and
+gives the window's world-line pass their lines, under the HUD, each
+marker's label text ("Red spawn", "Hill 2") over its anchor. The ground
+labels, which were rings painted on the HUD canvas, are markers; another
+seat's monitor keeps its ring (`forge_glue::marker`). A hill's marker
+takes `Area::of_corners` or the default area until the document holds an
+area.
 
 - **Lines first.** The world-line pass draws lines, with no depth test.
   That is the hologram's frame and is enough to read every marker. The
@@ -265,11 +269,16 @@ labels) go; another seat's monitor keeps its ring.
   alpha (the X-ray look) and no skin, so an author finds a spawn through
   a wall and still sees which side of it the spawn is on. The line pass
   has no depth, so until the marker pass exists every line draws full.
-- **Distance.** A marker fades from 40 world units to nothing at 60
-  (`Mesh::faded`), an area's wall from 80 to 120; its label shows within
-  20. The selected, aimed-at and held markers never fade.
-- **Budget.** At most 256 markers a view, the nearest first; the rest
-  are counted in `render.markers`.
+- **Distance.** A marker fades from 40 world units to nothing at 60, an
+  area's wall from 80 to 120, as the window's own per-line fade
+  (`LineStyle::fade`); its label shows within 20. The aimed-at and held
+  markers are white, never fade and are drawn first. A marker past its
+  fade is not drawn and not counted.
+- **Other game types.** With the tool showing this game type
+  (`forge.show`), a thing of another game type has no marker; with all
+  shown it draws at a quarter alpha (`Mesh::faded`).
+- **Budget.** At most 256 markers a view (`markers_world::BUDGET`), the
+  nearest first; the rest are counted in `render.markers`.
 
 ### When a marker shows
 
@@ -354,7 +363,7 @@ of a window ([agent API rules](../../AGENTS.md)).
 | `view.layers`, `view.snapshot` | Studio | as they are: the layers now draw the markers |
 | `forge.things` | game | each goal gains `area` |
 | `forge.propose` | game | takes `{"entry":{"area":{target, area}}}`; refusals by name as for any entry op |
-| `render.markers` | game | what the last present drew: `{shown, hidden_by_budget, markers: [{thing, kind, team, anchor, lines, faded}]}`, `anchor` in window pixels as `render.marks` gives a mark's, and `areas`, the walls shown in play |
+| `render.markers` | game | what the last capture drew: `{shown, hidden_by_budget, markers: [{thing, kind, team, anchor, lines, faded}]}`, `anchor` in world units, `kind` filtering the list ([agent-api.md](../runtime/agent-api.md), "`render.markers`"); the walls shown in play join it with MK8 |
 | `rules.zones` | game | each zone the host built: `{label, number, shape: "area" \| "corners" \| "default", area, at}`, so a test reads the hill a script scores |
 
 `markers.render` is the content render of this page's shapes, as
@@ -389,7 +398,7 @@ lines with tests, M under 2,500.
 | MK3 | **The zone read**: `zones::Shape::Area`, the three-step order, `FakeGame`'s areas, `bots::objective::zones`, `rules.zones` | S | MK2 | on the fake game `koth.rules` scores a player inside a path hill and not one in its notch; a retail hill's zone holds the same points before and after; a lone flag is the default cylinder |
 | MK4 (built) | **Studio draws them**: `scenario_edit::marker_view`, the layers' overlays in place of the glyphs, outlines and volume boxes, `markers.list`, `markers.render` | M | MK1 | on the invented cache each placement block gives its kind and team; a hill's corners give one `Hill`; `markers.render` writes the sheet with every kind of `Kind::samples`; `view.snapshot` of a spawn differs from the background where its mesh projects |
 | MK5 | **Studio edits areas**: the gizmo handles, the inspector rows, `markers.area.set`, **Convert to area**, the `markers` check | M | MK2, MK4 | a rim drag writes one area op; an edge handle adds a point; a refused drag leaves the document as it was; converting a hill's corners gives a zone that holds the same points; the check names an overlapping pair |
-| MK6 | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |
+| MK6 (built) | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |
 | MK7 | **Forge edits areas**: **Edit area**, radius by stick and typed, the path's drop, drag, remove and close, the notices | M | MK2, MK6 | scripted pad input (`forge.input`) that drops four points and closes writes one op with those points; a crossing fifth point is refused with its sentence and the path is unchanged; B leaves the document as it was |
 | MK8 | **The boundary in play**: `show_area`, `hide_area`, the eight shown areas in `RulesExt`, the built-ins' calls, the wall from the same source | S | MK3, MK6 | on the fake game `koth.rules` shows the hill in play and one area at a time as the hill moves; the shown areas are equal on a host and a client after a tick; a script that never calls it shows none |
 | MK9 | **The skin**: `native_render::markers`, the translucent faces with depth, the X-ray lines | M | MK6 | on the renderer's headless target a hill's wall changes pixels in front of a floor and none behind a nearer wall; with `impl.render.native=off` the lines draw alone |

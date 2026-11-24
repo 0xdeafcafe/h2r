@@ -1350,6 +1350,9 @@ fn run_configured(
         // render.marks: where the window drew the world marks (world_lines.rs).
         #[cfg(feature = "gpu")]
         world_lines::add_marks_method(&a.agent);
+        // render.markers: the Forge game type markers the last present drew
+        // (forge_glue/markers_world.rs).
+        forge_glue::markers_world::add_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));

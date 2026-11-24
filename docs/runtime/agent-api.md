@@ -62,6 +62,7 @@ connection to hold `session.claim`.
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.marks` | read | [`render.marks`](#rendermarks) |
+| `render.markers` | read | [`render.markers`](#rendermarkers) |
 | `render.frame_layout` | read | [Display raster and texture coordinates](#renderframe_layout) |
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.picture.open`, `render.picture.close` | read | [Picture feed](#picture-feed-renderpicture) |
@@ -1654,6 +1655,43 @@ present, genuine and synthetic alike
 ```sh
 h2 agent render.marks
 h2 agent render.marks | jq '.presents[] | [.frame, .fraction, .shifted, .anchors[0]]'
+```
+
+### `render.markers`
+
+`render.markers` reads the Forge game type markers the window's last
+capture drew ([gametype-markers.md](../game/gametype-markers.md), "The
+game"). Params are `{}` or `{"kind": "spawn"}`, a kind name of
+`game_markers::Kind::name` (`spawn`, `flag_stand`, `hill`, `ff_drop`, ...);
+a name that is not one is refused with `invalid params` and the list of
+names, and so is any other field. The answer is
+
+```json
+{"shown": 2, "hidden_by_budget": 0,
+ "markers": [{"thing": "starting_locations:0", "kind": "spawn", "team": 0,
+              "anchor": [1.0, 2.0, 0.85], "lines": 38, "faded": false}]}
+```
+
+- `shown` counts the markers the capture drew and `hidden_by_budget` the
+  ones in range that the 256 a view left out, the nearest first. A marker
+  past its distance fade is in neither. The counts cover every kind; `kind`
+  filters only `markers`, which lists the nearest first.
+- `thing` names what the marker stands for: `<block>:<index>` for an entry
+  of the map, `added:<op>` for one the document added, `problem:<label>`
+  for a ground label the last build could not honour.
+- `team` is 0 to 7, or null. `anchor` is where the label sits, in world
+  units; `render.marks` gives window pixels for the groups the window
+  visited. `lines` is the marker's line count. `faded` is a marker of
+  another game type, drawn at a quarter.
+- With no Forge session, the monitor off, or no present since, `shown` is
+  0 and `markers` is empty. A headless host has no window and draws none.
+
+The method is the host's (`crates/extensions/game/src/forge_glue/markers_world.rs`,
+`add_method`; the name is `agent_proto::method::RENDER_MARKERS`).
+
+```sh
+h2 agent render.markers
+h2 agent render.markers '{"kind":"hill"}'
 ```
 
 ### `render.coop_look`

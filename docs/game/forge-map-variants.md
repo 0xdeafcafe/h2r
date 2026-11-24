@@ -428,13 +428,13 @@ collision and each machine builds its own.
   reload the running map with the build, and a session that opens on a
   reloaded map must keep the document, the monitor's place and the tool
   (below, "What is left").
-- **The overlay.** While the monitor is on, the play window rings each
-  placed marker (a drop green, a cover yellow, a base its team's colour,
-  the siege labels violet) and each label the last build could not
-  honour (orange, drawn first so it shows through a marker at the same
-  place), as it rings another seat's monitor (`Editor::ground_rings`,
-  `forge_glue::markers`). The sectors are not drawn: the report holds
-  their count, not their places.
+- **The overlay.** While the monitor is on, the play window draws each
+  placed marker as its game type marker (a drop green, a cover yellow, a
+  base its team's colour, the siege labels violet) and each label the
+  last build could not honour in orange in place of its marker
+  (`Editor::marker_entries`, `forge_glue::markers_world`;
+  [gametype-markers.md](gametype-markers.md), "The game"). The sectors
+  are not drawn: the report holds their count, not their places.
 - **What is left.** Loading the built map. A session opens on the
   original map (`forge_map::open` refuses a slot that serves a package or
   an override), the document's edits are live in that map, and the build
