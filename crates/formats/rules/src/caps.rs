@@ -347,6 +347,8 @@ pub mod id {
     pub const PRIMED: u16 = 119;
     pub const SEES: u16 = 120;
     pub const SET_OPEN: u16 = 121;
+    pub const MARK_PLAYER: u16 = 122;
+    pub const MARK_TEAM: u16 = 123;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -649,24 +651,33 @@ pub const ENTRIES: &[Entry] = &[
     // A barrier already in the state asked for does nothing. The host adds
     // no call of its own.
     act(id::SET_OPEN, "set_open", &[Object, Bool], Some("objects.move"), Now, Named),
+    // `mark(wp, at, p)` and `mark(wp, at, t)`: the waypoint's audience,
+    // the player's slot's bit or the bits of the team's seated players,
+    // resolved in the VM from the roster every machine holds
+    // (docs/game/rules-world-api.md, "HUD"). `mark(wp, at)` is every
+    // viewer; `mark(wp, at, all)` is spelled the same and is `mark`.
+    act(id::MARK_PLAYER, "mark_player", &[Int, Object, Player], Some("hud.waypoints"), Now, Named),
+    act(id::MARK_TEAM, "mark_team", &[Int, Object, Team], Some("hud.waypoints"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
 pub const EVERYONE: &str = "all";
 
 /// The name the language spells an entry with: `message` for each of the
-/// three forms of `message(to, text)`, its own name for the rest.
+/// three forms of `message(to, text)`, `mark` for each of the audience
+/// forms of `mark(wp, at, to)`, its own name for the rest.
 pub fn spelled(e: &Entry) -> &'static str {
     match e.id {
         id::MESSAGE_TEAM | id::MESSAGE_ALL => "message",
+        id::MARK_PLAYER | id::MARK_TEAM => "mark",
         _ => e.name,
     }
 }
 
 /// An entry a script names only through another's spelling: the team and
-/// everyone forms of `message`, and the `fmt_*` entries of its holes.
-/// Completion leaves it out, and calling it by its own name is an unknown
-/// function.
+/// everyone forms of `message`, the audience forms of `mark`, and the
+/// `fmt_*` entries of its holes. Completion leaves it out, and calling it
+/// by its own name is an unknown function.
 pub fn is_form(e: &Entry) -> bool {
     spelled(e) != e.name || Hole::of_entry(e.id).is_some()
 }
@@ -674,6 +685,11 @@ pub fn is_form(e: &Entry) -> bool {
 /// Whether `entry` is one of the three forms of `message(to, text)`.
 pub fn is_message(entry: u16) -> bool {
     matches!(entry, id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL)
+}
+
+/// Whether `entry` is one of the three forms of `mark(wp, at, to)`.
+pub fn is_mark(entry: u16) -> bool {
+    matches!(entry, id::MARK | id::MARK_PLAYER | id::MARK_TEAM)
 }
 
 /// The values one message shows at most.

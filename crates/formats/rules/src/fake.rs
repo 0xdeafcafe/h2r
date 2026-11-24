@@ -772,6 +772,14 @@ impl Game for FakeGame {
         self.teams.iter().rev().copied().collect()
     }
 
+    fn players_of_team(&self, team: u8) -> Vec<u8> {
+        self.players
+            .iter()
+            .filter(|(_, p)| p.team == team)
+            .map(|(&slot, _)| slot)
+            .collect()
+    }
+
     fn labelled(&self, label: &str) -> Vec<Placed> {
         let holds = |t: &str| self.labelled.get(t).is_some_and(|l| !l.is_empty());
         let mut list = self

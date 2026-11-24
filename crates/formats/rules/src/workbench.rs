@@ -14,6 +14,7 @@ use crate::ir::{self, Event, Handler, Ir, LabelDef, LabelKind, Op, Scope};
 use crate::labels;
 use crate::scenario::{self, ScenarioLabel};
 use crate::settings;
+use crate::show;
 use crate::ty::{MAX_LABELLED, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty};
 use crate::vm::{self, Arg, ErrorKind, Fired, Input, ScriptError, Vm, Warning};
 
@@ -487,6 +488,69 @@ pub struct TracedCall {
     pub args: Vec<String>,
 }
 
+/// One row of the script's HUD after a tick, as the scenario's first
+/// seated player sees it (`rules::show::view`): what the workbench's HUD
+/// strip shows for the tick.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct HudLine {
+    /// The declaration's name.
+    pub name: String,
+    /// The kit element it is at (`koth.hill`), when it has one.
+    pub slot: Option<String>,
+    /// `text`, `banner`, `meter` or `waypoint`.
+    pub kind: &'static str,
+    /// Whether it draws.
+    pub shown: bool,
+    /// The number the HUD words beside it; 0 for a waypoint.
+    pub value: i32,
+    /// What it says, when it says anything.
+    pub text: Option<String>,
+    /// What a waypoint marks: the object's handle.
+    pub at: Option<u32>,
+}
+
+/// The HUD rows one viewer sees of the state, as [`HudLine`]s, for the
+/// workbench's HUD strip: the scenario's first seated player, or nobody
+/// when the match seats none. Waypoint rows keep the object they mark in
+/// `at`, for the strip to name by the scenario's things.
+fn hud_lines(vm: &Vm, g: &FakeGame) -> Vec<HudLine> {
+    let Some((&slot, seated)) = g.players.iter().next() else {
+        return Vec::new();
+    };
+    let viewer = show::Viewer {
+        slot: Some(slot),
+        team: Some(seated.team),
+    };
+    let seen = show::view(vm.show(), vm.ir(), viewer);
+    let mut out = Vec::new();
+    for w in &seen.widgets {
+        out.push(HudLine {
+            name: w.name.clone(),
+            slot: Some(w.slot.clone()),
+            kind: match w.kind {
+                crate::ir::WidgetKind::Text => "text",
+                crate::ir::WidgetKind::Banner => "banner",
+                crate::ir::WidgetKind::Meter => "meter",
+            },
+            shown: w.shown,
+            value: w.value,
+            text: w.text.clone(),
+        });
+    }
+    for w in &seen.waypoints {
+        out.push(HudLine {
+            name: w.name.clone(),
+            slot: w.slot.clone(),
+            kind: "waypoint",
+            shown: true,
+            value: 0,
+            text: None,
+            at: Some(w.at),
+        });
+    }
+    out
+}
+
 /// A player's table row and variables after a tick.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerState {
@@ -510,6 +574,9 @@ pub struct TickTrace {
     pub warnings: Vec<String>,
     pub globals: Vec<(String, String)>,
     pub players: Vec<PlayerState>,
+    /// The script's HUD as the first seated player sees it, when it shows
+    /// anything (`rules::show::view`); the workbench's HUD strip reads it.
+    pub hud: Vec<HudLine>,
     pub error: Option<String>,
 }
 
@@ -1094,6 +1161,7 @@ impl Runner {
                 }
                 if self.trace.ticks.len() < MAX_TRACED_TICKS {
                     let (globals, players) = vars.unwrap_or_else(|| (globals(vm), players(vm, g)));
+                    let hud = hud_lines(vm, g);
                     self.trace.ticks.push(TickTrace {
                         tick,
                         ran,
@@ -1102,6 +1170,7 @@ impl Runner {
                         warnings,
                         globals,
                         players,
+                        hud,
                         error: error.clone(),
                     });
                 } else if self.trace.cut.is_none() {
@@ -1217,6 +1286,42 @@ mod tests {
         assert_eq!(r.capabilities[0].words, "moves players between teams");
         assert!(!r.capabilities[0].grantable && r.capabilities[1].grantable);
         assert_eq!(r.unhostable, ["set_team"]);
+    }
+
+    /// The HUD strip's rows are the first seated player's view of the
+    /// state: what the script set, with its text and its mark's object.
+    #[test]
+    fn the_trace_keeps_the_hud_rows_one_viewer_sees() {
+        let src = "rules \"Strip\" 1\ntype slayer\nrequires hud.widgets, hud.waypoints\n\
+             label hill: zones\n\
+             hud wave: text at koth.hill\nwaypoint spot at koth.mark\n\
+             on round_start {\n\
+                 hud_text(wave, \"Wave two\")\n\
+                 hud_value(wave, 2)\n\
+                 hud_show(wave, true)\n\
+                 if let z = hill[0] { mark(spot, z) }\n\
+             }\n";
+        let mut scenario = slayer_scenario();
+        scenario.map = Some(vec![scenario::ScenarioLabel::new("hill", 0x4001_0000)]);
+        let t = run(src, &scenario).unwrap();
+        let kept = t
+            .ticks
+            .iter()
+            .find(|k| !k.hud.is_empty())
+            .expect("a kept tick with hud rows");
+        let wave = kept.hud.iter().find(|h| h.name == "wave").unwrap();
+        assert_eq!(
+            (
+                wave.kind,
+                wave.slot.as_deref(),
+                wave.shown,
+                wave.value,
+                wave.text.as_deref()
+            ),
+            ("text", Some("koth.hill"), true, 2, Some("Wave two"))
+        );
+        let spot = kept.hud.iter().find(|h| h.name == "spot").unwrap();
+        assert_eq!((spot.kind, spot.at), ("waypoint", Some(0x4001_0000)));
     }
 
     fn slayer_scenario() -> Scenario {

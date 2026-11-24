@@ -187,7 +187,7 @@ allocations after the first tick.
 
 | Item | Per client | Host with 15 clients | Evidence |
 |---|---:|---:|---|
-| Show channel cap: its own `actor_net::Budget`, 600 bytes in any 30 ticks, tags included | 0.6 KB/s | 9 KB/s | **Design** |
+| Show channel cap: at most 5 `Show` records a second and a state of 255 bytes, tags included; a target of 600 bytes in any 30 ticks | 0.6 KB/s | 9 KB/s | **Design**; the rate and the bound are built in the channel's `actor_net::Budget` |
 | One moved object: about 20 bytes at 10 updates a second | 200 B/s | 3 KB/s | **S**, ai-networking.md "Bandwidth" |
 | 16 movers and one drop ship with 8 riders | 5 KB/s | 75 KB/s | **S** |
 | Actors, as budgeted | 8 KB/s | 120 KB/s | **Design**, ai-networking.md |

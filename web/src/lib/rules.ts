@@ -837,6 +837,9 @@ export interface TraceTick {
   warnings: string[];
   globals: TraceVar[];
   players: TracePlayer[];
+  /** The script's HUD as the first seated player sees it, when it shows
+   *  anything; an older run's answer carries none. */
+  hud?: HudLine[];
   error: string | null;
 }
 export interface Trace {
@@ -854,6 +857,21 @@ export interface Trace {
   worst_tick_ops?: number;
   scores: Array<{ slot: number; score: number }>;
 }
+/** One row of the script's HUD after a tick, as the match's first seated
+ *  player sees it (`rules::show::view`): the workbench's HUD strip. */
+export interface HudLine {
+  name: string;
+  /** The kit element it is at ("koth.hill"), when it has one. */
+  slot: string | null;
+  /** "text", "banner", "meter" or "waypoint". */
+  kind: string;
+  shown: boolean;
+  value: number;
+  text: string | null;
+  /** What a waypoint marks: the object's handle. */
+  at: number | null;
+}
+
 /** A run whose script did not build, or whose map the script's labels
  *  refuse (`map`: each problem's text; nothing ran). */
 export interface RunFailed { ok: false; errors: Problem[]; map?: string[] }
@@ -875,6 +893,15 @@ export function parseTrace(body: unknown): Trace | RunFailed {
       warnings: strs(t.warnings),
       globals: vars(t.globals),
       players: arr(t.players).map(obj).map((p) => ({ slot: num(p.slot), team: num(p.team), alive: p.alive === true, score: num(p.score), lives: num(p.lives), vars: vars(p.vars) })),
+      hud: arr(t.hud).map(obj).map((h) => ({
+        name: str(h.name),
+        slot: h.slot === undefined || h.slot === null ? null : str(h.slot),
+        kind: str(h.kind),
+        shown: h.shown === true,
+        value: num(h.value),
+        text: h.text === undefined || h.text === null ? null : str(h.text),
+        at: h.at === undefined || h.at === null ? null : num(h.at),
+      })),
       error: optStr(t.error),
     })),
     last_tick: num(b.last_tick),
@@ -934,6 +961,16 @@ export function traceLines(t: Trace): string[] {
   else out.push(`ran to tick ${t.last_tick}`);
   if (t.cut) out.push(t.cut);
   return out;
+}
+
+/** The HUD strip of a run: the last tick whose HUD showed a row, with
+ *  the rows. Null when the script's HUD showed nothing in the trace. */
+export function hudStrip(t: Trace): { tick: number; rows: HudLine[] } | null {
+  for (const k of [...t.ticks].reverse()) {
+    const rows = k.hud ?? [];
+    if (rows.length) return { tick: k.tick, rows };
+  }
+  return null;
 }
 
 // ---------- results ----------

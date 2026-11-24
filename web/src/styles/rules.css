@@ -211,6 +211,15 @@
 .s-rules-tl-score span { color: #8d9aab; }
 .s-rules-tl-change { color: #c5d6ee; }
 .s-rules-chip { display: inline-block; padding: 0 4px; font-size: 10px; color: #dfe7f2; border: 1px solid #33496a; border-radius: 3px; background: #0e1a2c; }
+
+/* The script's HUD in the run (RulesTest.tsx HudStrip): each row's
+   declaration, its kit element, and what it says. */
+.s-rules-hud { display: grid; gap: 2px; }
+.s-rules-hud > p { margin: 0; }
+.s-rules-hud ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 1px; }
+.s-rules-hud li { display: flex; gap: 6px; align-items: baseline; font-size: 11px; line-height: 15px; }
+.s-rules-hud li.s-rules-hud--hidden { opacity: .5; }
+.s-rules-hud li.s-rules-hud--hidden > span:last-child { text-decoration: line-through; }
 .s-rules code { font: 11px/14px var(--font-mono); }
 
 .s-rules-dialog { width: min(420px, 92vw); max-height: 80vh; padding: 0; color: #e6e6e6; background: #1b1b1b; border: 1px solid #2a3d59; }
