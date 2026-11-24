@@ -520,7 +520,10 @@ impl d3d::ExternalPass for WaterViewPass {
         };
         let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
-        Some(gpu.water_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &sampled, &view, &self.fogs))
+        Some(gpu.water_draws(
+            &t.device, t.color_format, t.depth_format, t.size, d3d::external_viewport(&request, t.size),
+            &self.selected, &sampled, &view, &self.fogs,
+        ))
     }
 
     /// The set that samples the view: the scene copy and the pass as
@@ -540,7 +543,7 @@ impl d3d::ExternalPass for WaterViewPass {
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         Some(gpu.water_encoded(
             &t.device, &t.queue, &t.uploads, &t.color, t.color_format, &t.depth, t.depth_format,
-            t.size, t.copy, &self.selected, &sampled, &view, &self.fogs,
+            t.size, d3d::external_viewport(&request, t.size), t.copy, &self.selected, &sampled, &view, &self.fogs,
         ))
     }
 
@@ -562,7 +565,7 @@ impl d3d::ExternalPass for WaterViewPass {
         }
         gpu.encode_water(
             t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format,
-            t.size, t.copy, &self.selected, &sampled,
+            t.size, t.viewport, t.copy, &self.selected, &sampled,
         )
     }
 }

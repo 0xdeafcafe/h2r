@@ -564,7 +564,10 @@ impl d3d::ExternalPass for FogViewPass {
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        Some(gpu.fog_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))
+        Some(gpu.fog_draws(
+            &t.device, t.color_format, t.depth_format, t.size, d3d::external_viewport(&request, t.size),
+            &self.selected, &view, &self.fogs,
+        ))
     }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
@@ -587,7 +590,7 @@ impl d3d::ExternalPass for FogViewPass {
             let mut uploads = t.encoder_uploads();
             gpu.prepare_fog(&mut uploads, &view, &self.fogs);
         }
-        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &self.selected)
+        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, t.viewport, &self.selected)
     }
 }
 

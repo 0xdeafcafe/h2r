@@ -60,7 +60,7 @@ pub(crate) struct WaterItem {
 }
 
 /// `items` as packets for the D3D pass already open on these attachments:
-/// the whole target as viewport and scissor, the world's program vertices
+/// the whole target as viewport and the player view as scissor, the world's program vertices
 /// and indices ([`crate::gpu::GpuWorld::water_draws`]).
 // wgpu compares and hashes pipelines by their stable handle identity.
 #[allow(clippy::mutable_key_type)]
@@ -70,9 +70,9 @@ pub(crate) fn item_packets(
     vertices: &wgpu::Buffer,
     indices: &wgpu::Buffer,
     target_size: (u32, u32),
+    scissor: gfx::ScissorRect,
 ) -> Result<Vec<gfx::RecordedDraw>, &'static str> {
-    use gfx::{BoundGroup, RecordedDraw, ScissorRect};
-    let scissor = ScissorRect::full(target_size.0, target_size.1);
+    use gfx::{BoundGroup, RecordedDraw};
     let render = gfx::state::RenderState::default();
     let mut packets = Vec::with_capacity(items.len());
     for it in items {
@@ -539,7 +539,7 @@ pub fn water_passes(material: &tags::material::Material, rasterizer: Option<map:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fog_gpu::tests::{fogs, parts, pass, render, selected, view, world, SIZE};
+    use crate::fog_gpu::tests::{assert_split_images, fogs, parts, pass, player_viewport, render, selected, view, world, SIZE};
     use crate::gpu::GpuWorld;
     use wgpu::TextureFormat as F;
 
@@ -589,7 +589,7 @@ mod tests {
                 gpu.prepare_water(&mut uploads, &view(), &fogs());
                 let count = gpu.encode_water(
                     &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float,
-                    (SIZE, SIZE), d3d::TargetCopy::Display, &[(Owner::Instance(5), 0)], &[],
+                    (SIZE, SIZE), player_viewport(false), d3d::TargetCopy::Display, &[(Owner::Instance(5), 0)], &[],
                 );
                 assert_eq!(count, 1);
             }).0
@@ -609,10 +609,10 @@ mod tests {
         let mut gpu = scene(&ctx, false, 3.0);
         let (selected, view, fogs) = (selected(), view(), fogs());
         let mut images = Vec::new();
-        for packets in [true, false] {
+        for (packets, split) in [(true, false), (false, false), (true, true), (false, true)] {
             images.push(render(&ctx, |enc, arena, target| {
                 let draws = gpu
-                    .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &[], &view, &fogs)
+                    .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(split), &selected, &[], &view, &fogs)
                     .unwrap();
                 assert_eq!((draws.ranges, draws.packets.len()), (2, 2));
                 assert_eq!(draws.writes.len(), 4, "cluster uniforms and placement view rows");
@@ -626,7 +626,7 @@ mod tests {
                     gpu.prepare_water(&mut uploads, &view, &fogs);
                     assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
                     let recorded = gpu.encode_water(
-                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE),
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split),
                         d3d::TargetCopy::Display, &selected, &[],
                     );
                     assert_eq!(recorded, 2);
@@ -634,7 +634,7 @@ mod tests {
             }));
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the water drew something");
-        assert_eq!(images[0], images[1]);
+        assert_split_images(&images);
     }
 
     /// A set that samples the view: the encoded commands (the staged
@@ -647,16 +647,16 @@ mod tests {
         let mut gpu = scene(&ctx, true, 3.0);
         let (selected, view, fogs) = (selected(), view(), fogs());
         assert!(gpu
-            .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &[], &view, &fogs)
+            .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(false), &selected, &[], &view, &fogs)
             .is_err());
         let mut images = Vec::new();
-        for encoded in [true, false] {
+        for (encoded, split) in [(true, false), (false, false), (true, true), (false, true)] {
             images.push(render(&ctx, |enc, arena, target| {
                 if encoded {
                     let commands = gpu
                         .water_encoded(
                             &ctx.device, &ctx.queue, arena, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float,
-                            (SIZE, SIZE), d3d::TargetCopy::Display, &selected, &[], &view, &fogs,
+                            (SIZE, SIZE), player_viewport(split), d3d::TargetCopy::Display, &selected, &[], &view, &fogs,
                         )
                         .unwrap();
                     assert_eq!((commands.ranges, commands.passes), (2, 1));
@@ -668,7 +668,7 @@ mod tests {
                     let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
                     gpu.prepare_water(&mut uploads, &view, &fogs);
                     let recorded = gpu.encode_water(
-                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE),
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split),
                         d3d::TargetCopy::Display, &selected, &[],
                     );
                     assert_eq!(recorded, 2);
@@ -676,6 +676,6 @@ mod tests {
             }));
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the water drew something");
-        assert_eq!(images[0], images[1]);
+        assert_split_images(&images);
     }
 }
