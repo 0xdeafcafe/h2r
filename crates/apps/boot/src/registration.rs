@@ -26,7 +26,7 @@ use crate::{
     agent_glue, aim_assist, bot_glue, campaign_menu, cheats, clankers, coop_probe, custom_games,
     game_setup_help, h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
     map_copy, map_select, map_slots, precision, signin_screen, skulls, skulls_custom, skulls_menu,
-    skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, xapi_glue,
+    skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, variant_weapons, xapi_glue,
 };
 
 /// The three subsystems measured together on a light host. Resolve each
@@ -390,6 +390,17 @@ pub(crate) fn register_core_film(
             crate::map_override::map_file_at(&mut v, name, path)
         })
     });
+    // The variant's other weapons as the starting and secondary weapon:
+    // their tags are read from the same file.
+    let weapon_maps: Option<skulls_custom::MapLocator> = i.vfs.clone().map(|vfs| -> skulls_custom::MapLocator {
+        Box::new(move |name, path| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            crate::map_override::map_file_at(&mut v, name, path)
+        })
+    });
+    features
+        .add(&variant_weapons::Weapons::new(weapon_maps))
+        .map_err(|e| anyhow::anyhow!("variant options weapons: {e}"))?;
     let skulls_custom_on = skulls_custom::install_for_maps(
         features, i.settings.clone(), telemetry.clone(), custom_maps, sources.as_deref(),
     )

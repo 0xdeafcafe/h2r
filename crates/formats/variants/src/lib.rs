@@ -6,6 +6,7 @@
 //! ([`VariantEditor`]: UI-free state and commands, drawn by `h2-editor`). docs/editor/variants.md has the format and the evidence.
 
 pub mod ext;
+pub mod ext_weapons;
 pub mod extra;
 pub mod panel;
 pub mod portable;
