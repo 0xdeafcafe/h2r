@@ -484,6 +484,24 @@ Notes on some:
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
+- **Shaders.** `shader.read {tag}` reads a `shad` as the Shader tab shows
+  it ([rich-editors.md](rich-editors.md), "Shaders"; `api/shader.rs`):
+  the template, the level of detail shown (0) and how many there are, the
+  bitmap, colour and vector slots of the compiled postprocess (each with
+  its `tag.set` path, value, and `used_by`: the layer, pass,
+  implementation and register or stage the template's binding puts it
+  in), the animated properties and what each drives, the passes per
+  layer, `names_known` (false until the template's parameter names are
+  read), `read_only` and the bindings that did not read (`refusals`).
+  `shader.set {tag, slot: {kind, index}, value}` writes one slot: the
+  `tag.set` at the slot's path with the same value, one undo step,
+  refused as `tag.set` refuses; a slot past the shader's is
+  `INVALID_PARAMS`. `shader.preview {tag, shape?, object?, size?, out?}`
+  draws the shader alone on a sphere (the default), a flat square
+  (`quad`) or an object tag's model, unlit, to a PNG outside Git; it
+  answers `passes_drawn`, each left-out layer in `refusals` with its pass
+  count and reason, `base` when the base look does not draw, and
+  `covered`. With no renderer `png` is null and the counts still answer.
 - **Curves.** `function.read {tag, path}` reads the function blob a
   `view=function` data field points at
   ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
@@ -2120,6 +2138,12 @@ the window and the API stay one path.
   the colour picker's helpers (`fields/colour.rs`); a colour's `tag.set`
   is `app::tag_api::set_field` with `fields::colour::from_json`, a
   `TagAction::Write` of the field's own length, as the dialog writes.
+- **Shaders (rich editors S1).** `api/shader.rs` registers `Shader` for
+  `shader.read`, `shader.set` and `shader.preview`, over `app/shader.rs`
+  (the Shader tab's read, on the shown map with the document's edits)
+  and `native_view::preview::material`; `shader.set` is `tag.set` at the
+  slot's path (`SlotKind::path`) through `tag_fields::perform`, one undo
+  step.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for
   `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
   window draws; `rules.reload` leaves the blob in its outbox and

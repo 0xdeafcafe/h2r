@@ -243,7 +243,7 @@ impl Studio {
                     self.want_tab = (!done && tries > 1).then_some((tab, tries - 1));
                 }
                 self.viewport_window(ui, app, gpu, &mut actions);
-                self.inspector_window(ui, app, &mut actions);
+                self.inspector_window(ui, app, gpu, &mut actions);
             }
             Surface::Variants => self.variant_windows(ui, app, &mut actions),
             Surface::Playlists => self.playlist_windows(ui, app, &mut actions),
@@ -1043,7 +1043,13 @@ impl Studio {
         padding.pop();
     }
 
-    fn inspector_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+    fn inspector_window(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        gpu: &mut Gpu<'_>,
+        actions: &mut Vec<Action>,
+    ) {
         let mut state = std::mem::take(&mut self.inspector);
         // The closure borrows the whole shell, so the key is its own value.
         let key = self.keys.inspector.clone();
@@ -1059,7 +1065,16 @@ impl Studio {
                 }
             }
             if app.surface() == Surface::Tags {
-                tags::fields(ui, app, &mut self.tags, &self.fonts, self.dialogs, actions);
+                tags::fields(
+                    ui,
+                    app,
+                    &mut self.tags,
+                    &self.fonts,
+                    self.dialogs,
+                    gpu,
+                    &mut self.map_list,
+                    actions,
+                );
                 return;
             }
             if app.surface() == Surface::Scripts {

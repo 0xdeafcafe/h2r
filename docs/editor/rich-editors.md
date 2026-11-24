@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2), which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
+Status: Design, except the seam (X1), "Data that changes length", sound audition (A1), mouth curves, read (A2), Scripts, read (H1), Recordings, read (K1), Recordings, play (K2), Recordings, write (K3), the curve editor, same length (F1), curve type changes (F2), Model poses (M1), the colour picker (C1) and the colour forms of `obje`, `deca`, `lens` and `sky ` (C2) and the Shader tab (S1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/fields/rich.rs` (the seam), `crates/formats/tags/src/defs/attrs.rs` (`FieldView`), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/tools/scenario-edit/src/scenario/data.rs` (the scenario's data that changes length), `crates/apps/studio/src/fields/colour.rs` and `crates/apps/studio/src/api/colours.rs` (C1), `crates/apps/studio/src/fields/curve.rs` and `crates/apps/studio/src/api/curves.rs` (F1), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/formats/hs/src/recording.rs`, `crates/formats/hs/src/recording_edit.rs`, `crates/apps/studio/src/app/recordings.rs`, `crates/apps/studio/src/api/recordings.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`, `crates/apps/studio/src/app/shader.rs`, `crates/apps/studio/src/fields/shader.rs`, `crates/apps/studio/src/api/shader.rs` and `crates/tools/scenario-edit/src/native_view/preview.rs` (`material`, S1). Tests: `defs/tests.rs`, `registry/tests.rs`, `fields::rich::tests` and `api/tests.rs` (X1), `effects::function::tests` and `api/curves/tests.rs` (F1), `app/tag_data_tests.rs` and scenario-edit's `data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1), `hs::recording::tests`, `hs::recording_edit::tests` (`recording_edit_tests.rs`) and `app/recordings_tests.rs` (K1, K3), `fields/colour/tests.rs` and `api/colours/tests.rs` (C1), `scenario-edit`'s `the_recordings_blocks_writes_save_with_the_scenario` (K3), `app/shader_tests.rs`, `api/tests/shader_tests.rs` and `native_view::tests` (S1); each other slice names its own, `crates/apps/studio/src/app/anim.rs`, `crates/apps/studio/src/ui/anim.rs` (M1), `api/anim/tests.rs`, `anim_tests.rs`.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -250,22 +250,39 @@ are always present).
 
 ### Shaders
 
-**What the user does.** Opening a `shad` tag shows a **Shader** tab: a
-preview on the left, parameters on the right in four folding sections.
+**What the user does.** Opening a `shad` tag shows a **Shader** tab
+(`fields::shader`, a view of `fields::rich::TAG_VIEWS`): the header, the
+preview, then the parameters in four folding sections.
 
 - **Bitmaps**: one row per slot with a thumbnail, the bitmap's name,
-  **Open** and **Change...** (the tag picker of tag-editing.md, limited
-  to `bitm`, with thumbnails in its list).
-- **Colours**: the pixel constants, each a `argb8` colour row.
-- **Vectors**: the vertex constants, each four numbers; a slot the
-  template binds as a texture transform shows as scale and offset.
-- **Animation**: one row per animated property with its curve and what it
-  drives.
+  **Open** and **Change...**. **Change...** opens a bitmap picker dialog:
+  a search, **No bitmap**, then the map's `bitm` tags, each with its
+  thumbnail (decoded a few a frame as rows scroll into view). A pick is
+  `tag.set`'s write at the slot's path, one undo step.
+- **Colours**: the pixel constants, each an `argb8` colour row
+  (`shad.txt` names the view); the swatch opens the colour dialog of
+  "Colours".
+- **Vectors**: the vertex constants, each four numbers, with **Edit in
+  Fields**, which shows the field in the Fields tab. The tab does not edit
+  them itself.
+- **Animation**: one row per animated property with its input (an object
+  function or game time and its period) and what it drives. Its curves
+  are edited in the Fields tab until S2.
 
 A header names the template (`stem`) with **Open**, the level of detail
-shown, and every refusal of the preview in words. Each parameter row has
-a `Used by` line from the template's binding: which pass and which
-register or stage reads it.
+shown (0, the one a near object draws), why the tag is read-only when it
+is, and what did not read: a binding to a slot the shader lacks is named
+(`the template binds colour 0, which the shader does not have`). Each
+parameter row has a `Used by` line from the template's binding
+(`app::shader`): which pass, which implementation, and which texture
+stage, combiner constant (`final combiner c0`, `combiner stage 3 c1`),
+vertex default (`vN`) or vertex constant (`c[18+N]`) reads it. A slot no
+binding reads at that level of detail says so.
+
+The tab and the API read the shown map with the document's edits laid
+over it (`App::open_shown_map_edited`, `tag_browse::Patched`), so an edit
+shows in the read and the preview at once. A block the document has
+grown is not in that overlay; the read shows the map's own.
 
 **The data.** `crates/formats/tags/src/shader.rs`, decode only:
 `ShaderInstance` and `ShaderPostprocess` (`bitmaps`, `colors`, `vectors`,
@@ -288,14 +305,16 @@ slots carry `applies=frame`. Gaps:
 
 **Preview.** The editor's native view: `scenario_edit::native_view` on
 `native_render`, the game's own material path (`layers_load::plan_without_game`,
-`program::compile`). The preview draws the resolved material on a sphere,
-a flat quad or the selected object's own mesh (a row that opens a
-picker), under the map's lighting when a map is open and a fixed key
-light otherwise. An edit re-plans the one material and shows on the next
-frame; the Scene viewport shows the same change on the map. Animated
-properties run on a preview clock with pause and scrub. What the native
-view refuses, the preview refuses in the same words, listed in the
-header: layer 1 (`native_view::LAYER_1_UNCHECKED`), bitmap, render-state
+`program::compile`). `native_view::preview::material` builds a world of
+one section whose material is the shader, with no lightmap, and draws it
+through `NativeWorld` as the viewport's Game mode does, unlit: the base
+look, then each layer pass the plan accepts. The shape is a sphere (the
+default), a flat square, or an object tag's model in its rest pose,
+chosen in a picker dialog under the preview. An edit re-plans the one
+material and shows on the next frame; the Scene viewport shows the same
+change on the map. The preview plans at time 0 with no clock until S2,
+so an animated pass is refused by name. What the native view refuses,
+the preview refuses in the same words, listed under it: layer 1 (`native_view::LAYER_1_UNCHECKED`), bitmap, render-state
 and stage-state animations and object-function inputs
 (`native_render::layer_pass::LayerRefusal`), and the registers named in
 `program::CAMERA_GIVEN`. A refused pass is left out and counted, never
@@ -755,9 +774,9 @@ already a namespace there (player models and looks), so poses use `anim.*`.
 | `function.read` | `{tag, path}` | `{type, ranged, sub_types, range, length, sets: [...], editable, read_only}` |
 | `function.set` | `{tag, path, type?, ranged?, range?, sets?}` | the new `function.read`; one undo step; refusals as "Curves" |
 | `function.sample` | `{tag, path, inputs: [x], range_input?}` | `{outputs}` from `Function::evaluate` |
-| `shader.read` | `{tag}` | `{template, lod, bitmaps, colours, vectors, animations, used_by, names_known, refusals}` |
-| `shader.set` | `{tag, slot: {kind, index}, value}` | the row; equal to the `tag.set` it stands for |
-| `shader.preview` | `{tag, shape?, object?, time?, size?}` | `{png, passes_drawn, refusals}` |
+| `shader.read` | `{tag}` | `{tag, template, lod, lods, bitmaps, colours, vectors, animations, passes, used_by, names_known, names, read_only, refusals}`; each slot `{kind, index, path, label, value, used_by}` |
+| `shader.set` | `{tag, slot: {kind: bitmap\|colour\|vector, index}, value}` | the slot as `shader.read` lists it; the write, undo step and refusals are the `tag.set` it stands for |
+| `shader.preview` | `{tag, shape?: sphere\|quad\|object, object?, size?, out?}`; `time` is S2 | `{png, width, height, covered, shape, passes_drawn, refusals: [{layer, passes, why}], base, unresolved, notes}`; with no renderer `png` is null and the counts still answer |
 | `shader.code` | `{tag, pass}` | `{vertex: {listing, wgsl, warnings}, pixel: {listing, wgsl, warnings}}` |
 | `script.list` | `{filter?}` | `{scripts: [{name, kind, type, nodes}], globals, free_nodes, node_limit}` |
 | `script.source` | `{name?}` | `{name, item, kind, type, source, links: [{span, kind, name, target, why?}]}` |
@@ -851,7 +870,7 @@ the first one whose needs are met.
 | F1 | **Curve editor, same length**: typed payload accessors, the plot, handles, `function.*` | M | X1 | `function.sample` equals `Function::evaluate` for every type on invented blobs; an edit round-trips through `to_bytes`; types 6 and 8 are read-only |
 | H1 | **Scripts, read**: the Scripts tool, the catalog from the source's executable, source with links, `script.list`, `script.source`, `script.uses` | M | P4 | an invented scenario's scripts list and decompile; a link to an object name selects the placement; without the executable the tool refuses by name |
 | M1 (built) | **Model poses**: `anim.list`, `anim.pose`, an animation picker and scrub on a model in the native view | M | P14 | an invented two-bone model posed at a frame differs from the rest pose where the clip moves it and nowhere else |
-| S1 | **Shader tab**: slots with `Used by`, bitmap thumbnails in rows and in the picker, the preview on sphere, quad and object, refusals listed, `shader.read`, `shader.set`, `shader.preview` | L | C1, P15 | on an invented material: `shader.set` equals the `tag.set` it stands for; a changed colour changes `shader.preview` pixels; a refused pass is counted and absent |
+| S1 (built) | **Shader tab**: slots with `Used by`, bitmap thumbnails in rows and in the picker, the preview on sphere, quad and object, refusals listed, `shader.read`, `shader.set`, `shader.preview` | L | C1, P15 | on an invented material: `shader.set` equals the `tag.set` it stands for; a changed colour changes `shader.preview` pixels; a refused pass is counted and absent |
 | S2 | **Shader animation**: animated properties as curves, the preview clock | S | S1, F1 | a periodic property changes the preview between two clock times; a refused animation kind is named |
 | S4 | **Shader code, read**: listings, WGSL and warnings per pass, `shader.code` | S | S1 | an invented pass lists both programs; a state program shows its refusal |
 | A2 (built) | **Mouth curves, read**: the extra-info names in `defs`, `Gestalt::mouth_curve`, the track under the waveform, `sound.mouth` read | S | A1 | an invented gestalt with one voiced and one unvoiced permutation gives one curve and one null |

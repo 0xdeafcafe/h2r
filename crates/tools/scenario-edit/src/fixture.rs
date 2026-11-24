@@ -1124,6 +1124,68 @@ pub fn fixture_with_layered_bsp() -> Vec<u8> {
     b
 }
 
+/// Where [`fixture_with_shader_colour`]'s floor shader keeps its one
+/// colour parameter (postprocess `+0x0c`), and where its template keeps
+/// the one binding row that feeds it (postprocess `+0x20`).
+pub const SHADER_COLOURS: usize = TEX_SHAD + 0xf0;
+pub const STEM_BINDINGS: usize = LAYERED_STEM + 0xd0;
+/// The colour parameter's value as the fixture writes it: the pass's own
+/// colour, so the picture is [`fixture_with_layered_bsp`]'s until it is
+/// edited.
+pub const SHADER_COLOUR: u32 = LAYERED_COLOR;
+/// The binding word that names the final combiner's first constant
+/// (`tags::shader::ParameterBinding`: register 8 in bits 6 to 9, `c0`),
+/// and its channel mask selector: red, green and blue
+/// (`tags::material::CHANNEL_MASKS[4]`).
+pub const FINAL_C0: u16 = 0x200;
+pub const RGB_MASK: u8 = 4;
+
+/// [`fixture_with_layered_bsp`] with the floor shader given one colour
+/// parameter ([`SHADER_COLOUR`]) and the template one binding that puts
+/// it in the final combiner's first constant, which the pass's pixel
+/// shader outputs: an edit of the colour changes the pass's colour. The
+/// pass draws in `layer` (the layered map's is [`LAYERED_LAYER`]; layer 1
+/// is one the editor refuses, `native_view::LAYER_1_UNCHECKED`).
+/// Everything is invented.
+pub fn fixture_with_shader_colour(layer: u8) -> Vec<u8> {
+    assert!(layer < 6, "the template lists layers 0 to 5");
+    let mut b = fixture_with_layered_bsp();
+    let file = |at: usize| META_FILE + at;
+    let addr = |at: usize| META + at as u32;
+    let half = |b: &mut [u8], at: usize, v: u16| b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    let range = |start: u16, count: u16| start | count << 9;
+
+    // The shader's postprocess: one colour.
+    let post = file(TEX_SHAD + 0x60);
+    put(&mut b, post + 0xc, 1);
+    put(&mut b, post + 0x10, addr(SHADER_COLOURS));
+    put(&mut b, file(SHADER_COLOURS), SHADER_COLOUR);
+
+    // The template: its one implementation row binds colour 0, through
+    // one binding, to the final combiner's c0.
+    let (stem_post, lods, layers, rows) = (
+        file(LAYERED_STEM + 0x60),
+        file(LAYERED_STEM + 0x90),
+        file(LAYERED_STEM + 0xa0),
+        file(LAYERED_STEM + 0xc0),
+    );
+    put(&mut b, stem_post + 0x20, 1);
+    put(&mut b, stem_post + 0x24, addr(STEM_BINDINGS));
+    half(&mut b, rows + 2, range(0, 1));
+    let at = file(STEM_BINDINGS);
+    half(&mut b, at, FINAL_C0);
+    b[at + 2] = RGB_MASK;
+    b[at + 3] = 0;
+
+    // The pass moves to `layer`.
+    if layer != LAYERED_LAYER {
+        half(&mut b, layers + 2 * usize::from(LAYERED_LAYER), 0);
+        half(&mut b, layers + 2 * usize::from(layer), range(0, 1));
+        put(&mut b, lods + 2, 1 << layer);
+    }
+    b
+}
+
 /// Where [`fixture_with_screen`]'s screen tag (`id(4)`, a `wgit`) is in
 /// the metadata, and its name.
 pub const SCREEN_AT: usize = 0x1400;

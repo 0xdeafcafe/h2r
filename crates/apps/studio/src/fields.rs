@@ -26,6 +26,7 @@ pub mod find;
 pub mod picker;
 pub mod rich;
 pub mod row;
+pub mod shader;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;

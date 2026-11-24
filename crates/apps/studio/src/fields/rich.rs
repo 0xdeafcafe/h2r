@@ -6,25 +6,40 @@
 //! its plain form and `tag.fields` gives the word in its `view` key. A
 //! **tag view** is attached to a tag's group and shows as a tab beside
 //! **Fields** ([`tabs`]); the table is [`TAG_VIEWS`], and each slice that
-//! adds a view adds one line to it. Nothing here writes: a view reads and
-//! writes through `TagDoc` (or the Scenario session) like the panel does.
+//! adds a view adds one line to it (the Shader tab, `super::shader`).
+//! Nothing here writes: a view reads and writes through `TagDoc` (or the
+//! Scenario session) like the panel does.
 
 use dear_imgui_rs::Ui;
 use map::{FourCC, TagId};
 use serde_json::{Value, json};
 use tags::registry::{Field, FieldView};
 
+use super::PanelState;
 use crate::App;
 use crate::app::Action;
+use crate::ui::map_list::MapListUi;
+use crate::viewport::Gpu;
 
 /// The id of the plain field panel's tab, and of the tab `tag.view` shows
 /// when none is named.
 pub const FIELDS_TAB: &str = "fields";
 
+/// What a tag view draws with beside the app: the GPU and the picture
+/// cache for its images, the field panel's state (its colour and pick
+/// dialogs, so a view's rows open the panel's own), and each view's own
+/// state.
+pub struct ViewCx<'a, 'g> {
+    pub gpu: &'a mut Gpu<'g>,
+    pub pictures: &'a mut MapListUi,
+    pub panel: &'a mut PanelState,
+    pub shader: &'a mut super::shader::ShaderUi,
+}
+
 /// How a tag view draws itself below the tab bar: the tag it shows and
 /// the actions it pushes. A view that cannot model the tag says why and
 /// leaves **Show fields** to the bar; it never draws part of a picture.
-pub type DrawFn = fn(&Ui, &App, TagId, &mut Vec<Action>);
+pub type DrawFn = fn(&Ui, &App, TagId, &mut ViewCx<'_, '_>, &mut Vec<Action>);
 
 /// A tag view: a tab for every tag of its groups.
 pub struct TagView {
@@ -38,7 +53,12 @@ pub struct TagView {
 }
 
 /// The tag views, in tab order. Each rich-editor slice adds its own.
-pub const TAG_VIEWS: &[TagView] = &[];
+pub const TAG_VIEWS: &[TagView] = &[TagView {
+    id: "shader",
+    label: "Shader",
+    groups: &[crate::app::shader::SHAD],
+    draw: super::shader::draw,
+}];
 
 /// One tab of a tag's panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,7 +159,7 @@ pub fn tab_bar(ui: &Ui, group: FourCC, shown: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    fn nothing(_: &Ui, _: &App, _: TagId, _: &mut Vec<Action>) {}
+    fn nothing(_: &Ui, _: &App, _: TagId, _: &mut ViewCx<'_, '_>, _: &mut Vec<Action>) {}
 
     const SOUND: FourCC = FourCC(*b"snd!");
     const SHADER: FourCC = FourCC(*b"shad");

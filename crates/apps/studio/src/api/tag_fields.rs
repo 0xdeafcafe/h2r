@@ -793,7 +793,7 @@ impl TagFields {
 
 /// An edit with no edit target answers `NO_TARGET`: the window asks for one,
 /// the API does not.
-fn no_target(app: &App) -> Result<(), agent_proto::RpcError> {
+pub(super) fn no_target(app: &App) -> Result<(), agent_proto::RpcError> {
     match app.edit_refusal() {
         Some(why) => Err(err(code::NO_TARGET, why)),
         None => Ok(()),

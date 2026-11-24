@@ -1307,4 +1307,173 @@ fn a_repainted_base_map_changes_the_drawn_world() {
     // Lightmap only draws white whatever the bitmap.
     let flat = NativeWorld::new(&device, &queue, &load, Lighting::LightmapOnly);
     assert_eq!(flat.repaint_base(&queue, bitmap, 4, 4, &blue), 0);
+
+/// The invented coloured material ([`crate::fixture::fixture_with_shader_colour`])
+/// with its pass in `layer`, opened as a map, and its raw resources.
+fn coloured(layer: u8) -> (Map<std::io::Cursor<Vec<u8>>>, ResourceFiles) {
+    let bytes = crate::fixture::fixture_with_shader_colour(layer);
+    let mut files = ResourceFiles::new();
+    files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+    (
+        Map::from_reader(std::io::Cursor::new(bytes)).unwrap(),
+        files,
+    )
+}
+
+/// The floor's shader drawn alone on each shape plans its layer-5 pass
+/// and its base look, as the level does; in layer 1 the same pass is
+/// refused by name and nothing of it is drawn.
+#[test]
+fn a_material_preview_plans_the_materials_own_passes() {
+    use crate::fixture::{LAYERED_LAYER, id};
+    use preview::{Shape, material, material_draws};
+    for shape in [Shape::Sphere, Shape::Quad] {
+        let (mut map, mut files) = coloured(LAYERED_LAYER);
+        let p = material(&mut map, &mut files, id(6), shape).unwrap();
+        assert_eq!(p.shape, shape);
+        let d = material_draws(&p);
+        assert_eq!(d.base, None, "{shape:?}: {d:?}");
+        assert!(d.unresolved.is_empty(), "{d:?}");
+        assert!(d.drawn.contains(&LAYERED_LAYER), "{shape:?}: {d:?}");
+        assert!(
+            d.drawn
+                .iter()
+                .all(|&l| l == LAYERED_LAYER || l == layers_load::LAYER_3),
+            "{shape:?}: {d:?}"
+        );
+        assert!(
+            d.refused.iter().all(|(layer, _)| *layer == layers_load::LAYER_3),
+            "only layer 3 may stand aside for the base look: {d:?}"
+        );
+    }
+    let (mut map, mut files) = coloured(1);
+    let p = material(&mut map, &mut files, id(6), Shape::Sphere).unwrap();
+    let d = material_draws(&p);
+    assert!(!d.drawn.contains(&1), "{d:?}");
+    let (_, why) = d.refused.iter().find(|(l, _)| *l == 1).expect("layer 1 named");
+    assert!(why.contains(LAYER_1_UNCHECKED), "{why}");
+}
+
+/// The shape geometry: the sphere's points are on the unit sphere with
+/// their normals, its triangles face outward (counter-clockwise from
+/// outside, as the square's from above) and index its vertices.
+#[test]
+fn the_preview_shapes_face_outward() {
+    use preview::{quad, sphere};
+    let s = sphere();
+    let n = s.positions.len();
+    assert_eq!(s.normals.len(), n);
+    assert_eq!((s.tangents.len(), s.binormals.len(), s.uvs.len()), (n, n, n));
+    for p in &s.positions {
+        let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        assert!((r - 1.0).abs() < 1e-5, "{p:?}");
+    }
+    let facing = |sec: &SectionInput| {
+        let mut out = 0usize;
+        for t in &sec.parts[0].triangles {
+            let [a, b, c] = (*t).map(|i| sec.positions[usize::from(i)]);
+            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let mid = [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ];
+            let outward = sec.normals[usize::from(t[0])];
+            let dir = if sec.positions.len() == 4 { outward } else { mid };
+            let dot = n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2];
+            // A pole's triangles have no area: they face nowhere.
+            if dot < -1e-7 {
+                out += 1;
+            }
+            assert!(t.iter().all(|&i| usize::from(i) < sec.positions.len()));
+        }
+        out
+    };
+    assert_eq!(facing(&s), 0, "every sphere triangle faces out");
+    assert_eq!(facing(&quad()), 0, "the square faces up");
+}
+
+/// On the GPU: the coloured material on a sphere draws its pass's
+/// colour over the base look, and an edit of the colour parameter in
+/// the map's bytes changes the picture to the new colour; in layer 1
+/// the pass is absent and the base look alone is drawn. Skipped without
+/// a wgpu adapter.
+#[test]
+fn a_material_preview_draws_its_colour_and_follows_an_edit() {
+    use crate::fixture::{LAYERED_LAYER, SHADER_COLOURS, id, put};
+    use preview::{Shape, material, render_material};
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let draw = |bytes: Vec<u8>| -> Vec<[u8; 4]> {
+        let mut files = ResourceFiles::new();
+        files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+        let mut map = Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+        let p = material(&mut map, &mut files, id(6), Shape::Sphere).unwrap();
+        let tex = render_material(&device, &queue, &p, [64, 64], [0.0; 3]);
+        read_all(&device, &queue, &tex)
+    };
+    let green = |p: &[u8; 4]| p[1] > 250 && p[0] < 5 && p[2] < 5;
+    let red = |p: &[u8; 4]| p[0] > 250 && p[1] < 5 && p[2] < 5;
+    let before = draw(crate::fixture::fixture_with_shader_colour(LAYERED_LAYER));
+    let lit = before.iter().filter(|p| p[..3] != [0, 0, 0]).count();
+    assert!(lit > 200, "the sphere fills the view: {lit}");
+    // The pass draws at the base look's depth (the same position code):
+    // all but a stray edge pixel is its colour.
+    let most = |n: usize| n * 100 >= lit * 95;
+    assert!(
+        most(before.iter().filter(|p| green(p)).count()),
+        "the sphere is the pass's green"
+    );
+    let mut edited = crate::fixture::fixture_with_shader_colour(LAYERED_LAYER);
+    put(&mut edited, crate::fixture::META_FILE + SHADER_COLOURS, 0xffff_0000);
+    let after = draw(edited);
+    assert!(most(after.iter().filter(|p| red(p)).count()), "the edit shows");
+    let refused = draw(crate::fixture::fixture_with_shader_colour(1));
+    assert_eq!(refused.iter().filter(|p| green(p)).count(), 0, "layer 1 is absent");
+    assert!(refused.iter().filter(|p| p[..3] != [0, 0, 0]).count() > 200, "the base look draws");
+}
+
+/// Every pixel of a 64 by 64 colour texture.
+fn read_all(device: &wgpu::Device, queue: &wgpu::Queue, color: &wgpu::Texture) -> Vec<[u8; 4]> {
+    let row = 256u32;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * 64),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        color.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(64),
+            },
+        },
+        wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = buf.slice(..).get_mapped_range().unwrap();
+    (0..64 * 64)
+        .map(|i| {
+            let at = (i / 64) * row as usize + (i % 64) * 4;
+            [data[at], data[at + 1], data[at + 2], data[at + 3]]
+        })
+        .collect()
 }

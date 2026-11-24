@@ -26,6 +26,7 @@ mod import_tests;
 mod sound_edit_tests;
 mod shell_tests;
 mod ui_export_tests;
+mod shader_tests;
 
 struct Temp(PathBuf);
 impl Temp {
@@ -236,6 +237,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, super::curves::tests::curve_map()).unwrap();
             app.tags = crate::app::TagDoc::new(super::curves::tests::registry());
             call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
+        m::SHADER_READ | m::SHADER_SET | m::SHADER_PREVIEW => {
+            // The invented material: the floor shader with a colour its
+            // template's one pass in layer 5 reads.
+            let map = t.path("shader.map");
+            std::fs::write(&map, shader_tests::material_map(fixture::LAYERED_LAYER)).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
         m::TAG_COLOURS => {
             // A map whose weapon tag has an invented colour field of
