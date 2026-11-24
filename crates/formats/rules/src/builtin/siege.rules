@@ -70,6 +70,8 @@ global var assault: bool = false
 global var wave0: timer
 global var wave1: timer
 object var taken: bool = false
+// The site taken this tick, if any, whose line the spawns move to.
+global var front: zone? = none
 
 fn begin(n: int) {
     phase = n
@@ -140,18 +142,23 @@ on tick {
             if phase < needed and ticks_held(s, team 0) >= capture_time {
                 s.taken = true
                 begin(phase + 1)
-                // The front moves up: the attackers spawn at the site they
-                // took, and the defenders fall back.
-                spawn_near(team 0, s, line)
-                fall_back()
-                if phase < needed {
-                    message(all, "The attackers took a site")
-                } else if assault {
-                    message(all, "Final assault: the defenders' flag")
-                } else {
-                    message(all, "The attackers took every site")
-                    win(team 0)
-                }
+                front = s
+            }
+        }
+        // The front moves up once a tick, after the sites are counted:
+        // the attackers spawn at the site they took, and the defenders
+        // fall back.
+        if let s = front {
+            front = none
+            spawn_near(team 0, s, line)
+            fall_back()
+            if phase < needed {
+                message(all, "The attackers took a site")
+            } else if assault {
+                message(all, "Final assault: the defenders' flag")
+            } else {
+                message(all, "The attackers took every site")
+                win(team 0)
             }
         }
     } else if not over and assault {
