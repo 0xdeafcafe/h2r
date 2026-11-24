@@ -286,3 +286,21 @@ fn the_original_starts_where_the_call_entered_whatever_eip_holds() {
     );
     assert_eq!(outcome, Outcome::Matched { steps: 4 });
 }
+
+#[test]
+fn the_guest_arm_keeps_live_state_on_a_mismatch_and_between_samples() {
+    let s = registry();
+    let (c, g) = (entry(), live());
+    let mut wrong = port(2, 1, 0);
+    assert!(!s.guest_arm("test.inc", &c, &g, CODE, tick, &mut wrong));
+    s.enable(&["test.inc".into()], Some(2), None).unwrap();
+    for _ in 0..3 {
+        assert!(s.guest_arm("test.inc", &c, &g, CODE, tick, &mut wrong));
+        assert_eq!(word(&g, OUT), 0);
+        assert_eq!(c.esp, STACK);
+    }
+    let st = s.status();
+    assert_eq!((st.calls, st.checked, st.mismatched), (3, 2, 2));
+    s.disable(&[]).unwrap();
+    assert!(!s.guest_arm("test.inc", &c, &g, CODE, tick, &mut wrong));
+}

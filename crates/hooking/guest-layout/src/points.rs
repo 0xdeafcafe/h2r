@@ -1634,6 +1634,16 @@ points! { ALL;
     /// Fill a screen request (ECX): the player mask, two words and the
     /// loader; `OPEN_SCREEN` and the menus' own opens call it.
     SCREEN_REQUEST @ 0x0014_9f49: [fn(request: ecx, mask: stack 0, a: stack 1, b: stack 2, loader: stack 3) ret 16]; "docs/halo1/campaign-picker.md";
+    /// The action assembled for a local or remote slot becomes the unit's control.
+    PLAYER_ACTION_TO_UNIT_CONTROL @ 0x0015_05f0: [fn(player: eax, unit: stack 0, action: stack 1) ret 8]; "docs/engine/sim-rewrite.md";
+    PLAYER_NEUTRAL_UNIT_CONTROL @ 0x0015_0790: [fn(unit: edi) ret 0]; "docs/engine/sim-rewrite.md";
+    PLAYER_LOOK_CURVE @ 0x0018_5b30: [fn(samples: esi, count: eax, axis: stack 0) ret 4]; "docs/engine/sim-rewrite.md";
+    HUD_SEATS_UPDATE @ 0x0013_91ed: [fn() ret 0]; "docs/engine/sim-rewrite.md";
+    HUD_SEAT_UPDATE @ 0x0013_a838: [fn(user: stack 0) ret 4]; "docs/engine/sim-rewrite.md";
+    AIM_TARGET_UPDATE @ 0x001a_4900: [fn(user: eax, state: ebx, follow: stack 0) ret 4]; "docs/game/aim-assist.md";
+    AIM_TARGET_SEARCH @ 0x001a_5370: [fn(camera: ecx, params: stack 0, direction: stack 1, unit: stack 2, team: stack 3, output: stack 4) ret 20]; "docs/game/aim-assist.md";
+    AIM_TARGET_COMPARE @ 0x001a_66f0: [fn(lhs: stack 0, rhs: stack 1) -> eax ret 0]; "docs/game/aim-assist.md";
+    SEAT_SHOT_AIM @ 0x001a_4c00: [fn(direction: eax, origin: ebx, player: stack 0, aim: stack 1, hand: stack 2) -> al ret 12]; "docs/game/aim-assist.md";
     /// One local player's control update (look input to the player's
     /// action): stdcall, the local user index first of five stack words,
     /// the player's local controller index (player `+0x24`) in EDX. Its

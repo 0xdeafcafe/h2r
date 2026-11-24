@@ -141,6 +141,16 @@ struct State {
     dropped: u64,
 }
 
+impl State {
+    /// Count the call while holding the same registry lock as enable/disable.
+    /// None means native authority; Some(None) is an unsampled checked call.
+    fn next_sample(&mut self, name: &str) -> Option<Option<(u64, u32)>> {
+        let p = self.ports.get_mut(name).filter(|p| p.on)?;
+        p.calls += 1;
+        Some(((p.calls - 1) % self.every == 0).then_some((p.calls, p.base)))
+    }
+}
+
 /// The registry. One per process ([`SHADOW`]); tests make their own.
 pub struct Shadow {
     on: AtomicBool,
@@ -371,17 +381,11 @@ impl Shadow {
         let entry = *cpu;
         let mut guard = self.lock();
         let s = &mut *guard;
-        let (every, limit) = (s.every, s.step_limit);
-        let Some(p) = s.ports.get_mut(name).filter(|p| p.on) else {
+        let Some(Some((call, base))) = s.next_sample(name) else {
             drop(guard);
             return port(cpu, guest);
         };
-        p.calls += 1;
-        let (call, base) = (p.calls, p.base);
-        if (call - 1) % every != 0 {
-            drop(guard);
-            return port(cpu, guest);
-        }
+        let limit = s.step_limit;
         let Some(code) = s.code.as_deref_mut() else {
             drop(guard);
             return port(cpu, guest);
@@ -419,6 +423,35 @@ impl Shadow {
         }
         Self::record(s, name, pc, call, tick(guest), &entry, outcome);
         live
+    }
+
+    /// With checks enabled for this port, the caller dispatches the original
+    /// on live state, including on unsampled calls and after a mismatch.
+    /// The sampled candidate and interpreter only see private copies.
+    pub fn guest_arm(
+        &self,
+        name: &'static str,
+        entry: &CpuAbi,
+        guest: &Guest,
+        pc: u32,
+        tick: TickFn,
+        port: &mut PortFn<'_>,
+    ) -> bool {
+        if !self.on.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut state = self.lock();
+        let s = &mut *state;
+        let Some(sample) = s.next_sample(name) else {
+            return false;
+        };
+        if let Some((call, base)) = sample {
+            let code = s.code.as_deref_mut().expect("enabling a shadow port loads its image");
+            code.prime(base);
+            let (outcome, _) = check(code, &mut s.view, guest, entry, pc, s.step_limit, port);
+            Self::record(s, name, pc, call, tick(guest), entry, outcome);
+        }
+        true
     }
 
     fn record(
