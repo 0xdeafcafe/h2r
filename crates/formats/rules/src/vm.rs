@@ -824,6 +824,11 @@ impl Vm {
         &self.ext
     }
 
+    /// End the role grants when the host observes a round boundary.
+    pub fn clear_roles(&mut self) {
+        self.ext.role_mask = 0;
+    }
+
     pub fn has_role(&self, slot: u8) -> bool {
         slot < MAX_PLAYERS as u8 && self.ext.role_mask & (1 << slot) != 0
     }
@@ -1085,7 +1090,7 @@ impl Vm {
             }
             Input::RoundEnd => {
                 self.ext.grants.clear();
-                self.ext.role_mask = 0;
+                self.clear_roles();
                 self.ext.held.clear();
                 self.ext.spawns = [None; MAX_TEAMS];
                 self.ext.bodies = [None; MAX_TEAMS];

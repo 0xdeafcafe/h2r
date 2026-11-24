@@ -90,6 +90,14 @@ pub fn restart_refusal(s: &Situation, new: &Ir) -> Option<String> {
     }
     match s.engine {
         Some(e) if e == i32::from(new.header.engine()) => None,
+        Some(e) if e == i32::from(::rules::SCRIPT_INDEX) => {
+            // A restart keeps this record and only changes its extension.
+            match variants::portable::settings_record(new) {
+                Ok(v) if v.game_type() == variants::GameType::Script => None,
+                Ok(_) => Some("the script's settings need a different variant record".into()),
+                Err(error) => Some(error.to_string()),
+            }
+        }
         Some(e) => Some(format!(
             "the script rides engine {}, and the variant is engine {e}",
             new.header.engine()
@@ -115,6 +123,9 @@ pub fn decide(s: &Situation, old: Option<&Ir>, new: &Ir, mode: ReloadMode) -> De
     }
     if let Some(why) = runtime::host_refusal(new) {
         return Decision::Refuse(format!("this host cannot run the script: {why}"));
+    }
+    if let Some(why) = s.engine.and_then(|index| runtime::record_refusal(new, index)) {
+        return Decision::Refuse(why);
     }
     let shape = match old {
         Some(old) => ::rules::reload::compatible(old, new)

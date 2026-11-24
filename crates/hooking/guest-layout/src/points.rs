@@ -719,6 +719,12 @@ points! { ALL;
     /// (record flag bit 2), 2 extra damage (bit 12), 3 damage resistance
     /// (bit 13). The slot is called at `0x15b28e`, `0x2404ad`, `0x2bc967`.
     ENGINE_TRAIT_QUERY @ 0x0024_dda0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    // Retail overrides of the same slot. CTF and Assault share their body.
+    CTF_TRAIT_QUERY @ 0x0024_2010: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    ODDBALL_TRAIT_QUERY @ 0x002b_cc90: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    KING_TRAIT_QUERY @ 0x002b_d9d0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    JUGGERNAUT_TRAIT_QUERY @ 0x0019_26c0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    TERRITORIES_TRAIT_QUERY @ 0x002c_02e0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// The game variant record clean-up: EBX the `0x130`-byte record.
     /// Clamps every field, the engine index (`+0x44`) to 1..9 and the type
     /// area by engine (`0x19de54`; 5 and 6 always fail), then compares the
@@ -1909,6 +1915,12 @@ mod tests {
                 ..
             }
         ));
+        for query in [
+            &CTF_TRAIT_QUERY, &ODDBALL_TRAIT_QUERY, &KING_TRAIT_QUERY,
+            &JUGGERNAUT_TRAIT_QUERY, &TERRITORIES_TRAIT_QUERY,
+        ] {
+            assert_eq!(query.sig, ENGINE_TRAIT_QUERY.sig, "{}", query.name);
+        }
         // The routines a script's calls reach: register arguments, no pop.
         assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("player"), Some(Loc::Eax));
         assert_eq!(JUGGERNAUT_ROLE_SET.sig.arg("on"), Some(Loc::Ecx));

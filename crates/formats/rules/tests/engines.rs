@@ -306,7 +306,7 @@ fn juggernaut_passes_to_its_killer_and_only_it_scores() {
 fn script_index_carries_the_crown_and_its_trait_choices_across_a_restore() {
     let source = builtin::JUGGERNAUT.replace(
         "type juggernaut",
-        r#"type slayer
+        r#"type juggernaut
 option role_active_camo: bool = true "Camo"
 option role_extra_damage: bool = false "Damage""#,
     );

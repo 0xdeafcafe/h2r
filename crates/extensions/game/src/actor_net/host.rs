@@ -116,8 +116,7 @@ impl Host {
         Ok(())
     }
 
-    /// The mode state for this tick, as the Firefight HUD reads it
-    /// (`crate::firefight::hud`; empty when no mode runs): a `State` record
+    /// The Firefight HUD and script role state for this tick: a `State` record
     /// in this tick's changes when it differs from the last, and whole in
     /// every key. Call after [`Host::capture`], which starts the tick's
     /// changes afresh.

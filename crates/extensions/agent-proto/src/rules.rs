@@ -46,8 +46,7 @@ pub struct State {
     /// Where the blob came from: `builtin` or `live`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// The retail engine index the game's record is on
-    /// (`rules::ir::Header::engine`).
+    /// The physical engine index in the active variant record, including the script index.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier: Option<u8>,
     /// Who scores the game the script runs in: `script` when its VM

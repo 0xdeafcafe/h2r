@@ -420,31 +420,34 @@ pub fn host_refusal(ir: &Ir) -> Option<String> {
     unhostable_refusal(ir).or_else(|| runtime_refusal(ir))
 }
 
-/// An entry no host can make on the script's carrier
-/// (`verify::unhostable`), in words.
+/// An unavailable script entry, in words.
 pub fn unhostable_refusal(ir: &Ir) -> Option<String> {
-    if let Some(e) = verify::unhostable(ir) {
+    ir.handlers.iter().flat_map(|h| &h.code).find_map(|op| {
+        let Op::Call { entry, .. } = op else { return None };
+        let e = caps::entry(*entry, ir.header.api_version)?;
         let status = match e.status {
             EntryStatus::Traced => "traced but not a named point",
             EntryStatus::Untraced => "untraced",
             EntryStatus::NotBuilt => "not built",
-            EntryStatus::Named | EntryStatus::VmOnly => "not hostable",
+            EntryStatus::Named | EntryStatus::VmOnly => return None,
         };
-        // A call one engine's routine makes, in a script on another carrier.
-        if let Some(hosts) = e.hosts.filter(|_| e.status.hostable()) {
-            let name = |c: u8| caps::carrier_name(c).map_or_else(|| format!("engine {c}"), str::to_string);
-            let on: Vec<String> = hosts.iter().map(|&c| name(c)).collect();
-            return Some(format!(
-                "the script calls {}, which a host makes only on {}, and the script rides {}",
-                caps::spelled(e),
-                on.join(", "),
-                name(ir.header.engine())
-            ));
-        }
-        return Some(format!(
+        Some(format!(
             "the script calls {}, whose engine entry is {status}",
             caps::spelled(e)
-        ));
+        ))
+    })
+}
+
+/// The retail ball return looks up a spawn in Oddball's engine globals.
+pub(super) fn record_refusal(ir: &Ir, engine: i32) -> Option<String> {
+    if matches!(variants::GameType::from_engine(engine), variants::GameType::Other(_)) {
+        return Some(format!("the record has unsupported engine index {engine}"));
+    }
+    if engine != variants::GameType::Oddball.engine()
+        && ir.handlers.iter().flat_map(|h| &h.code)
+            .any(|op| matches!(op, Op::Call { entry, .. } if *entry == id::RESET_OBJECTIVE))
+    {
+        return Some("reset_objective needs the active Oddball record's ball spawns".into());
     }
     None
 }
@@ -708,8 +711,12 @@ impl Game for GuestGame<'_> {
             id::SCORE => p.zip(int(1)).map(|(player, delta)| Call::Score { player, delta }),
             id::SET_LIVES => p.zip(int(1)).map(|(player, lives)| Call::SetLives { player, lives }),
             id::RESPAWN => p.map(Call::Respawn),
+            // The VM holds the role on every record. The retail Juggernaut
+            // setter also posts the announcement and updates its team mask.
             id::ROLE_TRAITS => match call.args.get(1) {
-                Some(Arg::Bool(on)) => p.map(|player| Call::RoleTraits { player, on: *on }),
+                Some(Arg::Bool(on)) if guest::engine_index(self.m).ok().flatten() == Some(super::roles::JUGGERNAUT) => {
+                    p.map(|player| Call::RoleTraits { player, on: *on })
+                }
                 _ => None,
             },
             id::RESET_OBJECTIVE => match call.args.first() {
@@ -767,6 +774,10 @@ impl Game for GuestGame<'_> {
 
 /// One game's script.
 pub struct Running {
+    /// The physical record, including the script index.
+    pub(super) record_engine: i32,
+    /// The identity peers see in the record, also across in-place reloads.
+    pub(super) record_prefix: [u8; 8],
     pub vm: Vm,
     /// The type of the record's script, including a settings-only variant.
     game_type: Type,
@@ -1166,18 +1177,6 @@ impl Runtime {
             );
         }
         let full = Some(hash.to_string());
-        // A record of the script index carries any script: its engine
-        // object makes no rules of a retail engine's (`super::engine_object`).
-        let script_index = engine == i32::from(::rules::SCRIPT_INDEX) && script.mode == Mode::Rules;
-        if i32::from(ir.header.engine()) != engine && !script_index {
-            return self.refuse(
-                full,
-                format!(
-                    "the script rides engine {}, and the record is engine {engine}",
-                    ir.header.engine()
-                ),
-            );
-        }
         // The policy first: a refusal by kind of game names the capability.
         if let Some(d) = policy::check(self.context, &ir.header.requires, ir.header.api_version)
             .into_iter()
@@ -1205,7 +1204,7 @@ impl Runtime {
                 Err(why) => return self.refuse(full, why),
             },
         };
-        if let Some(why) = unhostable_refusal(&ir) {
+        if let Some(why) = record_refusal(&ir, engine).or_else(|| unhostable_refusal(&ir)) {
             return self.refuse(full, for_carried(carried.as_ref(), &ir, why));
         }
         // A carried script's built-in is refused for what this host cannot
@@ -1265,6 +1264,12 @@ impl Runtime {
             (g.error, g.start_line)
         };
         let mut running = Running {
+            record_engine: engine,
+            record_prefix: if script.mode == Mode::Rules {
+                script.prefix
+            } else {
+                hash.0[..8].try_into().unwrap()
+            },
             vm,
             game_type,
             start_line,
@@ -1459,9 +1464,26 @@ impl Runtime {
     /// `ENGINE_ROUND_RESET`): `on round_start`, with its calls kept for
     /// the next tick boundary. The first round's is [`Runtime::start`]'s.
     pub fn round_start(&mut self, m: &dyn GuestMemory) {
-        let Some(ty) = self.running().map(|r| r.game_type) else { return };
+        let Some(r) = self.running() else { return };
+        let ty = r.game_type;
+        let projects_role = r.record_engine == super::roles::JUGGERNAUT;
         self.run(m, |vm, g| {
+            let before = vm.ext().role_mask;
+            vm.clear_roles();
+            let first_call = g.calls.len();
             vm.round_start_as(g, ty);
+            // Retail Juggernaut keeps its native mask across round resets.
+            // Release any old holder the new round's handler did not clear
+            // explicitly or crown again.
+            if projects_role {
+                let expired = before & !vm.ext().role_mask;
+                for player in 0u8..16 {
+                    let clear = Call::RoleTraits { player, on: false };
+                    if expired & (1 << player) != 0 && !g.calls[first_call..].contains(&clear) {
+                        g.calls.push(clear);
+                    }
+                }
+            }
         });
     }
 
@@ -1602,6 +1624,9 @@ impl Runtime {
                 "the new script has a uses line and no handlers to swap in; restart the game with it".into(),
             );
         }
+        if let Some(why) = record_refusal(&ir, r.record_engine) {
+            return Err(why);
+        }
         if let Err(why) = sync(r, &*self.store) {
             self.stop(why.clone());
             return Err(why);
@@ -1723,7 +1748,7 @@ impl Runtime {
                     version: Some(ir.header.version),
                     hash: Some(r.hash.to_string()),
                     source: Some(r.source.name().into()),
-                    carrier: Some(ir.header.engine()),
+                    carrier: u8::try_from(r.record_engine).ok(),
                     scoring: Some(wire::Scoring::Script),
                     options: Some(r.options),
                     authority: r.authority,

@@ -10,8 +10,7 @@
 //! nothing but those bytes draws what the host draws. The host builds it
 //! after each tick ([`Mode::of`], published through [`slot`]); the
 //! channel's capture sends it (`actor_net::host::Host::set_mode`) and a
-//! client reads it back (`actor_net::client::Client::mode_state`,
-//! [`Mode::decode`]).
+//! client extracts the HUD portion in `actor_net::roles` before [`Mode::decode`].
 //!
 //! **The view.** [`view`] is a pure function of a [`Mode`] and the viewing
 //! player's roster slot. It reads no game memory and no clock, so the host
