@@ -301,9 +301,10 @@ grown is not in that overlay; the read shows the map's own.
 slots carry `applies=frame`. Gaps:
 
 - **Parameter names.** Slots bind by index (`ParameterBinding::source`).
-  The template's parameter and category blocks (`stem` root `+0x40`,
-  `+0x4c`) are not read ([shader-instances.md](../formats/shader-instances.md),
-  "Open items"). Until slice S3 reads them, a slot is labelled by its
+  The template's properties and categories blocks (`stem` root `+0x10`,
+  `+0x18`, per Assembly's plugin) are not read, and a retail cache may keep
+  no names in them ([shader-instances.md](../formats/shader-instances.md),
+  "Parameter names"). Until slice S3 reads them, a slot is labelled by its
   kind, index and `Used by` line (`Bitmap 2 · stage 1 of pass 3`), and
   the tab says once `This template's parameter names are not read yet.`
 - **`pixl`, `slit`.** No code parses either. The light response
@@ -946,7 +947,7 @@ the first one whose needs are met.
 | A3 (built) | **Face preview**: the `talk` overlay by the curve on a picked model, in step with play and scrub | S | A2, M1 | `anim.pose` with the overlay at weight 0 and 1 gives two pictures; the preview at a tick uses that tick's byte |
 | X2 (built) | **Data that changes length**: `TagDoc::resize_data`, the grown-data entry in the save, the session's form for the scenario | M | nothing | a shorter and a longer invented payload save and read back; growth off refuses; the old bytes are unreferenced; undo restores the pair |
 | F2 (built) | **Curve type changes** | S | F1, X2 | changing type saves at the new `blob_len` and reads back equal |
-| S3 | **Template parameter names**: read `stem`'s parameter and category blocks (**E** first), names on slots | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |
+| S3 | **Template parameter names**: read `stem`'s properties and categories blocks (`+0x10`, `+0x18`), names on slots. Waits on a disc check that the blocks are kept and on the source-index to parameter mapping | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |
 | C3 | **Colour functions**: the read of which colours a function blends (**E**), gradient strips | M | F1, C1 | an invented colour property draws its strip; the note records the reader |
 | H2 (built) | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
 | H3 (built) | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
