@@ -78,6 +78,34 @@ impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
         })
     }
 
+    pub(crate) fn for_segment(
+        ram: &'a mut M,
+        cpu: &runtime::CpuAbi,
+        pc: u32,
+        text: std::ops::Range<u32>,
+        sites: &[u32],
+    ) -> Option<Self> {
+        if !super::supported(cpu) || (pc != text.start && sites.binary_search(&pc).is_err()) {
+            return None;
+        }
+        Self::new(ram, text.start, text.end)
+    }
+
+    /// The value of each physical byte after the segment. Keep only the
+    /// last write to an overlapping address, including through aliases.
+    pub(crate) fn final_bytes(&self) -> Vec<(u32, u8)> {
+        let mut bytes = Vec::new();
+        for store in self.stores[..self.count].iter().chain(&self.spill).rev() {
+            for (i, &value) in store.bytes[..usize::from(store.len)].iter().enumerate() {
+                bytes.push((store.physical + i as u32, value));
+            }
+        }
+        // Stable sort keeps the newest byte first at each address.
+        bytes.sort_by_key(|&(addr, _)| addr);
+        bytes.dedup_by_key(|(addr, _)| *addr);
+        bytes
+    }
+
     /// Called before executing the segment. If the leaf has no contiguous
     /// instruction mapping it cannot run inline (its own gather checks this).
     pub(crate) fn protect_inline_text(&mut self, start: u32, end: u32) {
@@ -213,10 +241,7 @@ pub(crate) fn segment<const N: usize, M: SegmentMemory>(
     sites: &[u32],
     body: impl FnOnce(&mut runtime::CpuAbi, &mut Plan<'_, M, N>, u32) -> super::Result,
 ) -> Result<Option<runtime::TransferAbi>, GuestFault> {
-    if !super::supported(cpu) || (pc != text.start && sites.binary_search(&pc).is_err()) {
-        return Ok(None);
-    }
-    let Some(mut plan) = Plan::new(ram, text.start, text.end) else {
+    let Some(mut plan) = Plan::for_segment(ram, cpu, pc, text, sites) else {
         return Ok(None);
     };
     let mut next = *cpu;
@@ -276,6 +301,10 @@ mod tests {
         assert!(plan.unstaged_read(0x20004, 1).is_none());
         assert!(plan.unstaged_read(0x20007, 1).is_some());
         plan.set_u8(0x10003, 0x12).unwrap();
+        assert_eq!(
+            plan.final_bytes(),
+            [(0, 0x10), (1, 0x32), (2, 0x54), (3, 0x12), (4, 0x33), (5, 0xcd), (6, 0xab)]
+        );
         plan.commit().unwrap();
         assert_eq!(ram.u32(0x20002).unwrap(), 0xcd331254);
     }

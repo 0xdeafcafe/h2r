@@ -37,6 +37,8 @@ macro_rules! body {
     };
 }
 
+pub mod arm;
+
 mod actions;
 mod advance;
 mod channel_blend;
@@ -108,9 +110,13 @@ fn run_body(
     pc: u32,
 ) -> Result<Option<TransferAbi>, GuestFault> {
     segment::<128, _>(c, g, pc, body.entry..body.end, body.sites, |c, g, pc| {
-        g.allow_large_segment();
-        (body.handler)(c, g, pc)
+        evaluate(body, c, g, pc)
     })
+}
+
+fn evaluate(body: &Body, c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
+    g.allow_large_segment();
+    (body.handler)(c, g, pc)
 }
 
 /// Run exactly one entry or return segment against the live guest frame.
