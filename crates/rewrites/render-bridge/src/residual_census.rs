@@ -361,7 +361,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "frame_tail",
         entry: 0x0001_3b90,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {

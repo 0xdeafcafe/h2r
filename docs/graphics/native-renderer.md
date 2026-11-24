@@ -381,6 +381,12 @@ counted once; runtime counts depend on visibility and admissions):
 | Alternate view | view setup `0x0002c863`, UI call `0x0002c884`, view finish `0x0002c889` |
 | Outside game views | fallback-view call `0x0022326a`, 2 frame-finish calls, present `0x00223296` |
 
+The frame tail at `0x00013b90` conditionally copies the view target and composites it.
+The bridge scopes each helper by its caller and drains pending draws at entry and
+return. Its four-vertex pushed fans use the native screen-space pass with the
+resolved shader, textures, viewport and target. Refused draws use the original
+packet. State setup, optional surface readback and `Swap` run on the guest path.
+
 The five base target sites are `0x0002bde2`, `0x0002be83`, `0x0002bf0e`,
 `0x0002bf7f` and `0x0002bfe3`. The direct clear is `0x0002be01`; the clear
 helper calls `D3DDevice_Clear` at `0x00014bb2`. Target changes converge on

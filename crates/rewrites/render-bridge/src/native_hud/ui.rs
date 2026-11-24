@@ -20,6 +20,7 @@ pub enum UiScope {
     Hud,
     Loading,
     Overlay,
+    FrameTail,
 }
 
 const SCOPES: [(UiScope, &Point, &Point, Option<&Point>); 6] = [
@@ -339,10 +340,32 @@ fn overlay_rect(c: &mut Call<'_>) -> Option<TransferAbi> {
     }
 }
 
+fn tail_caller(mem: &dyn GuestMemory, stack: u32, caller: u32) -> bool {
+    mem.u32(stack).ok() == Some(caller)
+}
+
 pub(super) fn place(b: &mut Builder<'_>) {
     super::backdrop::place(b);
     super::model::place(b);
     super::outline::place(b);
+    for (start, end, caller) in [
+        (&TAIL_COPY, &TAIL_COPY_END, TAIL_COPY_CALLER),
+        (&TAIL_COMPOSITE, &TAIL_COMPOSITE_END, TAIL_COMPOSITE_CALLER),
+    ] {
+        b.raw().before(start, "native_frame_tail_draw", move |c| {
+            if c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
+                let mut mem = c.ctx.memory();
+                if tail_caller(&*mem, c.cpu.esp, caller) && let Some(host) = host() {
+                    host.enter_ui(&mut *mem, UiScope::FrameTail, c.cpu.esp, true);
+                }
+            }
+            Ok(Flow::Continue)
+        }).context_only().optional();
+        b.raw().before(end, "native_frame_tail_draw_end", |c| {
+            leave(c, UiScope::FrameTail);
+            Ok(Flow::Continue)
+        }).context_only().optional();
+    }
     for (scope, start, end, alternate) in SCOPES {
         b.raw().before(start, "native_ui_enter", move |c| {
             Ok(enter(c, scope, end, alternate).map_or(Flow::Continue, Flow::Return))
@@ -388,6 +411,19 @@ pub(super) fn place(b: &mut Builder<'_>) {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn only_the_frame_tail_caller_owns_each_shared_helper() {
+        let mut mem = FakeGuest::new();
+        let stack = 0x4100;
+        for (caller, other) in [(TAIL_COPY_CALLER, TAIL_COMPOSITE_CALLER),
+                                (TAIL_COMPOSITE_CALLER, TAIL_COPY_CALLER)] {
+            mem.put_u32(stack, caller);
+            assert!(tail_caller(&mem, stack, caller));
+            assert!(!tail_caller(&mem, stack, other));
+            assert!(!tail_caller(&mem, stack + 4, caller));
+        }
+    }
 
     #[test]
     fn glyph_belongs_to_current_shader_only_inside_the_text_widget_string_call() {
