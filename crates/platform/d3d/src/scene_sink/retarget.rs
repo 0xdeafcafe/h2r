@@ -122,7 +122,8 @@ impl Retarget {
     /// `op` at `at`, moved onto its view's blended camera where it can be.
     pub fn op<'o>(&mut self, at: SlotAt, op: &'o ReplayOp) -> Retargeted<'o> {
         match op {
-            ReplayOp::Draw { draw, textures, camera: CameraUse::View { view, first } } => {
+            ReplayOp::Draw { draw, textures, camera: CameraUse::View { view, first }, external: None } => {
+            // A draw with a typed replacement (a native flare) stays at its tick.
                 let Some(rows) = self.rows.get(view) else {
                     return Retargeted::Same(op);
                 };
@@ -134,6 +135,7 @@ impl Retarget {
                     draw: Arc::new(moved),
                     textures: textures.clone(),
                     camera: CameraUse::View { view: *view, first: *first },
+                    external: None,
                 })
             }
             ReplayOp::Stage(stage) if at.slot.in_game_view() && !self.rows.is_empty() => {
