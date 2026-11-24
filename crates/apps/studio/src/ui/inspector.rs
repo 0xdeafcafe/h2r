@@ -12,6 +12,7 @@
 //! whose values differ says so, and an edit writes only what was touched
 //! (one component of a vector, one bit of flags) to each. Every edit is one
 //! undo step; a drag is one step however long.
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use dear_imgui_rs::{Drag, Ui};
@@ -38,6 +39,12 @@ pub struct InspectorState {
     chain: Option<(u64, TagId, &'static str, Chain)>,
     tag_world: Option<u64>,
     focus: Option<(TagId, String)>,
+    /// The where-used answer per tag, as computed for the document's
+    /// revision and the scenario's block layout: what the chain's node
+    /// headers count and the Where this is used lists draw. A palette
+    /// field edit changes the answer without changing either; `tag.uses`
+    /// always reads the live one.
+    used: Option<(u64, u64, HashMap<TagId, tag_api::Uses>)>,
 }
 
 /// A field's heading in the inspector.
@@ -711,16 +718,39 @@ fn tags(
     if !state.chain.as_ref().is_some_and(|(r, t, v, _)| (*r, *t, *v) == (rev, tag, via)) {
         state.chain = Some((rev, tag, via, tag_api::chain(doc, root, tag_api::DEFAULT_DEPTH)));
     }
+    // The where-used answers for every node of the chain, cached by the
+    // document's revision and the scenario's block layout.
+    let scenario = app.session.scenario();
+    let scenario_key = scenario.map(|s| {
+        s.blocks
+            .iter()
+            .map(|b| b.layout_rev().wrapping_mul(31).wrapping_add(b.len() as u64))
+            .fold(0u64, |a, x| a.wrapping_mul(31).wrapping_add(x))
+    });
+    let key = (rev, scenario_key.unwrap_or(0));
+    if !state.used.as_ref().is_some_and(|(r, s, _)| (*r, *s) == key) {
+        state.used = Some((key.0, key.1, HashMap::new()));
+    }
     if let Some((_, _, _, chain)) = &state.chain {
         if let Some(node) = &chain.root {
+            let mut asked = Vec::new();
+            collect_tags(node, &mut asked);
+            if let Some((_, _, answers)) = &mut state.used {
+                for tag in asked {
+                    answers
+                        .entry(tag)
+                        .or_insert_with(|| tag_api::uses(doc, scenario, tag));
+                }
+            }
             let mut trail = location.trail.clone();
             // tag_node appends its own ID.
             trail.pop();
             if state.tag_panel.has_field_focus(tag) {
                 ui.set_next_item_open(true);
             }
+            let used = state.used.as_ref().map(|(_, _, m)| m).unwrap();
             tag_node(
-                ui, doc, node, &mut trail, &mut state.tag_panel, &mut actions, issues,
+                ui, doc, node, &mut trail, &mut state.tag_panel, used, &mut actions, issues,
                 &mut resolution,
             );
         }
@@ -787,6 +817,7 @@ fn tag_node(
     node: &Node,
     trail: &mut Vec<TagId>,
     panel: &mut fields::PanelState,
+    used: &HashMap<TagId, tag_api::Uses>,
     actions: &mut Vec<Action>,
     issues: &IssueIndex,
     resolution: &mut Option<Apply>,
@@ -821,7 +852,11 @@ fn tag_node(
     let Some(_node) = item else { return };
     match &t.access {
         Access::Edit => {
-            ui.text_disabled("Edits affect every placement and tag that uses this tag.");
+            // What an edit to it changes: the count of its uses.
+            ui.text_disabled(used.get(&id).map_or_else(
+                || "Edits affect every placement and tag that uses this tag.".to_owned(),
+                shared_words,
+            ));
         }
         Access::Read(why) | Access::None(why) => ui.text_disabled(why),
     }
@@ -838,6 +873,33 @@ fn tag_node(
     }
     if let Some(variant) = &node.variant {
         ui.text_disabled(format!("Variant {variant}"));
+    }
+    // Where this is used: the placements whose palette reaches the tag
+    // and the tags that refer to it, each row a jump or a selection.
+    if let Some(uses) = used.get(&id)
+        && !(uses.tags.is_empty() && uses.placements.is_empty())
+        && let Some(_list) = ui.tree_node("Where this is used")
+    {
+        for u in &uses.tags {
+            let label = doc.tag_label(u.tag.0);
+            if ui.small_button(format!("{label}##used{:08x}", u.tag.0)) {
+                let mut to = trail.clone();
+                to.push(u.tag);
+                actions.push(Action::Navigate(NavAction::Open(to)));
+            }
+            if ui.is_item_hovered() {
+                ui.set_item_tooltip(&u.via);
+            }
+        }
+        for p in &uses.placements {
+            let label = scenario_edit::layout::BLOCKS
+                .iter()
+                .find(|d| d.kind == p.kind)
+                .map_or_else(|| format!("{:?}", p.kind), |d| d.label);
+            if ui.small_button(format!("{label} {}##used", p.index)) {
+                actions.push(Action::Select(Selection::Placement(p.kind, p.index)));
+            }
+        }
     }
     if !matches!(t.access, Access::None(_))
         && doc.layout(id).is_some_and(|layout| layout.size <= t.size)
@@ -864,16 +926,43 @@ fn tag_node(
         }
     }
     for child in node.children.iter().filter(|child| child.shortcut.is_some()) {
-        tag_node(ui, doc, child, trail, panel, actions, issues, resolution);
+        tag_node(ui, doc, child, trail, panel, used, actions, issues, resolution);
     }
     if node.children.iter().any(|child| child.shortcut.is_none())
         && let Some(_refs) = ui.tree_node("All references")
     {
         for child in node.children.iter().filter(|child| child.shortcut.is_none()) {
-            tag_node(ui, doc, child, trail, panel, actions, issues, resolution);
+            tag_node(ui, doc, child, trail, panel, used, actions, issues, resolution);
         }
     }
     trail.pop();
+}
+
+/// The node header's count of a tag's uses, in the design's words
+/// ("shared by 14 placements, 3 tags").
+fn shared_words(uses: &tag_api::Uses) -> String {
+    let p = uses.placements.len();
+    let t = uses.tags.len();
+    let mut parts = Vec::new();
+    if p > 0 {
+        parts.push(format!("{p} placement{}", if p == 1 { "" } else { "s" }));
+    }
+    if t > 0 {
+        parts.push(format!("{t} tag{}", if t == 1 { "" } else { "s" }));
+    }
+    if parts.is_empty() {
+        "Not used by anything else.".to_owned()
+    } else {
+        format!("Edits affect every use: shared by {}.", parts.join(", "))
+    }
+}
+
+/// Every tag a chain node covers, itself and its children.
+fn collect_tags(node: &Node, out: &mut Vec<TagId>) {
+    out.push(node.tag);
+    for child in &node.children {
+        collect_tags(child, out);
+    }
 }
 
 /// The label column's width.

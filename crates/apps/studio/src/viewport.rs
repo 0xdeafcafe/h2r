@@ -915,6 +915,45 @@ pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &Ap
         ));
     }
     vp.set_layer_overlay(device, LayerId::Halo1, &tris, &[]);
+    // `tag.uses highlight`: a square on the ground around each placement
+    // it named.
+    let mut lines = Vec::new();
+    if !app.highlighted.is_empty() {
+        let color = crate::theme::layer_color(LayerId::Markers);
+        for m in app
+            .session
+            .markers()
+            .iter()
+            .filter(|m| app.highlighted.contains(&(m.block, m.index)))
+        {
+            let r = 0.75 * m.scale.max(0.25);
+            let [f, l, u] = m.axes;
+            let center = geometry::add(m.position, geometry::scale(u, 0.05));
+            let corner = |a: f32, b: f32| {
+                geometry::add(
+                    geometry::add(center, geometry::scale(f, a * r)),
+                    geometry::scale(l, b * r),
+                )
+            };
+            let square = [
+                corner(1.0, 1.0),
+                corner(1.0, -1.0),
+                corner(-1.0, -1.0),
+                corner(-1.0, 1.0),
+            ];
+            let mut push = |p: [f32; 3]| lines.push(render::Vertex {
+                position: p,
+                center: p,
+                normal: [0.0, 0.0, 1.0],
+                color,
+            });
+            for k in 0..4 {
+                push(square[k]);
+                push(square[(k + 1) % 4]);
+            }
+        }
+    }
+    vp.set_layer_overlay(device, LayerId::Markers, &[], &lines);
 }
 
 #[cfg(test)]

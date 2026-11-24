@@ -92,11 +92,7 @@ fn rows(
     unnamed: Unnamed,
 ) -> (Vec<Value>, usize) {
     let doc = app.shown_tags();
-    let link = panel::Link::of(app);
-    let issues = match (link, &app.pairing.link) {
-        (panel::Link::Off, _) | (_, None) => IssueIndex::empty(),
-        (_, Some(l)) => l.issues.as_ref(),
-    };
+    let (link, issues) = linked(app);
     let prefix = match tag_api::named_path(doc, tag, path) {
         Ok(p) if !p.is_empty() => format!("{p}."),
         _ => String::new(),
@@ -136,15 +132,13 @@ fn rows(
 
 const VIEW: MethodDef = def(
     m::TAG_VIEW,
-    "Drive the Tags tool's field panel and read what it shows. `tag` selects a tag in the Tags tool; `path` (a list element, `parts[1]`) shows that element as the whole panel, as Open alone does (empty for the root); `field` (a tag.set path) focuses a field, opening its lists and its Unnamed fields group (alone, from the root); `unnamed` sets Show unnamed fields; `show_as` sets how an unnamed value is shown (`as` null for the guess), kept for that field of every tag of the kind. With none it only reads. `path` is the element shown and `breadcrumbs` its crumbs as drawn, `rows` the rows the panel shows of it, `unnamed_hidden` the unnamed rows in a folded group, `header` the header's lines as drawn",
-    r#"{"tag?":"string|integer","path?":"string (a list element shown alone, parts[1]; empty for the root)","field?":"string","unnamed?":"boolean","show_as?":"{path: string, as: decimal|whole_number|hex|null}"}"#,
-    r#"{"tag":"string|null","path":"string","breadcrumbs":"[string]","field":"string|null","search":"null","changed":"boolean","unnamed":"boolean","rows":"[tag.fields row]","unnamed_hidden":"integer","header":"[string]"}"#,
-    r#"{"tag":"itmc","unnamed":true}"#,
+    "Drive the Tags tool's field panel and read what it shows. `tag` selects a tag in the Tags tool; `path` (a list element, `parts[1]`) shows that element as the whole panel, as Open alone does (empty for the root); `field` (a tag.set path) focuses a field, opening its lists and its Unnamed fields group (alone, from the root, and clearing the filters); `search` sets the filter row's Search fields (empty clears it); `changed` sets Changed only; `unnamed` sets Show unnamed fields; `show_as` sets how an unnamed value is shown (`as` null for the guess), kept for that field of every tag of the kind. With none it only reads. `path` is the element shown and `breadcrumbs` its crumbs as drawn, `rows` the rows the panel shows of it — with a search or Changed only on, the hit list's rows, each a `tag.fields` row of the field it found — `unnamed_hidden` the unnamed rows in a folded group (0 with a filter on), `header` the header's lines as drawn, with the search budget's sentence last when the walk stopped at 5,000 list items",
+    r#"{"tag?":"string|integer","path?":"string (a list element shown alone, parts[1]; empty for the root)","field?":"string","search?":"string","changed?":"boolean","unnamed?":"boolean","show_as?":"{path: string, as: decimal|whole_number|hex|null}"}"#,
+    r#"{"tag":"string|null","path":"string","breadcrumbs":"[string]","field":"string|null","search":"string (empty when none)","changed":"boolean","unnamed":"boolean","rows":"[tag.fields row]","unnamed_hidden":"integer","header":"[string]"}"#,
+    r#"{"tag":"itmc","search":"reload"}"#,
 );
 
 fn view(app: &mut App, p: &P) -> Reply {
-    // `search` and `changed` are not in the params, so the dispatcher
-    // refuses them: the panel is unsearched.
     if p.has("tag") {
         let id = resolve(app, p)?;
         app.perform(Action::Tag(TagAction::Select(id)), false)
@@ -169,6 +163,9 @@ fn view(app: &mut App, p: &P) -> Reply {
         if let Some(field) = field {
             tag_api::field_focus(&app.tags, tag, field)
                 .map_err(|e| err(code::INVALID_PARAMS, format!("{field}: {e}")))?;
+            // A focused field is shown by its rows, not the hit list.
+            app.tag_fields.search.clear();
+            app.tag_fields.changed = false;
         }
         if let Some(e) = element {
             tag_api::element_steps(&app.tags, tag, e)
@@ -182,6 +179,17 @@ fn view(app: &mut App, p: &P) -> Reply {
         };
         app.perform(Action::Navigate(go), false).map_err(refused)?;
         app.dispatch(Action::SetTool(ToolKind::Tags));
+    }
+    if let Some(v) = p.get("search") {
+        app.tag_fields.search = v
+            .as_str()
+            .ok_or_else(|| err(code::INVALID_PARAMS, "search: a string"))?
+            .to_owned();
+    }
+    if let Some(v) = p.get("changed") {
+        app.tag_fields.changed = v
+            .as_bool()
+            .ok_or_else(|| err(code::INVALID_PARAMS, "changed: a boolean"))?;
     }
     if let Some(v) = p.get("unnamed") {
         app.tag_fields.unnamed = v
@@ -198,8 +206,9 @@ fn view(app: &mut App, p: &P) -> Reply {
     }
     let Some(tag) = selected else {
         return Ok(json!({
-            "tag": null, "path": "", "breadcrumbs": [], "field": null, "search": null,
-            "changed": false, "unnamed": app.tag_fields.unnamed, "rows": [],
+            "tag": null, "path": "", "breadcrumbs": [], "field": null,
+            "search": app.tag_fields.search, "changed": app.tag_fields.changed,
+            "unnamed": app.tag_fields.unnamed, "rows": [],
             "unnamed_hidden": 0, "header": [],
         }));
     };
@@ -226,23 +235,103 @@ fn view(app: &mut App, p: &P) -> Reply {
             .map_err(|reason| err(code::REFUSED, reason))?,
     };
     let element = steps.last().map_or(String::new(), |s| s.path.clone());
-    let (shown, unnamed_hidden) =
-        rows(app, tag, &element, at, &layout, Unnamed::AsShown { focus });
+    let filtering = !app.tag_fields.search.is_empty() || app.tag_fields.changed;
+    let (shown, unnamed_hidden, budget) = if filtering {
+        // The hit list replaces the rows.
+        let (link, issues) = linked(app);
+        let mut walked = steps.clone();
+        let found = panel::find::find_from(
+            doc,
+            tag,
+            &mut walked,
+            link,
+            issues,
+            &app.tag_fields.search,
+            app.tag_fields.changed,
+            app.tag_fields.unnamed,
+        );
+        let hits: Vec<Value> = found.hits.iter().map(|h| h.row.clone()).collect();
+        (hits, 0, found.why.map(str::to_owned))
+    } else {
+        let (shown, hidden) = rows(app, tag, &element, at, &layout, Unnamed::AsShown { focus });
+        (shown, hidden, None)
+    };
     let crumbs: Vec<String> = panel::row::breadcrumbs(doc, tag, &steps)
         .into_iter()
         .map(|(text, _)| text)
         .collect();
+    let mut header = crate::ui::tags::header(app, tag);
+    if let Some(why) = budget {
+        header.push(why);
+    }
     Ok(json!({
         "tag": format!("{:#010x}", tag.0),
         "path": element,
         "breadcrumbs": crumbs,
         "field": field,
-        "search": null,
-        "changed": false,
+        "search": app.tag_fields.search,
+        "changed": app.tag_fields.changed,
         "unnamed": app.tag_fields.unnamed,
         "rows": shown,
         "unnamed_hidden": unnamed_hidden,
-        "header": crate::ui::tags::header(app, tag),
+        "header": header,
+    }))
+}
+
+/// The game link the panel's rows are drawn for, and the issues they
+/// show: none with no game connected.
+fn linked(app: &App) -> (panel::Link, &IssueIndex) {
+    let link = panel::Link::of(app);
+    let issues = match (link, &app.pairing.link) {
+        (panel::Link::Off, _) | (_, None) => IssueIndex::empty(),
+        (_, Some(l)) => l.issues.as_ref(),
+    };
+    (link, issues)
+}
+
+const FIND: MethodDef = def(
+    m::TAG_FIND,
+    "The fields of a tag the filter row's search names, or that differ from the loaded file, as the panel's hit list holds them (fields::find): every element of every list from `path` (the root by default) to 12 lists below it and 5,000 list items, in the panel's order. `query`'s words match the label, the name, the description, the type words, the choice and switch names, and the referenced tag's row text; `changed` keeps only edited fields (both together intersect); `unnamed` leaves the unnamed rows out; `limit` cuts the hits and sets `truncated` with the budget's `why`",
+    r#"{"tag":"string|integer","query?":"string","path?":"string (a list element to search within, parts[1]; default the root)","changed?":"boolean","unnamed?":"boolean (default true)","limit?":"integer"}"#,
+    r#"{"hits":"[{path, breadcrumbs, label, type, value, matched}]","truncated":"boolean","why":"string|null (the budget's sentence when the walk stopped)"}"#,
+    r#"{"tag":"itmc","query":"reload"}"#,
+);
+
+fn find(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let query = p.opt_str("query")?.unwrap_or_default();
+    let path = p.opt_str("path")?.unwrap_or_default();
+    let changed = match p.get("changed") {
+        None => false,
+        Some(v) => v.as_bool().ok_or_else(|| err(code::INVALID_PARAMS, "changed: a boolean"))?,
+    };
+    let unnamed = match p.get("unnamed") {
+        None => true,
+        Some(v) => v.as_bool().ok_or_else(|| err(code::INVALID_PARAMS, "unnamed: a boolean"))?,
+    };
+    let limit = p.opt_usize("limit")?;
+    let (link, issues) = linked(app);
+    let found = panel::find::find(app.shown_tags(), tag, path, link, issues, query, changed, unnamed)
+        .map_err(|e| err(code::INVALID_PARAMS, format!("path: {e}")))?;
+    let total = found.hits.len();
+    let shown = limit.unwrap_or(total).min(total);
+    let hits: Vec<Value> = found.hits[..shown]
+        .iter()
+        .map(|h| {
+            json!({
+                "path": h.row["path"],
+                "breadcrumbs": h.breadcrumbs,
+                "label": h.row["label"],
+                "type": h.row["type"],
+                "value": h.row["value"],
+                "matched": h.matched,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "hits": hits,
+        "truncated": shown < total || found.truncated,
+        "why": found.why,
     }))
 }
 
@@ -460,12 +549,41 @@ fn elements(app: &mut App, p: &P) -> Reply {
 
 const CHAIN: MethodDef = MethodDef {
     name: m::TAG_CHAIN,
-    summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits",
+    summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits; each node's `uses` counts the placements and tags that use it — what an edit to it changes (tag.uses lists them)",
     params: r#"{"block?":"string","index?":"integer","tag?":"string|integer","depth?":"integer (default 3, max 8)"}"#,
-    result: r#"{"root":"{tag,group,name,via,label,where,cache,variant,cycle,children:[node]}|null","truncated":"boolean"}"#,
+    result: r#"{"root":"{tag,group,name,via,label,where,cache,variant,cycle,uses:{placements,tags},children:[node]}|null","truncated":"boolean"}"#,
     example: r#"{"block":"weapons","index":0}"#,
     planned: None,
 };
+
+const USES: MethodDef = def(
+    m::TAG_USES,
+    "Where a tag is used (tag_api::uses): the tags that refer to it — transitively, so the object tags whose chains run through it are named, each entry with the field path one step closer to it — and the placements whose palette entry reaches it, from the reverse reference index cached in the document (a reference edit rebuilds it; a block edit changes the placements). `highlight: true` outlines the placements in the viewport until the next highlight or selection. The live objects whose definition reaches it are read when a game is paired",
+    r#"{"tag":"string|integer","highlight?":"boolean"}"#,
+    r#"{"tags":"[{tag, group, name, via}]","placements":"[{block, index}]","objects":"[]"}"#,
+    r#"{"tag":"itmc"}"#,
+);
+
+fn uses(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let highlight = match p.get("highlight") {
+        None => None,
+        Some(v) => Some(
+            v.as_bool()
+                .ok_or_else(|| err(code::INVALID_PARAMS, "highlight: a boolean"))?,
+        ),
+    };
+    let scenario = app.session.scenario();
+    let found = tag_api::uses(app.shown_tags(), scenario, tag);
+    let answer = found.json(app.shown_tags());
+    if let Some(on) = highlight {
+        let placements = on
+            .then(|| found.placements.iter().map(|p| (p.kind, p.index)).collect())
+            .unwrap_or_default();
+        app.set_highlighted_uses(placements);
+    }
+    Ok(answer)
+}
 
 fn chain(app: &mut App, p: &P) -> Reply {
     let depth = p.opt_u64("depth")?.unwrap_or(tag_api::DEFAULT_DEPTH as u64);
@@ -489,7 +607,7 @@ fn chain(app: &mut App, p: &P) -> Reply {
         }
         _ => return Err(err(code::INVALID_PARAMS, "supply block and index, or tag")),
     };
-    Ok(tag_api::chain(doc, root, depth as usize).json(doc))
+    Ok(tag_api::chain(doc, root, depth as usize).json(doc, app.session.scenario()))
 }
 
 pub(super) fn sync_open_tags(app: &mut App) -> Result<(), agent_proto::RpcError> {
@@ -525,6 +643,8 @@ impl Provider for TagFields {
             BYTES,
             RESET,
             ELEMENTS,
+            FIND,
+            USES,
             block_def(
                 m::TAG_BLOCK_ADD,
                 "Add an element to a tag block (path from the root, `parts` or `parts[0].bones`), where the block has room in its source; refused with the reason otherwise",
@@ -552,7 +672,9 @@ impl Provider for TagFields {
             m::TAG_BYTES => return Some(bytes(app, &p)),
             m::TAG_RESET => return Some(reset(app, &p)),
             m::TAG_ELEMENTS => return Some(elements(app, &p)),
+            m::TAG_FIND => return Some(find(app, &p)),
             m::TAG_CHAIN => return Some(chain(app, &p)),
+            m::TAG_USES => return Some(uses(app, &p)),
             _ => {}
         }
         if ![
