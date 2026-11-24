@@ -159,6 +159,7 @@ are under [Reviews](#reviews).
 - [sound.md](formats/sound.md): sound tags (`snd!`, `ugh!`) and `h2 sound`
 - [structure-bsp.md](formats/structure-bsp.md): render model and structure BSP geometry, lightmaps, and the viewer
 - [ui.md](formats/ui.md): user-interface tags (`wgit`, `wgtz`, `wigl`, `skin`)
+- Notes: [2026-11-24-facial-sequences.md](formats/notes/2026-11-24-facial-sequences.md) (the engine read of a sound's facial sequence)
 
 ## Engine (`engine/`)
 

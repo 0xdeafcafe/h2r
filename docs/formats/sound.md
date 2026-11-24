@@ -54,7 +54,14 @@ tests read the same layout back):
   curve data), mouth length, facial-sequence offset and
   facial-sequence length. A permutation's signed `+5` byte picks its
   descriptor; a negative index and a zero mouth length are an unvoiced
-  permutation. The facial sequence's layout is not known;
+  permutation. A facial sequence is per-track weight keys for the
+  frames of a facial pose animation: an i16 track count, the version
+  `0x096c`, a seconds-per-unit scale at `+0x0c`, then per track an i16
+  key count and first key index, then the shared 4-byte keys (i16 time,
+  i16 value × 0.0001). The engine keeps the 12 largest smoothed weights
+  and blends those frames as overlays (**E** `0x10de40`, `0x10e530`;
+  [the note](notes/2026-11-24-facial-sequences.md)). Nothing here reads
+  or writes it;
 - `fklb` ends the resource.
 
 The two locators that find the data and the descriptors are the element's

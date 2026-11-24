@@ -438,9 +438,12 @@ animation graph (**E**, [sounds.md](../halo1/sounds.md)):
   the curve by audio time and blends frame zero of its `talk` overlay
   from the model animation graph by that weight (`0x1cc150`). The unit's
   `lip_sync_onset_weight` and `lip_sync_release_weight` shape it.
-- The **facial sequence** is optional second data in the same resource.
-  No code decodes it and its layout is not known (**S**). Slice A5 is
-  that research; nothing below edits it.
+- The **facial sequence** is optional second data in the same resource:
+  weight keys per frame of a facial pose animation, of which the engine
+  blends the 12 largest as overlays (**E** `0x10de40`, `0x10e530`; slice
+  A5, [the note](../formats/notes/2026-11-24-facial-sequences.md)).
+  Whether any retail sound has one is not known (**S**). Nothing below
+  reads or edits it.
 
 So facial animation in Halo 2 is a jaw track per line of dialogue plus
 one authored overlay per character, and an editor for it is a sound
@@ -757,7 +760,7 @@ the first one whose needs are met.
 | N1 | **Strings, read**: every string by name and language, searched | S | nothing | an invented table lists and searches in each language |
 | K4 | **Re-record from input**: the game's `recording.capture`, the capture flow | L | K2, K3 | a capture on the fake game encodes to a stream that walks clean; the determinism check is in "Not verified" |
 | S6 | **Xbox shader programs, write**: the vertex assembler, the combiner encoder and parser, the writes | L | S4, X2 | `assemble(disassemble(p)) == p` and `encode(decode(d)) == d` on invented programs; over-limit and untranslatable programs are refused |
-| A5 | **Facial sequences**: the engine read of the second extra-info payload, written up as a note | S | A2 | the note states the layout with addresses, or that the disc has none |
+| A5 (built) | **Facial sequences**: the engine read of the second extra-info payload, written up as a note | S | A2 | the note states the layout with addresses, or that the disc has none |
 
 X1, A1, H1, M1, N1 and X2 need nothing from each other and can run side
 by side. The first seven rows are the shortest road to something a user
@@ -782,7 +785,7 @@ that can be read, and models that move.
   [haloscript.md](../formats/haloscript.md).
 - **S**: that node types can be inferred well enough to round-trip every
   disc script (the `#[ignore]`d run of H2 verifies it); that the facial
-  sequence is used by any retail sound (A5); that a colour property keeps
+  sequence is used by any retail sound (its layout is **E**, A5); that a colour property keeps
   its colours beside its function (C3); that the `stem` parameter blocks
   hold names usable as labels (S3).
 - **Design**: the seam, the `view=` words, `resize_data`, the refusal
