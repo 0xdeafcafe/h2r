@@ -14,6 +14,7 @@
 use std::fmt;
 
 use map::scenario_layout::game_types as slots;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 /// The engines, by index and name, in the order the slots list them.
 pub const ENGINES: [(i32, &str); 7] = [
@@ -78,6 +79,33 @@ impl fmt::Display for GameSet {
             .map(|(_, n)| *n)
             .collect();
         f.write_str(&names.join(", "))
+    }
+}
+
+/// A set is written as its engine indices in ascending order, `[1, 9]`,
+/// one spelling a set: a list out of order, with a repeat or with an index
+/// that is no engine's is refused.
+impl Serialize for GameSet {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut indices: Vec<i32> = self.engines();
+        indices.sort_unstable();
+        indices.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GameSet {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let indices = Vec::<i32>::deserialize(d)?;
+        if indices.len() > ENGINES.len() || !indices.windows(2).all(|w| w[0] < w[1]) {
+            return Err(de::Error::custom(
+                "a game set lists engine indices once each, in ascending order",
+            ));
+        }
+        let set = GameSet::of(&indices);
+        if set.engines().len() != indices.len() {
+            return Err(de::Error::custom("a game set names engines by index"));
+        }
+        Ok(set)
     }
 }
 

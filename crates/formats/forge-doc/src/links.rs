@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ActiveLabel, Area, BlockKind, Edit, EntryOp, FieldWrite, ForgeDoc, Label, Labels, Limits,
-    MarkerArea, Op, OpId, Placement, Print, Refusal, Result, Value, WorldBounds, builtin_label,
-    entry, wire,
+    MarkerArea, Op, OpId, Placement, Print, Property, Refusal, Result, Value, WorldBounds,
+    builtin_label, entry, wire,
 };
 
 /// The largest channel a teleporter link writes. The netgame flag's
@@ -317,6 +317,9 @@ struct Pass<'a> {
     edited: BTreeSet<Endpoint>,
     /// The ops a later reset covers (`entry::covered`).
     covered: BTreeSet<OpId>,
+    /// Objects with a `games` set: such an entry is left out of a map
+    /// built for another engine, so it has no link and no label.
+    games: BTreeSet<Endpoint>,
     world: Option<WorldBounds>,
 }
 
@@ -348,6 +351,7 @@ impl<'a> Pass<'a> {
             prints: BTreeMap::new(),
             edited: BTreeSet::new(),
             covered: entry::covered(ops),
+            games: BTreeSet::new(),
             world,
         };
         for op in ops {
@@ -440,6 +444,7 @@ impl<'a> Pass<'a> {
             }
             self.gone.remove(&target);
             self.areas.remove(&target);
+            self.games.remove(&target);
             return Ok(());
         }
         if self.gone.contains(&target) {
@@ -447,6 +452,24 @@ impl<'a> Pass<'a> {
         }
         if let Endpoint::Base { .. } = target {
             self.edited.insert(target);
+        }
+        if let EntryOp::Property {
+            property: Property::Games(set),
+            ..
+        } = edit
+            && !self.covered.contains(&id)
+        {
+            if set.is_some() {
+                if self.linked(target) {
+                    return Err(invalid(what, "a linked entry is in every game type"));
+                }
+                if self.labels.contains_key(&target) {
+                    return Err(invalid(what, "a labelled entry is in every game type"));
+                }
+                self.games.insert(target);
+            } else {
+                self.games.remove(&target);
+            }
         }
         if let EntryOp::Area { area, .. } = edit {
             match area {
@@ -570,6 +593,12 @@ impl<'a> Pass<'a> {
     fn link(&mut self, id: OpId, link: &Link) -> Result<()> {
         for end in link.endpoints() {
             self.exists(link, end)?;
+            if self.games.contains(&end) {
+                return Err(invalid(
+                    link.what(),
+                    "an entry with game types has no links: clear its game types first",
+                ));
+            }
         }
         if self.active.values().any(|l| l == link) {
             return Err(invalid(link.what(), "the link already exists"));
@@ -640,6 +669,12 @@ impl<'a> Pass<'a> {
             return Err(invalid("label", "names no entry"));
         }
         match label {
+            Some(_) if self.games.contains(&target) => {
+                return Err(invalid(
+                    "label",
+                    "an entry with game types has no label: clear its game types first",
+                ));
+            }
             Some(label) => {
                 self.labels.insert(target, (id, label.clone()));
             }

@@ -77,6 +77,10 @@ pub enum Error {
     SourceSize(String),
     #[error("forge_kit: {0}")]
     Kit(&'static str),
+    /// The document's objects have game types and the build names no
+    /// engine, or one that is no engine's.
+    #[error("forge_game: {0}")]
+    Game(&'static str),
     #[error("forge_links: {0}")]
     Links(&'static str),
     /// The AI ground could not be built from the document's marks and
@@ -152,9 +156,34 @@ impl Built {
 }
 
 /// Build against a set of named input maps. The lookup should expose the disc's
-/// original maps by name. The hash checks use those exact bytes.
+/// original maps by name. The hash checks use those exact bytes. A document
+/// whose objects have game types needs [`build_for`].
 pub fn build(
     doc: &ForgeDoc,
+    lookup: impl FnMut(&str) -> Option<MapSource>,
+) -> Result<Built, Error> {
+    build_for(doc, None, lookup)
+}
+
+/// The `MapId` of `doc` built for the engine at variant index `engine`:
+/// the engine is in it only when the document's objects have game types
+/// (docs/game/forge-map-variants.md, "Game types").
+pub fn map_id(doc: &ForgeDoc, engine: Option<i32>) -> Result<MapId, Error> {
+    Ok(MapId::forge_game(
+        doc.base.sha256,
+        doc.id()?,
+        entry::game(doc, engine)?,
+    ))
+}
+
+/// [`build`] for the engine at variant index `engine` (Slayer 2, Capture
+/// the Flag 1, `forge_doc::games::ENGINES`): an object whose `games` set
+/// lacks it is left out of the map, and the package's identity names the
+/// engine. A document whose objects have no game types ignores `engine`
+/// and builds the one map it always does.
+pub fn build_for(
+    doc: &ForgeDoc,
+    engine: Option<i32>,
     mut lookup: impl FnMut(&str) -> Option<MapSource>,
 ) -> Result<Built, Error> {
     let mut limits = Limits {
@@ -163,7 +192,8 @@ pub fn build(
     };
     forge_doc::validate(doc, &limits)?;
     let document_hash = doc.id()?;
-    let id = MapId::forge(doc.base.sha256, document_hash);
+    let game = entry::game(doc, engine)?;
+    let id = MapId::forge_game(doc.base.sha256, document_hash, game);
     if let Some(expect) = doc.expect
         && expect.map_id != id
     {
@@ -215,9 +245,19 @@ pub fn build(
         .collect::<Result<Vec<_>, _>>()?
         .into();
     limits.world = placement::world_bounds(&mut map)?;
+    // The objects of another game type are removed after every op; the
+    // document itself, its hash and its file are as authored.
+    let for_game = match game {
+        Some(game) => std::borrow::Cow::Owned(forge_doc::for_game(
+            doc,
+            i32::from(game),
+            &limits.base_counts,
+        )?),
+        None => std::borrow::Cow::Borrowed(doc),
+    };
 
     let mut apply = placement::Materialiser::new(&mut session, &mut map);
-    forge_doc::replay(doc, &limits, &mut apply).map_err(|refusal| match refusal {
+    forge_doc::replay(&for_game, &limits, &mut apply).map_err(|refusal| match refusal {
         Refusal::Print { block, index } => Error::Print { block, index },
         refusal => Error::Document(refusal),
     })?;
@@ -286,6 +326,7 @@ pub fn build(
         document_file: "document.h2forge".into(),
         file: "materialised.map".into(),
         sha256: Sha256::of(&output),
+        game,
     });
     Ok(Built {
         manifest,

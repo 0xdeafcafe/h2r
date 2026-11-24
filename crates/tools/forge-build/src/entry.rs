@@ -7,9 +7,13 @@
 //! written. Entry ops themselves arrive lowered to placement ops by
 //! running index (`forge_doc::resolve`), which `placement.rs` applies as
 //! it applies any other.
+//!
+//! An object with a `games` property is in the map built for an engine
+//! its set has and left out of the rest ([`game`],
+//! `forge_doc::for_game`; docs/game/forge-map-variants.md, "Game types").
 use std::io::{Read, Seek};
 
-use forge_doc::{BlockKind, F32, Print, Printed, TagKey, Value};
+use forge_doc::{BlockKind, F32, ForgeDoc, Print, Printed, TagKey, Value, games::ENGINES};
 use map::{Map, TagId};
 use scenario_edit::layout::{self, FieldType, Role};
 
@@ -129,4 +133,23 @@ pub(crate) fn check<R: Read + Seek>(
 ) -> forge_doc::Result<()> {
     let fields = base_fields(map, scenario, printed.block, printed.index)?;
     forge_doc::check_print(printed.block, printed.index, printed.print, &fields)
+}
+
+/// The engine `doc` is built for, as the package's identity names it: none
+/// for a document whose objects have no game types, whatever `engine` is,
+/// so every such document keeps its id; else `engine`, which the build
+/// needs and which must be an engine's variant index.
+pub(crate) fn game(doc: &ForgeDoc, engine: Option<i32>) -> Result<Option<u8>, crate::Error> {
+    if forge_doc::object_games(&doc.ops).is_empty() {
+        return Ok(None);
+    }
+    let engine = engine.ok_or(crate::Error::Game(
+        "the document's objects have game types: name the game type to build for",
+    ))?;
+    if !ENGINES.iter().any(|(index, _)| *index == engine) {
+        return Err(crate::Error::Game("the game type names no engine"));
+    }
+    u8::try_from(engine)
+        .map(Some)
+        .map_err(|_| crate::Error::Game("the game type names no engine"))
 }

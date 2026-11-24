@@ -127,6 +127,12 @@ and one `[[forge]]` layer. The layer names the document hash
 (`document`), the canonical `.h2forge` file (`document_file`), and the
 materialised `.map` (`file`, `sha256`). The ID hashes the canonical
 JSON `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+A document whose objects have game types is built for one engine, and
+its layer names that engine's variant index (`game`, 0 to 15), which
+the canonical JSON carries after `format`:
+`{"base":"<base hash>","forge":["<document hash>"],"format":2,"game":2}`
+(`MapId::forge_game`; [forge-map-variants.md](forge-map-variants.md),
+"Game types"). Every other document has no `game` and keeps its id.
 The document hash omits the entire `expect` block. The resolver checks
 the document, the expected MapId when present, the disc's copy of the
 base, and the local map file. These packages require explicit selection
