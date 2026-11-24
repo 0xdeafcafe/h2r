@@ -206,9 +206,9 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 
 /// Animation sampling and pose (docs/engine/sim-rewrite.md). The group
 /// owns the channel manager, graph resolve, stream, marker, unit pose, unit
-/// aim and first-person filter entries, enables the first-person palette
-/// and filter kernels, and checks the graph walk `1dd1c0` against the
-/// guest at every call.
+/// aim and first-person filter entries and enables the palette and filter
+/// kernels. It compares the graph walk at each call and the six phase 1d
+/// manager and graph entries at each generated transfer.
 pub const ANIM: &str = "sim.native.anim";
 
 pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
