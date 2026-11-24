@@ -86,7 +86,7 @@ resolved draw packets after their recording has succeeded.
   `+12` for semantic 3. The declaration builder at `0x0001c3b0` maps semantics to
   the register slots listed by the vertex shader classification. Colossus’s
   decal program assigns semantic 3 to `v1`. Native pipelines bind the decoded
-  field at the resolved location (`v1` or `v3`). Its format code 16 maps through the table at `0x0035790`
+  field at the non-position register selected by the declaration (`v1` through `v15`). Its format code 16 maps through the table at `0x0035790`
   to `D3DVSDT 0x16`, an 11:11:10 signed normalised vector the NV2A fetches
   with `w = 1` (the native pass decodes it to three floats, as
   `gfx::repack` and the D3D translation do).

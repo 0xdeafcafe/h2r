@@ -765,6 +765,41 @@ pub fn input_fetch(declaration: &[Element]) -> [shaders::vsh::InputFetch; 16] {
     out
 }
 
+/// Match a live PRT attribute to the compiled register conversion. The
+/// vertex buffer always has a full slot, so a native three-lane fetch
+/// can supply W=1 even when the shader consumes all four lanes.
+fn prt_padding(format: Attribute, expected: shaders::vsh::InputFetch) -> Result<&'static [u8], String> {
+    use shaders::vsh::InputFetch as I;
+    if vertex_fetch(format).1 == expected {
+        return Ok(&[]);
+    }
+    match (format, expected) {
+        (Attribute::PByte(3), I::Float) => Ok(&[u8::MAX]),
+        (Attribute::NormShort(3), I::Float) => Ok(&[0xff, 0x7f]),
+        (Attribute::Short(3), I::Int) => Ok(&[1, 0]),
+        // The shader forces W to one, as does the narrower live format.
+        (Attribute::Float(1..=3) | Attribute::PByte(1..=2) | Attribute::NormShort(1..=2), I::Xyz1)
+        | (Attribute::Short(1..=2), I::IntXyz1) => Ok(&[]),
+        _ => Err(format!("PRT attribute {format:?} cannot supply {expected:?}")),
+    }
+}
+
+fn gather_prt(
+    elements: &[Element], fetch: &[shaders::vsh::InputFetch; 16], bytes: &[u8], stride: usize, count: usize,
+) -> Result<Vec<[u8; SLOT]>, String> {
+    let mut vertices = gather(elements, &[Some(StreamData { bytes, stride })], count)?;
+    for (column, element) in elements.iter().enumerate() {
+        let padding = prt_padding(element.format, fetch[usize::from(element.register)])?;
+        if !padding.is_empty() {
+            let start = element.format.size();
+            for slot in vertices.iter_mut().skip(column).step_by(elements.len()) {
+                slot[start..start + padding.len()].copy_from_slice(padding);
+            }
+        }
+    }
+    Ok(vertices)
+}
+
 /// The vertex attributes of a buffer holding `registers` of `formats`,
 /// each in a [`SLOT`].
 pub fn attributes(registers: &[u8], formats: &[Attribute]) -> Vec<wgpu::VertexAttribute> {
@@ -1179,8 +1214,8 @@ impl LitObjects {
     /// stride apart (`read` the guest's bytes), through the declaration
     /// the stream setup builds for the stream's type (`formats`, read
     /// from guest memory). That declaration must supply the registers the
-    /// PRT variant was compiled for, fetched the same way: a stream type
-    /// whose format differs refuses. A draw without a stream is left as it
+    /// PRT variant was compiled for, with a compatible shader input type
+    /// and fourth component. A draw without a stream is left as it
     /// is.
     pub fn fill_prt(
         &self, index: u32, draw: &mut PlannedDraw, formats: &StreamFormats, read: &dyn Fn(u32, usize) -> Option<Vec<u8>>,
@@ -1192,7 +1227,7 @@ impl LitObjects {
         let mut all = input.streams.clone();
         all.push(formats.elements(stream.kind)?);
         let full = declaration(&input.semantics, &all);
-        if registers(&full) != input.provided || input_fetch(&full) != input.fetch {
+        if registers(&full) != input.provided {
             return Err(format!("PRT stream type {:#x} feeds other registers than type {PRT_STREAM:#x}'s", stream.kind));
         }
         let prt: Vec<Element> = full
@@ -1206,7 +1241,7 @@ impl LitObjects {
         let stride = usize::from(stream.stride);
         let len = count.checked_mul(stride).filter(|&n| n <= MAX_PRT_BYTES).ok_or("its PRT stream is too large")?;
         let bytes = read(stream.data, len).filter(|b| b.len() == len).ok_or("its PRT stream does not read")?;
-        let vertices = gather(&prt, &[Some(StreamData { bytes: &bytes, stride })], count)?;
+        let vertices = gather_prt(&prt, &input.fetch, &bytes, stride, count)?;
         *gathered = Some(PrtVertices { formats: prt.iter().map(|e| e.format).collect(), vertices: Arc::new(vertices) });
         Ok(())
     }
@@ -1445,9 +1480,7 @@ impl LitObjects {
                 BoundGroup { index: 0, group: uniforms.group.clone(), offsets: uniforms.offsets(i).to_vec() },
                 BoundGroup::new(1, textures),
             ];
-            // The stencil reference is zero (`object_state::resolve_scene`)
-            // but for a marked part's mode 2 (`object_state::mark`); the
-            // packet sets it.
+            // Carry the resolved reference, including a marked part's mode 2.
             let state = gfx::state::RenderState { stencil: d.state.stencil, ..Default::default() };
             // A PRT draw's stream, gathered at the hook, in this
             // submission's uploads.
@@ -1953,6 +1986,24 @@ pub struct LitMaterial {
     pub properties: Vec<tags::shader::AnimatedProperty>,
 }
 
+/// Resolve state bindings that use only the shader instance once, before
+/// compiling its section variants. The effective writes stay on the pass
+/// for the live device-state checks at the layer call.
+fn instance_states<'a>(
+    imp: &'a tags::material::ResolvedImplementation, inputs: &tags::material::EngineInputs,
+) -> Result<std::borrow::Cow<'a, tags::material::ResolvedImplementation>, String> {
+    if imp.engine_render_states.is_empty() && imp.engine_stage_states.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(imp));
+    }
+    let states = crate::engine_states::apply_static(imp, inputs).map_err(|e| format!("engine states: {e:?}"))?;
+    let mut resolved = imp.clone();
+    resolved.render_states = states.render_states;
+    resolved.stage_states = states.stage_states;
+    resolved.engine_render_states.clear();
+    resolved.engine_stage_states.clear();
+    Ok(std::borrow::Cow::Owned(resolved))
+}
+
 /// What [`lit_model`] built: the input to upload, the materials taken,
 /// those refused with the reason, and the implementations (bit `n`) every
 /// taken material has (an object whose records draw another stays on D3D).
@@ -2074,6 +2125,8 @@ pub fn lit_model(
             let samples_lightmap = engine.lightmap.is_some()
                 && imp.textures.iter().flatten().any(|t| t.source == tags::material::TextureSource::Lightmap);
             let mut compile = || -> Result<Vec<(LitProgramInput, usize)>, String> {
+                let resolved = instance_states(imp, &lit.material.inputs)?;
+                let imp = resolved.as_ref();
                 let vs = imp.vertex_shader.ok_or_else(|| format!("implementation {n} has no vertex program"))?;
                 let mut got = Vec::new();
                 for s in &secs {
@@ -2221,6 +2274,14 @@ pub fn lit_model(
                         }
                         continue;
                     }
+                    let resolved = match instance_states(imp, &lit.material.inputs) {
+                        Ok(resolved) => resolved,
+                        Err(e) => {
+                            out.layer_refused.push((m, layer, format!("pass {k} implementation {n}: {e}")));
+                            continue;
+                        }
+                    };
+                    let imp = resolved.as_ref();
                     let index_list = |s: u16| lists[&s].0.clone();
                     let compiled = compile_layer_sections(
                         None, pass.pass, imp, &lit.properties, &secs, formats, engine, copies_view, &mut *vertex, &mut *image, &mut buffers,
@@ -2425,6 +2486,53 @@ mod tests {
     use super::*;
     use crate::object_lighting::Lighting;
     use gfx::state::RenderStateType;
+
+    #[test]
+    fn prt_layout_changes_preserve_the_fourth_component() {
+        use shaders::vsh::InputFetch as I;
+        for (format, expected, fourth) in [
+            (Attribute::PByte(3), I::Float, &[255][..]),
+            (Attribute::NormShort(3), I::Float, &[255, 127][..]),
+            (Attribute::Short(3), I::Int, &[1, 0][..]),
+        ] {
+            assert_eq!(prt_padding(format, expected).unwrap(), fourth);
+        }
+        assert!(prt_padding(Attribute::Float(2), I::Xyz1).unwrap().is_empty());
+        assert!(prt_padding(Attribute::Float(4), I::Xyz1).is_err());
+        assert!(prt_padding(Attribute::Short(3), I::Float).is_err());
+    }
+
+    #[test]
+    fn a_packed_prt_triple_supplies_w_without_reading_the_next_attribute() {
+        use shaders::vsh::InputFetch;
+        let elements = [
+            Element { stream: 0, register: 8, offset: 0, format: Attribute::PByte(3) },
+            Element { stream: 0, register: 9, offset: 3, format: Attribute::PByte(1) },
+        ];
+        let fetch = [InputFetch::Float; 16];
+        let vertices = gather_prt(&elements, &fetch, &[1, 2, 3, 4, 5, 6, 7, 8], 4, 2).unwrap();
+        assert_eq!(&vertices[0][..4], &[1, 2, 3, 255]);
+        assert_eq!(vertices[1][0], 4);
+        assert_eq!(&vertices[2][..4], &[5, 6, 7, 255]);
+        assert_eq!(vertices[3][0], 8);
+    }
+
+    #[test]
+    fn instance_driven_object_states_keep_their_effective_writes() {
+        use tags::shader::ExternalBinding;
+        let mut imp = crate::engine_states::tests::implementation(Vec::new(), 1);
+        imp.input_reads.scalars = 1 << 21;
+        imp.engine_render_states.push(ExternalBinding { bytes: [2, 1, 0, 21] });
+        imp.engine_stage_states.push(ExternalBinding { bytes: [0, 0, 1, 21] });
+        let mut inputs = tags::material::EngineInputs::default();
+        inputs.scalars[21] = 3.0;
+        let resolved = instance_states(&imp, &inputs).unwrap();
+        assert_eq!(resolved.render_states.last(), Some(&state(RenderStateType::AlphaRef, 3)));
+        assert_eq!(f32::from_bits(resolved.stage_states[0].mip_lod_bias), 3.0);
+        assert!(resolved.engine_render_states.is_empty() && resolved.engine_stage_states.is_empty());
+        imp.engine_render_states[0].bytes[3] = 3;
+        assert!(instance_states(&imp, &inputs).is_err());
+    }
 
     /// Synthetic stream formats: type 1 a 3-float position (semantic 0),
     /// a 2-float coordinate (semantic 3) and a 3-float normal (semantic 2);

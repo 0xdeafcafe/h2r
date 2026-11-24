@@ -291,6 +291,19 @@ definitions. Model loads and uploads stay lazy when definitions exist.
 An empty map result logs once per stage. The hooks then return at an
 atomic flag check until the next map activation or snapshot restore.
 
+The structure's layer-3 pass accepts an explicit One/Zero/Add blend as
+opaque. Layer-3 object and first-person draws also accept that combination
+when the live device supplies its inherited fields. Scene object packets
+carry the resolved stencil reference. Object templates can leave blend and
+depth writes to the live state check. They take render and
+sampler bindings driven by the shader instance's scalar input. The model
+loader retains the effective state writes for the device-state checks.
+
+Layer 5 accepts a PRT declaration with the compiled registers and compatible
+fetches. A three-component packed byte, short or normalized short can feed
+a four-component input by supplying the encoded one in W. A shader that
+forces W to one also accepts a narrower input with the same numeric type.
+
 ## Native scene walks for effects and overlays
 
 The walks are on whenever the native renderer is. The effects walk shares the particles renderer.
@@ -299,7 +312,7 @@ The walks are on whenever the native renderer is. The effects walk shares the pa
 | --- | --- |
 | Transparents | At `0x00041020` the saved sorted-loop ordinal resolves through the live u16 order array. The data pointer must match the handler argument. At `0x0004dad0` the standard emitter has a contiguous range in EDI/ESI. The subrange branches at `0x0004db40`, `0x0004dbdc` and `0x0004dc3a` supply topology, count and indices on the stack. Each admitted range skips one indexed call and resumes at its return address. A refusal runs that call in sorted order. |
 | First person | At the layer-3 call returning to `0x00040136` the model pass can suppress the sole in-layer item before its build. Mixed lists keep the guest sort. At `0x0004dad0`, the ordinary sorted draw stack and the first-person list can supply contiguous ranges in layers 1, 3, 7, 8 and 20. |
-| Decals | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, then skip the array submission through `0x00044190`. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
+| Decals | At `0x00044161` ESI names one record in the callback's linked list. Read its live allocation and quad count, and submit the array through native decal admission. A committed draw resumes at the generated entry `0x00044195`. A refusal continues through the guest draw. The guest has already marked duplicates and selected the bitmap and attribute defaults. |
 | Particles | At `0x0023ed5c` the guest allocator has succeeded and the emitter inputs are still live. Replace the one quad and skip its attribute writes and geometry publication in the guest. Restore EBP and return with the original stack cleanup. |
 | Effects | The four-vertex copy callback's source is available at `0x0004b252`. Read it directly and skip the copy and publication. For contrails, read the completed callback output at `0x0004b28c` and skip publication. Both use the live inline declaration, then return `-1` with the original stack cleanup. |
 | UI and HUD | The sorted widget dispatch, HUD and loading callbacks delimit ownership. The HUD, UI and loading census rows are partial. The overlay takes supported widget fans and inline screen quads with their bound textures. Shared quads inside the loading callback count as loading draws. Refused draws follow the ordered UI packet or guest path. |
