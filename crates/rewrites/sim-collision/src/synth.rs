@@ -346,3 +346,249 @@ pub fn random(rng: &mut Rng, depth: u32) -> Builder {
     }
     b
 }
+
+/// One portal of a synthetic structure: the clusters either side, the
+/// index of its plane, a bounding sphere and its polygon.
+#[derive(Clone, Debug, Default)]
+pub struct PortalSpec {
+    pub clusters: [i16; 2],
+    pub plane: u32,
+    pub sphere: [f32; 4],
+    pub vertices: Vec<[f32; 3]>,
+    /// Overrides the vertex count word (to test counts the guest cannot use).
+    pub count: Option<u32>,
+}
+
+/// A structure's portal graph in the guest's layout: a structure tag with
+/// its collision BSP pointer, portal block and cluster block; the BSP's
+/// plane block; each cluster's portal list; each portal's vertices.
+#[derive(Clone, Debug, Default)]
+pub struct Portals {
+    /// Each cluster's portal indices, in list order.
+    pub clusters: Vec<Vec<i16>>,
+    pub portals: Vec<PortalSpec>,
+    /// The structure collision BSP's planes, `nx, ny, nz, d`.
+    pub planes: Vec<[f32; 4]>,
+}
+
+/// Bytes [`Portals::write`] gives the structure tag, then the BSP header.
+pub const STRUCTURE_BYTES: u32 = 0x100;
+
+impl Portals {
+    /// Write the structure tag at `at`, its collision BSP header after it,
+    /// then every block, through `put`. Returns the end address and the
+    /// BSP header's address.
+    pub fn write(&self, at: u32, mut put: impl FnMut(u32, &[u8])) -> (u32, u32) {
+        use crate::flood::layout::*;
+        let bsp = at + STRUCTURE_BYTES;
+        put(at, &[0; STRUCTURE_BYTES as usize]);
+        put(bsp, &[0; HEADER_BYTES as usize]);
+        let mut next = align(bsp + HEADER_BYTES);
+        let mut block = |data: &[u8], put: &mut dyn FnMut(u32, &[u8])| {
+            let start = next;
+            put(start, data);
+            next = align(next + data.len() as u32);
+            start
+        };
+        let planes: Vec<u8> = self
+            .planes
+            .iter()
+            .flat_map(|p| p.iter().flat_map(|v| v.to_le_bytes()))
+            .collect();
+        let planes_at = block(&planes, &mut put);
+        put(bsp + 8, &(self.planes.len() as u32).to_le_bytes());
+        put(bsp + BSP_PLANES, &planes_at.to_le_bytes());
+        put(at + COLLISION_BSP, &bsp.to_le_bytes());
+        let mut portals = Vec::new();
+        for p in &self.portals {
+            let vertices: Vec<u8> = p
+                .vertices
+                .iter()
+                .flat_map(|v| v.iter().flat_map(|x| x.to_le_bytes()))
+                .collect();
+            let vertices_at = block(&vertices, &mut put);
+            let mut r = Vec::with_capacity(PORTAL_STRIDE as usize);
+            r.extend_from_slice(&p.clusters[0].to_le_bytes());
+            r.extend_from_slice(&p.clusters[1].to_le_bytes());
+            r.extend_from_slice(&p.plane.to_le_bytes());
+            p.sphere
+                .iter()
+                .for_each(|v| r.extend_from_slice(&v.to_le_bytes()));
+            r.extend_from_slice(&0u32.to_le_bytes());
+            let count = p.count.unwrap_or(p.vertices.len() as u32);
+            r.extend_from_slice(&count.to_le_bytes());
+            r.extend_from_slice(&vertices_at.to_le_bytes());
+            portals.extend_from_slice(&r);
+        }
+        let portals_at = block(&portals, &mut put);
+        put(at + PORTALS - 4, &(self.portals.len() as u32).to_le_bytes());
+        put(at + PORTALS, &portals_at.to_le_bytes());
+        let mut clusters = vec![0u8; self.clusters.len() * CLUSTER_STRIDE as usize];
+        for (c, list) in self.clusters.iter().enumerate() {
+            let indices: Vec<u8> = list.iter().flat_map(|i| i.to_le_bytes()).collect();
+            let list_at = block(&indices, &mut put);
+            let o = c * CLUSTER_STRIDE as usize + CLUSTER_PORTAL_COUNT as usize;
+            clusters[o..o + 4].copy_from_slice(&(list.len() as u32).to_le_bytes());
+            clusters[o + 4..o + 8].copy_from_slice(&list_at.to_le_bytes());
+        }
+        let clusters_at = block(&clusters, &mut put);
+        put(at + CLUSTER_COUNT, &(self.clusters.len() as u32).to_le_bytes());
+        put(at + CLUSTERS, &clusters_at.to_le_bytes());
+        (next, bsp)
+    }
+
+    /// Add a portal between `a` and `b` and list it in both clusters.
+    pub fn link(&mut self, a: i16, b: i16, p: PortalSpec) -> i16 {
+        let i = self.portals.len() as i16;
+        self.portals.push(PortalSpec {
+            clusters: [a, b],
+            ..p
+        });
+        for c in [a, b] {
+            if let Some(list) = usize::try_from(c).ok().and_then(|c| self.clusters.get_mut(c)) {
+                list.push(i);
+            }
+        }
+        i
+    }
+}
+
+/// A square of half-size `h` around `(u, v)` in the plane `axis = at`.
+pub fn square(axis: usize, at: f32, (u, v): (f32, f32), h: f32) -> Vec<[f32; 3]> {
+    [(-h, -h), (h, -h), (h, h), (-h, h)]
+        .iter()
+        .map(|&(du, dv)| {
+            let mut p = [0.0; 3];
+            p[axis] = at;
+            p[(axis + 1) % 3] = u + du;
+            p[(axis + 2) % 3] = v + dv;
+            p
+        })
+        .collect()
+}
+
+/// A random portal graph over `n` clusters: a chain of walls `x = k`
+/// between clusters `k` and `k + 1`, plus random cross links with tilted
+/// planes, polygons of 3 to 8 sides, spheres around them, and now and
+/// then a portal neither of whose clusters names its lister.
+pub fn random_portals(rng: &mut Rng, n: u32) -> Portals {
+    let mut s = Portals {
+        clusters: vec![Vec::new(); n as usize],
+        ..Portals::default()
+    };
+    fn plane(s: &mut Portals, rng: &mut Rng, k: f32) -> (u32, usize) {
+        let (normal, axis) = match rng.below(4) {
+            0 | 1 => ([if rng.chance(2) { 1.0 } else { -1.0 }, 0.0, 0.0], 0),
+            2 => ([0.6, if rng.chance(2) { 0.8 } else { -0.8 }, 0.0], 1),
+            _ => {
+                let a = rng.below(3) as usize;
+                let mut n = [0.0f32; 3];
+                n[a] = if rng.chance(2) { 1.0 } else { -1.0 };
+                (n, a)
+            }
+        };
+        let d = if axis == 0 { k * normal[0] } else { rng.eighths(4) };
+        s.planes.push([normal[0], normal[1], normal[2], d]);
+        (s.planes.len() as u32 - 1, axis)
+    }
+    for k in 0..n.saturating_sub(1) {
+        let (p, axis) = plane(&mut s, rng, k as f32 + 0.5);
+        let at = s.planes[p as usize][3] * s.planes[p as usize][axis];
+        let h = [0.5f32, 1.0, 2.0, 4.0][rng.below(4) as usize];
+        let mut vertices = square(axis, at, (rng.eighths(2), rng.eighths(2)), h);
+        if rng.chance(3) {
+            vertices.pop();
+        }
+        if rng.chance(4) {
+            vertices.reverse();
+        }
+        let mut sphere = vertices.iter().fold([0.0f32; 3], |c, v| {
+            [c[0] + v[0] / 4.0, c[1] + v[1] / 4.0, c[2] + v[2] / 4.0]
+        });
+        sphere[0] = at;
+        let r = h * [1.5f32, 0.25, 3.0][rng.below(3) as usize];
+        s.link(
+            k as i16,
+            k as i16 + 1,
+            PortalSpec {
+                plane: p,
+                sphere: [sphere[0], sphere[1], sphere[2], r],
+                vertices,
+                ..PortalSpec::default()
+            },
+        );
+    }
+    for _ in 0..rng.below(n) {
+        let (a, b) = (rng.below(n) as i16, rng.below(n) as i16);
+        let k = rng.eighths(8);
+        let (p, axis) = plane(&mut s, rng, k);
+        let at = s.planes[p as usize][3] * s.planes[p as usize][axis];
+        let vertices = square(axis, at, (rng.eighths(4), rng.eighths(4)), 2.0);
+        let mut spec = PortalSpec {
+            plane: p,
+            sphere: [rng.eighths(8), rng.eighths(8), rng.eighths(8), 6.0],
+            vertices,
+            ..PortalSpec::default()
+        };
+        if rng.chance(16) {
+            spec.count = Some(0);
+        }
+        let i = s.link(a, b, spec);
+        if rng.chance(10) {
+            // Listed by a third cluster: its far side is the portal's first.
+            let c = rng.below(n) as usize;
+            s.clusters[c].push(i);
+        }
+    }
+    s
+}
+
+/// One object reference in a synthetic cluster list.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Reference {
+    pub handle: u32,
+    pub kind: u8,
+    /// Centre and radius.
+    pub bounds: [f32; 4],
+}
+
+/// A per-cluster reference list in the guest's layout: a head table of
+/// datum words, and a datum array header whose records carry the handle,
+/// the next datum, the type byte and the bounding sphere.
+#[derive(Clone, Debug, Default)]
+pub struct References {
+    pub clusters: Vec<Vec<Reference>>,
+}
+
+impl References {
+    /// Record size [`References::write`] gives the datum array.
+    pub const SIZE: u32 = 0x24;
+
+    /// Write the head table at `heads`, the datum array header at `array`
+    /// and the records at `data`. Datum words carry a salt in the high half.
+    pub fn write(&self, heads: u32, array: u32, data: u32, mut put: impl FnMut(u32, &[u8])) {
+        use crate::objects::layout::*;
+        let mut index = 0u32;
+        put(array, &[0; 0x48]);
+        put(array + ELEMENT_SIZE, &Self::SIZE.to_le_bytes());
+        put(array + DATA, &data.to_le_bytes());
+        for (c, list) in self.clusters.iter().enumerate() {
+            let datum = |i: u32| (0x5a00 + i) << 16 | i;
+            let head = if list.is_empty() { u32::MAX } else { datum(index) };
+            put(heads + 4 * c as u32, &head.to_le_bytes());
+            for (k, r) in list.iter().enumerate() {
+                let i = index + k as u32;
+                let next = if k + 1 == list.len() { u32::MAX } else { datum(i + 1) };
+                let mut b = vec![0u8; Self::SIZE as usize];
+                b[HANDLE as usize..][..4].copy_from_slice(&r.handle.to_le_bytes());
+                b[NEXT as usize..][..4].copy_from_slice(&next.to_le_bytes());
+                b[BOUNDS as usize] = r.kind;
+                for (j, v) in r.bounds.iter().enumerate() {
+                    b[BOUNDS as usize + 4 + 4 * j..][..4].copy_from_slice(&v.to_le_bytes());
+                }
+                put(data + i * Self::SIZE, &b);
+            }
+            index += list.len() as u32;
+        }
+    }
+}

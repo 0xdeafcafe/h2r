@@ -1,8 +1,9 @@
 # Simulation rewrite, phase 2: the collision world
 
 The phase 2 design uses a Rust-owned collision world behind the native
-collision switch. A/B have native adapters. C–E record their entry
-controls and run lifted. The vector kernels are tested directly until
+collision switch. A/B have native adapters. C–E, G and H record their
+entry controls and run lifted; G and H have native adapters checked by the
+differential only. The vector kernels are tested directly until
 their transitive scratch-state contract is closed. The [entry contracts](collision-queries.md)
 describe the implemented arithmetic, stack and register comparisons.
 Remaining slices are specified below. Bar E requires the guest-visible
@@ -843,7 +844,7 @@ on the coordinator's integration pass.
 | S2 | BSP segment and matcher | `bsp/segment`, `bsp/ring`; entries C and D; R pinned in `layout.rs` | 824 | unit, differential C and D with the `bsp::segment` port as third arm, disc sweep segments |
 | S3 | MOPP decode, ray walker, instance trace | `mopp/decode`, `mopp/ray`, `structure` instances, `instance`; entry E | ≥ 437 visible; most of the 1,644 family | unit, differential E, disc sweep rays and inverses |
 | S4 | MOPP box | `mopp/boxq` single and packet; entry F; bail-rate report | 509 (`2ff8b0`, `300150`) | unit against `boxvm`, differential F, disc sweep boxes |
-| S5 | Cluster flood and object visit | `flood`, `objects`; entries G and H; `120850` and `23a160` in the kernel | 1,012 | unit, differential G and H with the two ports as third arms |
+| S5 | Cluster flood and object visit | `flood`, `objects`; entries G and H; `120850` and `23a160` in the kernel | 1,012 | unit, differential G and H with the two ports as third arms; adapters built, not installed |
 | S6 | General MOPP ray | `async` adapter for entry I on `RayWalk` | the rest of the 1,644 | differential I with fake and real callees |
 | S7 | Whole query | port `169510`, `1eff40` and helpers (object models through node matrices); entry J as one call; `collision.trace`; batch API with the reference-list lanes | 1,025 | unit, differential J, run parity |
 | S8 | Layout tuning | DFS re-layout with a guest-index map, two-level point treelets, only where a profile pair shows a gain | — | cold/warm and re-layout on/off give equal bits |

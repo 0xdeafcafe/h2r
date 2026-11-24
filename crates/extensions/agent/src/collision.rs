@@ -79,7 +79,15 @@ mod tests {
         let names: Vec<&str> = w.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
-            ["point_to_leaf", "location", "vector_test", "vector_context", "instance_trace"]
+            [
+                "point_to_leaf",
+                "location",
+                "vector_test",
+                "vector_context",
+                "instance_trace",
+                "cluster_flood",
+                "object_visit"
+            ]
         );
         assert_eq!(w.entries[0].addr, "0014a280");
         assert_eq!(w.entries[0].native, 7);

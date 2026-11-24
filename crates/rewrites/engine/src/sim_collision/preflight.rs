@@ -6,7 +6,11 @@ use runtime::{
     Guest,
     guest::{Access, Permissions},
 };
-use sim_collision::{Bail, Bsp, mem::overlaps, structure::LeafTable};
+use sim_collision::{
+    Bail, Bsp, TopologyKey,
+    mem::overlaps,
+    structure::{LeafTable, TableVersion},
+};
 
 pub trait CollisionMemory: Memory {
     /// Establish a version for this BSP and its decode constants. The
@@ -18,6 +22,19 @@ pub trait CollisionMemory: Memory {
     /// A version for all bytes of this leaf table, when the memory provider
     /// can detect every change. Other providers read the selected word live.
     fn leaf_table(&mut self, _count_addr: u32, _leaves: u32, _leaf: u32) -> Option<LeafTable> {
+        None
+    }
+
+    /// A version for every byte a portal graph was decoded from, when the
+    /// provider can detect every change. With `sources` (after a decode)
+    /// it arms a new version over those spans; with `None` it returns the
+    /// armed version for `key` while no source has changed. Other
+    /// providers decode the graph on every call.
+    fn topology_version(
+        &mut self,
+        _key: TopologyKey,
+        _sources: Option<&[(u32, u32)]>,
+    ) -> Option<TableVersion> {
         None
     }
 
@@ -34,6 +51,14 @@ impl CollisionMemory for Guest {
 
     fn leaf_table(&mut self, count_addr: u32, leaves: u32, leaf: u32) -> Option<LeafTable> {
         super::cluster::table(self, count_addr, leaves, leaf)
+    }
+
+    fn topology_version(
+        &mut self,
+        key: TopologyKey,
+        sources: Option<&[(u32, u32)]>,
+    ) -> Option<TableVersion> {
+        super::topology::version(self, key, sources)
     }
 
     fn physical_range(&self, addr: u32, len: u32) -> Option<u32> {

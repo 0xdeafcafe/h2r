@@ -5277,7 +5277,8 @@ h2 agent theater.play '{}' --socket "$film_run/play.sock"
 ## `collision`: the native collision world
 
 The collision switch enables counters for native entries A and B, and
-before-call observers for the lifted vector and instance traces C–E. The game
+before-call observers for the lifted vector and instance traces C–E, the
+cluster flood G and the object visit H. The game
 method reads process counters at a tick boundary. The entry addresses and
 bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
@@ -5291,10 +5292,11 @@ the control words at entry, including calls that fall back at the first
 environment check. Keys are lowercase hexadecimal strings with leading
 zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
 a call count. Each map counts its own register independently. For
-`vector_test`, `vector_context` and `instance_trace`, only the frequency
-maps accumulate. An image without an observed entry leaves its row empty.
-`array_bytes` counts the decoded BSP allocations and the packed cluster
-table. `bytes` adds the reserved space for BSP owners and address-index
+`vector_test`, `vector_context`, `instance_trace`, `cluster_flood` and
+`object_visit`, only the frequency maps accumulate; `cluster_flood` also
+counts the flood's recursive entries. An image without an observed entry
+leaves its row empty. `array_bytes` counts the decoded BSP allocations, the
+packed cluster table and the portal graph. `bytes` adds the reserved space for BSP owners and address-index
 capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
 `ring_fallbacks` counts transitions to scalar ring reads, and
 `cluster_budget_reads` counts lookups that need the live cluster word

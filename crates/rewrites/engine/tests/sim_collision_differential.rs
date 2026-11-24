@@ -8,6 +8,9 @@
 //! including the return address, EFLAGS and live x87 registers. A decline
 //! must preserve every guest register and byte. Each case takes the adapter
 //! cold and warm, and compares the older per-function port where present.
+//! G and H compare like C and D, with their own dead stack; their third arm
+//! runs the lifted entry with one `sim_physics` port in place (the portal
+//! test under G, the visit itself for H).
 #![cfg(feature = "differential")]
 
 mod common;
@@ -18,7 +21,7 @@ use engine::sim_collision::{self as adapter, CollisionWorld, layout};
 use engine::{points, sim_native as sim};
 use ir::interp::{self, Cpu};
 use lift::harness::HARNESS_EXIT;
-use runtime::{CpuAbi, GuestFault, TransferAbi, guest::{Access, FaultReason}};
+use runtime::{CpuAbi, Guest, GuestFault, TransferAbi, guest::{Access, FaultReason, Permissions}};
 use sim_collision::synth::{self, Builder, Rng};
 use sim_collision::structure::{LeafTable, TableVersion};
 use sim_core::Epoch;
@@ -36,6 +39,16 @@ const LOCATION: u32 = 0x0063_3000;
 const STRUCTURE: u32 = 0x0063_4000;
 const CLUSTERS: u32 = 0x0063_5000;
 const BSP: u32 = 0x0064_0000;
+const OUT: u32 = 0x0063_6000;
+const CENTRE: u32 = VECTORS + 0x30;
+const TOPOLOGY: u32 = 0x0066_0000;
+/// A second collision BSP header for `[0x4e033c]`, with its own planes.
+const OTHER_BSP: u32 = 0x0066_f000;
+/// Per list: the head table, the datum array header and the records.
+const REFERENCES: [(u32, u32, u32); 2] = [
+    (0x0067_0000, 0x0067_0100, 0x0067_0200),
+    (0x0067_1000, 0x0067_1100, 0x0067_1200),
+];
 
 #[derive(Clone)]
 struct Ram<'a> {
@@ -209,6 +222,17 @@ const CONTEXT_ENTRY: Entry = Entry {
     dead: (layout::CONTEXT_DEAD_BELOW, 4 + layout::VECTOR_ARGS),
 };
 
+const FLOOD: Entry = Entry {
+    point: &points::COLLISION_CLUSTER_FLOOD,
+    eax: u32::MAX,
+    dead: (layout::FLOOD_DEAD_BELOW, 4 + layout::FLOOD_ARGS),
+};
+const VISIT: Entry = Entry {
+    point: &points::OBJECT_SPATIAL_VISIT,
+    eax: u32::MAX,
+    dead: (layout::VISIT_DEAD_BELOW, 4 + layout::VISIT_ARGS),
+};
+
 fn visible(e: &Entry, c: &Cpu) -> [u32; 11] {
     [
         c.gpr[0] & e.eax,
@@ -231,26 +255,78 @@ struct Oracle<'a> {
 }
 
 impl Oracle<'_> {
-    fn run(&mut self, c: &mut Cpu, mem: &mut Ram<'_>, mut pc: u32) {
+    fn prime(&mut self, pc: u32) {
+        if !self.cache.contains_key(&pc) {
+            let f = self
+                .lifter
+                .lift(pc)
+                .unwrap_or_else(|| panic!("function at {pc:#x}"));
+            for insn in f.blocks.into_values().flat_map(|b| b.insns) {
+                self.cache.insert(insn.pc, insn);
+            }
+        }
+    }
+
+    fn run(&mut self, c: &mut Cpu, mem: &mut impl interp::Memory, mut pc: u32) {
         for _ in 0..4_000_000 {
             c.eip = pc;
             if pc == HARNESS_EXIT {
                 return;
             }
-            if !self.cache.contains_key(&pc) {
-                let f = self
-                    .lifter
-                    .lift(pc)
-                    .unwrap_or_else(|| panic!("function at {pc:#x}"));
-                for insn in f.blocks.into_values().flat_map(|b| b.insns) {
-                    self.cache.insert(insn.pc, insn);
-                }
-            }
+            self.prime(pc);
             pc = interp::step(c, mem, &self.cache[&pc])
                 .unwrap_or_else(|e| panic!("at {pc:#x}: {e:?}"))
                 .target();
         }
         panic!("step limit at {pc:#x}");
+    }
+
+    /// [`Oracle::run`] with `port` taking its entry and its return sites.
+    /// `false` when the port does not support the state it is entered in.
+    fn run_with_port(
+        &mut self,
+        c: &mut Cpu,
+        mem: &mut GuestRam,
+        mut pc: u32,
+        port: &engine::sim_physics::Port,
+    ) -> bool {
+        for _ in 0..4_000_000 {
+            c.eip = pc;
+            if pc == HARNESS_EXIT {
+                return true;
+            }
+            if pc == port.point.base || port.resumes.contains(&pc) {
+                let mut abi = lifted::cpu::from_interp(c);
+                if pc == port.point.base && !engine::sim_physics::supported(port, &abi, &mem.0) {
+                    return false;
+                }
+                let transfer = port
+                    .invoke(&mut abi, &mut mem.0, pc)
+                    .unwrap_or_else(|f| panic!("port at {pc:#x}: {f:?}"));
+                *c = lifted::cpu::to_interp(&abi);
+                pc = transfer.target_pc;
+                continue;
+            }
+            self.prime(pc);
+            pc = interp::step(c, mem, &self.cache[&pc])
+                .unwrap_or_else(|e| panic!("at {pc:#x}: {e:?}"))
+                .target();
+        }
+        panic!("step limit at {pc:#x}");
+    }
+}
+
+/// A whole guest for the port arm: the ports take a `Guest`.
+struct GuestRam(Guest);
+
+impl interp::Memory for GuestRam {
+    fn read(&mut self, a: u32, dst: &mut [u8]) -> Result<(), interp::MemFault> {
+        sim::Memory::read_bytes(&self.0, a, dst, 1)
+            .map_err(|f| interp::MemFault { addr: f.addr, write: false })
+    }
+    fn write(&mut self, a: u32, data: &[u8]) -> Result<(), interp::MemFault> {
+        sim::Memory::write_bytes(&mut self.0, a, data, 1)
+            .map_err(|f| interp::MemFault { addr: f.addr, write: true })
     }
 }
 
@@ -748,6 +824,331 @@ fn vector_test_ties_match_the_guest() {
                                 &c,
                                 &m,
                                 |c, g, w| adapter::vector_test(c, g, w),
+                                None,
+                                &label
+                            ),
+                            "{label}: declined"
+                        );
+                        n += 1;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// The third arm for G and H: the lifted entry with `port` in place, from
+/// the same state, against the lifted entry alone.
+fn port_matches(
+    oracle: &mut Oracle<'_>,
+    e: &Entry,
+    c: &CpuAbi,
+    m: &Ram<'_>,
+    port: &engine::sim_physics::Port,
+    case: &str,
+) -> bool {
+    let dead = (c.esp.wrapping_sub(e.dead.0), c.esp.wrapping_add(e.dead.1));
+    let (mut gc, mut gm) = (ir_cpu(c), m.clone());
+    oracle.run(&mut gc, &mut gm, e.point.base);
+    let len = (m.image.len() as u32 + 0xfff) & !0xfff;
+    let mut g = Guest::new();
+    g.map_zeroed(0, len, Permissions::RW).unwrap();
+    g.write_bytes(0, m.image, 1).unwrap();
+    for (&at, &byte) in &m.overlay {
+        g.write_bytes(at, &[byte], 1).unwrap();
+    }
+    let mut mixed = GuestRam(g);
+    let mut got = lifted::cpu::to_interp(c);
+    if !oracle.run_with_port(&mut got, &mut mixed, e.point.base, port) {
+        return false;
+    }
+    assert_eq!(visible(e, &got), visible(e, &gc), "{case} port: registers");
+    assert_eq!(got.eflags, gc.eflags, "{case} port: EFLAGS");
+    for (slot, value) in gc.x87.st.iter().enumerate() {
+        if gc.x87.tag >> (2 * slot) & 3 != 3 {
+            assert_eq!(&got.x87.st[slot], value, "{case} port: x87 slot {slot}");
+        }
+    }
+    let start = mixed.0.mappings()[0].physical_start as usize;
+    let ram = &mixed.0.physical_ram()[start..start + m.image.len()];
+    let mut at: BTreeSet<u32> = gm.overlay.keys().copied().collect();
+    at.extend(
+        ram.iter()
+            .zip(m.image)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, _)| i as u32),
+    );
+    for p in at {
+        if p.wrapping_sub(c.esp) < 4 || !(dead.0..dead.1).contains(&p) {
+            assert_eq!(ram[p as usize], gm.get(p), "{case} port: byte at {p:#x}");
+        }
+    }
+    true
+}
+
+fn physics_port(point: &points::Point) -> &'static engine::sim_physics::Port {
+    engine::sim_physics::PORTS
+        .iter()
+        .find(|p| p.point.base == point.base)
+        .unwrap()
+}
+
+/// A random portal graph at [`TOPOLOGY`], named by both structure globals.
+/// Now and then `[0x4e033c]` names another BSP whose normals point the
+/// other way, so the projection row changes while the distance does not.
+fn write_topology(m: &mut Ram<'_>, rng: &mut Rng, clusters: u32) -> synth::Portals {
+    let p = synth::random_portals(rng, clusters);
+    let (end, bsp) = p.write(TOPOLOGY, |a, d| m.store(a, d));
+    assert!(end < OTHER_BSP);
+    m.word(layout::ACTIVE_STRUCTURE, TOPOLOGY);
+    if rng.chance(6) {
+        let planes = OTHER_BSP + 0x100;
+        m.store(OTHER_BSP, &[0; 0x40]);
+        m.word(OTHER_BSP + 8, p.planes.len() as u32);
+        m.word(OTHER_BSP + 0xc, planes);
+        for (i, plane) in p.planes.iter().enumerate() {
+            for k in 0..4 {
+                let v = if k < 3 { -plane[k] } else { plane[k] };
+                m.float(planes + 16 * i as u32 + 4 * k as u32, v);
+            }
+        }
+        m.word(layout::STRUCTURE_BSP, OTHER_BSP);
+    } else {
+        m.word(layout::STRUCTURE_BSP, bsp);
+    }
+    p
+}
+
+/// Mostly the environment the flood's x87 sequences run in; now and then
+/// extended precision, or the precision flag not yet sticky.
+fn flood_cpu(rng: &mut Rng, point: u32) -> CpuAbi {
+    let mut c = entry_cpu(rng, point);
+    c.x87.control = [0x027f, 0x007f, 0x027f, 0x027f, 0x037f][rng.below(5) as usize];
+    if !rng.chance(8) {
+        c.x87.status |= 0x20;
+    }
+    c
+}
+
+#[test]
+fn cluster_flood_matches_the_guest() {
+    with_oracle("collision cluster flood differential test", |oracle, image| {
+        const CASES: u32 = 800;
+        let port = physics_port(&points::OBJECT_SPATIAL_PORTAL);
+        let (mut native, mut ported) = (0, 0);
+        for n in 0..CASES {
+            let mut rng = Rng(0x3c6e_f372_fe94_f82b
+                ^ u64::from(n).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                | 1);
+            let mut m = fresh(image);
+            let clusters = 2 + rng.below(9);
+            write_topology(&mut m, &mut rng, clusters);
+            let epoch = rng.next();
+            m.word(layout::FLOOD_EPOCH, epoch);
+            for k in 0..clusters {
+                let mark = if rng.chance(8) { epoch } else { epoch ^ (1 + k) };
+                m.word(layout::CLUSTER_MARKS + 4 * k, mark);
+            }
+            m.store(OUT, &[0xcd; 48]);
+            put_vector(
+                &mut m,
+                CENTRE,
+                [rng.eighths(10), rng.eighths(4), rng.eighths(4)],
+            );
+            let radius = match rng.below(16) {
+                0 => -1.0,
+                1 => 0.0,
+                2 => f32::from_bits(1),
+                _ => [0.5f32, 1.0, 2.5, 6.0, 40.0][rng.below(5) as usize],
+            };
+            let capacity = [16u32, 3, 1, 0, 16, 16, 0x8000][rng.below(7) as usize];
+            let mut c = flood_cpu(&mut rng, FLOOD.point.base);
+            m.word(STACK + 4, rng.below(clusters) | (rng.next() << 16));
+            m.word(STACK + 8, CENTRE);
+            m.float(STACK + 12, radius);
+            m.word(STACK + 16, capacity);
+            m.word(STACK + 20, OUT);
+            c.eax = rng.next();
+            let case = format!("case {n}");
+            let ok = check(
+                oracle,
+                &FLOOD,
+                &c,
+                &m,
+                |c, g, w| adapter::cluster_flood(c, g, w),
+                None,
+                &case,
+            );
+            if ok && n % 4 == 0 {
+                ported += u32::from(port_matches(oracle, &FLOOD, &c, &m, port, &case));
+            }
+            native += u32::from(ok);
+        }
+        eprintln!("cluster flood: the portal port ran in {ported} cases");
+        report("cluster flood", native, CASES);
+    });
+}
+
+/// Random references for each cluster of each list: a few slots shared
+/// across clusters and lists, all types, spheres near the query.
+fn write_references(m: &mut Ram<'_>, rng: &mut Rng, clusters: u32) {
+    let globals = [
+        (layout::COLLIDEABLE_HEADS, layout::COLLIDEABLE_ARRAY),
+        (layout::OTHER_HEADS, layout::OTHER_ARRAY),
+    ];
+    for (k, &(heads, array, data)) in REFERENCES.iter().enumerate() {
+        let list = synth::References {
+            clusters: (0..clusters)
+                .map(|_| {
+                    (0..rng.below(4))
+                        .map(|_| synth::Reference {
+                            handle: (rng.next() << 16) | rng.below(24),
+                            kind: rng.below(40) as u8,
+                            bounds: [
+                                rng.eighths(10),
+                                rng.eighths(4),
+                                rng.eighths(4),
+                                rng.eighths(2).abs(),
+                            ],
+                        })
+                        .collect()
+                })
+                .collect(),
+        };
+        list.write(heads, array, data, |a, d| m.store(a, d));
+        m.word(globals[k].0, heads);
+        m.word(globals[k].1, array);
+    }
+}
+
+#[test]
+fn object_visit_matches_the_guest() {
+    with_oracle("collision object visit differential test", |oracle, image| {
+        const CASES: u32 = 800;
+        let port = physics_port(&points::OBJECT_SPATIAL_VISIT);
+        let (mut native, mut ported) = (0, 0);
+        for n in 0..CASES {
+            let mut rng = Rng(0xa54f_f53a_5f1d_36f1
+                ^ u64::from(n).wrapping_mul(0x2545_f491_4f6c_dd1d)
+                | 1);
+            let mut m = fresh(image);
+            let clusters = 2 + rng.below(9);
+            write_topology(&mut m, &mut rng, clusters);
+            write_references(&mut m, &mut rng, clusters);
+            let (epoch, generation) = (rng.next(), rng.next());
+            m.word(layout::FLOOD_EPOCH, epoch);
+            m.word(layout::VISIT_GENERATION, generation);
+            for k in 0..clusters {
+                let mark = if rng.chance(10) { epoch.wrapping_add(1) } else { epoch };
+                m.word(layout::CLUSTER_MARKS + 4 * k, mark);
+            }
+            for slot in 0..24 {
+                let mark = if rng.chance(8) { generation.wrapping_add(1) } else { generation };
+                m.word(layout::OBJECT_MARKS + 4 * slot, mark);
+            }
+            m.store(OUT, &[0xcd; 48]);
+            let cluster = if rng.chance(8) { 0xffff } else { rng.below(clusters) };
+            m.word(LOCATION, rng.next());
+            m.word(LOCATION + 4, cluster | (rng.next() << 16));
+            put_vector(
+                &mut m,
+                CENTRE,
+                [rng.eighths(10), rng.eighths(4), rng.eighths(4)],
+            );
+            let radius = match rng.below(8) {
+                0 => -1.0,
+                1 => 0.0,
+                2 => -0.0,
+                _ => [0.5f32, 1.0, 2.5, 6.0, 40.0][rng.below(5) as usize],
+            };
+            let lists = [0u32, 1, 2, 3, 0xffff_fffc][rng.below(5) as usize];
+            let types = match rng.below(4) {
+                0 => 0,
+                1 => u32::MAX,
+                _ => rng.next(),
+            };
+            let capacity = [8u32, 2, 1, 0, 0xffff][rng.below(5) as usize] | (rng.next() << 16);
+            let mut c = flood_cpu(&mut rng, VISIT.point.base);
+            for (k, arg) in [lists, types, LOCATION, CENTRE, radius.to_bits(), OUT, capacity]
+                .into_iter()
+                .enumerate()
+            {
+                m.word(STACK + 4 + 4 * k as u32, arg);
+            }
+            c.eax = rng.next();
+            let case = format!("case {n}");
+            let ok = check(
+                oracle,
+                &VISIT,
+                &c,
+                &m,
+                |c, g, w| adapter::object_spatial_visit(c, g, w),
+                None,
+                &case,
+            );
+            if ok && n % 4 == 0 {
+                ported += u32::from(port_matches(oracle, &VISIT, &c, &m, port, &case));
+            }
+            native += u32::from(ok);
+        }
+        eprintln!("object visit: the visit port ran in {ported} cases");
+        report("object visit", native, CASES);
+    });
+}
+
+/// Fixed walls and a sphere moved across them: the plane distance equal to
+/// the radius, the circle grazing a polygon edge, a full output.
+#[test]
+fn cluster_flood_ties_match_the_guest() {
+    with_oracle("collision cluster flood ties", |oracle, image| {
+        let mut p = synth::Portals {
+            clusters: vec![Vec::new(); 3],
+            ..synth::Portals::default()
+        };
+        for k in 1..3i16 {
+            p.planes.push([1.0, 0.0, 0.0, k as f32]);
+            let mut vertices = synth::square(0, k as f32, (0.0, 0.0), 1.0);
+            vertices.reverse();
+            p.link(
+                k - 1,
+                k,
+                synth::PortalSpec {
+                    plane: k as u32 - 1,
+                    sphere: [k as f32, 0.0, 0.0, 4.0],
+                    vertices,
+                    ..synth::PortalSpec::default()
+                },
+            );
+        }
+        let mut n = 0u32;
+        for &x in &[0.25f32, 0.5, 0.75, 1.0, 1.5] {
+            for &y in &[0.0f32, 1.0, 1.25, 1.5, 2.0] {
+                for &radius in &[0.25f32, 0.5, 0.75, 1.0] {
+                    for &(control, capacity) in &[(0x027fu16, 16u32), (0x007f, 1)] {
+                        let mut m = fresh(image);
+                        let (_, bsp) = p.write(TOPOLOGY, |a, d| m.store(a, d));
+                        m.word(layout::ACTIVE_STRUCTURE, TOPOLOGY);
+                        m.word(layout::STRUCTURE_BSP, bsp);
+                        m.word(layout::FLOOD_EPOCH, 9);
+                        m.store(OUT, &[0xcd; 16]);
+                        put_vector(&mut m, CENTRE, [x, y, 0.0]);
+                        let mut c = entry_cpu(&mut Rng(u64::from(n) | 1), FLOOD.point.base);
+                        (c.mxcsr, c.x87.control, c.x87.tag) = (0x1fa0, control, 0xffff);
+                        c.x87.status = 0x20;
+                        m.word(STACK + 4, 0);
+                        m.word(STACK + 8, CENTRE);
+                        m.float(STACK + 12, radius);
+                        m.word(STACK + 16, capacity);
+                        m.word(STACK + 20, OUT);
+                        let label = format!("centre ({x}, {y}) radius {radius} control {control:#x}");
+                        assert!(
+                            check(
+                                oracle,
+                                &FLOOD,
+                                &c,
+                                &m,
+                                |c, g, w| adapter::cluster_flood(c, g, w),
                                 None,
                                 &label
                             ),

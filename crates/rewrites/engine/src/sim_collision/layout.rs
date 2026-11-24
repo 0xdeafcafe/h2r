@@ -73,3 +73,57 @@ pub const VECTOR_DEAD_BELOW: u32 = 0x3c + CONTEXT_DEAD_BELOW;
 /// Bytes of stack arguments the vector-test entries pop (they also write
 /// into their own argument slots).
 pub const VECTOR_ARGS: u32 = 0x10;
+
+/// `u8`: set while the object visit floods (entry H sets it and clears it).
+pub const FLOOD_ACTIVE: u32 = 0x004e_7411;
+/// `u32`: the cluster flood's epoch. The flood (G) marks under the epoch its
+/// caller set; the visit (H) bumps it before flooding.
+pub const FLOOD_EPOCH: u32 = 0x004e_7414;
+/// One `u32` mark per cluster.
+pub const CLUSTER_MARKS: u32 = 0x004e_7418;
+/// `u8`: set while the object visit walks its lists.
+pub const VISIT_ACTIVE: u32 = 0x004d_e2f8;
+/// `u32`: the object visit's generation, bumped once per visit.
+pub const VISIT_GENERATION: u32 = 0x004d_e2fc;
+/// One `u32` mark per object slot (the handle's low half).
+pub const OBJECT_MARKS: u32 = 0x004d_e300;
+/// Object mark slots the native visit writes. A higher slot's mark would
+/// reach the structure globals at `0x004e_033c`; the visit declines it.
+pub const OBJECT_MARK_SLOTS: u32 = 0x800;
+/// The collideable reference list: the per-cluster head table pointer and
+/// the datum array header pointer (`0x000b8940`).
+pub const COLLIDEABLE_HEADS: u32 = 0x004d_e2e0;
+pub const COLLIDEABLE_ARRAY: u32 = 0x004d_e2e4;
+/// The second reference list (`0x000b8a10`).
+pub const OTHER_HEADS: u32 = 0x004d_e2d4;
+pub const OTHER_ARRAY: u32 = 0x004d_e2d8;
+
+/// Bytes of stack arguments the flood pops; it reuses two of its argument
+/// slots as locals.
+pub const FLOOD_ARGS: u32 = 0x14;
+/// Bytes of stack arguments the visit pops; it rewrites two of them.
+pub const VISIT_ARGS: u32 = 0x1c;
+
+/// The stack the flood writes below its entry `esp`: its five saved
+/// registers, 0x2c per nested flood, and 0x44c under a frame that runs the
+/// portal test (0x420 of locals, the polygon test's frame). `deepest` is
+/// the deepest nesting that ran a test.
+pub const fn flood_dead_below(deepest: Option<u32>) -> u32 {
+    match deepest {
+        Some(k) => 0x14 + 0x2c * k + 0x44c,
+        None => 0x14,
+    }
+}
+
+/// Every flood the native kernel admits stays within this window.
+pub const FLOOD_DEAD_BELOW: u32 =
+    flood_dead_below(Some(sim_collision::flood::MAX_CLUSTERS - 1));
+/// The visit's 0x430-byte frame, then 0x18 for a list-head call or for the
+/// flood's arguments and return address.
+pub const fn visit_dead_below(flood: Option<Option<u32>>) -> u32 {
+    match flood {
+        Some(deepest) => 0x448 + flood_dead_below(deepest),
+        None => 0x448,
+    }
+}
+pub const VISIT_DEAD_BELOW: u32 = 0x448 + FLOOD_DEAD_BELOW;

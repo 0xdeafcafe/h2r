@@ -10,6 +10,8 @@ The collision world holds decoded BSPs for native point-to-leaf and location que
 
 - `src/bsp/`: the decoded BSP and its tree walks.
 - `src/world.rs`: decoded BSPs, map invalidation, memory accounting and entry counters.
+- `src/flood.rs`: the structure's portal graph and the sphere cluster flood (entry G).
+- `src/objects.rs`: the object spatial visit over the live reference lists (entry H).
 - `src/structure.rs`: the signed leaf-to-cluster table for the active structure.
 - `src/mem.rs`: the `GuestRead` boundary.
 - `src/synth.rs`: synthetic BSPs in guest form (`synth`).

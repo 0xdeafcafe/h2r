@@ -1,8 +1,9 @@
 # Collision queries
 
 The native collision world answers point and location queries (A/B).
-The vector queries and instance trace (C–E) run lifted with entry FP
-observers. The differential harness also exercises the C/D kernels. The entry adapters live in
+The vector queries and instance trace (C–E), the cluster flood (G) and
+the object spatial visit (H) run lifted with entry FP observers. The
+differential harness also exercises the C/D, G and H kernels. The entry adapters live in
 `crates/rewrites/engine/src/sim_collision`, the kernels in
 `crates/rewrites/sim-collision` and the installer in
 `crates/rewrites/sim-bridge/src/sim_native.rs`. See the
@@ -21,8 +22,13 @@ A declined query resumes the lifted entry from its original state.
 | C | `0x1de630` vector test | `COLLISION_VECTOR_TEST` | `eax` R, `ecx` query bits, `edx` BSP, `xmm0` limit; stack: breakable count (`u16`), breakable mask, start, delta; `ret 0x10`; hit in `al` | R, `al`, x87 PE |
 | D | `0x1de6d0` vector walk | `COLLISION_BSP_SEGMENT` | stack: context, node, `t0`, `t1`; `ret 0x10`; hit in `al` | R, the context's `+0x1c`, `+0x20`, `+0x24`, `al`, x87 PE |
 | E | `0x244980` instance trace | `COLLISION_INSTANCE_TRACE` | `eax` cluster, `esi` start, `edi` delta, three stack arguments, `ret 0xc` | `al`, terminal marks and hit-result fields described below |
+| G | `0x14a5b0` cluster flood | `COLLISION_CLUSTER_FLOOD` | stack: cluster (`i16`), centre, radius, capacity, out; `ret 0x14`; count in `ax` | the `u16` cluster list, the cluster marks |
+| H | `0xbb050` object spatial visit | `OBJECT_SPATIAL_VISIT` | stack: list bits, type mask, location, centre, radius, out, capacity; `ret 0x1c`; count in `ax` | the handle list, the epochs, active bytes and marks described below |
 
-The installer gives both implementations and the three observers to the collision switch. The implementations use the owning executor because they update shared caches and subscriptions. The older
+The installer gives both implementations and the five observers (C, D,
+E, G, H) to the collision switch. G and H have native adapters
+(`sim_collision::flood`) that the differential runs; they are not
+installed. The implementations use the owning executor because they update shared caches and subscriptions. The older
 per-function switches (`native_point_to_leaf`, `native_bsp_segment`) are
 skipped at these points while the collision switch is on. Their bodies stay
 as differential oracles.
@@ -110,6 +116,62 @@ terminal callback enters at A−0x710−0x1c0·d. C's dead-window bound applies
 below that address. A successful native E therefore needs a depth bound
 for its actual traversal and an alias check spanning both walks. E's
 three argument words are read-only. The status-save sites are catalogued below. The precision controls reached in a running match require an entry histogram.
+
+### Entries G and H — cluster flood and object visit
+
+G floods from a cluster through the portals a sphere reaches, depth first.
+The cluster record is `[[0x4e0348]+0xa0] + 0xb0c·i`: `+0x8c` portal
+count, `+0x90` the `i16` portal indices. A portal is 36 bytes at
+`[sbsp+0x60]`: `+0` and `+2` its two clusters, `+4` its plane index,
+`+8` a bounding sphere, `+0x1c` the vertex count, `+0x20` the vertices.
+The far cluster is the second when the first is the current one, else the
+first. G marks each cluster it enters with the current flood epoch
+(`[0x4e7418 + 4·cluster] = [0x4e7414]`), writes it to `out[k]` while the
+low half of `capacity − k` is positive, and counts it even when the
+output is full. A far cluster already marked is skipped. Otherwise the
+portal test `0x14a370` decides:
+
+1. The plane distance on x87, `((ny·cy + nz·cz) + cx·nx) − d`, the plane
+   taken from the structure's plane block; the comparison is
+   `r > |dist|` on the unrounded value.
+2. The bounding sphere on SSE, `((dz² + dx²) + dy²) < (r_p + r)²`.
+3. Only then the projection: the normal's dominant axis (`0x120850`: z
+   when `|z| ≥ |y|` and `|z| ≥ |x|`, else y when `|y| ≥ |x|`, else x),
+   the projection row `2·axis + (n[axis] > 0)`, the foot
+   `n·(0 − dist) + c` and the cross radius `sqrt(r·r − d·d)` on x87,
+   stored single.
+4. The polygon test `0x23a160` over the vertices copied into a
+   128-entry frame array: per edge `len2 = ex² + ey²`, skipped when 0,
+   `cross = x0·ey − y0·ex`; outside when `cross > 0` and
+   `cross² > len2·rr`. A count of 0 or less passes.
+
+G returns the count in EAX and the top cluster's portal count in ECX. Its
+flags come from `test ecx, ecx` when that count is 0 or less, and
+otherwise from the loop's last compare of the count with itself.
+
+H reads the location's cluster word (`+4`). When it is not `0xffff` and
+the radius is above the guest's zero (`0x45dbd8`), H bumps the flood
+epoch, sets `[0x4e7411]`, floods with capacity 512 into a local array and
+clears the byte. Otherwise it visits the location's one cluster, or none.
+It bumps the visit generation `[0x4de2fc]` and holds `[0x4de2f8]` at 1
+for the walk. Zero list bits or type mask means all. Per cluster the
+collideable list (heads `[0x4de2e0]`, array `[0x4de2e4]`) runs before the
+second list (`[0x4de2d4]`, `[0x4de2d8]`). A record is
+`data(+0x44) + (datum & 0xffff)·size(+0x24)`: `+4` handle, `+8` next,
+`+0xc` type byte, `+0x10` centre, `+0x1c` radius. A reference passes the
+type mask `1 << (type & 31)`, then its object is tested and marked at
+`0x4de300 + 4·(handle & 0xffff)` before the overlap test, so a missed
+object is not tested again through another reference. The overlap is
+`(r_ref + r)² ≥ sum`, the collideable list summing `(zz + yy) + xx` and
+the second `(zz + xx) + yy`. A full output stops the walk and returns
+`(handle & 0xffff0000) | count`; otherwise H returns the count. A next
+record whose handle is −1 ends a list. The flags come from
+`add esp, 0x420`.
+
+The kernel (`sim_collision::flood`, `sim_collision::objects`) decodes the
+portal graph once per structure and version, and reads the reference
+lists live on every call. It bounds clusters below 512 and object slots
+below 0x800, so the marks it writes cannot reach other globals.
 
 ### Records
 
@@ -224,6 +286,8 @@ slots. The frame exclusions are bounded as follows.
 |---|---|---|
 | C | 0x3c to D plus D's bound | first argument at ESP+4 |
 | D | 0x28 per nested near-child call, plus 0x90 at the deepest matcher and ring test | within ESP+4 through ESP+0x13 |
+| G | 0x14, or 0x460 + 0x2c·k when a portal test ran at depth k | within ESP+4 through ESP+0x17 |
+| H | 0x448, plus G's figure when it floods | within ESP+4 through ESP+0x1f |
 
 A handled D call has at most 255 nested calls beneath its initial frame.
 The deepest leaf has 0x30 bytes through entry to the matcher, another
@@ -248,6 +312,8 @@ Direct calls in the executable text, identified by instruction address:
 | C | 1693c0, 16987c, 1f52a7, 1f5358, 221ed9, 221f3d |
 | D | 1de6b8, 1de7d8, 1f01e4 |
 | E | 169c71 |
+| G | bb0e4, 132dbc, 14a68b (itself), 17e4e9, 180bb8, 1cace3 |
+| H | d6d09, 1095c2, 1155ff, 119cf3, 11c757, 150954, 1511b7, 1ac697, 2c0f4e |
 
 All six direct C callers test AL immediately. The outer vector wrapper
 at `0x1de6b8` forwards D's AL and restores its frame. The recursive
@@ -260,7 +326,10 @@ D's model trace can forward EDX and XMM registers through `0x1f0228`.
 A whitelist of these direct return addresses would still admit those
 paths. The collision installer keeps C/D lifted until all surviving
 state is replayed or proved dead through their outer callers. A/B
-have no caller-liveness prerequisite.
+have no caller-liveness prerequisite. G and H stay lifted on the same
+terms: their adapters do not replay scratch GPRs, XMM registers, x87
+condition codes or the dead stack, and the G and H callers above are not
+yet read for what they consume.
 
 ### Status-instruction census
 
@@ -349,8 +418,14 @@ cargo test -p sim-collision
 cargo test -p engine --features runtime-glue --lib sim_collision::
 cargo test -p sim-bridge sim_native
 cargo test -p agent collision
+cargo test -p guest-layout
 H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test it sim_collision_differential::
 ```
+
+The G and H cases (`cluster_flood_matches_the_guest`,
+`cluster_flood_ties_match_the_guest`, `object_visit_matches_the_guest`)
+run the `sim_physics` spatial ports as a third arm, with the lifted entry
+calling the port on a copy of the guest.
 
 The synthetic differential runs each entry against the lifted instructions
 on the IR interpreter, with a cold and a warm world and the earlier
@@ -367,6 +442,12 @@ H2_DISC=/path/to/halo2.iso H2_XBE=/path/to/default.xbe cargo test --release -p e
 ```
 
 ## Gaps
+
+G and H are differential-only until their callers' use of the scratch
+state is read. Their FP observers count each recursive G entry, so the
+census includes recursion. The 512-cluster and 0x800-object-slot bounds
+come from the globals that follow the mark arrays, not from a measured
+map census.
 
 The segment and MOPP disc sweeps, debug round-robin source checks and
 packed ring test are later slices. Runtime verification includes arena

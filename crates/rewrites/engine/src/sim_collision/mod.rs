@@ -1,5 +1,6 @@
-//! Guest adapters for native point and location queries and the differential
-//! BSP segment kernels. See docs/engine/collision-queries.md.
+//! Guest adapters for native point and location queries, and the
+//! differential BSP segment, cluster flood and object visit kernels. See
+//! docs/engine/collision-queries.md.
 //!
 //! Each adapter reads the entry's arguments and the live guest words its
 //! query needs, runs the kernel against the decoded BSP, and only then
@@ -15,10 +16,13 @@
 //! `esp`) is excluded only in the vector differential harness.
 //! The x87 precision flag the original's split divisions raise is set.
 mod cluster;
+mod flood;
 pub mod layout;
 mod point;
 mod preflight;
 mod sources;
+mod topology;
+pub use flood::{cluster_flood, object_spatial_visit};
 pub use point::{location, point_to_leaf};
 pub use preflight::CollisionMemory;
 use preflight::Outputs;
