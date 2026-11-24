@@ -5,6 +5,7 @@
 
 mod backdrop;
 pub mod hud_overlay;
+pub mod modal_blur;
 mod model;
 mod outline;
 mod ui;
@@ -179,6 +180,20 @@ pub trait Host: Send + Sync {
         false
     }
 
+    /// The blur under a dialog is about to run (`modal_blur`): true when
+    /// the host has armed its draws to be left out and `call.blur` drawn
+    /// from the overlay in their place at the wrapper's return.
+    fn modal_blur(&self, _mem: &mut dyn GuestMemory, _call: &modal_blur::ModalBlur) -> bool {
+        false
+    }
+
+    /// The armed blur's wrapper returned (`esp` its return slot): true when
+    /// the overlay's blur replaced its draws; false when the game's draws
+    /// were given back.
+    fn finish_modal_blur(&self, _mem: &mut dyn GuestMemory, _esp: u32) -> bool {
+        false
+    }
+
     fn enter_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32, _eligible: bool) {}
 
     fn leave_ui(&self, _mem: &mut dyn GuestMemory, _scope: UiScope, _stack: u32) {}
@@ -272,6 +287,7 @@ impl Feature for NativeHud {
             return Ok(());
         }
         ui::place(b);
+        modal_blur::place(b);
         // The menus on the overlay (`ui_overlay`): a list's claim opens
         // when it is sorted and closes, checked, when its draws are done.
         // A claimed draw is left out by resuming after its call: without

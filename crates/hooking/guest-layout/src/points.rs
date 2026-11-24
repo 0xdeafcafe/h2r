@@ -993,6 +993,11 @@ points! { ALL;
     /// Screen convolution blur, also called by the colour pass. From
     /// 0x0002da96, stack arguments 0 and 1 are the steps and tap spread.
     SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [fn(source: eax, steps: stack 0, spread: stack 1, growth: stack 2, dest: stack 3, other: stack 4, last: stack 5, combine: stack 6, arg7: stack 7, arg8: stack 8, arg9: stack 9) -> eax ret 40]; "docs/graphics/native-renderer.md";
+    /// The blur under a dialog: XMM0 the screen's transition fraction,
+    /// times `[0x0045de14]` as the steps of one call of
+    /// [`SCREEN_CONVOLUTION_BLUR`] (returning to `0x00235794`), then a
+    /// bare RET. Called from the window stack's render at `0x00235128`.
+    UI_MODAL_BLUR @ 0x0023_5756: [fn(fraction: xmm0) ret 0]; "docs/graphics/native-post-hud.md";
     /// A unit's integrated-light update, called at the end of its tick.
     UNIT_LIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/hud.md";
     /// A shader template's pass set up (`0x00016610`, called by

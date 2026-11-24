@@ -356,7 +356,7 @@ classified readers, 73 read run state and 30 start from it.
 | Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | GPU counter and native colour fans built, fade state guest-owned |
 | Post | `0x00013870`, `0x000214f0`, `0x0002d140`, `0x0002dd30`, `0x0002df00`, layer 17 | typed post from the scenario's screen effects and the camera's parameters | glow and screen effects built |
 | HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | the live shader quad and glyph callbacks emit overlay items with the evaluated widget shader and layer inputs |
-| Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | the walk emits the overlay's items (`scene_extract::ui::draw_list`, from a `UiFrame`); at each sorted list the guest's widgets are read and runs of exact ones drawn from the overlay with their draws skipped ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)). Containers and plain bitmap widgets read exactly; a shader bitmap's quad is drawn from the overlay at the shader quad with its template's combiner; text, model scenes, lists and buttons are still the game's quads |
+| Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | the walk emits the overlay's items (`scene_extract::ui::draw_list`, from a `UiFrame`); at each sorted list the guest's widgets are read and runs of exact ones drawn from the overlay with their draws skipped ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)). Containers and plain bitmap widgets read exactly; a shader bitmap's quad is drawn from the overlay at the shader quad with its template's combiner; the blur under a dialog is the overlay's `Blur` item, drawn in place of its quads ([native-post-hud.md](native-post-hud.md#the-blur-under-a-dialog)); text, model scenes, lists and buttons are still the game's quads |
 | Text | glyph decode `0x0001f5c0`, the glyph cache, one quad per glyph | Rust shaping from the font data ([fonts.md](../formats/fonts.md)) into the renderer's own atlas, one draw per run | not built |
 | Movies | `0x00156040`'s blit and quad, `BinkCopyToBuffer` | the decoder's host frame goes to the renderer as a scene item; no guest texture is locked | not built |
 | Loading, fade, bars | `0x000289e0`, `0x00040890`, `0x00052ce7` | draw-list items from the same state words the guest reads | each draw taken at its producer onto the overlay with the guest's combiner, blend and blend constant at the draw: all six fade modes, the bars with the combiner they inherit, the loading screen's bitmaps and spinner ([native-post-hud.md](native-post-hud.md#the-fade-the-bars-and-the-loading-screen)); `scene_extract::ui`'s typed `UiFrame` draws are not filled from them |
@@ -390,14 +390,18 @@ blend) is dropped and counted: the overlay has no guest draw behind it.
 
 A `Blur` item blurs what the items before it drew, inside its clip: the
 menus' backdrop under a dialog. It carries the guest's steps by value
-(each step's spread and the tap's offset over it), and the plan turns
-them into offsets that are fractions of the target, so a blur looks the
-same at any scale. The plan ends the batch before a blur
+(each step's spread, the tap's offset over it, and the constant of the
+combiner that blends the taps, `pick`), and the plan turns the spreads
+into offsets that are fractions of the target, so a blur looks the same
+at any scale. The plan ends the batch before a blur
 (`native_render::overlay::PlanBlur`); `OverlayGpu` ends its pass there,
-copies the target, runs each step as four bilinear taps between two
-scratch targets, and writes the result back through the texture
-combiner inside the clip. Over a target it cannot copy or sample, every
-blur is dropped and counted (`refused_blur`). A `ModelView` item is a
+copies the target, runs each step as four bilinear taps blended in pairs
+by the guest's combiner between two scratch targets, and writes the
+result back through the texture combiner into every channel inside the
+clip. Over a target it cannot copy or sample, every blur is dropped and
+counted (`refused_blur`). In the game the blur under a dialog is drawn
+this way in place of the Kawase blur's quads
+([native-post-hud.md](native-post-hud.md#the-blur-under-a-dialog)). A `ModelView` item is a
 model widget's camera and objects with its viewport as the clip. No
 stage draws one yet: the plan drops it and counts it
 (`refused_model_view`).
