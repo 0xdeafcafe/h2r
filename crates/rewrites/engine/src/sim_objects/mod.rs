@@ -75,6 +75,10 @@ pub enum Next {
     /// `call target`, returning to `site` (one of the body's
     /// [`Body::sites`]).
     Call { target: u32, site: u32 },
+    /// Call with a return address the image resumes. A partially native
+    /// function can hand its live retail frame back to the original at
+    /// this boundary. Its installer requires the generated selector.
+    CallOriginalResume { target: u32, site: u32 },
     /// `ret pop`.
     Ret { pop: u16 },
     /// `jmp target` out of the function (a tail call).
@@ -392,12 +396,12 @@ pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, mut pc: u32) -> Res
         let (body, _) = table.at(pc).ok_or_else(|| unowned(pc))?;
         let next = (body.run)(&mut Cx { cpu: &mut *cpu, g: &mut *g }, pc)?;
         match next {
-            Next::Call { target, site } => {
-                debug_assert!(
-                    body.sites.contains(&site),
-                    "{} calls {target:#x} from an unlisted site {site:#x}",
-                    body.point.name
-                );
+            Next::Call { target, site } | Next::CallOriginalResume { target, site } => {
+                if matches!(next, Next::CallOriginalResume { .. }) {
+                    debug_assert!(table.at(site).is_none(), "lifted return site {site:#x} is owned");
+                } else {
+                    debug_assert!(body.sites.contains(&site), "{} omitted site {site:#x}", body.point.name);
+                }
                 frame::push(cpu, g, site)?;
                 if table.fuses(target) && supported(cpu) {
                     pc = target;
