@@ -8,6 +8,8 @@ use crate::sim_physics::{ARITH, arithmetic, byte, logic, pop, push, status};
 use runtime::{CpuAbi, Guest, GuestFault};
 use sim_sound::scheduling::{self, HeadAction};
 
+mod promotion;
+
 const DOC: &str = "docs/engine/sim-rewrite.md";
 pub const GAME_SOUND_UPDATE: Point = Point::new(
     "GAME_SOUND_UPDATE",
@@ -44,6 +46,7 @@ const FRAME_SITES: &[u32] = &[
     0x18c1b3, 0x18c1c0, 0x18c1e5, 0x18c1f4, 0x18c207, 0x18c232,
 ];
 pub const BODIES: &[Body] = &[
+    promotion::BODY,
     Body {
         point: &GAME_SOUND_UPDATE,
         sites: FRAME_SITES,

@@ -36,6 +36,47 @@ pub fn head_action(delay: i16, playing: bool) -> HeadAction {
     }
 }
 
+/// The promotion counter uses signed wrapping tick arithmetic. Rewinding
+/// the sound clock increases the remaining value by the ticks rewound.
+pub fn decay_counter(counter: i32, elapsed: i32) -> i32 {
+    counter.wrapping_sub(elapsed).max(0)
+}
+
+/// A rule adds its increment before testing its threshold. Each rule passed
+/// on the way to a higher one loses its accumulated credit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromotionCredit(pub i32);
+
+impl PromotionCredit {
+    pub fn accrue(counter: i32, increment: i32) -> Self {
+        Self(counter.wrapping_add(increment))
+    }
+
+    pub fn reached(self, threshold: i32) -> bool {
+        self.0 >= threshold
+    }
+}
+
+/// A higher promotion can interrupt a lower level's cooldown. A lower
+/// promotion that is accepted after the cutoff does not take ownership of
+/// the cooldown until the active rule has expired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    Suppress,
+    Admit,
+    AdmitAndArm,
+}
+
+pub fn admission(rule: i32, active: i32, clock: i32, until: i32) -> Admission {
+    if rule <= active && clock < until {
+        Admission::Suppress
+    } else if rule >= active {
+        Admission::AdmitAndArm
+    } else {
+        Admission::Admit
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,59 +110,15 @@ mod tests {
     }
 }
 
-/// The promotion counter uses signed wrapping tick arithmetic. Rewinding
-/// the sound clock increases the remaining value by the ticks rewound.
-pub fn decay_counter(counter: i32, elapsed: i32) -> i32 {
-    counter.wrapping_sub(elapsed).max(0)
-}
-
-/// A rule adds its increment before testing its threshold. Each rule passed
-/// on the way to a higher one loses its accumulated credit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PromotionRule {
-    pub enabled: i16,
-    pub threshold: i32,
-    pub increment: i32,
-}
-
-impl PromotionRule {
-    pub fn advance(self, counter: i32, has_next: bool) -> (i32, bool) {
-        let credit = counter.wrapping_add(self.increment);
-        if self.enabled > 0 && credit >= self.threshold && has_next {
-            (0, true)
-        } else {
-            (credit, false)
-        }
-    }
-}
-
-/// A higher promotion can interrupt a lower level's cooldown. A lower
-/// promotion that is accepted after the cutoff does not take ownership of
-/// the cooldown until the active rule has expired.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Admission { Suppress, Admit, AdmitAndArm }
-
-pub fn admission(rule: i32, active: i32, clock: i32, until: i32) -> Admission {
-    if rule <= active && clock < until {
-        Admission::Suppress
-    } else if rule >= active {
-        Admission::AdmitAndArm
-    } else {
-        Admission::Admit
-    }
-}
-
 #[cfg(test)]
 mod promotion_tests {
     use super::*;
 
     #[test]
     fn promotion_counts_decays_and_spends_only_passed_rules() {
-        let rule = PromotionRule { threshold: 6, increment: 4, enabled: 1 };
-        assert_eq!(rule.advance(decay_counter(5, 4), true), (5, false));
-        assert_eq!(rule.advance(decay_counter(5, 3), true), (0, true));
-        assert_eq!(rule.advance(decay_counter(5, 3), false), (6, false));
-        assert_eq!(rule.advance(i32::MAX, true), (i32::MIN + 3, false));
+        assert!(!PromotionCredit::accrue(decay_counter(5, 4), 4).reached(6));
+        assert!(PromotionCredit::accrue(decay_counter(5, 3), 4).reached(6));
+        assert_eq!(PromotionCredit::accrue(i32::MAX, 4).0, i32::MIN + 3);
         assert_eq!(decay_counter(i32::MIN, 1), i32::MAX);
         assert_eq!(decay_counter(2, 4), 0);
     }
