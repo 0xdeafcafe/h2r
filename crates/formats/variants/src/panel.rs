@@ -55,6 +55,8 @@ enum Target {
     Setting(SettingId),
     /// One row of the script settings table.
     Row(u16),
+    /// The other weapon of one slot (true: the secondary).
+    Weapon(bool),
     /// One of the script's options (its index in the IR): dragging it is
     /// one step, and a different option is another.
     ScriptOption(u8),
@@ -65,7 +67,7 @@ impl Target {
     fn merges(self) -> bool {
         matches!(
             self,
-            Target::Name | Target::Row(_) | Target::ScriptOption(_)
+            Target::Name | Target::Row(_) | Target::Weapon(_) | Target::ScriptOption(_)
         )
     }
 }
@@ -331,6 +333,23 @@ impl VariantEditor {
         doc.redo.clear();
         doc.last = Some(target);
         Ok(())
+    }
+
+    /// Sets the weapon of ours the block names for the starting weapon
+    /// (`secondary` false) or the secondary weapon: an id of
+    /// [`crate::ext_weapons::TABLE`], or 0 for the record's own weapon.
+    /// The id's table has no settings row, so it is edited here rather
+    /// than through [`Self::set_row`].
+    pub fn set_other_weapon(&mut self, secondary: bool, id: u16) -> Result<(), EditError> {
+        self.edit(Target::Weapon(secondary), |v| {
+            let mut e = v.ext();
+            if secondary {
+                e.secondary = id;
+            } else {
+                e.primary = id;
+            }
+            v.set_ext(&e)
+        })
     }
 
     pub fn set_setting(&mut self, id: SettingId, value: i32) -> Result<(), EditError> {
@@ -866,6 +885,38 @@ mod tests {
         let text = e.export_current().unwrap();
         e.import(&text).unwrap();
         assert_eq!(e.current().unwrap().ext(), want);
+    }
+
+    #[test]
+    fn the_other_weapons_edit_per_slot_and_undo() {
+        use crate::ext_weapons::TABLE;
+        let mut e = VariantEditor::new(schema(), None);
+        e.open_builtin(0);
+        assert!(matches!(
+            e.set_other_weapon(false, TABLE[0].id),
+            Err(EditError::ReadOnly)
+        ));
+        e.new_variant(GameType::Slayer);
+        let start = e.current().unwrap().ext();
+        e.set_other_weapon(false, TABLE[0].id).unwrap();
+        e.set_other_weapon(false, TABLE[1].id).unwrap();
+        e.set_other_weapon(true, TABLE[2].id).unwrap();
+        let now = e.current().unwrap().ext();
+        assert_eq!((now.primary, now.secondary), (TABLE[1].id, TABLE[2].id));
+        assert_eq!(now.script, start.script, "the script reference stays");
+        // A run on one slot is one step; the other slot is another.
+        assert!(e.undo());
+        let was = e.current().unwrap().ext();
+        assert_eq!((was.primary, was.secondary), (TABLE[1].id, 0));
+        assert!(e.undo());
+        assert_eq!(e.current().unwrap().ext(), start);
+        // An id the table lacks is refused and changes nothing.
+        assert!(e.set_other_weapon(true, 999).is_err());
+        assert_eq!(e.current().unwrap().ext(), start);
+        // 0 puts the record's own weapon back.
+        e.set_other_weapon(true, TABLE[0].id).unwrap();
+        e.set_other_weapon(true, 0).unwrap();
+        assert_eq!(e.current().unwrap().ext(), start);
     }
 
     #[test]

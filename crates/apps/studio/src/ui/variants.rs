@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use dear_imgui_rs::{TableColumnFlags, TableColumnWidth, TableFlags, TreeNodeFlags, Ui};
 use variants::ext;
+use variants::ext_weapons;
 use variants::panel::{Origin, OptionKind, OptionView, ScriptView, script_view, strip_icon};
 use variants::record::{self, Kind};
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
@@ -499,7 +500,60 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
         ));
     }
     let teams = team_count_row(ui, v);
+    let weapons = weapon_rows(ui, v);
     out.or_else(|| teams.map(|t| Action::SetVariantRow("team_count".into(), t)))
+        .or(weapons)
+}
+
+/// The weapons of ours the starting and secondary weapon can be, beyond
+/// the record's list (docs/game/game-options.md, "Any weapon as the
+/// starting or secondary weapon"): a choice of each slot, "Not Used" for
+/// the record's own. The action for what the user changed.
+fn weapon_rows(ui: &Ui, v: &GameVariant) -> Option<Action> {
+    let now = v.ext();
+    let mut out = None;
+    for (secondary, label, tip, id, widget) in [
+        (
+            false,
+            "Other starting weapon",
+            "A weapon the map's list lacks, given as the starting weapon in \
+             place of the one set above. The map must carry it, or the one \
+             above is used. Applied by the host (not on System Link).",
+            now.primary,
+            "##ext-primary",
+        ),
+        (
+            true,
+            "Other secondary weapon",
+            "A weapon the map's list lacks, given as the secondary weapon in \
+             place of the one set above. The map must carry it, or the one \
+             above is used. Applied by the host (not on System Link).",
+            now.secondary,
+            "##ext-secondary",
+        ),
+    ] {
+        ui.table_next_row();
+        ui.table_next_column();
+        ui.align_text_to_frame_padding();
+        ui.text(label);
+        ui.set_item_tooltip(tip);
+        ui.table_next_column();
+        ui.set_next_item_width(-1.0);
+        if let Some(_c) = ui.begin_combo(widget, ext_weapons::name(id)) {
+            let steps = std::iter::once(0u16).chain(ext_weapons::TABLE.iter().map(|w| w.id));
+            for step in steps {
+                if ui
+                    .selectable_config(ext_weapons::name(step))
+                    .selected(step == id)
+                    .build()
+                    && step != id
+                {
+                    out = Some(Action::SetVariantWeapon(secondary, step));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Team count (setting 93, `+0xb4`): how many teams the game makes,

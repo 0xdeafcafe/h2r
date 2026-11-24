@@ -375,6 +375,17 @@ fn the_variant_tool_builds_from_the_fallback_and_undoes_through_actions() {
         app.variants.as_ref().unwrap().current().unwrap().ext(),
         before
     );
+    // The other weapons are their own action, then undo.
+    let id = variants::ext_weapons::TABLE[0].id;
+    app.dispatch(Action::SetVariantWeapon(true, id));
+    let after = app.variants.as_ref().unwrap().current().unwrap().ext();
+    assert_eq!((after.primary, after.secondary), (0, id));
+    assert_eq!(after.script, before.script);
+    app.dispatch(Action::Undo);
+    assert_eq!(
+        app.variants.as_ref().unwrap().current().unwrap().ext(),
+        before
+    );
 }
 
 #[test]

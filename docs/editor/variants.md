@@ -269,8 +269,8 @@ file, so it carries no signature.
   blob is not at hand), and `Ir` or `Source` attach a given script. The
   block's extras are the script's `settings` and nothing else:
   `Bundle::new` does not keep the input record's `hx` extras, and
-  `Bundle::check` refuses an extra no settings row stores (movement
-  speed, weapon ids, team size, the superbounce flag). The same inputs
+  `Bundle::check` refuses an extra no settings row stores (weapon
+  ids, team size, the superbounce flag). The same inputs
   give the same id. `portable::port_input` takes a raw record, a
   saved-variant file (record and signature), a hopper record slot
   (`0x37c` bytes, the record at `+0x24c`) or a `.h2variant` of either

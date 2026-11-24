@@ -230,6 +230,20 @@ impl Decision {
         }
     }
 
+    /// The block's own weapon ids (primary, secondary; 0 for the record's)
+    /// when this machine gives them: a machine alone or the host. The
+    /// spawn is the host's, so a guest's units come from its host.
+    pub fn weapons(&self) -> Option<(u16, u16)> {
+        match self {
+            Decision::Apply { ext, who }
+                if *who != GUEST && (ext.primary != 0 || ext.secondary != 0) =>
+            {
+                Some((ext.primary, ext.secondary))
+            }
+            _ => None,
+        }
+    }
+
     /// The line the log prints when the decision changes.
     pub fn line(&self) -> String {
         match self {

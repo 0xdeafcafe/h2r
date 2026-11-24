@@ -374,6 +374,11 @@ pub enum Action {
     /// (`variants::panel::VariantEditor::set_row`): the `hx` extras are
     /// edited as these rows.
     SetVariantRow(String, i32),
+    /// Set the weapon of ours the open variant gives as its starting
+    /// (false) or secondary (true) weapon: an id of
+    /// `variants::ext_weapons::TABLE`, 0 for the record's own
+    /// (`VariantEditor::set_other_weapon`).
+    SetVariantWeapon(bool, u16),
     /// Write the open variant to the save storage.
     SaveVariant,
     /// Back to the variant as last loaded or saved.
@@ -1472,6 +1477,7 @@ impl App {
             | Action::SetVariantName(_)
             | Action::SetSetting(..)
             | Action::SetVariantRow(..)
+            | Action::SetVariantWeapon(..)
             | Action::SaveVariant
             | Action::RevertVariant
             | Action::DeleteVariant
@@ -1767,6 +1773,10 @@ impl App {
                 .map_err(|e| e.to_string()),
             Action::SetVariantRow(name, value) => e
                 .set_row(&name, value)
+                .map(|()| None)
+                .map_err(|e| e.to_string()),
+            Action::SetVariantWeapon(secondary, id) => e
+                .set_other_weapon(secondary, id)
                 .map(|()| None)
                 .map_err(|e| e.to_string()),
             Action::SaveVariant => e.save().map(|()| None).map_err(|e| e.to_string()),

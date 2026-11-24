@@ -1,8 +1,8 @@
 # Game options the game doesn't allow
 
-Status: Partly built. Sections 1 to 3 are built: the record's limits, our added choices, the extension block with its Live transport, the "More Options" page and movement speed. Team size, weapons outside the globals list in the game's editor, and the lobby texts are not built; section 4 (names with any character) is a design.
-Code: `crates/formats/variants` (`ext`, `extra`, `record`, `schema`), `crates/extensions/game/src/variant_options.rs`, `variant_ext.rs`, `variant_page.rs`, `community_variants.rs`. Tests: listed under "Tests".
-Switch: `features.variant-more-options-row`, `features.variant-more-options`, `variant-vitality`, `variant-speed`, `variant-ext-live` (feature ids), listed in [switches.md](../runtime/switches.md).
+Status: Partly built. Sections 1 to 3 are built: the record's limits, our added choices, the extension block with its Live transport, the "More Options" page, movement speed and the weapons outside the globals list. Team size, slots 15, 16 and 20 in the game's own editor rows, and the lobby texts are not built; section 4 (names with any character) is a design.
+Code: `crates/formats/variants` (`ext`, `extra`, `record`, `schema`), `crates/extensions/game/src/variant_options.rs`, `variant_ext.rs`, `variant_page.rs`, `variant_weapons.rs`, `community_variants.rs`. Tests: listed under "Tests".
+Switch: `features.variant-more-options-row`, `features.variant-more-options`, `variant-vitality`, `variant-speed`, `variant-weapons`, `variant-ext-live` (feature ids), listed in [switches.md](../runtime/switches.md).
 
 The goals:
 
@@ -160,7 +160,20 @@ picking a weapon up) is not traced ("Not verified").
   other weapon tags the map has). The byte can't hold it past 0x14. An
   extension field names it, and a hook at `0x19eda0` returns that tag for
   our value; the record keeps a fallback weapon in `+0xd6` so an older build
-  gets something sensible.
+  gets something sensible. `variants::ext_weapons::TABLE` lists the weapons
+  by id and tag path (never a datum, which differs per map); `variant_weapons`
+  tells the primary from the secondary by the call's return address
+  (`0x19f056`, `0x19f063` primary; `0x19f042`, `0x19f07b` secondary; the
+  routine's own retry at `0x19ee18` is left alone), reads the loaded map's
+  file for the `weap` tag of the path (through the VFS, once per map and
+  scenario, as our skulls' tag is read) and returns it in EAX. A map
+  without the tag, an id the build lacks, or a game that is not this
+  machine's to start (a Live guest, System Link) keeps the record's
+  weapon; a Superbounce game with the stick on keeps the stick as its
+  secondary. A block holding an id the table lacks is ignored whole, as
+  any out-of-range value is. A rules script's `set_loadout` and a bundle
+  that carries a script never name these ids: the bundle check refuses a
+  weapon id beside a script (`PortableError::Extras`).
 
 ### Fast respawn
 
@@ -268,7 +281,7 @@ The table lists each option, whether the record can store it, and how it is offe
 | Gravity | needs the extension | scale `[0x51e9c4]` at game start, as Low Gravity |
 | Bounce Practice magnum, Bumper Cars | offered; Bumper Cars needs our "None" | built-ins |
 | Any weapon, from the globals list | storable (15, 16, 20) | name them from the disc; Studio offers them, the game's editor does not yet |
-| Any weapon, outside that list | needs the extension (not built) | extension names the tag; hook `0x19eda0`; record keeps a fallback |
+| Any weapon, outside that list | needs the extension (built) | the block names a weapon of ours (`variants::ext_weapons`) and a hook on `0x19eda0` answers its tag; the record keeps a fallback |
 | Score above 250 | storable to 0x7fff | offer more steps |
 | Time above 1 h | storable to 0x7fff s (9 h 6 min) | offer more steps |
 | Lives above 99 | storable to 0x7fff | offer more steps |
@@ -431,8 +444,9 @@ guests"):
   with the list hooks the pregame dialog's "Halo 1 Options" row uses
   ([multiplayer.md](../halo1/multiplayer.md) "Halo 1 options",
   [ui-screens.md](ui-screens.md)). A opens the shared value picker for
-  gravity, the team count and the damage, shield, health and speed scales.
-  Unlimited Grenades is a toggle. The page reads and writes the record
+  gravity, the team count, the damage, shield, health and speed scales and
+  the two other-weapon rows (a picker of "Not Used" and the table's
+  weapons). Unlimited Grenades is a toggle. The page reads and writes the record
   being edited (`boot::variant_page` under "The variant editor's page list").
 - **Studio** (`crates/apps/studio/src/ui/variants.rs`): a "More options
   (h2recomp)" section under the pages edits the block through
@@ -440,7 +454,9 @@ guests"):
   each extra is the settings-table row a script's `settings` block names
   ([rules-variants.md](rules-variants.md#the-settings-block)), and the
   record names its script (mode 2). It shows only what the game applies (gravity, damage, shield, health and
-  speed, unlimited grenades, team count); a block the
+  speed, unlimited grenades, team count) and the other starting and
+  secondary weapon (two choices, `VariantEditor::set_other_weapon`,
+  `Action::SetVariantWeapon`; the table has no row for them); a block the
   game would ignore shows a warning and an `Issue::Ext`. `issues()` also
   has our own rule (respawn 0 with cycling).
 - **Unlimited grenades**: flag bit 1. After each tick a
@@ -601,7 +617,8 @@ and nothing to change.
 ### The code
 
 - `variants::ext`: `Ext` (gravity, damage, shield, health and speed
-  percents, unlimited grenades, two weapon ids, team size), `encode`
+  percents, unlimited grenades, two weapon ids of `variants::ext_weapons`,
+  team size), `encode`
   (all zero for the default) and `decode` (`Block::None`, `Ext` or
   `Ignored(Why)`: magic, version, CRC, range), `in_effect`, `summary`,
   `crc32`. `GameVariant::ext_block`, `ext_state`, `ext` and `set_ext`
@@ -645,12 +662,11 @@ and nothing to change.
   through the slot (`0x15b28e`, `0x2404ad`, `0x2bc967`) ask trait 1, active
   camo; the reader of traits 2 and 3 is not found, so the scales hook the
   damage steps instead (`0xd9110`, `0xd8cb0`).
-- **Weapons outside the globals list.** The extension's `+0x11a`/`+0x11c`
-  ids need our table of tag paths, checked against each map's tags, and a
-  hook on `0x19eda0` (stdcall: default tag, value byte, other weapon's tag;
-  `ret 0xc`). Primary or secondary is told by the return address
-  (`0x19f056`/`0x19f063` primary, `0x19f042`/`0x19f07b` secondary;
-  `0x19ee18` is its own random retry).
+- **Our weapons in the game's own editor** and **slots 15, 16 and 20 in
+  its rows**: the editor's lists take our labels from fixed strings
+  (`boot::variant_options`), and these need names from the disc. The
+  paths in `variants::ext_weapons::TABLE` are retail's naming and have not
+  been checked against each map's tags (see "Not verified").
 - **Team size**: lobby enforcement is not traced. What is: each console
   builds its own player's requested configuration with the team at `+0x7c`
   from its profile (`0x18fd94`), and `0x14be90` (player index on the
@@ -862,6 +878,16 @@ Our added choices:
 
 The extension block:
 
+- `ext_weapons::{ids_are_unique_nonzero_and_paths_canonical,
+  a_picker_step_and_an_id_round_trip,
+  paths_are_found_in_either_slash_and_case, names_say_what_an_id_is}`,
+  `ext::a_weapon_id_the_table_lacks_ignores_the_block`,
+  `panel::the_other_weapons_edit_per_slot_and_undo`,
+  `variant_weapons::{the_calls_slot_is_told_by_its_return_address,
+  only_weap_tags_are_kept_and_paths_match_in_any_slash_and_case,
+  a_slot_is_answered_with_its_own_weapon,
+  nothing_asked_nothing_known_or_no_tag_leaves_the_routine}`,
+  `variant_page::tests::the_weapon_rows_pick_from_the_table_and_write_the_block`;
 - `ext::crc_matches_zlib`, `the_default_is_all_zero_and_reads_as_none`,
   `a_block_round_trips`, `a_damaged_block_is_ignored` (every byte flipped
   in turn), `out_of_range_values_are_ignored_even_with_a_good_crc`,
@@ -933,6 +959,10 @@ Only a game run shows these.
   team switch offers, and whether guests see three teams.
 - Weapons 15, 16 and 20: picking each in Studio, saving and playing spawns
   with it.
+- Our weapons: each path of `ext_weapons::TABLE` exists as a `weap` tag on
+  the multiplayer maps that should have it (a map without one says so in the
+  log and spawns the record's weapon); a Live host's guests see the unit
+  with the weapon.
 - The unoffered vehicle values and setting 80.
 - Which font slot draws names in each place (the design assumes `conduit`
   and `handel_gothic`).
