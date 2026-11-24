@@ -808,6 +808,11 @@ fn kind_words(kind: ErrorKind) -> String {
             "more than {} barriers are open at once; set_open(b, false) closes one",
             vm::MAX_GATES
         ),
+        ErrorKind::Picks => format!(
+            "a picker is numbered past {}, a pick_row names a picker not offered, or a picker has more than {} rows",
+            vm::MAX_PICKS - 1,
+            vm::MAX_PICK_ROWS
+        ),
     }
 }
 

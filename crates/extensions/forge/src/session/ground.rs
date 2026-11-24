@@ -159,8 +159,8 @@ impl Session {
 
     /// How many of each ground label are placed, in [`GroundLabel::ALL`]
     /// order: the palette page's counts.
-    pub fn ground_counts(&self) -> [usize; 6] {
-        let mut counts = [0; 6];
+    pub fn ground_counts(&self) -> [usize; GroundLabel::ALL.len()] {
+        let mut counts = [0; GroundLabel::ALL.len()];
         for mark in self.ground_marks().unwrap_or_default() {
             if let Some(i) = GroundLabel::ALL.iter().position(|l| *l == mark.kind) {
                 counts[i] += 1;
@@ -264,6 +264,12 @@ impl Session {
         team: u8,
         phase: Option<i32>,
     ) -> Result<OpId, String> {
+        if !label.on_flag() {
+            return Err(format!(
+                "{} labels an object: aim at one and pick it again.",
+                label.title()
+            ));
+        }
         if team >= 2 {
             return Err("A marker's team is 0 (red) or 1 (blue).".into());
         }
@@ -323,6 +329,28 @@ impl Session {
         };
         let phase = label.has_phase().then(|| (placed / 2) as i32);
         self.place_marker(world, tick, label, frame, team, phase)
+    }
+
+    /// Label the placed object `id` a siege barrier that opens in `phase`
+    /// (the label's number), or renumber one, in one undo step. A barrier is
+    /// a mark on scenery, a crate, a machine or a vehicle, not a flag: the
+    /// ground build does not read it, and the script finds it by its label.
+    pub fn label_barrier(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        phase: i32,
+    ) -> Result<(), String> {
+        let thing = self.thing(id).ok_or("Aim at an object of the map.")?;
+        if !forge_doc::SOLID_BLOCKS.contains(&thing.block) {
+            return Err(format!(
+                "{} labels an object: scenery, a crate, a machine or a vehicle.",
+                GroundLabel::Barrier.title()
+            ));
+        }
+        let label = Label::new(GroundLabel::Barrier.text(), Some(phase)).map_err(reason)?;
+        self.set_label(world, tick, id, Some(label))
     }
 
     /// The ground markers the document adds, with their labels.

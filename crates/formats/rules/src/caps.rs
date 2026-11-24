@@ -54,6 +54,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("player.weapons", "gives and takes weapons", false),
     cap("player.disguise", "hides or changes a player's body", false),
     cap("player.camera", "changes the camera", false),
+    cap("player.pick", "asks each player to pick from a short list before the round", false),
     cap("objects.create", "makes objects", false),
     cap("objects.delete", "removes objects", false),
     cap("objects.move", "moves objects", false),
@@ -349,6 +350,9 @@ pub mod id {
     pub const SET_OPEN: u16 = 121;
     pub const MARK_PLAYER: u16 = 122;
     pub const MARK_TEAM: u16 = 123;
+    pub const OFFER_PICK: u16 = 124;
+    pub const PICK_ROW: u16 = 125;
+    pub const PICKED: u16 = 126;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -658,6 +662,15 @@ pub const ENTRIES: &[Entry] = &[
     // viewer; `mark(wp, at, all)` is spelled the same and is `mark`.
     act(id::MARK_PLAYER, "mark_player", &[Int, Object, Player], Some("hud.waypoints"), Now, Named),
     act(id::MARK_TEAM, "mark_team", &[Int, Object, Team], Some("hud.waypoints"), Now, Named),
+    // `offer_pick(n, title)`, `pick_row(n, label)`: a picker the host opens
+    // for each player at the round's start, and a row of it. The VM keeps
+    // the offers (`vm::RulesExt::picks`, at most `vm::MAX_PICKS` of at most
+    // `vm::MAX_PICK_ROWS` rows) and each player's pick (`vm::Vm::choose`,
+    // reported by the host); `picked(p, n)` reads the row, or -1. The host
+    // adds no call of its own: it reads the offers after the tick.
+    act(id::OFFER_PICK, "offer_pick", &[Int, Text], Some("player.pick"), Now, Named),
+    act(id::PICK_ROW, "pick_row", &[Int, Text], Some("player.pick"), Now, Named),
+    vm(id::PICKED, "picked", &[Player, Int], Int),
 ];
 
 /// The word `message(to, text)` takes for everyone.

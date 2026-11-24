@@ -169,7 +169,7 @@ fn a_marker_is_a_labelled_flag_and_places_nothing_in_the_world() {
     assert_eq!((markers[1].number, markers[1].team), (Some(2), 1));
 
     // The palette's counts, in label order.
-    assert_eq!(session.ground_counts(), [1, 0, 0, 0, 0, 1]);
+    assert_eq!(session.ground_counts(), [1, 0, 0, 0, 0, 1, 0]);
     // The document says what the build reads: flags 3 and 4 after the
     // map's three.
     let marks = session.ground_marks().unwrap();
@@ -196,7 +196,7 @@ fn a_marker_moves_turns_and_is_removed_with_its_label() {
     assert_eq!(session.markers().unwrap()[0].frame, at(5., 0.));
     session.remove_marker(&mut world, 5, id).unwrap();
     assert!(session.markers().unwrap().is_empty());
-    assert_eq!(session.ground_counts(), [0; 6]);
+    assert_eq!(session.ground_counts(), [0; 7]);
     assert_eq!(world.calls, 0);
 }
 

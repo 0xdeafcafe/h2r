@@ -292,6 +292,9 @@ game answers it from its `enter` and `leave` events.
 | `teleport` | object, vec, or object, or object and vec offset | `objects.move` | queued | named (a position outside the world is a refused call, recorded, that moves nothing) |
 | `move_to` | object, vec or object, time | `objects.move` | now | named (a mover in the VM's state, at most 16, one a second for an object, stepped each tick, `on arrive(o)` on its end tick; a time of 0 is one tick) |
 | `stop` | object | `objects.move` | now | named (ends the object's mover with no `on arrive`) |
+| `set_open` | object, bool | `objects.move` | now | named (a barrier put 64 units below its place and back; a put the world refuses closes it again in the state) |
+| `offer_pick`, `pick_row` | int picker (0 or 1), text | `player.pick` | now | named (a picker of at most 6 rows the host opens for each local player at the round's start; the round's end takes it) |
+| `picked` | player, int picker | none | VM, int | named (the row the player picked, or -1: none made, none offered, or a player on another machine) |
 | `airborne`, `crouching`, `primed` | player | none | read, bool | not built on a host (`p.airborne`, `p.crouching`, `p.primed`: the biped is off the ground, crouched, or its level pair is in the state a landing bounces from; the fake answers from the scenario's `body`) |
 | `sees` | object, object | none | VM, bool | not built on a host (`sees(a, b)`: nothing solid between two objects. A read of the VM's sight table: a pair asked in one tick is traced at that tick's end through `Game::trace_sight` and answers from the next, false until then; a pair not asked in 30 ticks is dropped; a 33rd pair is a script error) |
 

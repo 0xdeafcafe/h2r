@@ -131,7 +131,7 @@ own powers.
 
 The fixed list (`h2 rules caps`): `game.traits`, `player.traits`,
 `player.team`, `player.spawn`, `player.weapons`, `player.disguise`,
-`player.camera`, `objects.create`, `objects.delete`, `objects.move`,
+`player.camera`, `player.pick`, `objects.create`, `objects.delete`, `objects.move`,
 `ai.squads`, `vehicles.drive`, `hud.message`, `firefight.director`, and the four
 **grantable** `forge.move`, `forge.delete`, `forge.place`, `forge.scale`.
 

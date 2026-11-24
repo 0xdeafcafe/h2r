@@ -375,6 +375,12 @@ pub enum Command {
     },
     Undo,
     Redo,
+    /// Label the object as a siege barrier of the phase it opens in
+    /// ([`crate::Session::label_barrier`]).
+    Barrier {
+        id: Endpoint,
+        phase: i32,
+    },
     /// Place the next ground marker of this label at a frame
     /// ([`crate::Session::place_marker_next`]).
     Marker {

@@ -24,13 +24,17 @@
 // first takes the site as it would have.
 // The map opens with the phases: each `siege_barrier` object, numbered by
 // the phase it opens in, stands open from that phase on (`set_open`).
+// Each player picks a loadout set before the round (`offer_pick`): the
+// host opens a picker of three rows at the round's start, and the pick
+// (`picked`) is the set from that player's next spawn; a player who does
+// not pick gets the set the lobby chose.
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, hud.message, hud.widgets, hud.waypoints, objects.move
+requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, objects.move
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -71,7 +75,9 @@ option sites: int 1..4 = 2 "Sites" "How many territories the attackers take befo
 option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait to come back together"
 option overtime_time: time 5s..60s = 30s "Overtime" "The most a phase runs on past its clock while an attacker is on its objective"
 
-// What each side spawns with: the lobby picks one set for the game.
+// What each side spawns with: the lobby picks one set for the game, and a
+// player's own pick before the round (the picker's rows are in this order)
+// takes its place.
 enum Kits { standard, close, ranged }
 
 option kits: Kits = Kits.standard "Loadouts" "The weapons each side spawns with: the standard set, close quarters or long range"
@@ -253,6 +259,10 @@ fn release(side: team) {
 
 on round_start {
     over = false
+    offer_pick(0, "LOADOUT")
+    pick_row(0, "STANDARD")
+    pick_row(0, "CLOSE QUARTERS")
+    pick_row(0, "LONG RANGE")
     pushers = 0
     banner_left = 0
     hud_show(banner_row, false)
@@ -383,10 +393,12 @@ on timer(wave1) {
 }
 
 on spawn(p) {
-    if kits == Kits.close {
+    // The player's row of the picker, or -1 when none was made.
+    let own = picked(p, 0)
+    if own == 1 or (own < 0 and kits == Kits.close) {
         let kit = close_loadouts[p.team]
         set_loadout(p, kit.primary, kit.secondary)
-    } else if kits == Kits.ranged {
+    } else if own == 2 or (own < 0 and kits == Kits.ranged) {
         let kit = ranged_loadouts[p.team]
         set_loadout(p, kit.primary, kit.secondary)
     } else {

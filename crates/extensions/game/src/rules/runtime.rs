@@ -215,6 +215,11 @@ pub const ACTIONS: &[u16] = &[
     // The VM keeps the open barriers and steps each to its place
     // ([`step_object`](Game::step_object)), so no call is made of its own.
     id::SET_OPEN,
+    // Kept in the VM's state (`RulesExt::picks`); the boundary opens the
+    // picker for each local player from it (`super::world::pick`), so no
+    // call is made of the entry's own.
+    id::OFFER_PICK,
+    id::PICK_ROW,
 ];
 
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
@@ -454,6 +459,9 @@ pub enum Call {
     /// `teleport`, or a mover's step: the object put at a place
     /// (`super::world::objects`).
     Put(super::world::objects::Place),
+    /// `offer_pick`: the value picker opened for one local player with the
+    /// offer's rows (`super::world::pick`).
+    OfferPick(super::world::pick::Ask),
 }
 
 impl Call {
@@ -479,6 +487,7 @@ impl Call {
             Call::SoundTo { .. } | Call::Play { .. } => "sound",
             Call::SetLoadout { .. } => "set_loadout",
             Call::Put(_) => "put_object",
+            Call::OfferPick(_) => "offer_pick",
         }
     }
 }
@@ -891,6 +900,9 @@ impl Game for GuestGame<'_> {
             | id::MARK | id::MARK_PLAYER | id::MARK_TEAM | id::UNMARK => None,
             // The VM keeps the mover; each tick's step is `step_object`.
             id::MOVE_TO | id::STOP | id::SET_OPEN => None,
+            // The VM keeps the offers; the boundary asks the players
+            // (`super::world::pick::plan`).
+            id::OFFER_PICK | id::PICK_ROW => None,
             id::TELEPORT => super::world::objects::plan(call).map(Call::Put),
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {
@@ -1606,6 +1618,12 @@ impl Runtime {
             return None;
         }
         r.vm.begin_tick(tick);
+        // The picks the local players made since the last boundary
+        // (`super::world::pick`); one for a picker the script no longer
+        // offers is refused by the VM and dropped.
+        for pick in super::world::pick::take() {
+            r.vm.choose(pick.player, pick.slot, pick.row);
+        }
         {
             let Running {
                 vm,
@@ -1656,6 +1674,14 @@ impl Runtime {
         let ask_authority = r.authority.is_none();
         let mut calls = rest;
         calls.extend(plays);
+        // The next local player to ask for a pick, on the authority and
+        // never in a film, which replays the picks it recorded.
+        if r.authority == Some(true)
+            && !self.film
+            && let Some(ask) = super::world::pick::plan(&r.vm, &super::world::pick::seats(m), tick)
+        {
+            calls.push(Call::OfferPick(ask));
+        }
         if let Some(ty) = r.start_line
             && super::start_line::players_ready(m)
         {
@@ -1933,9 +1959,15 @@ impl Runtime {
 
     /// The async body's outcome: what the authority check answered, and
     /// the calls the engine refused (entry name, error).
-    pub fn finish(&mut self, tick: u32, authority: Option<bool>, refused: Vec<(String, String)>) {
-        for (call, error) in refused {
-            self.error(tick, &call, error);
+    pub fn finish(&mut self, tick: u32, authority: Option<bool>, refused: Vec<Refused>) {
+        for r in refused {
+            self.error(tick, &r.call, &r.error);
+            // A put the world refused did not move the barrier the VM
+            // thinks it opened: the VM closes it in its state again
+            // (`Vm::put_refused`), saved with the next tick's state.
+            if let (Some(place), Status::Running(run)) = (r.put, &mut self.status) {
+                run.vm.put_refused(place.object, place.at);
+            }
         }
         // A machine that is not the authority ends no blocked game: its host
         // decides.
@@ -2184,16 +2216,29 @@ fn tell(vm: &mut Vm, g: &mut GuestGame<'_>, seen: &mut Seen) {
     }
 }
 
+/// A call the engine refused: the entry's name and the reason, and for a put
+/// the place it was refused at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refused {
+    pub call: String,
+    pub error: String,
+    pub put: Option<super::world::objects::Place>,
+}
+
 /// Before the tick: the authority check when asked, then each call in
 /// order. Returns the answer and the calls the engine refused.
-pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, String)>) {
+pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
     let mut refused = Vec::new();
     let mut authority = None;
     if work.ask_authority {
         match guest::authoritative(cx).await {
             Ok(a) => authority = Some(a),
             Err(e) => {
-                refused.push(("authority".to_string(), e.to_string()));
+                refused.push(Refused {
+                    call: "authority".to_string(),
+                    error: e.to_string(),
+                    put: None,
+                });
                 authority = Some(false);
             }
         }
@@ -2229,9 +2274,20 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<(String, Str
                 ref secondary,
             } => super::world::loadout::give(cx, player, primary.as_deref(), secondary.as_deref()).await,
             Call::Put(place) => super::world::objects::put(cx, place).await,
+            Call::OfferPick(ref ask) => super::world::pick::open(cx, ask).await,
         };
         if let Err(e) = result {
-            refused.push((call.name().to_string(), e.to_string()));
+            // The VM is told a refused put, so a barrier it holds open at a
+            // place the world would not take is closed in its state again.
+            let put = match call {
+                Call::Put(place) => Some(*place),
+                _ => None,
+            };
+            refused.push(Refused {
+                call: call.name().to_string(),
+                error: e.to_string(),
+                put,
+            });
         }
     }
     (authority, refused)

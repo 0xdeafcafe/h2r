@@ -552,3 +552,48 @@ fn the_rounds_end_closes_every_open_barrier() {
     assert_eq!(g.object_positions[&PLATFORM], at(0, 5, 2), "back where it closed");
     assert_eq!(g.object_positions[&(PLATFORM + 1)], at(1, 5, 2));
 }
+
+/// The put that opens a barrier is refused by the world (a place outside
+/// it): the host tells the VM at its boundary, and the barrier is closed in
+/// the VM's state too, where it stands. The next `set_open` tries again.
+#[test]
+fn a_refused_open_leaves_the_vm_with_the_barrier_closed() {
+    let (mut vm, mut g) = gates(1);
+    // The closed place is inside, the open one (64 units down) is not.
+    g.world_limit = Some(fixed::from_int(50));
+    let home = at(0, 5, 2);
+    rules::scenario::step(&mut vm, &mut g, 0, true, &[]);
+    assert_eq!(g.refused_steps.len(), 1, "the world refused the put");
+    assert_eq!(g.refused[0].0, "put_object");
+    assert_eq!(g.object_positions[&PLATFORM], home, "nothing moved");
+    assert_eq!(vm.gates().len(), 1, "the VM does not know yet");
+    // The next boundary tells it.
+    rules::scenario::step(&mut vm, &mut g, 1, false, &[]);
+    assert!(vm.gates().is_empty());
+    assert!(g.refused_steps.is_empty());
+    assert_eq!(g.script_error, None, "a refused put is no script error");
+    // Once the world takes it, asking again opens the barrier.
+    g.world_limit = None;
+    vm.begin_tick(2);
+    vm.fire(&mut g, Input::RoundStart);
+    assert_eq!(vm.gates().len(), 1);
+    assert_eq!(g.object_positions[&PLATFORM], [home[0], home[1], home[2] - GATE_DROP]);
+}
+
+/// A refused put that is not the opening of a barrier changes nothing in
+/// the VM: not another object's, not another place of the barrier's.
+#[test]
+fn put_refused_closes_only_the_barrier_whose_open_put_it_was() {
+    let (mut vm, mut g) = gates(2);
+    vm.begin_tick(0);
+    vm.fire(&mut g, Input::RoundStart);
+    assert_eq!(vm.gates().len(), 2);
+    let world = |v: i32| (f64::from(v) / 65536.0) as f32;
+    let open = vm.gates()[0].open_at().map(world);
+    assert!(!vm.put_refused(PLATFORM + 5, open), "another object");
+    assert!(!vm.put_refused(PLATFORM, vm.gates()[0].home.map(world)), "its closed place");
+    assert_eq!(vm.gates().len(), 2);
+    assert!(vm.put_refused(PLATFORM, open));
+    assert_eq!(vm.gates().iter().map(|g| g.object).collect::<Vec<_>>(), [PLATFORM + 1]);
+    assert!(!vm.put_refused(PLATFORM, open), "already closed");
+}

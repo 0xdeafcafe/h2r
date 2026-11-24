@@ -1585,6 +1585,13 @@ impl Editor {
             Choice::Marker(forge::GroundLabel::Site) => {
                 return self.choose(tick, Choice::Goal(forge::Goal::Site));
             }
+            // A barrier labels the object the monitor aims at (or holds),
+            // opening in the first phase: Properties' label number changes
+            // the phase.
+            Choice::Marker(forge::GroundLabel::Barrier) => {
+                let id = self.property_target()?;
+                return self.command(tick, Command::Barrier { id, phase: 1 });
+            }
             Choice::Marker(label) => {
                 let frame = self.marker_frame()?;
                 return self.command(tick, Command::Marker { label, frame });
@@ -2097,6 +2104,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Ungroup { group } => s.ungroup(w, tick, group),
         LockGroup { group, locked } => s.set_group_locked(w, tick, group, locked),
         SetLabel { id, label } => s.set_label(w, tick, id, label),
+        Barrier { id, phase } => s.label_barrier(w, tick, id, phase),
         PlacePrefab { prefab, frame } => s.place_prefab(w, tick, &prefab, frame).map(|_| ()),
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),

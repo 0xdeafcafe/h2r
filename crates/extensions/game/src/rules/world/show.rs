@@ -373,6 +373,14 @@ pub(super) fn local_slots(m: &dyn GuestMemory) -> Vec<u8> {
         .collect()
 }
 
+/// This machine's local players: roster slot and controller port.
+pub(super) fn local_seats(m: &dyn GuestMemory) -> Vec<(u8, u32)> {
+    roster(m)
+        .into_iter()
+        .filter_map(|p| p.user.map(|u| (p.slot, u)))
+        .collect()
+}
+
 /// The name a player hole shows: the roster slot's name, or `player N`
 /// when the slot is not seated.
 fn named(roster: &[Roster]) -> impl Fn(u8) -> String + '_ {
