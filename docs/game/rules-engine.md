@@ -1221,7 +1221,16 @@ phase (its number is the phase, its team the side;
 `label placed_line: zones at most 16 = "siege_line"`) replaces the
 phase's line for that side. A line the map lacks (no flag stand) leaves
 that side the engine's own spawns. The attackers spawn as Spartans and the defenders
-as Elites (`set_body`), whatever each player chose. It opens no barriers (`delete` and `create` are not
+as Elites (`set_body`), whatever each player chose. The HUD is the King of
+the Hill kit's ("The HUDs a script feeds" in
+[rules-world-api.md](rules-world-api.md#the-huds-a-script-feeds)): the
+mark and the row (`koth.hill`) follow the front, the site the attackers
+are on (a site someone stands on stays the front, contested or not), else
+the first site still to take, then the final stand; the row reads open,
+held by a side or contested; the banner (`koth.banner`) says a site
+taken, the final assault, and the last 30 and 10 seconds of a phase. The
+phase clock has no row of its own in the kit, so its seconds are not
+shown. It opens no barriers (`delete` and `create` are not
 hostable, "The engine API"), and it has no core to carry.
 
 ### A Forge graph is the same IR
@@ -2288,6 +2297,7 @@ The phased mode is the check that the API is wide enough:
 | loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits | named; the built-in Siege; picker screen not built |
 | team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
 | two species teams | `set_body` per team at the round's start | named; the built-in Siege |
+| the objective and its state on the HUD | the Hill kit's mark, row and banner (`hud_style`, `mark`, `hud_text`) | named; the built-in Siege; the phase clock's own row not built |
 
 ## Forge labels
 

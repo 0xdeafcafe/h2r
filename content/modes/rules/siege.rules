@@ -13,6 +13,10 @@
 // defenders at a site still to take, then at their flag stand. The
 // attackers spawn as Spartans and the defenders as Elites (`set_body`).
 // The winners score a point each, so the post-game's scores name them.
+// The HUD is the King of the Hill kit's: a mark over the site the attackers
+// are on (else the first still to take, then the final stand), its state
+// (open, held by a side, contested), and a banner for a site taken, the
+// final assault and the last 30 and 10 seconds of a phase.
 // docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
@@ -20,7 +24,7 @@
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, hud.message
+requires player.weapons, player.spawn, player.disguise, hud.message, hud.widgets, hud.waypoints
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -57,6 +61,12 @@ option capture_time: time 5s..60s = 15s "Capture time" "How long the attackers h
 option sites: int 1..4 = 2 "Sites" "How many territories the attackers take before the final assault"
 option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait to come back together"
 
+// The HUD (docs/game/game-types-without-carriers.md, "The display"): the
+// front's state, a banner, and a mark over the front.
+hud front_row: text at koth.hill
+hud banner_row: banner at koth.banner
+waypoint front_mark at koth.mark
+
 // How many starting locations a side's spawns keep near its line.
 const line = 4
 
@@ -85,10 +95,80 @@ object var lit: bool = false
 global var lights: int = 0
 // The site taken this tick, if any, whose line the spawns move to.
 global var front: zone? = none
+// The zone the HUD follows (and its id), the banner's ticks left, and the last whole
+// second of the clock a warning was weighed at.
+global var focus: zone? = none
+global var focus_id: int = -1
+global var stays: bool = false
+global var banner_left: int = 0
+global var seen: int = -1
 
 fn begin(n: int) {
     phase = n
     clock = phase_time
+    seen = -1
+}
+
+// Who of either side stands in a zone.
+fn occupied(z: object) -> int = count(players p where p.alive and inside(p, z))
+
+// The HUD each tick: the mark and the state row follow the site the
+// attackers are on, else the first site still to take, then the final
+// stand; the banner shows for two ticks and the kit times it from there;
+// the last 30 and 10 seconds of a phase are said once each.
+fn show_front() {
+    if banner_left > 0 {
+        banner_left = banner_left - 1
+        if banner_left == 0 { hud_show(banner_row, false) }
+    }
+    let left = whole_seconds(clock)
+    if left != seen {
+        seen = left
+        if left == 30 {
+            hud_text(banner_row, "30 SECONDS")
+            hud_show(banner_row, true)
+            banner_left = 2
+        } else if left == 10 {
+            hud_text(banner_row, "10 SECONDS")
+            hud_show(banner_row, true)
+            banner_left = 2
+        }
+    }
+    // A site someone is on stays the front, contested or not.
+    stays = false
+    if phase < needed {
+        for each site s where not s.taken and s.id == focus_id {
+            if occupied(s) > 0 { stays = true }
+        }
+        if not stays {
+            focus = first(site s where not s.taken and ticks_held(s, team 0) > 0t)
+            if focus == none { focus = first(site s where not s.taken) }
+        }
+    } else {
+        focus = last_stand
+    }
+    focus_id = -1
+    if let z = focus {
+        focus_id = z.id
+        mark(front_mark, z)
+        let here = count(players p where p.alive and p.team == team 0 and inside(p, z))
+        let rival = count(players q where q.alive and q.team == team 1 and inside(q, z))
+        if here > 0 and rival > 0 {
+            hud_style(front_row, 2)
+        } else if here > 0 {
+            hud_style(front_row, 1)
+            hud_value(front_row, 0)
+        } else if rival > 0 {
+            hud_style(front_row, 1)
+            hud_value(front_row, 1)
+        } else {
+            hud_style(front_row, 0)
+        }
+        hud_show(front_row, true)
+    } else {
+        unmark(front_mark)
+        hud_show(front_row, false)
+    }
 }
 
 // The round's end: the winners score a point each.
@@ -130,6 +210,8 @@ fn release(side: team) {
 
 on round_start {
     over = false
+    banner_left = 0
+    hud_show(banner_row, false)
     // Spartans attack, Elites defend.
     set_body(team 0, "objects/characters/masterchief/masterchief_mp")
     set_body(team 1, "objects/characters/elite/elite_mp")
@@ -191,8 +273,14 @@ on tick {
             fall_back()
             if phase < needed {
                 message(all, "The attackers took a site")
+                hud_text(banner_row, "SITE TAKEN")
+                hud_show(banner_row, true)
+                banner_left = 2
             } else if assault {
                 message(all, "Final assault: the defenders' flag")
+                hud_text(banner_row, "FINAL ASSAULT")
+                hud_show(banner_row, true)
+                banner_left = 2
             } else {
                 message(all, "The attackers took every site")
                 win(team 0)
@@ -204,6 +292,7 @@ on tick {
             win(team 0)
         }
     }
+    if not over { show_front() }
 }
 
 on timer(clock) {
