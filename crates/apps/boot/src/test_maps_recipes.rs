@@ -182,9 +182,38 @@ mod tests {
         }
     }
 
+    /// An invented map in the retail layout (`map::build::TagSet`), which
+    /// the package path needs to decompose it: the fixture's own layout is
+    /// not retail, so `scenario_edit::fixture` cannot stand in. The scenario
+    /// has two starting locations and nothing else.
+    fn retail_base() -> Vec<u8> {
+        use map::build::{Block, TagPayload, TagSet};
+        use map::{CacheType, FourCC};
+        use tags::defs::{Defs, Val, default_record, to_built};
+
+        let scnr = FourCC(*b"scnr");
+        let name = "levels\\test\\fixture\\fixture";
+        let def = Defs::builtin().group(scnr).expect("scnr is defined");
+        let mut rec = default_record(def);
+        let Some(Val::Block(starts)) = rec.at_mut("starting_locations") else {
+            panic!("starting_locations is a block");
+        };
+        let child = def.child("starting_locations").expect("a block");
+        *starts = (0..2).map(|_| default_record(child)).collect();
+        let mut set = TagSet::new(CacheType::Multiplayer, "fixture", name);
+        for g in [*b"matg", *b"scnr"] {
+            set.add_group(FourCC(g), None, None);
+        }
+        set.add_tag(FourCC(*b"matg"), "globals\\globals", TagPayload::Built(Block::zeroed(0x40)))
+            .unwrap();
+        let block = to_built(def, &rec, &mut |_| None).unwrap();
+        set.add_tag(scnr, name, TagPayload::Built(block)).unwrap();
+        set.build().expect("the invented map builds").0
+    }
+
     #[test]
     fn a_placement_recipe_is_a_package_and_the_probe_is_not() {
-        let base = scenario_edit::fixture::fixture();
+        let base = retail_base();
         let r = Recipe::from_toml(
             "name = \"two\"\ntitle = \"Two\"\npurpose = \"p\"\nbase = \"fixture\"\n\
              fidelity = \"full\"\nanchor = { at = [0.0, 0.0, 0.0] }\n\
