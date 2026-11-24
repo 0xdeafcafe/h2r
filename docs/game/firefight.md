@@ -882,7 +882,7 @@ The HUD is the HUD kit's `firefight` HUD
 | `ff.banner` (`Banner`) | GET READY, WAVE n, BOSS WAVE, FINISH THEM, WAVE COMPLETE, ROUND COMPLETE, VICTORY, GAME OVER, and the two-team ends; none while the wave is fought. The game shows it for three seconds from when it changes |
 | `ff.lives.pill`, `.end`, `.count` | the viewer's lives while the match is on, in a pill cut from the frag pill at the grenade row's next place, the count in the LCD font (99 at most); the time warning's flash at 1 and 0 |
 | `ff.enemies.pill`, `.end`, `.count` | the enemies left while a wave is on, in the same pill 30 pixels on |
-| `ff.note` (`Message`) | "Round 2 of 3" when a round starts, "Mythic skull on" for each skull switched on (the skull menu's name, `hud::skull_name`; the skulls on at the start send none), "A life lost" or "n lives lost" (`huds::firefight::notes`) |
+| `ff.note` (`Message`) | "Round 2 of 3" when a round starts, "Mythic skull on" for each skull switched on (the skull menu's name, `hud::skull_name`; the skulls on at the start send none), "A life lost" or "n lives lost", "Bonus life" or "n bonus lives" when the viewer's count rises (the round's bonus), and at the end "Cleared 2/3" (every round for a one-team win, the rounds before the one lost otherwise; the two-team ends send none) (`huds::firefight::notes`) |
 
 The kit's checks (`h2 hud preview firefight --state all --mode all`)
 hold it in every state and screen mode, and the kit's runtime draws it.

@@ -438,7 +438,7 @@ by `hud::view` from the mode blob as it is ([firefight.md](firefight.md),
 | `ff.banner` | Banner (slice K2) | the message routine's centred line | GET READY, WAVE 3, BOSS WAVE, ROUND COMPLETE, VICTORY, GAME OVER; timed, then gone |
 | `ff.lives.pill`, `.end`, `ff.lives.count` | Icon and LCD Text | the grenade row's next place | lives; `Flash(Pulse::TimeWarning)` at 1 and 0 |
 | `ff.enemies.pill`, `.end`, `ff.enemies.count` | Icon and LCD Text | the place after | enemies left while a wave is on |
-| `ff.note` | Message | the notification list | "Round 2 of 3", "Mythic skull on", a life lost (`huds::firefight::notes`; the skulls ride in the mode blob) |
+| `ff.note` | Message | the notification list | "Round 2 of 3", "Mythic skull on", a life lost, the round's bonus lives, "Cleared 2/3" at the end (`huds::firefight::notes`; the skulls ride in the mode blob) |
 
 - The round and wave are not permanent lines. They are in the banner
   when they change and in the notification list.
