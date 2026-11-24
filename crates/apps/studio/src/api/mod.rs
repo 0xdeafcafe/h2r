@@ -45,6 +45,7 @@ mod markers_check;
 mod mirror;
 mod models;
 mod nav;
+mod game;
 mod ground;
 mod nav_mesh;
 mod pair;

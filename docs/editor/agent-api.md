@@ -925,6 +925,31 @@ Notes on some:
   waits for an outstanding batch, reverts the journal, and disconnects on
   acknowledgement. Omitting `leave` opens the prompt in the window. Both `edit.set` and
   `edit.revert` enforce the same game-side session check as `edit.batch`.
+- **Game picture.** The Game panel shows the paired game's own frames,
+  read from the game's `render.picture` ring ([game-view.md](game-view.md),
+  `play/picture.rs`). `game.status` answers `{mode, camera, own, attached,
+  picture}`: `mode` is `attached` and `camera` is `player` (the editor's own
+  game, `game.start` and `game.camera` are not built, so `own` is
+  `{state: "none"}`); `attached` repeats `pair.status`'s socket, map, phase
+  and tick with the link plate's state and text, and is null before the
+  window has run its game link; `picture` is null with no pairing. Its
+  `state` is `connecting`, `open`, `stalled` (no new frame for two
+  seconds; `age_ms` says how long), `closed` (the game closed the picture)
+  or `failed` (`why`: a game over `tcp://`, whose JPEG stream Studio does
+  not decode, a game with no frame source, a lost connection). It also has
+  `size` of the newest frame, `asked_fps`, the frames taken, `dropped`
+  (frames the game published that no poll took), `fps` over the last
+  second, `age_ms`, the frame's game `tick`, `tick_lag` (the game's tick at
+  the link's last poll minus the frame's) and `events` (the `picture`
+  events the game sent). Reading it takes the newest frame, so the numbers
+  are those of a reader that polls once per call.
+  `game.snapshot {out?}` takes the newest frame and writes it as a PNG at
+  the size the game published (default under the output directory,
+  `game/<map>.png`), answering `{path, width, height, frame, tick}`. It is
+  `REFUSED` with no picture, with no frame yet, after a failed or closed
+  picture, and for a path inside a Git checkout. The picture is opened when
+  the pairing learns the game offers `render.picture.open`, and again when
+  the game closed it; it ends with the pairing.
 - **Live mirror.** The paired editor reads the game's `objects`,
   `players` and `camera` stream. `mirror.status.stream.refused.camera`
   says why a game has no camera layer. `mirror.status` reports the stream state, layers,

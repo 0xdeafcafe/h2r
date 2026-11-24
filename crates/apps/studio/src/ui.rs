@@ -5,6 +5,7 @@
 mod bar;
 pub mod browser;
 mod doc_tabs;
+mod game_view;
 mod layout;
 mod toolbar;
 pub(crate) mod inspector;
@@ -252,7 +253,7 @@ impl Studio {
             Surface::Hud => self.hud_windows(ui, app, gpu, &mut actions),
             Surface::Textures => self.textures_windows(ui, app, gpu, &mut actions),
         }
-        self.play.window(ui, app, &self.keys.game);
+        self.play.window(ui, app, &self.keys.game, gpu);
         self.previous_surface = Some(app.surface());
         self.previous_map = app.loaded_map().or_else(|| app.loaded_halo1()).map(str::to_owned);
         self.play.pending_window(ui, app, &self.keys.pending_edits);
