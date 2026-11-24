@@ -48,8 +48,9 @@
 //! `GAME_TICK`, through the mechanism Firefight's tick hook uses, ahead of
 //! the VM's queued calls. A score therefore lands at the next tick
 //! boundary rather than inside the kill, and a read in the same handler
-//! does not see it. The carrier's own scoring does not run beside it
-//! (`super::scoring`).
+//! does not see it. On the script index no retail engine scores beside
+//! it: the engine object's kill slot is an empty body
+//! (`super::engine_object`).
 //!
 //! **State.** The VM's state is the `RULES` record of the `SimExt` blob
 //! ([`Store`]), written after every run that changed it. Before each run
@@ -1300,6 +1301,14 @@ impl Runtime {
             .0
             .team;
         Some((slot, r.vm.body(team)?))
+    }
+
+    /// Whether a script runs here and this machine is the game's
+    /// authority, so the carrier's round-start line is the script's to
+    /// make (`super::start_line::replace_carrier`). Before the first tick
+    /// boundary asks for the authority, the engine keeps its line.
+    pub fn has_authority(&self) -> bool {
+        matches!(&self.status, Status::Running(r) if r.authority == Some(true))
     }
 
     /// The running blob's full hash, for the Live session's `rules` field.

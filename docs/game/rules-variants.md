@@ -133,8 +133,8 @@ Such a script says so in its header:
   `territories`). The script has no handlers, no variables and no
   options (`uses.handlers`). It may have `type`, `points`, `teams`,
   `requires`, `settings`, `quick` and `about`.
-- No `uses` line: the script is the game's one scorer, as every script
-  is ([rules-engine.md](rules-engine.md#which-engine-index-a-script-rides)).
+- No `uses` line: the script's own handlers score the game; on the
+  script index they are its only scorer ([rules-engine.md](rules-engine.md#one-scorer)).
   A script with neither handlers nor `uses` is the error `scoring.none`:
   "this script scores nothing. Write `uses slayer` to play Slayer's
   rules."
@@ -151,8 +151,8 @@ used type's built-in script in its place (`runtime::used_builtin`,
 `rules::builtin::of_type`) under the variant's own record: the VM reads
 the record's settings (team play, score limit, time limit), and the
 built-in plays its own default options, since the script has
-none. From there it is a running script like any other: the built-in is
-the one scorer, `rules.state` reports the built-in (`scoring: carrier`,
+none. From there it is a running script like any other: the built-in
+scores, `rules.state` reports the built-in (`scoring: carrier`,
 the wire's word for a script with a `uses` line), and the Live session
 names the built-in's hash, which every build has
 ([rules-engine.md](rules-engine.md#the-host-runtime), "A `uses`

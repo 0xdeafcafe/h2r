@@ -797,6 +797,34 @@ pub fn clean_up(raw: &mut [u8; RECORD_SIZE]) -> CleanUp {
     CleanUp::ResetAsSlayer
 }
 
+/// Moves a record that names a script (mode 2) off a retail index onto the
+/// script index, in place; whether it moved. A retail engine's own rules
+/// would otherwise score beside the script, and the script index's object
+/// has none. Slayer's records saved before scripts that ride Slayer took
+/// the script index are the common case; a script on CTF, Oddball, King of
+/// the Hill, Juggernaut, Territories or Assault moves the same way. No
+/// script writes a type-area setting, so the area is dropped.
+///
+/// The index and the type area change; every common setting, the name and
+/// the block stay. A record with no script, whose block is ignored, or
+/// that is on the script index already is not touched (a record with no
+/// script moves by `portable::script_record_of_retail`).
+pub fn onto_script_index(raw: &mut [u8; RECORD_SIZE]) -> bool {
+    use crate::ext::{AT, Block, Ext, LEN, Mode};
+    let engine = i32::from_le_bytes(raw[ENGINE_AT..ENGINE_AT + 4].try_into().unwrap());
+    if !matches!(engine, 1 | 2 | 3 | 4 | 7 | 8 | 9) {
+        return false;
+    }
+    let block: [u8; LEN] = raw[AT..AT + LEN].try_into().unwrap();
+    match Ext::decode(&block) {
+        Block::Ext(e) if e.script.mode == Mode::Rules => {}
+        _ => return false,
+    }
+    raw[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&SCRIPT_INDEX.to_le_bytes());
+    raw[TYPE_AREA].fill(0);
+    true
+}
+
 /// The registers the clean-up leaves when it returns without changing the
 /// record (`0x19de4b`): EAX 1, and ECX and EDX 0 from the compare loop and
 /// the routine's zero register. A native answer that returns leaves these,
@@ -1329,6 +1357,74 @@ mod tests {
         assert!(stock.bytes()[TYPE_AREA].iter().all(|&b| b == 0));
         assert!(refused(&stock).is_empty());
         assert!(!GameType::ALL.contains(&ty), "goof lists only retail engines");
+    }
+
+    fn script_block(mode: crate::ext::Mode) -> [u8; crate::ext::LEN] {
+        crate::ext::Ext {
+            gravity: 50,
+            script: crate::ext::Script { mode, prefix: [7; 8], options: 3 },
+            ..crate::ext::Ext::default()
+        }
+        .encode()
+    }
+
+    fn stock_on(ty: GameType, block: [u8; crate::ext::LEN]) -> [u8; RECORD_SIZE] {
+        let mut b = GameVariant::stock(ty).unwrap().to_bytes();
+        b[crate::ext::AT..crate::ext::AT + crate::ext::LEN].copy_from_slice(&block);
+        b
+    }
+
+    #[test]
+    fn a_slayer_record_that_names_a_script_moves_onto_the_script_index() {
+        let was = stock_on(GameType::Slayer, script_block(crate::ext::Mode::Rules));
+        assert_ne!(was[TYPE_AREA.start], 0, "Slayer's stock type area is not empty");
+        let mut b = was;
+        assert!(onto_script_index(&mut b));
+        let v = GameVariant::from_bytes(&b).unwrap();
+        assert_eq!(v.game_type(), GameType::Script);
+        assert!(check(&v).is_empty(), "{:?}", check(&v));
+        // Only the index and the type area changed.
+        let mut want = was;
+        want[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&SCRIPT_INDEX.to_le_bytes());
+        want[TYPE_AREA].fill(0);
+        assert_eq!(b, want);
+        // It is on the script index, so a second move is a no-op.
+        assert!(!onto_script_index(&mut b));
+    }
+
+    #[test]
+    fn a_script_record_on_any_retail_index_moves_and_keeps_its_block() {
+        for ty in GameType::ALL {
+            let block = script_block(crate::ext::Mode::Rules);
+            let was = stock_on(ty, block);
+            let mut b = was;
+            assert!(onto_script_index(&mut b), "{ty:?}");
+            let v = GameVariant::from_bytes(&b).unwrap();
+            assert_eq!(v.game_type(), GameType::Script, "{ty:?}");
+            assert!(check(&v).is_empty(), "{ty:?}: {:?}", check(&v));
+            assert_eq!(&b[crate::ext::AT..crate::ext::AT + crate::ext::LEN], &block, "{ty:?}");
+            assert!(b[TYPE_AREA].iter().all(|&x| x == 0), "{ty:?}");
+            assert_eq!(&b[0x4c..0xe0], &was[0x4c..0xe0], "{ty:?}: the common settings stay");
+        }
+    }
+
+    #[test]
+    fn a_record_with_no_script_or_an_ignored_block_stays() {
+        use crate::ext::Mode;
+        for ty in GameType::ALL {
+            for block in [[0u8; crate::ext::LEN], script_block(Mode::None)] {
+                let was = stock_on(ty, block);
+                let mut b = was;
+                assert!(!onto_script_index(&mut b), "{ty:?}");
+                assert_eq!(b, was);
+            }
+        }
+        let mut broken = script_block(Mode::Rules);
+        broken[5] ^= 1;
+        let was = stock_on(GameType::Slayer, broken);
+        let mut b = was;
+        assert!(!onto_script_index(&mut b));
+        assert_eq!(b, was);
     }
 
     #[test]

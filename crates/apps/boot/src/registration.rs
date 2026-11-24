@@ -536,6 +536,11 @@ pub(crate) fn register_core_film(
     if firefight_on {
         crate::firefight::hud::install(features).context("installing the Firefight HUD")?;
     }
+    // The base HUD (score and clock) of a game on the script index
+    // (docs/game/game-types-without-carriers.md, "The display"); hidden
+    // in every other game.
+    #[cfg(feature = "rules")]
+    crate::rules::base_hud::install(features).context("installing the base HUD")?;
     // The announcer speaks the HUD's medal lines (medal_announcer.rs,
     // docs/audio/audio.md, "Our medals' announcer lines"); boot gives it
     // the mixer once the audio is up.

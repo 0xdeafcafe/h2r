@@ -24,6 +24,9 @@
 //!   under Slayer's content category (`variants::record::content_category`)
 //!   on a save or a list add; the game's body would jump through a zero
 //!   entry. Any other record goes to the game's body.
+//! - `GAME_ACTIVATE`, a `before` in the last class: the record about to
+//!   start moves onto the script index when it would play beside or in
+//!   place of a script ([`move_onto_script_index`]).
 //!
 //! The differential test against the lifted original is
 //! `crates/rewrites/engine/tests/variant_record_differential.rs`.
@@ -147,11 +150,136 @@ pub fn decode(
     Ok(Some(u8::from(answer == wire::Decoded::Kept)))
 }
 
+/// A multiplayer game's options at `options`: the record to start is at
+/// `options + variant_ext::OPTIONS_VARIANT`, and the mode at `+0`.
+const MODE_MULTIPLAYER: u32 = crate::skulls_mp::MODE_MULTIPLAYER;
+
+/// What the swap did to a record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Swap {
+    /// The record stays as it is.
+    Stayed,
+    /// The record moved onto the script index.
+    Moved,
+    /// A retail record that cannot map onto its built-in's options (a
+    /// value the option's range lacks); it stays as it is.
+    Refused(String),
+}
+
+/// The index-6 record of a record that names its type's own built-in
+/// (a `uses` script's or the matchmaking CTF's): the same mapping as a
+/// record with no script (`variants::portable::script_record_of_retail`),
+/// so the record's type-area settings still reach the built-in.
+fn builtin_record(raw: &[u8; RECORD_SIZE]) -> Result<Option<variants::GameVariant>, String> {
+    use variants::ext::{Block, Mode};
+    let Ok(v) = variants::GameVariant::from_bytes(raw) else {
+        return Ok(None);
+    };
+    let Block::Ext(mut e) = v.ext_state() else {
+        return Ok(None);
+    };
+    let src = u8::try_from(v.game_type().engine()).ok().and_then(::rules::builtin::builtin);
+    let Some(src) = src.filter(|_| e.script.mode == Mode::Rules) else {
+        return Ok(None);
+    };
+    let Ok(ir) = ::rules::compile(src) else {
+        return Ok(None);
+    };
+    if e.script.prefix[..] != ir.id().0[..8] {
+        return Ok(None);
+    }
+    e.script.mode = Mode::None;
+    let mut plain = v;
+    plain.set_ext(&e).map_err(|e| e.to_string())?;
+    variants::portable::script_record_of_retail(&plain).map_err(|e| e.to_string())
+}
+
+/// Before a multiplayer game starts, the record at `options` moves onto the
+/// script index when a retail engine would otherwise run beside its script
+/// or in its place, so each game has one scorer (the script):
+///
+/// - a record with no script on CTF, Oddball, King of the Hill,
+///   Juggernaut, Territories or Assault becomes the index-6 record of that
+///   type's built-in, its type area mapped into the built-in's options
+///   (`variants::portable::script_record_of_retail`); a record that
+///   cannot map is [`Swap::Refused`] and plays on its retail engine;
+/// - a record that names its own type's built-in maps the same way;
+/// - any other record that names a script, on any retail index, takes the
+///   script index with its type area dropped
+///   ([`record::onto_script_index`]).
+///
+/// Every machine does it from the record it was given, so each starts the
+/// same engine. Only the copy in the options changes; the stored record
+/// and the wire keep their bytes.
+pub fn move_onto_script_index(
+    m: &mut dyn GuestMemory,
+    options: u32,
+) -> Result<Swap, engine::MemFault> {
+    if m.u32(options)? != MODE_MULTIPLAYER {
+        return Ok(Swap::Stayed);
+    }
+    let at = options.wrapping_add(crate::variant_ext::OPTIONS_VARIANT);
+    let mut raw = [0u8; RECORD_SIZE];
+    m.read(at, &mut raw)?;
+    let mapped = match variants::GameVariant::from_bytes(&raw) {
+        Ok(v) => variants::portable::script_record_of_retail(&v).map_err(|e| e.to_string()),
+        Err(_) => Ok(None),
+    };
+    let mapped = match mapped {
+        Ok(None) => builtin_record(&raw),
+        other => other,
+    };
+    match mapped {
+        Ok(Some(out)) => raw = out.to_bytes(),
+        Ok(None) => {
+            if !record::onto_script_index(&mut raw) {
+                return Ok(Swap::Stayed);
+            }
+        }
+        Err(why) => return Ok(Swap::Refused(why)),
+    }
+    m.write(at, &raw)?;
+    Ok(Swap::Moved)
+}
+
+/// Logs a refused swap's reason once per distinct reason.
+fn log_refused_once(why: &str) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(Mutex::default);
+    if seen.lock().is_ok_and(|mut s| s.insert(why.to_string())) {
+        eprintln!("rules: the record stays on its retail engine: {why}");
+    }
+}
+
 /// The hooks. No other feature hooks these points. The content
 /// category is answered for the script index only; the protocol map for
 /// every index.
 pub fn register(b: &mut hooks::Builder) {
     use hooks::Flow;
+    // After the other start hooks, as the engine object's: the Live
+    // guest's block from its host is written first, and the engine start
+    // after them all reads the record.
+    b.raw()
+        .before(
+            &points::GAME_ACTIVATE,
+            "rules: a record that scores beside its engine starts on the script index",
+            move |c| {
+                let options = c.cpu.eax;
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let m: &mut dyn GuestMemory = &mut *mem;
+                match move_onto_script_index(m, options) {
+                    Ok(Swap::Moved) => eprintln!("rules: the record starts on the script index"),
+                    Ok(Swap::Refused(why)) => log_refused_once(&why),
+                    _ => {}
+                }
+                Ok(Flow::Continue)
+            },
+        )
+        .last()
+        .after_feature(crate::skulls_mp::FEATURE);
     b.raw().before(
         &points::VARIANT_CLEAN_UP,
         "rules: the record clean-up keeps a script record",
