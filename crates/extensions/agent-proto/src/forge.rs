@@ -106,7 +106,8 @@ pub mod refusal {
 pub const SHARED_SESSION: &str = "shared";
 
 /// `forge.things`: every thing of the session, or those of one kind, or
-/// only those the document changes.
+/// only those the document changes. A netgame flag's row carries its
+/// document area, or null for an unshaped flag.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThingsParams {

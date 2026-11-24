@@ -550,3 +550,36 @@ fn a_refused_base_move_leaves_the_document_log_and_world_alone() {
     assert!(s.move_thing(&mut w, 2, weapon(1), frame(30., 0.)).is_err());
     assert!(w.calls.is_empty());
 }
+
+#[test]
+fn setting_an_area_is_one_undoable_document_edit() {
+    let mut session = open(rows());
+    let mut world = Fake::default();
+    let goal = Endpoint::base(BlockKind::NetgameFlags, 1);
+    let area = forge_doc::MarkerArea::radius(3.0);
+    session
+        .set_area(&mut world, 1, goal, Some(area.clone()))
+        .unwrap();
+    let read = |session: &Session| {
+        session
+            .areas()
+            .unwrap()
+            .get(&goal)
+            .map(forge_doc::Area::marker_area)
+    };
+    assert_eq!(read(&session), Some(area.clone()));
+    assert_eq!(session.log().len(), 1);
+    session.undo(&mut world, 2).unwrap();
+    assert_eq!(read(&session), None);
+    session.redo(&mut world, 3).unwrap();
+    assert_eq!(read(&session), Some(area.clone()));
+    session.reset(&mut world, 4, goal).unwrap();
+    assert_eq!(read(&session), None);
+    session.undo(&mut world, 5).unwrap();
+    assert_eq!(read(&session), Some(area));
+    session.set_area(&mut world, 6, goal, None).unwrap();
+    assert_eq!(read(&session), None);
+    assert!(session.set_area(&mut world, 7, goal, None).is_err());
+    assert_eq!(session.log().len(), 6);
+    assert!(world.calls.is_empty());
+}

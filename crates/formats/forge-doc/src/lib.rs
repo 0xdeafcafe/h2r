@@ -5,6 +5,7 @@
 //! See [the crate README](../README.md) for the wire format and limits.
 #![forbid(unsafe_code)]
 
+mod area;
 mod document;
 mod entry;
 pub mod games;
@@ -17,6 +18,7 @@ mod validate;
 mod variant;
 mod wire;
 
+pub use area::{Area, MarkerArea};
 pub use content::{MapId, Sha256};
 pub use document::*;
 pub use entry::{EntryOp, PROPERTY_TEAMS, Print, Property, check_print, print, teams};
@@ -63,6 +65,8 @@ pub enum Refusal {
     Limit { what: String, max: usize },
     #[error("{what}: {reason}")]
     Invalid { what: String, reason: String },
+    #[error("{0}")]
+    Area(String),
     #[error("{0} edits are reserved for a later Forge slice")]
     Unsupported(String),
     #[error("proposal starts at sequence {proposed}, host is at {head}")]
@@ -85,6 +89,10 @@ impl Refusal {
             what: what.into(),
             reason: reason.into(),
         }
+    }
+
+    pub(crate) fn area(error: game_markers::AreaError) -> Self {
+        Self::Area(error.to_string())
     }
 
     pub(crate) fn limit(what: &str, max: usize) -> Self {

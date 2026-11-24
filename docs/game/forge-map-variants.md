@@ -129,7 +129,7 @@ A family beside `Placement`, `TagField` and `Forge`
 (`forge_doc::Edit::Entry(EntryOp)`, in
 `crates/formats/forge-doc/src/entry.rs`; the type is `EntryOp` because
 `forge_doc::Entry` is the log entry). `Set`, `Remove`,
-`Reset` and `Property` (only a team, so far) are built:
+`Reset`, `Property` and `Area` are built.
 
 | Op | Does | Carries |
 |---|---|---|
@@ -137,6 +137,7 @@ A family beside `Placement`, `TagField` and `Forge`
 | `EntryOp::Remove {target}` | removes the entry | nothing |
 | `EntryOp::Reset {target}` | drops the effect of every earlier entry op on an own entry: it is in the map again, as the disc has it. Links and labels are their own ops and stay | nothing |
 | `EntryOp::Property {target, property}` | sets or clears a property that has no retail field ("Properties without a retail field") | the property's own value |
+| `EntryOp::Area {target, area}` | sets or clears a netgame flag's [area](gametype-markers.md#in-the-document) | a radius or path with heights, or `null` |
 
 `Placement::Add` stays the one way to make an entry, and its `OpId` is
 the new entry's name.
@@ -148,9 +149,9 @@ the new entry's name.
   `Placement::Set` or `Placement::Remove` of that running index
   (`Resolved::lowered`); `replay` hands those to the adapter in op
   order. `forge_doc::Apply` keeps its two required methods.
-  `EntryOp::Reset` lowers to nothing, and so does every entry op a
-  later reset of the same entry covers, as the fold leaves out a
-  retracted op. Placement ops by running index are never covered;
+  Resets, properties and areas lower to nothing. The fold leaves out
+  entry ops covered by a later reset of the same entry, as it leaves
+  out a retracted op. Placement ops by running index are never covered;
   their indices are read in the document with the covered ops left
   out.
 - **Replay checks the prints first.** `Resolved::prints` lists every

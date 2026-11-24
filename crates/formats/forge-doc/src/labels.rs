@@ -27,7 +27,8 @@ use rules::labels::{Census, Class, Member, ObjectType};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BlockKind, Edit, Endpoint, FieldWrite, ForgeDoc, OpId, Placement, Refusal, Result, Value,
+    BlockKind, Edit, Endpoint, FieldWrite, ForgeDoc, MarkerArea, OpId, Placement, Refusal, Result,
+    Value,
 };
 
 /// The most bytes a label's text takes.
@@ -172,7 +173,7 @@ pub struct MapRows {
 
 /// One labelled thing of a map, after its Forge document: the block and
 /// final index of its placement, its label, what it is and its team.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LabelledThing {
     pub block: BlockKind,
     pub index: u32,
@@ -181,6 +182,8 @@ pub struct LabelledThing {
     /// The placement's team designator, 0 to 7: a flag's or a starting
     /// location's team field. Neutral (8) and none (-1) are `None`.
     pub team: Option<u8>,
+    /// The area on the flag, in offsets from its placement.
+    pub area: Option<MarkerArea>,
 }
 
 /// A team field as a census member's team: designators 0 to 7; neutral (8),
@@ -204,16 +207,27 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
     // An item spawner's team is a property of the document
     // (`EntryOp::Property`), by the spawner's final index.
     let mut spawner_teams: BTreeMap<u32, u8> = BTreeMap::new();
+    let mut areas = BTreeMap::new();
     if let Some(doc) = doc {
+        labels = doc.labels(&rows.counts)?;
+        areas = doc.areas(&rows.counts)?;
+        let teams = crate::teams(&doc.ops);
+        let resolved = (!areas.is_empty() || !teams.is_empty())
+            .then(|| crate::resolve(&doc.ops, &rows.counts))
+            .transpose()?;
         for op in &doc.ops {
-            if let Edit::Placement(p) = &op.edit {
+            let placement = match &op.edit {
+                Edit::Placement(p) => Some(p),
+                Edit::Entry(_) if !areas.is_empty() => {
+                    resolved.as_ref().and_then(|r| r.lowered.get(&op.id))
+                }
+                _ => None,
+            };
+            if let Some(p) = placement {
                 replay_row(&mut flags, &mut starts, p);
             }
         }
-        labels = doc.labels(&rows.counts)?;
-        let teams = crate::teams(&doc.ops);
-        if !teams.is_empty() {
-            let resolved = crate::resolve(&doc.ops, &rows.counts)?;
+        if let Some(resolved) = resolved {
             for (end, team) in teams {
                 if let Some(index) = resolved.index(end) {
                     spawner_teams.insert(index, team);
@@ -238,6 +252,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
                 label,
                 class: Class::Flag,
                 team: designator(i64::from(f.team)),
+                area: areas.remove(&index),
             });
         }
     }
@@ -259,6 +274,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
             label: l.label.clone(),
             class,
             team,
+            area: None,
         });
     }
     out.sort_by_key(|t| (t.block, t.index));

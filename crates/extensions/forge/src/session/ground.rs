@@ -284,6 +284,9 @@ impl Session {
         team: u8,
         phase: Option<i32>,
     ) -> Result<OpId, String> {
+        if team >= 2 {
+            return Err("A marker's team is 0 (red) or 1 (blue).".into());
+        }
         let number = label.has_phase().then(|| phase.unwrap_or(0));
         let text = Label::new(label.text(), number).map_err(reason)?;
         let fields = vec![
@@ -359,7 +362,7 @@ impl Session {
                     label: GroundLabel::of(&active.label.text)?,
                     number: active.label.number,
                     frame: m.frame,
-                    team: m.team,
+                    team: u8::try_from(m.team).ok()?,
                 })
             })
             .collect())

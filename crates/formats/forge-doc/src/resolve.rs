@@ -146,8 +146,10 @@ pub fn resolve(ops: &[Op], base_counts: &BTreeMap<BlockKind, u32>) -> Result<Res
                             index: index as u32,
                         }
                     }
-                    // A property has no scenario bytes: nothing to lower.
-                    EntryOp::Reset { .. } | EntryOp::Property { .. } => continue,
+                    // Properties and areas have no scenario bytes.
+                    EntryOp::Reset { .. } | EntryOp::Property { .. } | EntryOp::Area { .. } => {
+                        continue;
+                    }
                 };
                 resolved.lowered.insert(op.id, lowered);
             }

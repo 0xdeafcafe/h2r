@@ -1451,6 +1451,88 @@ mod things {
     }
 
     #[test]
+    fn forge_proposes_and_lists_areas_on_own_and_added_flags() {
+        let h = Harness::new();
+        let mut game = game(1);
+        let block = BlockKind::NetgameFlags;
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(block, 4)].into(),
+            ..Default::default()
+        };
+        let rows = [10, 11, 11, 11]
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let fields = vec![
+                    vec3([index as f32, 0., 0.]),
+                    Value::Float(F32::new(0.).unwrap()),
+                    Value::Int(kind),
+                    Value::Int(8),
+                    Value::Int(0),
+                ];
+                BaseRow {
+                    block,
+                    index: index as u32,
+                    raw: vec![0; map::scenario_layout::block(block).stride as usize],
+                    print: forge_doc::print(block, &fields).unwrap(),
+                    fields,
+                }
+            })
+            .collect();
+        let session = Session::new(draft(), limits, vec![], 0).unwrap().with_base(BaseRows {
+            rows,
+            left_out: vec![],
+        });
+        local::install(&h.agent, Host(Mutex::new(Arc::new(session))));
+
+        let listed = h.ok(&mut game, method::THINGS, json!({"kind": "goal"}));
+        let target = &listed["things"][0]["id"];
+        let hill = &listed["things"][1]["id"];
+        assert_eq!(listed["things"][0].get("area"), Some(&Json::Null));
+        let area = json!({"radius":{"radius":"40000000","below":"3f000000","above":"3fc00000"}});
+        let edit = |id, target: &Json, area: &Json| {
+            json!({"op":{"id":id,"edit":{"entry":{"area":{"target":target,"area":area}}}}})
+        };
+        let crossing = json!({"path":{
+            "points":[["00000000","00000000"],["40800000","40000000"],
+                      ["40800000","00000000"],["00000000","3f800000"]],
+            "below":"3f000000","above":"3fc00000"
+        }});
+        let refused = propose(&h, &mut game, edit(1, target, &crossing));
+        assert_eq!(refused["error"]["data"]["code"], refusal::REFUSED);
+        assert_eq!(
+            refused["error"]["message"],
+            "The path crosses itself: the edge after point 1 meets the edge after point 3."
+        );
+        let refused = propose(&h, &mut game, edit(2, hill, &area));
+        assert_eq!(refused["error"]["data"]["code"], refusal::REFUSED);
+        assert_eq!(refused["error"]["message"], "a hill with corners takes no area");
+        let accepted = propose(&h, &mut game, edit(3, target, &area));
+        assert_eq!(accepted["result"]["entry"]["seq"], 1, "{accepted}");
+        let changed = h.ok(&mut game, method::THINGS, json!({"changed":true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["area"], area);
+
+        let added = propose(&h, &mut game, json!({"op":{"id":4,"edit":{"placement":{"add":{
+            "block":"netgame_flags","fields":[{"field":"type","value":{"int":12}}]
+        }}}}}));
+        assert_eq!(added["result"]["entry"]["seq"], 2, "{added}");
+        let added_id = json!({"added":4});
+        let accepted = propose(&h, &mut game, edit(5, &added_id, &area));
+        assert_eq!(accepted["result"]["entry"]["seq"], 3, "{accepted}");
+        let cleared = propose(&h, &mut game, edit(6, target, &Json::Null));
+        assert_eq!(cleared["result"]["entry"]["seq"], 4, "{cleared}");
+        let changed = h.ok(&mut game, method::THINGS, json!({"kind":"goal","changed":true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["id"], added_id);
+        assert_eq!(changed["things"][0]["area"], area);
+    }
+
+    #[test]
     fn each_refusal_sentence_has_its_name() {
         for (sentence, name) in [
             (
