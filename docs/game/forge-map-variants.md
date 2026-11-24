@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M10, D2 to D4 and V1 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); and the variant store, `forge::files::variants` (V1); everything else named here as new is not.
+Status: Design, slices M1 to M10, D2 to D4, V1 and V2 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); the variant store, `forge::files::variants` (V1), and the lobby's pick and the build before Start Game, `game::map_variant` (V2); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -524,7 +524,7 @@ names it, and the format 2 `MapId`.
 
 | Who picks | Holds the variant as | Where |
 |---|---|---|
-| The custom-game lobby | `lobby_start::map_variant() -> Option<MapId>`, beside the lobby's map | `crates/extensions/game/src/lobby_start.rs` |
+| The custom-game lobby | `lobby_start::map_variant() -> Option<MapId>`, beside the lobby's map; the pick's name and build in `map_variant::picked()` | `crates/extensions/game/src/{lobby_start.rs, map_variant.rs}` |
 | A Live session | `NewSession.map_id`, which exists; `map` stays the base map's name | `crates/live/live-proto/src/session.rs` |
 | A playlist entry | `map_variant: <MapId>` on a record of the hopper JSON. The retail record has no room for a hash, so the server keeps it in a table by hopper and record position, re-keyed by the patch's `from` as the other bytes are ([live-admin.md](../live/live-admin.md), "`PUT /v1/titles/{title}/hopper`"), published as `HopperVariantsSet` and served with the pins | `crates/live/live-server/src/admin.rs` |
 | A game variant | `maps: [{base, variant, name}]` in the `.h2variant` bundle: map variants its author made it for. The `0x130` record is untouched | `variants::portable::Bundle` |
@@ -567,7 +567,15 @@ the place of Forge Map....
 5. **Start Game** materialises first when the package is not cached
    and is refused, with the reason as the lobby's status line
    (`lobby_status.rs`), when any check of "Rules and limits" fails for
-   the host or a member.
+   the host or a member. `map_variant::pick` loads the variant with the
+   installed map's hash (`variants::load`), starts the build once on its
+   own thread, and holds the start state
+   (`lobby_mode::start_refused`) while it builds (the line says
+   `Building <name>...`) or is refused (the table's sentence). A pick is
+   cleared by a change of the lobby's map (`map_variant::sync`, read
+   where the lobby's state is read), by Original and by leaving the lobby.
+   Without a builder in the game (`game::map_variant::install`) a pick
+   is `variant_build`. `variant_member` is `Refusal::member`; V3 sends it.
 
 The row is absent when the `forge` feature is off. Only the party
 leader picks, as for the map.
@@ -579,7 +587,9 @@ Every machine builds the map from its own disc; no built byte travels
 
 - **The host** builds when the leader picks, off the game thread, into
   `<data>/maps/forge-<first 16 hex of the id>/`, and reuses a package
-  whose receipt matches.
+  whose receipt matches: its manifest's id is the pick's and its files
+  are there (`boot/src/forge_maps.rs`, `DiscMaps`, over the `Maps` trait
+  of `map_variant.rs`).
 - **A member** learns the pick from the session's `map_id`.
   `live_hle::maps::MapGate` treats a format 2 id as a package to make
   ready: get the document, check it, build it, compare with `expect`.
@@ -689,6 +699,7 @@ map loads. None is answered by loading the original map.
 | `variant_expect` | the built map's id is not `expect.map_id` (`forge_expect_map_id`) | "<name> did not build to the map its author saved." |
 | `variant_missing` | the document is on neither this machine nor Live, or is hidden or blocked | "<name> is not available." |
 | `variant_game` | the start gate: a goal or a label the game variant needs is absent | the gate's sentence, naming what is missing |
+| `variant_build` | the build failed for a reason the rows above do not name; the log has the error | "<name> could not be built." |
 | `variant_member` | a member failed any of the above | "<gamertag>: " and that member's sentence |
 
 - A base map is named by hash. A name match with another hash is

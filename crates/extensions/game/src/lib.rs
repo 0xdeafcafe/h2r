@@ -98,6 +98,7 @@ pub mod level_boot;
 pub mod lobby_mode;
 pub mod lobby_start;
 pub mod lobby_tabs;
+pub mod map_variant;
 pub mod list_class;
 #[cfg(feature = "gpu")]
 pub mod lod_distance;

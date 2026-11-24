@@ -163,6 +163,9 @@ pub struct State {
     pub mode: Mode,
     /// The saved Forge map the session loads (`None`: a new map).
     pub forge_map: Option<String>,
+    /// The map variant of the lobby's map the match plays (`None`:
+    /// Original), set with [`crate::map_variant`].
+    pub map_variant: Option<content::MapId>,
 }
 
 impl State {
@@ -178,6 +181,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     lobby: false,
     mode: Mode::Multiplayer,
     forge_map: None,
+    map_variant: None,
 });
 
 #[cfg(not(test))]
@@ -193,6 +197,7 @@ thread_local! {
             lobby: false,
             mode: Mode::Multiplayer,
             forge_map: None,
+            map_variant: None,
         })
     };
 }
@@ -241,6 +246,16 @@ pub fn set_forge_map(name: Option<String>) {
     });
 }
 
+/// The map variant the lobby plays (`None`: Original).
+pub fn map_variant() -> Option<content::MapId> {
+    with_state(|s| s.map_variant)
+}
+
+/// The lobby's map variant ([`crate::map_variant`] sets it with its pick).
+pub fn set_map_variant(id: Option<content::MapId>) {
+    with_state(|s| s.map_variant = id);
+}
+
 /// The lobby as a snapshot held it.
 pub fn restore(state: State) {
     with_state(|s| *s = state);
@@ -258,6 +273,7 @@ pub fn clear() {
             ..State::default()
         };
     });
+    crate::map_variant::forget();
 }
 
 // ---- the guest-call queue ----
@@ -377,7 +393,8 @@ mod tests {
             State {
                 lobby: true,
                 mode: Mode::Multiplayer,
-                forge_map: None
+                forge_map: None,
+                map_variant: None
             }
         );
     }
