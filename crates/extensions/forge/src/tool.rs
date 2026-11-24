@@ -82,6 +82,61 @@ impl Axes {
     }
 }
 
+/// A drawing the monitor adds over the world, which the monitor's player
+/// turns on or off (docs/game/forge-editing.md, "Overlays"). Presentation
+/// only: never in the document, the log or the sim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    /// The game type markers: a spawn, flag, hill, teleporter, item
+    /// spawner and ground label each.
+    Markers,
+    /// The rings of the session's other monitors.
+    Monitors,
+    /// The axes and outline at the held or aimed object.
+    Gizmo,
+}
+
+impl Overlay {
+    pub const ALL: [Overlay; 3] = [Overlay::Markers, Overlay::Monitors, Overlay::Gizmo];
+
+    /// The overlay as `forge.status` names it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Markers => "markers",
+            Self::Monitors => "monitors",
+            Self::Gizmo => "gizmo",
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// Which overlays are on. Every overlay is on until it is turned off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Overlays(u8);
+
+impl Default for Overlays {
+    fn default() -> Self {
+        Self(Overlay::ALL.iter().fold(0, |bits, o| bits | o.bit()))
+    }
+}
+
+impl Overlays {
+    pub const fn on(self, overlay: Overlay) -> bool {
+        self.0 & overlay.bit() != 0
+    }
+
+    pub fn set(&mut self, overlay: Overlay, on: bool) {
+        if on {
+            self.0 |= overlay.bit();
+        } else {
+            self.0 &= !overlay.bit();
+        }
+    }
+}
+
 /// Whether `thing` is one the game type with engine index `game` has (the
 /// variant record's `+0x44`: 1 CTF, 2 Slayer, 3 Oddball, 4 King of the Hill,
 /// 7 Juggernaut, 8 Territories, 9 Assault). With no game type known, every
@@ -193,6 +248,8 @@ pub enum Action {
     AreaClose,
     AreaGrab,
     AreaRelease,
+    /// Open the Overlays page.
+    Overlays,
 }
 
 impl Action {
@@ -217,6 +274,7 @@ impl Action {
             "area_close" => Self::AreaClose,
             "area_grab" => Self::AreaGrab,
             "area_release" => Self::AreaRelease,
+            "overlays" => Self::Overlays,
             _ => return None,
         })
     }
@@ -297,6 +355,7 @@ pub enum Command {
     Menu,
     Tools,
     Settings,
+    Overlays,
     DialogUp,
     DialogDown,
     DialogAccept,
@@ -322,6 +381,8 @@ pub struct Tool {
     pub show: Show,
     /// The basis for movement snap and turning.
     pub axes: Axes,
+    /// The drawings added over the world that are on.
+    pub overlays: Overlays,
     /// World units between movement snaps; 0 is off.
     movement_step: f32,
     pub placing: Option<usize>,
@@ -362,6 +423,7 @@ impl Default for Tool {
             game: None,
             show: Show::default(),
             axes: Axes::default(),
+            overlays: Overlays::default(),
             movement_step: 0.0,
             placing: None,
             ghost: None,
@@ -673,6 +735,7 @@ impl Tool {
             Some(A::Back) => None,
             Some(A::Tools) => Some(C::Tools),
             Some(A::Settings) => Some(C::Settings),
+            Some(A::Overlays) => Some(C::Overlays),
             Some(A::Undo) => Some(C::Undo),
             Some(A::Redo) => Some(C::Redo),
             Some(A::Delete) => {
@@ -772,6 +835,7 @@ impl Tool {
             Some(A::Back) => None,
             Some(A::Tools) => Some(C::Tools),
             Some(A::Settings) => Some(C::Settings),
+            Some(A::Overlays) => Some(C::Overlays),
             Some(A::Delete) if self.link_from.is_none() => {
                 let link = session.links_of(self.aimed_link?).last()?.id;
                 Some(C::Unlink { link })

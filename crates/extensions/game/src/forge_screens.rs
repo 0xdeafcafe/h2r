@@ -71,6 +71,9 @@ pub struct Facts {
     pub saved: Vec<String>,
     /// The saved map the session is, for Save as's keyboard.
     pub filename: Option<String>,
+    /// The added objects, for the placed objects browser
+    /// ([`sheet::placed_rows`]).
+    pub placed: Vec<sheet::Placed>,
 }
 
 /// The longest name Save as takes.
@@ -256,7 +259,7 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
     let sheet = match kind {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
         Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
-        Kind::Options => sheet::options(),
+        Kind::Options => sheet::options_with(&f.placed),
         Kind::Controls => sheet::controls(),
         Kind::Objects
         | Kind::Properties

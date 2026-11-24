@@ -237,6 +237,13 @@ pub const BINDINGS: &[Binding] = &[
         "G",
     ),
     row(
+        act(Action::Overlays),
+        "Overlays",
+        Pad::Tap(B::Back),
+        &[Key::Overlays],
+        "H",
+    ),
+    row(
         act(Action::Undo),
         "Undo",
         Pad::Tap(B::DpadLeft),
@@ -300,10 +307,13 @@ pub fn controls() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Pairs of controls the Controls page shows on one row: up and down.
-/// Undo and redo keep a row each; their pad names together are wider than
-/// the column.
-pub const PAIRS: &[(Does, Does)] = &[(Does::Hold(Held::Rise), Does::Hold(Held::Fall))];
+/// Pairs of controls the Controls page shows on one row: up and down, and
+/// the tool settings and the overlays. Undo and redo keep a row each; their
+/// pad names together are wider than the column.
+pub const PAIRS: &[(Does, Does)] = &[
+    (Does::Hold(Held::Rise), Does::Hold(Held::Fall)),
+    (act(Action::Settings), act(Action::Overlays)),
+];
 
 /// The Controls page's rows, `(what, pad, keys)`: the table in its order,
 /// each of [`PAIRS`] on its first control's row ("Up; down", "RB; LB",
@@ -384,6 +394,7 @@ mod tests {
         Action::Redo,
         Action::Tools,
         Action::Settings,
+        Action::Overlays,
     ];
 
     #[test]
@@ -420,6 +431,7 @@ mod tests {
         assert_eq!(pad(Does::Hold(Held::Thrust)), Pad::Trigger(Side::Left));
         assert_eq!(pad(act(Action::Tools)), Pad::Tap(B::DpadRight));
         assert_eq!(pad(act(Action::Settings)), Pad::Tap(B::DpadDown));
+        assert_eq!(pad(act(Action::Overlays)), Pad::Tap(B::Back));
         assert_eq!(pad(act(Action::Undo)), Pad::Tap(B::DpadLeft));
         assert_eq!(pad(act(Action::Redo)), Pad::Hold(B::DpadLeft));
         assert_eq!(pad(Does::Game), Pad::Tap(B::Start));
@@ -483,6 +495,7 @@ mod tests {
             Key::Accept,
             Key::Tools,
             Key::Settings,
+            Key::Overlays,
             Key::Undo,
             Key::Redo,
         ] {
@@ -507,6 +520,11 @@ mod tests {
             );
         }
         assert!(page.contains(&("Up; down".into(), "RB; LB".into(), "E; Q".into())));
+        assert!(page.contains(&(
+            "Tool settings; overlays".into(),
+            "D-pad Down; Back".into(),
+            "G; H".into()
+        )));
         assert!(page.contains(&("Undo".into(), "D-pad Left".into(), "Cmd+Z".into())));
         assert!(page.contains(&("Redo".into(), "Hold D-pad Left".into(), "Shift+Cmd+Z".into())));
     }

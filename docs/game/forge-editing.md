@@ -1,6 +1,6 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, and Tool settings with Movement snap, Rotation snap and Axes exist. Overlays, the browser, groups, prefabs and lights are design.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, movement and rotation snap, world or local axes, Coordinates with typing and nudging, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and the spawn, goal and item rows, Tool settings with Movement snap, Rotation snap and Axes, the Overlays page with the Markers, Other monitors and Axes overlays, and the placed objects browser exist. The nav overlay (with F9), groups, prefabs and lights are design.
 Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `props_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs`, `forge_screens/tests.rs` and `forge_glue/editing/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -40,7 +40,7 @@ objects that are guest truth, tool state that is presentation
 | World or local axes | built | Tool state: which basis the snap, the nudge and the gizmo use (`Tool::set_axes`); Local is the pickup's basis | none |
 | Typed numbers, Coordinates | built | A frame is six `f32` values kept bit-exact in the document (`forge::Frame`), so a typed number is the number saved. Halo 3's variants quantise positions (**C**, [forge.md](forge.md) 1.1); ours do not. A typed or nudged value moves the held thing live, and closing writes one op (`Session::hold`, then `move_thing`) | none |
 | Duplicate | P1 | One `Placement::Add` with the source's fields, held at once | in P1 |
-| Placed-object browser | P4 | A list over `Session::objects`; choosing a row flies the monitor to it | S |
+| Placed-object browser | built | A picker over `Session::objects`; choosing a row flies the monitor to it (`sheet::placed_rows`, `Camera::toward`) | none |
 | Limits by kind | P4 | `forge.capacity` already measures the object pool, each block's count and limit, and tag headroom | in P4 |
 | Selection, groups, group pivot | P5 | A selection is tool state. A group is a Forge-family op naming its members by `OpId`; moving one is a batch of placement sets in one undo step, as a delete of a linked machine is one step (`session.rs`) | M; the document format takes its next number |
 | Prefabs | P5 | A prefab is a small document: tag keys and frames relative to a pivot, no game bytes. Placing one checks every tag against this map's palette and refuses by name | in P5; sharing on Live rides F14 |
@@ -80,6 +80,7 @@ Black and White buttons.
 | Cancel a hold or a started link; back | B | Escape |
 | Tools | D-pad Right | T |
 | Tool settings | D-pad Down | G |
+| Overlays | Back | H |
 | Undo; redo | D-pad Left; hold for redo | Cmd+Z; Shift+Cmd+Z |
 | Forge menu | Start | Escape with nothing held |
 
@@ -89,8 +90,6 @@ Black and White buttons.
 - In the Links tool the same buttons mean the same things: A starts a
   link and makes it, X opens the Link question of the thing aimed at,
   hold Y removes its latest link, B cancels a started link.
-- **Overlays** (Back, H) joins the table with the first overlay, the
-  nav overlay of F9.
 - Start, and Escape with nothing to cancel, are the game's: they open
   its GAME MENU with the Forge rows in it. The table's Start row does
   nothing of the session's (`Does::Game`).
@@ -98,8 +97,9 @@ Black and White buttons.
   the pad and the keys go to the game's UI (`forge_controls::State`,
   `screen`).
 - Thrust triples flying while held; manipulating, it does not apply.
-- On the Controls page, up and down, and undo and redo, share a row each
-  (`bindings::PAIRS`), so the page fits the in-game list's sixteen lines.
+- On the Controls page, up and down, and Tool settings and Overlays, share
+  a row each (`bindings::PAIRS`), so the page fits the in-game list's
+  sixteen lines.
 - `forge.input` takes each action by the name `Action::named` gives it
   ([agent-api.md](../runtime/agent-api.md), "Local Forge session").
 
@@ -120,6 +120,25 @@ the tool in use.
 | Nav | the nav overlay and its problems | F9 |
 
 A tool that is not built is absent from the picker.
+
+## Overlays
+
+An overlay is a drawing the monitor adds over the world. Back (H) opens
+the Overlays page: a row for each overlay in `sheet::OVERLAYS`, showing
+On or Off, A opening a picker on the two. Every overlay starts On.
+Overlays are tool state, as the settings are: never in the document, the
+log or the sim (`forge::tool::Overlay`, `Tool::overlays`).
+
+| Overlay | Draws | Off |
+|---|---|---|
+| Markers | the game type markers: a spawn, flag, hill, teleporter, item spawner and ground label each (`forge_glue::markers_world`) | `Editor::marker_entries` is empty |
+| Other monitors | a ring at each other seat's monitor (`Editor::monitor_markers`) | no rings; the seats' bodies stay |
+| Axes | the axes and outline at the held or aimed object (`forge_glue::gizmo`) | no gizmo |
+
+The nav overlay (sectors, links by kind, problems; [forge-features.md](forge-features.md),
+"Nav mesh") is a row of this page when F9 builds it. `forge.status`
+carries `overlays`, a map of each overlay's name to whether it is on;
+`forge.input` takes `overlays` to open the page.
 
 ## Precision
 
@@ -264,9 +283,16 @@ opens a picker; an action row acts and closes.
   frames relative to the pivot, read with the document's bounded reader.
   It holds nothing a document could not. The Prefabs group lists those
   whose every tag this map holds; placing one is one undo step.
-- The browser (**Placed objects**, on the Forge options page) lists
-  groups first, then single objects by the object menu's groups. A on a
-  row flies the monitor to it and aims at it.
+- The browser (**Placed objects**, a row of the Forge options page)
+  opens a picker over every object placed, named as the object menu names
+  it and numbered when the map has more than one ("Beacon 2", in the
+  order placed), listed by the object menu's groups and then by name.
+  Each row's line says its group and position. A on a row flies the
+  monitor to it: it stands 5 world units off, on the side it was on, and
+  faces the object (`Camera::toward`), so the aim finds it. With nothing
+  placed the row is a fact. Once groups exist the browser lists them
+  first (P5). The monitor's view changes only: nothing reaches the
+  document, the log or the sim.
 
 ## Interfaces
 

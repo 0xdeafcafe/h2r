@@ -619,3 +619,31 @@ fn an_own_thing_is_picked_up_dropped_removed_and_opened_like_an_added_one() {
         Some(Endpoint::base(BlockKind::Weapons, 1))
     );
 }
+
+/// Overlays are all on until turned off; the Overlays action is a command
+/// and an agent name, and a turned-off overlay is tool state only.
+#[test]
+fn overlays_start_on_and_the_action_opens_their_page() {
+    use crate::tool::Overlay;
+    let session = session(2);
+    let mut tool = Tool::default();
+    tool.monitor = true;
+    tool.camera = Some(eye());
+    assert!(Overlay::ALL.iter().all(|o| tool.overlays.on(*o)));
+    assert_eq!(
+        tool.update(&session, 1, press(Action::Overlays)).unwrap(),
+        Some(Command::Overlays)
+    );
+    assert_eq!(Action::named("overlays"), Some(Action::Overlays));
+    tool.overlays.set(Overlay::Markers, false);
+    assert!(!tool.overlays.on(Overlay::Markers));
+    assert!(tool.overlays.on(Overlay::Monitors) && tool.overlays.on(Overlay::Gizmo));
+    tool.overlays.set(Overlay::Markers, true);
+    assert_eq!(tool.overlays, crate::tool::Overlays::default());
+    tool.set_links(true);
+    assert_eq!(
+        tool.update(&session, 2, press(Action::Overlays)).unwrap(),
+        Some(Command::Overlays),
+        "the Links tool has the same button"
+    );
+}

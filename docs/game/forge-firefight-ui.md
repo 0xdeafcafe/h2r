@@ -356,13 +356,15 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Properties | X on the thing aimed at or held | a list page on the in-game Controller Settings host; rows from a table by kind | U4 |
 | Tools | D-pad Right | `kit.picker.game` over the tools that are built | U4 |
 | Tool settings | D-pad Down; a row of Forge options | a list page on the same host, a row per setting | U4, rows in P1 |
+| Overlays | Back | a list page on the same host as Tool settings, a row per overlay | |
 | Link | X in the Links tool | a large dialog with a body and two rows | U4 |
 | Questions | delete with links, overwrite, leave unsaved | the same dialog with Yes and No | U4 |
 | Forge menu | Start | the game's GAME MENU with rows added | U4 |
 | Forge options | a row of the Forge menu | a list page on the Controller Settings host | U4 |
 | Controls | a row of Forge options | a list page made from the bindings table | U4 |
 | Coordinates | a row of Properties | a list page on the same host; A opens the keyboard | P1 |
-| Placed objects, Map limits | rows of Forge options | `kit.picker.game`; a list page of facts | P4 |
+| Placed objects | a row of Forge options | `kit.picker.game` over the objects placed, each flying the monitor to it | built |
+| Map limits | a row of Forge options | a list page of facts | P4 |
 
 - **Object menu.** Each picker has its six rows, scroll arrows and
   description block. The groups come from a table

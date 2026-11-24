@@ -164,6 +164,8 @@ pub enum Prop {
     MovementSnap,
     /// World or Local axes.
     Axes,
+    /// An overlay, On (value 0) or Off (value 1).
+    Overlay(forge::tool::Overlay),
     /// Open the six-coordinate editor.
     Coordinates,
     /// A spawn or goal's team.
@@ -275,6 +277,9 @@ pub enum Choice {
     BuildGround,
     /// **Test waves**: build the ground when it is not current.
     TestWaves,
+    /// The placed objects browser: fly the monitor to an added object and
+    /// look at it.
+    FlyTo(forge::OpId),
     /// Set a value to value `i` of its row's values.
     Set(Prop, usize),
     /// A number typed on the game's keyboard.
@@ -935,6 +940,57 @@ pub fn settings(rotation_snap: usize, movement_snap: usize, local_axes: bool) ->
     }
 }
 
+/// An overlay of the Overlays page: its name and what it draws.
+pub struct OverlayDef {
+    pub overlay: forge::tool::Overlay,
+    pub label: &'static str,
+    pub description: &'static str,
+}
+
+/// The overlays, in order (docs/game/forge-editing.md "Overlays"). An
+/// overlay that is not built is absent.
+pub const OVERLAYS: &[OverlayDef] = &[
+    OverlayDef {
+        overlay: forge::tool::Overlay::Markers,
+        label: "Markers",
+        description: "A marker at each spawn, flag, hill, teleporter and item spawner.",
+    },
+    OverlayDef {
+        overlay: forge::tool::Overlay::Monitors,
+        label: "Other monitors",
+        description: "A ring at each other player's monitor.",
+    },
+    OverlayDef {
+        overlay: forge::tool::Overlay::Gizmo,
+        label: "Axes",
+        description: "The axes and outline at the held or aimed object.",
+    },
+];
+
+/// The Overlays page: a row for each of [`OVERLAYS`], showing On or Off;
+/// A opens the picker on the two. `on` is [`forge::tool::Overlays`].
+pub fn overlays(on: forge::tool::Overlays) -> Sheet {
+    let values = vec!["On".to_string(), "Off".to_string()];
+    Sheet {
+        kind: Kind::Settings,
+        title: "OVERLAYS".into(),
+        body: String::new(),
+        rows: OVERLAYS
+            .iter()
+            .map(|d| {
+                text_value_row(
+                    d.label,
+                    d.description,
+                    Prop::Overlay(d.overlay),
+                    &values,
+                    usize::from(!on.on(d.overlay)),
+                )
+            })
+            .collect(),
+        focus: 0,
+    }
+}
+
 /// A row of Forge options: its label, its help (what it opens, for the
 /// help block under the rows when the page is the shared settings dialog,
 /// docs/game/ui-builder.md "The settings dialog") and the screen it opens.
@@ -945,8 +1001,8 @@ pub struct OptionDef {
 }
 
 /// Forge options, in order (docs/game/forge-firefight-ui.md "The screens").
-/// Monitor look joins when it is built; Placed objects and Map limits in
-/// P4, Generate nav in F9, Players in F5, Map settings and Publish in F14.
+/// Monitor look joins when it is built; Map limits in P4 (Placed objects is
+/// [`placed_row`], after these), Generate nav in F9, Players in F5, Map settings and Publish in F14.
 pub const OPTIONS: &[OptionDef] = &[
     OptionDef {
         label: "Tool settings...",
@@ -962,6 +1018,81 @@ pub const OPTIONS: &[OptionDef] = &[
 
 /// The Forge options page.
 pub fn options() -> Sheet {
+    options_with(&[])
+}
+
+/// An added object of the map, a row of the placed objects browser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub id: forge::OpId,
+    pub group: Group,
+    /// What the row says: the object's name, numbered when the map has
+    /// more than one of it ("Beacon 2").
+    pub name: String,
+    /// The row's line in the picker: its group and where it stands.
+    pub line: String,
+}
+
+/// The browser's rows for `objects` (an id, a group, a name and a
+/// position each, in the order the session holds them): grouped as the
+/// object menu groups ([`GROUPS`]), then by name, then in the order
+/// placed; an object of a name the map holds more than once is numbered
+/// in that order.
+pub fn placed_rows(objects: &[(forge::OpId, Group, String, [f32; 3])]) -> Vec<Placed> {
+    let mut rows: Vec<(usize, &(forge::OpId, Group, String, [f32; 3]))> =
+        objects.iter().enumerate().collect();
+    rows.sort_by(|(ia, a), (ib, b)| (a.1, &a.2, ia).cmp(&(b.1, &b.2, ib)));
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, (_, (id, group, name, at))) in rows.iter().enumerate() {
+        let same = |j: usize| rows[j].1.1 == *group && rows[j].1.2 == *name;
+        let first = (0..=i).find(|j| same(*j)).unwrap_or(i);
+        let many = first < i || rows.get(i + 1).is_some_and(|_| same(i + 1));
+        out.push(Placed {
+            id: *id,
+            group: *group,
+            name: if many {
+                format!("{name} {}", i - first + 1)
+            } else {
+                name.clone()
+            },
+            line: format!(
+                "{}. At {}, {}, {}.",
+                group.def().one,
+                number(at[0]),
+                number(at[1]),
+                number(at[2])
+            ),
+        });
+    }
+    out
+}
+
+/// The Placed objects row: A opens a picker over every added object, each
+/// flying the monitor to it. With none placed it is a fact.
+pub fn placed_row(placed: &[Placed]) -> SheetRow {
+    const HELP: &str = "Fly the monitor to an object you placed.";
+    if placed.is_empty() {
+        return SheetRow::new("Placed objects", Act::Info)
+            .value("None")
+            .describe("Nothing is placed yet. Place one from the object menu.");
+    }
+    let pick = PickSpec {
+        title: "Placed objects".into(),
+        values: placed.iter().map(|p| p.name.clone()).collect(),
+        current: 0,
+        details: placed.iter().map(|p| p.line.clone()).collect(),
+        description: String::new(),
+        choices: placed.iter().map(|p| Choice::FlyTo(p.id)).collect(),
+        closes: false,
+    };
+    SheetRow::new("Placed objects", Act::Pick(pick))
+        .value(&placed.len().to_string())
+        .describe(HELP)
+}
+
+/// The Forge options page with the placed objects browser over `placed`
+/// ([`placed_rows`]).
+pub fn options_with(placed: &[Placed]) -> Sheet {
     Sheet {
         kind: Kind::Options,
         title: "FORGE OPTIONS".into(),
@@ -970,6 +1101,7 @@ pub fn options() -> Sheet {
             .iter()
             .map(|o| SheetRow::new(o.label, Act::Open(o.opens)).describe(o.description))
             .chain([
+                placed_row(placed),
                 SheetRow::new("Build AI ground", Act::Choose(Choice::BuildGround))
                     .describe("Build the nav mesh and zones for the placed labels now."),
                 SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))

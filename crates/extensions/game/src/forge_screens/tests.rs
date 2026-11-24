@@ -493,8 +493,8 @@ fn every_forge_option_has_its_help() {
     let [top, left, bottom, right] = SETTINGS_HELP_TEXT.rect;
     let (width, height) = (i32::from(right - left), i32::from(top - bottom));
     let page = sheet::options();
-    // The options, then Build AI ground and Test waves.
-    assert_eq!(page.rows.len(), sheet::OPTIONS.len() + 2);
+    // The options, then Placed objects, Build AI ground and Test waves.
+    assert_eq!(page.rows.len(), sheet::OPTIONS.len() + 3);
     for r in &page.rows {
         let help = r.description.as_deref().unwrap_or_default();
         assert!(!help.trim().is_empty(), "{}: no help", r.label);
@@ -574,4 +574,79 @@ fn the_forge_options_build_the_ground_and_test_waves() {
     assert!(rows.contains(&("Build AI ground", &Act::Choose(Choice::BuildGround))));
     assert!(rows.contains(&("Test waves", &Act::Choose(Choice::TestWaves))));
     assert!(ForgeScreen::new(Kind::Options).show(s).is_ok());
+}
+
+/// The Overlays page has a row for each overlay of the table, showing On
+/// or Off, and its picker sends the overlay with the value's index.
+#[test]
+fn the_overlays_page_has_a_row_for_each_overlay() {
+    use forge::tool::{Overlay, Overlays};
+    let mut on = Overlays::default();
+    on.set(Overlay::Monitors, false);
+    let page = sheet::overlays(on);
+    assert_eq!(page.title, "OVERLAYS");
+    assert_eq!(page.rows.len(), sheet::OVERLAYS.len());
+    assert_eq!(sheet::OVERLAYS.len(), Overlay::ALL.len());
+    let values: Vec<_> = page.rows.iter().map(|r| r.value.as_deref()).collect();
+    assert_eq!(values, [Some("On"), Some("Off"), Some("On")]);
+    let Act::Pick(p) = &page.rows[1].act else {
+        panic!("a value row opens a picker");
+    };
+    assert_eq!(p.values, ["On", "Off"]);
+    assert_eq!(p.current, 1);
+    assert_eq!(
+        p.choices,
+        [
+            Choice::Set(Prop::Overlay(Overlay::Monitors), 0),
+            Choice::Set(Prop::Overlay(Overlay::Monitors), 1)
+        ]
+    );
+}
+
+fn placed_sample() -> Vec<sheet::Placed> {
+    use forge_doc::OpId;
+    sheet::placed_rows(&[
+        (OpId(7), sheet::Group::Scenery, "Beacon".into(), [1., 2., 3.]),
+        (OpId(2), sheet::Group::Crates, "Barrel".into(), [0., 0., 0.5]),
+        (OpId(5), sheet::Group::Scenery, "Beacon".into(), [-4.25, 0., 0.]),
+        (OpId(9), sheet::Group::Scenery, "Arch".into(), [0., 0., 0.]),
+    ])
+}
+
+/// The browser lists groups in the object menu's order, then names, and
+/// numbers an object the map holds more than once in the order placed.
+#[test]
+fn the_placed_objects_are_grouped_named_and_numbered() {
+    let rows = placed_sample();
+    let names: Vec<&str> = rows.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Arch", "Beacon 1", "Beacon 2", "Barrel"]);
+    let ids: Vec<u32> = rows.iter().map(|p| p.id.0).collect();
+    assert_eq!(ids, [9, 7, 5, 2], "numbered in the order placed");
+    assert_eq!(rows[2].line, "Scenery. At -4.25, 0, 0.");
+    assert_eq!(rows[3].line, "Crate. At 0, 0, 0.5.");
+}
+
+/// The Placed objects row opens a picker whose rows fly to their object;
+/// with nothing placed it is a fact, and the page still fits its screen.
+#[test]
+fn the_placed_objects_row_picks_an_object_to_fly_to() {
+    let rows = placed_sample();
+    let page = sheet::options_with(&rows);
+    let row = page
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    assert_eq!(row.value.as_deref(), Some("4"));
+    let Act::Pick(p) = &row.act else {
+        panic!("a browser picks");
+    };
+    assert_eq!(p.values, ["Arch", "Beacon 1", "Beacon 2", "Barrel"]);
+    assert_eq!(p.details.len(), 4);
+    assert_eq!(p.choices[1], Choice::FlyTo(forge_doc::OpId(7)));
+    assert!(ForgeScreen::new(Kind::Options).show(page).is_ok());
+    let none = sheet::options();
+    let row = none.rows.iter().find(|r| r.label == "Placed objects").unwrap();
+    assert_eq!(row.act, Act::Info);
+    assert_eq!(row.value.as_deref(), Some("None"));
 }

@@ -7,7 +7,7 @@ use agent::forge::ground as ground_api;
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
 use forge::camera::Camera;
-use forge::tool::{Action, Axes, Command, Extent, Input, Show, Tool};
+use forge::tool::{Action, Axes, Command, Extent, Input, Overlay, Show, Tool};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing, ThingKind};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
@@ -71,6 +71,9 @@ const GROUND_REACH: f32 = 100.;
 /// How far in front of the monitor a ground marker is placed, in world
 /// units.
 const MARKER_REACH: f32 = 3.;
+/// How far from an object the placed objects browser's fly-to stands, in
+/// world units.
+const FLY_DISTANCE: f32 = 5.;
 
 pub(super) struct Editor {
     pub session: Arc<Session>,
@@ -177,6 +180,11 @@ impl Editor {
         if let Err(reason) = self.choose(tick, Choice::Load(name)) {
             self.notice = Some((reason, tick));
         }
+    }
+
+    /// Whether an overlay is on.
+    pub fn overlay(&self, overlay: Overlay) -> bool {
+        self.tool.overlays.on(overlay)
     }
 
     pub fn monitor(&self) -> bool {
@@ -315,6 +323,8 @@ impl Editor {
             "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
             "rotation_snap":ANGLE_STEPS[self.rotation_step], "movement_snap":sheet::MOVE_STEPS[self.movement_step],
             "axes":self.tool.axes.name(),
+            "overlays":Value::Object(Overlay::ALL.iter()
+                .map(|o| (o.name().to_string(), Value::Bool(self.tool.overlays.on(*o)))).collect()),
             "ui_up":self.ui_up, "dirty":self.dirty(),
             "aimed_link":self.tool.aimed_link.map(linkable_json), "link_from":self.tool.link_from.map(linkable_json),
             "teleporters":self.session.teleporters().iter().map(|t| json!({
@@ -393,7 +403,7 @@ impl Editor {
     /// ([`super::markers_world::entries`]). None with the monitor off.
     pub fn marker_entries(&self) -> Vec<super::markers_world::Entry> {
         use super::markers_world::{Facts, entries, with_area};
-        if !self.tool.monitor {
+        if !self.tool.monitor || !self.overlay(Overlay::Markers) {
             return Vec::new();
         }
         let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
@@ -837,7 +847,24 @@ impl Editor {
             }),
             saved: self.saved.clone(),
             filename: self.filename.clone(),
+            placed: self.placed(),
         });
+    }
+
+    /// The added objects as the placed objects browser lists them.
+    fn placed(&self) -> Vec<sheet::Placed> {
+        let palette = self.session.palette();
+        let names = groups(palette);
+        let objects: Vec<_> = self
+            .session
+            .objects()
+            .iter()
+            .filter_map(|o| {
+                let (group, name) = names.get(palette.iter().position(|p| *p == o.item)?)?;
+                Some((o.id, *group, name.clone(), o.frame.position))
+            })
+            .collect();
+        sheet::placed_rows(&objects)
     }
 
     fn busy(&self) -> bool {
@@ -964,6 +991,7 @@ impl Editor {
             }
             Tools => screens::request(Kind::Tools)?,
             Settings => screens::request(Kind::Settings)?,
+            Overlays => screens::open(sheet::overlays(self.tool.overlays))?,
             Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
             BuildGround => return self.start_ground(tick, false, None),
             TestWaves => return self.start_ground(tick, true, None),
@@ -1147,6 +1175,18 @@ impl Editor {
                 let frame = self.marker_frame()?;
                 return self.command(tick, Command::Marker { label, frame });
             }
+            Choice::FlyTo(id) => {
+                let at = self
+                    .session
+                    .objects()
+                    .iter()
+                    .find(|o| o.id == id)
+                    .ok_or("That object is gone.")?
+                    .frame
+                    .position;
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                self.tool.camera = Some(eye.toward(at, FLY_DISTANCE));
+            }
             Choice::BuildGround => return self.command(tick, Command::BuildGround),
             Choice::TestWaves => return self.command(tick, Command::TestWaves),
             Choice::Tool(t) => self.tool.set_links(t == ToolKind::Links),
@@ -1167,6 +1207,12 @@ impl Editor {
                 } else {
                     Axes::World
                 });
+            }
+            Choice::Set(Prop::Overlay(overlay), i) => {
+                if i > 1 {
+                    return Err("No such value.".into());
+                }
+                self.tool.overlays.set(overlay, i == 0);
             }
             Choice::Set(Prop::Heading, i) => {
                 let yaw = HEADINGS.get(i).ok_or("No such heading.")?.to_radians();
