@@ -108,7 +108,7 @@ paths:
 | AI bodies, shots, grenades, deaths | the unit entity and the weapon, grenade and damage events | **E**; probes P1 and P3 of ai-networking.md |
 | a unit enters, leaves or boards a vehicle | events 24, 11 and 8; the unit's parent-vehicle flag | **E** |
 | an actor's dialogue line | the actor channel's `Line` record | **Code**, `crates/live/actor-net/src/wire.rs` |
-| a retail game event with its retail line and announcer sound | the game engine event (type 7) | **E** the type and the record's fields ([hud-kit.md](hud-kit.md#game-events-and-medals-0x0019de80)); generating one is traced only as `SIM_EVENT_GENERATE` (`0xb5a70`) |
+| a retail game event with its retail line and announcer sound | the game engine event (type 7) | **E** the type and the record's fields ([hud-kit.md](hud-kit.md#game-events-and-medals-0x0019de80)); the host posts a round-start event through `GAME_EVENT_POST` (`0x19eb90`) |
 | HUD values, waypoints, countdowns, script messages, sounds, music | nothing in retail: no entity field and no event carries them | **E**; the show channel below |
 | a bot order | nothing: a phantom's pad is a player's input on the host, and its body replicates as any player's | **Code**, `crates/live/bots/src/phantom.rs` |
 
@@ -126,7 +126,8 @@ engine does not replicate, is one of two things:
   255 bytes.
 - **Cues**: one-shot events with a tick. A message (text index, up to
   four typed hole values, audience; **Code**, `rules::show::Cue`), a
-  sound (tag-table index, an entity or a point or an audience) and a
+  Firefight or Siege round-start line (the declared type byte), a sound
+  (tag-table index, an entity or a point or an audience) and a
   medal line. A cue is not state: a machine that joins later does not
   get it.
 
@@ -146,10 +147,14 @@ works") carries both, with two more record tags:
 The `Show` record is not built (slice W2); nor is the 64-bit hash of the
 peer's filtered state the `Digest` gains, whose mismatch asks for a
 `Key`. The host filters the state per peer, so a team's waypoint is not
-sent to the other team's machines. A cue carries its audience as a mask
+sent to the other team's machines. A message cue carries its audience as a mask
 of player slots and goes to every peer; each peer shows it to its own
 players in the audience and to no one else (**Code**,
 `crates/extensions/game/src/rules/world/show.rs`).
+
+A round-start clip goes to every peer. The viewer accepts only a type
+with a custom start line that matches its running script or Firefight
+director. The one-byte payload selects a local clip (`rules::show::Cue`).
 
 **Authenticated** (not built; the records ride unauthenticated until it
 is). The tunnel and XNet's UDP mapping give no transport

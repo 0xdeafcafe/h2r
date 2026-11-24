@@ -401,6 +401,13 @@ clip is queued; one line per HUD line, so a chain of three bounces says
 Superbounce, Double bounce and Triple bounce in that order, and a Monster
 says Monster bounce. Bounced has no clip and is silent.
 
+Firefight and Siege use the same queue for their round-start lines.
+The build renders two synthetic voice clips from
+`art/announcer/start_lines.rs`. A published Studio take at
+`art/announcer/firefight.wav` or `art/announcer/siege.wav` replaces its
+corresponding generated clip. Studio's Sound tool can measure the
+embedded clips as `announcer/firefight` and `announcer/siege`.
+
 - **Taking turns with the game.** Our clips have no sound tag, so they
   cannot be lines in the game's queue. A clip of ours starts only when the
   game's queue is idle (`game_idle`, read each tick). While it plays, a

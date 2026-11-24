@@ -1,4 +1,4 @@
-# Announcer lines for our medals
+# Announcer lines
 
 One WAV per medal of our own (docs/game/superbounce.md, "Medals";
 docs/game/teabag.md), named by medal id: `superbounce`, `double-bounce`,
@@ -22,3 +22,12 @@ with RETAIL_DIR the exported retail lines and SOURCE_DIR the trimmed,
 loudness-levelled sources.
 
 Stored in Git LFS (`.gitattributes`).
+
+## Game types
+
+Firefight and Siege each have a spoken round-start cue. The build renders
+the original phoneme scores in `start_lines.rs` as mono PCM WAVs. A
+Studio recording named `firefight.wav` or `siege.wav` in this directory
+takes precedence when its LFS content is available. Both clip IDs are
+available in Studio's Sound tool and play through the game's announcer
+queue.

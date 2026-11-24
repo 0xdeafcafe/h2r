@@ -591,3 +591,22 @@ python3 -I words.py disc/default.xbe 0x216a88 9
   less one.
 - The `rules` feature answers the script index with Slayer's category,
   ECX 5, and leaves every other index to the body.
+
+## 2026-11-24: GT5, posting the round-start event
+
+Commit `9d70a4945` uses four entry points from the owner's retail image.
+The initializer at `0x19ebb0` takes the event address in EAX, the type in
+ECX and the index in EDX. It initializes the 0x24-byte event with no
+specific recipient. `0x19eb90` takes its address in EAX and posts it.
+The distributed send takes the address in EDX, and the local delivery
+takes it in EDI. All four return without popping arguments. The carrier
+start slots also call those last two entries directly. Filtering their
+callers preserves the remaining player setup in the CTF slot.
+
+To repeat the static read, inspect the event poster, initializer and the
+Slayer player-ready slot on the same image as GT0.
+
+```sh
+h2 disasm disc/default.xbe 0x19eb90 55
+h2 disasm disc/default.xbe 0x2bbfa0 35
+```

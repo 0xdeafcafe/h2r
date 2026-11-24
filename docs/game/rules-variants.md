@@ -266,7 +266,7 @@ script (compiled once, kept):
 | Part of the entry | From |
 |---|---|
 | name | `header.name`, a space and U+E006; the string hook serves it at `name_id(i)` |
-| game type | `header.engine()` as a list type (`GameType::ALL`) |
+| game type | the record's retail loader template (`GameType::menu_template`), as an index in `GameType::ALL` |
 | pairs | the record of the script: its value of every setting of the type that the editor offers (`game_variants::inject::pairs`, the store's own rule, **Code**) |
 | description | `header.about`, at description number `DESCRIPTION_BASE + i` |
 | icon | by origin, not by script: U+E006 for a compiled-in script, U+E007 for the store's |
@@ -276,13 +276,11 @@ The entry carries every offered pair, not only the script's, so the
 disc's per-type defaults never show through.
 
 The pairs cannot carry the `hx` block. When the original loader returns,
-the wrapper writes each listed script's block into its record in the
-content list (`tweakers::patch_builtins` today, for Superbounce at the
-list's first fill; it moves beside the wrapper and covers every listed
-script). From then the built-in record names its script, and so does the
-copy Edit makes. `community_variants::row_of` reads the row from the
-block alone; the match by name (`row_builtin`) and the superbounce
-mode's match by name are deleted.
+the wrapper restores each community and store variant's block with
+`community_variants::write_blocks`. The script index uses a Slayer
+template in the loader and regains index 6 and its empty type area at
+this point. The record a player selects or copies carries the script
+reference. `community_variants::filed_type` resolves its declared type.
 
 `DESCRIPTION_BASE` moves to 40, giving the listed scripts 40 to 93 (54
 entries; retail uses 0 to 38 and the store 94 to 100).
@@ -359,9 +357,7 @@ through `record_for` and reads it back.
   `h2 variants from-script <file.rules> [--option KEY=VALUE]... [-o DIR]`
   (new) writes it. `h2 variants port <input> --script FILE` keeps the
   input's record settings and attaches the script; the block's extras are
-  the script's settings, not the input's. A bundle's checks are unchanged
-  (`Bundle::integrity`): the IR still must hash to the file's hash and
-  ride the record's engine.
+  the script's settings, not the input's. The IR must match its hash. `Bundle::integrity` accepts the declared engine or the script index, where the record names its script explicitly.
 - **Live.** `bundle_for_script` (`crates/live/live-server/src/game_variants.rs`)
   builds its record with `record_for` in place of the bare stock record,
   and takes the description from `about` when the request gives none.

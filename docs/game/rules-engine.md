@@ -185,7 +185,7 @@ larger cap pays for names and strings.
 
 ### Which engine index a script rides
 
-A script game is a game of an existing retail engine index, as Firefight
+`portable::record_for` writes a record on the script's retail engine index, as Firefight
 is a Slayer game ([firefight.md](firefight.md#the-game-engine-underneath)).
 A new index is not possible without rewriting four retail paths:
 
@@ -196,11 +196,13 @@ A new index is not possible without rewriting four retail paths:
 | Wire codec decode `0x7d520` | decodes the type area per engine through a jump table, then runs the clean-up; a changed record is a failed decode | **E**, game-options.md |
 | Lobby protocol map `0x161c90` | synchronous protocol for the two deprecated indexes and anything out of range | **E**, [live-coop.md](../live/live-coop.md) |
 
-The script index (`rules::SCRIPT_INDEX`, 6) is the index of ours that
-replaces them: the clean-up, the codec and the protocol map are answered
-natively for it, and the engine table is the slice still to come
-([game-types-without-carriers.md](game-types-without-carriers.md#no-retail-engine-object)).
-No script record carries it yet.
+Index 6 (`rules::SCRIPT_INDEX`, `variants::GameType::Script`) uses a
+host-owned engine object, native clean-up and wire codec, and the
+distributed protocol. It has common settings and an empty type area.
+The variant store accepts it with a named script. Saves and editor pages
+use the Slayer template, and the script header supplies the menu row and
+round-start line. The record producer still writes its retail index.
+[Engine paths](game-types-without-carriers.md#no-retail-engine-object).
 
 **Design.** The script names its game type (`type`), and the type's row carries the index
 ([game-types-without-carriers.md](game-types-without-carriers.md#the-header)):
@@ -707,12 +709,12 @@ at the next open) it is written as its bundle and the pending file goes.
 - **In the variant list.** At each load of the main menu's tags the
   store's variants join the built-ins after the community variants
   (community-gametypes.md, "The merged block"), named "<name> U+E007".
-  Each entry's pairs are its record's settings, and at `GAME_ACTIVATE`,
-  before the game copies the options, a variant built from one of these
-  entries gets its bundle's block written into the options' record
-  (`inject::apply_block`, feature `game-variants`, ahead of the options'
-  transport to guests). So choosing one in Custom Games makes the game a
-  script game of that script, and its extras apply.
+  Each entry's pairs hold the record settings. When the loader returns,
+  `inject::restore_listed` restores the bundle block and record index.
+  An index-6 record uses Slayer's loader template and has an empty type
+  area. The Change Rules lists resolve its type from the script prefix.
+  At activation `inject::apply_block` applies the selection before
+  the options reach guests.
 - **From Live.** The variant list's load starts a refresh on a thread of
   its own (`game_variants::refresh_live`): `GET /v1/variants?author=<xuid>`
   as the first signed-in account (`Hle::my_game_variants`, 5 s), then each
@@ -726,10 +728,10 @@ at the next open) it is written as its bundle and the pending file goes.
   a bundle under `ported/` (`variants::portable::port`), keyed by the
   SHA-256 of its record and
   signature, so an edited save ports again and the rest are skipped. The
-  saves are only read. Each is ported with its engine's built-in
-  script named in the block and carried; the input's own `hx` extras are
-  not kept. A save whose record already names a script is refused by
-  name: its IR is not in the save. One line per run gives the counts ported, skipped and
+  saves are only read. A save with a script reference keeps its named script and packed
+  options. Porting resolves the IR from the compiled-in scripts or the
+  local store and reports the save name if that lookup fails. Other saves
+  take their retail engine's built-in script. One line per run gives the counts ported, skipped and
   refused, with each refusal's name and reason. The retail built-ins and
   the community variants are already in the list, so they are not ported
   at boot; `port::port_builtins` ports them on request.
@@ -791,9 +793,11 @@ the engine index the record is on. A retail type keeps its engine's
 index (ctf 1, slayer 2, oddball 3, koth 4, juggernaut 7, territories 8,
 assault 9); our types ride Slayer's, 2. `Header::engine` reads it. The
 type files a variant under its row of the game type list: `research`
-under Research and Devolution, `party` and `siege` under Party Games,
-the others under their own row (`header::list_row`,
-`community_variants::Row::of_type`, [community-gametypes.md](community-gametypes.md#tweakers)).
+under Research and Devolution, `party` under Party Games, and the other
+nine under their named rows. At round start the authority posts the
+declared type's line, including when `uses` selects a different type's
+handlers. See [the list](community-gametypes.md#tweakers) and
+[the start event](game-types-without-carriers.md#the-display).
 A script with no `type` line is the error "a script names its game type:
 type slayer", and an unknown word is refused by name ("unknown type x: a
 type is slayer, ctf, ..."). The IR header carries the type as one byte.
@@ -2133,7 +2137,7 @@ through `rules::header`:
 | Header | What it turns on | Game side |
 |---|---|---|
 | `requires hud.superbounce`, a capability that gates no entry | the superbounce mode: HUD, marks, priming, medals | `header::script_asks_superbounce` over the block's script reference, in `variant_ext::Decision::superbounce`, so a guest that applies its host's block turns the mode on too, and the mode needs no running script |
-| `type research`, `type party` | a place under Research and Devolution or Party Games ([community-gametypes.md](community-gametypes.md#tweakers)) | `header::list_row` (`Row::of_type`); `community_variants::row_of` asks it of a mode 2 block's script through `header::block_row` |
+| `type` | the variant list row and round-start line | `community_variants::filed_type` and `rules::start_line` use the type from the script header |
 
 Both find the script by the record's prefix among the compiled-in
 scripts (`runtime::compiled_in`) and in the game-variant store. With the
