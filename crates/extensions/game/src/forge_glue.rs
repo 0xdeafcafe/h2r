@@ -170,6 +170,7 @@ impl Driver {
         controls::publish(controls::State::default());
         crate::forge_screens::publish(crate::forge_screens::Facts::default());
         crate::forge_readout::clear();
+        crate::forge_hud::clear();
     }
 
     fn open(&mut self, loaded: &Loaded) -> Result<(), String> {
@@ -299,6 +300,7 @@ impl Driver {
             e.tick(tick, bsp, crate::forge_screens::ui_up(m), game);
             let now = tick as f32 / 30.;
             crate::forge_readout::publish(e.readout_scene(game));
+            crate::forge_hud::publish(e.monitor_hud());
             self.markers = e.monitor_markers(now);
             // The things are rebuilt a few times a second; the aimed and
             // held things move the selection every tick.
@@ -346,6 +348,7 @@ impl Feature for Hooks {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         controls::camera_hooks(b)?;
         crate::forge_readout::hook(b)?;
+        crate::forge_hud::hook(b)?;
         let driver = self.0.clone();
         b.game().on_start("reset the Forge document", move |_| {
             controls::forget_park();

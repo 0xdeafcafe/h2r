@@ -2,7 +2,11 @@
 format = 1
 id = "forge"
 name = "Forge"
-description = "The Forge readout: what the player aims at, as rows beside the motion tracker and marks on the level."
+description = "The monitor's HUD (prompt, budget pill, tool) and the Forge readout: what the player aims at, as rows beside the motion tracker and marks on the level."
+
+[[item]]
+kind = "hud"
+source = "huds/forge.hud.yaml"
 
 [[item]]
 kind = "hud"

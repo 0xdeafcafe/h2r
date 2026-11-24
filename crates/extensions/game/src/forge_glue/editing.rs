@@ -22,7 +22,7 @@ use crate::forge_screens::{
     sheet::{self, Ask, Choice, Group, Kind, Prop, Sheet, Tool as ToolKind},
 };
 use crate::ui_kit::{
-    forge::{ANGLE_STEPS, HEADINGS, Hud, Mode},
+    forge::{ANGLE_STEPS, HEADINGS},
     spec::ScreenSpec,
 };
 
@@ -93,6 +93,8 @@ pub(super) struct Editor {
     coordinates: Option<(CoordinateTarget, forge::Frame)>,
     area: Option<area::Draft>,
     notice: Option<(String, u32)>,
+    /// The right trigger is held: a held thing is being turned.
+    rotating: bool,
     /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
     /// The delete or removal the question is about.
@@ -147,6 +149,7 @@ impl Editor {
             coordinates: None,
             area: None,
             notice: None,
+            rotating: false,
             link_dialog: None,
             delete_asked: None,
             overwrite_asked: None,
@@ -506,72 +509,75 @@ impl Editor {
         }
     }
 
-    /// The Links tool's target line: what is aimed at, or the link in hand.
-    fn link_target(&self) -> String {
-        let aimed = self
-            .tool
-            .aimed_link
-            .filter(|&t| Some(t) != self.tool.link_from);
-        match (self.tool.link_from, aimed) {
-            (Some(from), Some(to)) => format!("{} to {}", self.linkable(from), self.linkable(to)),
-            (Some(from), None) => format!("From {}", self.linkable(from)),
-            (None, Some(thing)) => self.linkable(thing),
-            (None, None) => String::new(),
-        }
-    }
-
-    fn hud(&self) -> Hud {
-        if self.tool.links {
-            let mode = if self.tool.link_from.is_some() {
-                Mode::Linking
-            } else if self.tool.aimed_link.is_some() {
-                Mode::Aimed
-            } else {
-                Mode::Idle
-            };
-            return Hud {
-                mode,
-                links: true,
-                target: self.link_target(),
-                used: self.session.objects().len(),
-                limit: self.session.budget(),
-                rebuild: self.session.pending_rebuild(),
-                notice: self.notice.as_ref().map(|(text, _)| text.clone()),
-            };
-        }
-        let mode = if let Some(area) = &self.area {
-            match area.mode() {
-                controls::AreaMode::Radius => Mode::AreaRadius,
-                controls::AreaMode::Path => Mode::AreaPath,
-            }
-        } else if self.tool.placing.is_some() {
-            Mode::Placing
-        } else if self.tool.held_thing.is_some() {
-            Mode::Holding
-        } else if self.tool.aimed_thing.is_some() {
-            Mode::Aimed
-        } else {
-            Mode::Idle
-        };
-        Hud {
-            mode,
-            target: if let Some(area) = &self.area {
-                area.title()
-            } else {
-                self.target().map_or_else(String::new, |(name, _, _)| name)
-            },
-            used: self.session.objects().len(),
-            limit: self.session.budget(),
-            rebuild: self.session.pending_rebuild(),
-            notice: self.notice.as_ref().map(|(text, _)| text.clone()),
-            links: false,
-        }
-    }
-
-    /// The compositor's HUD (slice U3 moves it to the HUD kit). The
-    /// screens are the game's, so the compositor draws none.
+    /// The compositor's page: the reticle, with the gizmo and the markers
+    /// painted on it (slices U6 and U7 move them to the HUD kit). The rest of
+    /// the HUD is the kit's ([`Editor::monitor_hud`]) and the screens are
+    /// the game's, so the compositor draws none.
     pub fn page(&self) -> Option<ScreenSpec> {
-        self.tool.monitor.then(|| self.hud().spec())
+        self.tool.monitor.then(crate::ui_kit::forge::reticle)
+    }
+
+    /// What the HUD kit's `forge` HUD shows this tick (docs/game/
+    /// forge-firefight-ui.md, "The monitor HUD"): the tool and what its hand
+    /// has, the budget, the rebuilds pending and the notice. Nothing with
+    /// the monitor off.
+    pub fn monitor_hud(&self) -> crate::forge_hud::Published {
+        use hud_kit_core::views::forge::{Hand, Tool as KitTool, View};
+        if !self.tool.monitor {
+            return crate::forge_hud::Published::default();
+        }
+        let (tool, hand, target) = if self.tool.links {
+            let aimed = self
+                .tool
+                .aimed_link
+                .filter(|&t| Some(t) != self.tool.link_from);
+            let hand = if self.tool.link_from.is_some() {
+                Hand::Linking
+            } else if aimed.is_some() {
+                Hand::Aimed
+            } else {
+                Hand::Idle
+            };
+            (
+                KitTool::Links,
+                hand,
+                aimed.map(|t| self.linkable(t)).unwrap_or_default(),
+            )
+        } else {
+            let hand = if self.tool.placing.is_some() {
+                Hand::Placing
+            } else if self.tool.held_thing.is_some() {
+                Hand::Holding
+            } else if self.tool.aimed_thing.is_some() {
+                Hand::Aimed
+            } else {
+                Hand::Idle
+            };
+            (
+                KitTool::Objects,
+                hand,
+                self.target().map_or_else(String::new, |(name, _, _)| name),
+            )
+        };
+        // A held thing being turned says its heading, as the readout's.
+        let changing = (self.rotating && matches!(hand, Hand::Placing | Hand::Holding))
+            .then(|| self.tool.ghost)
+            .flatten()
+            .map(|frame| format!("Heading {}", heading_degrees(frame.rotation[0])));
+        crate::forge_hud::Published {
+            view: View {
+                monitor: true,
+                tool,
+                hand,
+                target,
+                used: self.session.objects().len() as u32,
+                limit: self.session.budget() as u32,
+                rebuild: self.session.pending_rebuild() as u32,
+                changing,
+                teach: None,
+            },
+            notice: self.notice.clone(),
+        }
     }
 
     /// Edits since the last save or load.
@@ -729,6 +735,7 @@ impl Editor {
             }
             let mut input = controls::sample();
             input.dialog = self.ui_up;
+            self.rotating = input.rotating && !self.ui_up;
             self.take_input(tick, input, bsp);
             let walls = bsp.and_then(|i| self.walls.get(i));
             self.hold_height = match (self.tool.held_thing, self.tool.ghost, walls) {
@@ -1313,6 +1320,14 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Goal { goal, frame } => s.place_goal(w, tick, goal, frame).map(|_| ()),
         _ => Err("A screen's command is not an edit.".into()),
     }
+}
+
+/// A heading in whole degrees, 0 to 359.
+fn heading_degrees(radians: f32) -> i32 {
+    if !radians.is_finite() {
+        return 0;
+    }
+    (radians.to_degrees().rem_euclid(360.0).round() as i32) % 360
 }
 
 /// A thing's name as the readout and the Properties header show it: the

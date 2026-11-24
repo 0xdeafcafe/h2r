@@ -44,6 +44,19 @@ pub struct Hud {
     pub notice: Option<String>,
 }
 
+/// The page the play window composites over the world while the monitor is
+/// up: the reticle's `+`, on a transparent canvas the gizmo and the markers
+/// are painted on. The rest of the monitor's HUD is the HUD kit's `forge`
+/// HUD, drawn by the game (`forge_hud`, docs/game/forge-firefight-ui.md,
+/// "The monitor HUD"); slice U7 removes this page with the compositor.
+pub fn reticle() -> ScreenSpec {
+    ScreenSpec::hud(
+        HUD,
+        "MONITOR",
+        vec![text("reticle", [9, -12, -16, 12], Justify::Centre, "+".into())],
+    )
+}
+
 impl Hud {
     pub fn spec(&self) -> ScreenSpec {
         let tool = match self.mode {

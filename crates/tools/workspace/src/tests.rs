@@ -773,7 +773,7 @@ fn the_first_party_huds_read() {
                 "huds/superbounce-readout.hud.yaml",
                 "huds/pill-block.hud.yaml",
             ],
-            "forge" => vec!["huds/forge-readout.hud.yaml"],
+            "forge" => vec!["huds/forge.hud.yaml", "huds/forge-readout.hud.yaml"],
             _ => vec!["huds/firefight.hud.yaml"],
         }) {
             files.insert(rel.to_owned(), std::fs::read(dir.join(rel)).unwrap());
@@ -788,6 +788,7 @@ fn the_first_party_huds_read() {
             "superbounce",
             "superbounce-readout",
             "pill-block",
+            "forge",
             "forge-readout",
             "firefight"
         ]
