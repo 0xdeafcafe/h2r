@@ -29,6 +29,8 @@ anyhow.workspace = true
 app-icon = { path = "../app-icon" }
 rfd = "0.18"
 content.workspace = true
+# The browser's package set (src/app/assets.rs): `GameSet`, edit files.
+workspace = { path = "../../tools/workspace" }
 editor-core = { path = "../../tools/editor-core" }
 scenario-edit = { path = "../../tools/scenario-edit" }
 # The Modeling tool's targets, undo and in-place writes (docs/editor/modeling.md).

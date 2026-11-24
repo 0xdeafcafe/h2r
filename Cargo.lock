@@ -7098,6 +7098,7 @@ dependencies = [
  "wgpu",
  "winit",
  "wma",
+ "workspace",
  "xbe",
  "xiso",
 ]

@@ -33,6 +33,7 @@ pub mod tag_api;
 pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
+pub mod assets;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
