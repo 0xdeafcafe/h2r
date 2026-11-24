@@ -240,12 +240,18 @@ mod tests {
             assert_eq!(of_type(ir.header.game_type), Some(src), "engine {index}");
             let report = crate::verify::verify(&ir).unwrap();
             assert!(report.fits(), "engine {index}: worst tick {}", report.worst_tick);
-            // A port declares nothing but what it does itself: a carried
-            // objective's script returns it by removing it (`delete`), as
-            // no engine slot runs for it.
-            let carried = matches!(index, 1 | 3 | 9);
-            let wants: &[&str] = if carried { &["objects.delete"] } else { &[] };
-            assert_eq!(ir.header.requires, wants, "engine {index}");
+            // A port declares what it does itself: a carried objective's
+            // script returns it by removing it (`delete`), as no engine
+            // slot runs for it, and the objective ports show their state
+            // in widgets and waypoints.
+            let wants: &[&str] = match index {
+                1 | 3 | 9 => &["hud.widgets", "objects.delete"],
+                4 | 8 => &["hud.waypoints", "hud.widgets"],
+                _ => &[],
+            };
+            let mut requires = ir.header.requires.clone();
+            requires.sort();
+            assert_eq!(requires, wants, "engine {index}");
         }
         for index in [1, 2, 3, 4, 7, 8, 9] {
             assert!(builtin(index).is_some(), "engine {index}");

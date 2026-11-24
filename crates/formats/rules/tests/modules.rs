@@ -8,10 +8,10 @@ use rules::lang::modules;
 use rules::{compile, compile_files, diagnose, diagnose_files};
 
 const WAVES: &str = "const base = 2\nfn bonus() -> int = base + 1\n";
-const MAIN: &str = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { score(k, bonus()) }\n";
+const MAIN: &str = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
 /// `MAIN` with `WAVES` where the `use` line is.
 const ONE: &str =
-    "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { score(k, bonus()) }\n";
+    "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
 
 fn files(list: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> + use<> {
     let list = list.to_vec();
@@ -41,7 +41,7 @@ fn a_file_named_by_two_files_is_read_once() {
         ("b.rules", "use \"waves.rules\"\n"),
         ("waves.rules", WAVES),
     ]);
-    let src = "rules \"Split\" 1\ntype slayer\nuse \"a.rules\"\nuse \"b.rules\"\non kill(v, k) { score(k, bonus()) }\n";
+    let src = "rules \"Split\" 1\ntype slayer\nuse \"a.rules\"\nuse \"b.rules\"\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
     assert_eq!(compile_files("m.rules", src, &read).unwrap().id(), compile(ONE).unwrap().id());
 }
 

@@ -46,6 +46,16 @@ pub const HUDS: [&str; 5] = [
     objective::territories::NAME,
 ];
 
+/// The first word of a slot (`odd` in `odd.holder`, the prefix the kit's
+/// element ids carry) and the objective HUD it belongs to.
+const SLOT_WORDS: [(&str, &str); 5] = [
+    ("ctf", objective::ctf::NAME),
+    ("asl", objective::assault::NAME),
+    ("odd", objective::oddball::NAME),
+    ("koth", objective::koth::NAME),
+    ("ter", objective::territories::NAME),
+];
+
 /// Metres in a world unit (`1 wu = 10 ft`). Not verified against the
 /// retail HUD's own distance.
 const METRES_PER_UNIT: f32 = 3.048;
@@ -104,7 +114,7 @@ pub fn huds_of(ir: &Ir) -> Vec<&'static str> {
             continue;
         };
         let word = slot.split('.').next().unwrap_or_default();
-        if let Some(&name) = HUDS.iter().find(|&&name| name == word)
+        if let Some(&(_, name)) = SLOT_WORDS.iter().find(|&&(w, _)| w == word)
             && !out.contains(&name)
         {
             out.push(name);
@@ -320,13 +330,13 @@ mod tests {
     #[test]
     fn the_huds_a_script_feeds_are_named_by_its_slots_first_word() {
         let (ir, _) = ::rules::build(
-            "rules \"X\" 1\ntype slayer\nrequires hud.widgets\n\
-             hud a: text at ctf.own\nhud b: text at oddball.time\nhud c: text at elsewhere.row\n\
+            "rules \"X\" 1\ntype slayer\nuses slayer\nrequires hud.widgets\n\
+             hud a: text at ctf.own\nhud b: text at odd.time\nhud c: text at elsewhere.row\n\
              hud d: text at ctf.enemy\n",
         )
         .unwrap();
         assert_eq!(huds_of(&ir), ["ctf", "oddball"]);
-        let none = ::rules::build("rules \"Y\" 1\ntype slayer\n").unwrap().0;
+        let none = ::rules::build("rules \"Y\" 1\ntype slayer\nuses slayer\n").unwrap().0;
         assert!(huds_of(&none).is_empty());
     }
 
@@ -335,7 +345,7 @@ mod tests {
     #[test]
     fn a_widget_naming_a_player_by_slot_carries_that_players_name() {
         let ir = ::rules::build(
-            "rules \"Z\" 1\ntype slayer\nrequires hud.widgets\nhud holder: text at oddball.holder\n\
+            "rules \"Z\" 1\ntype slayer\nrequires hud.widgets\nhud holder: text at odd.holder\n\
              on round_start { hud_value(holder, 17)\nhud_style(holder, 1)\nhud_show(holder, true) }\n",
         )
         .unwrap()

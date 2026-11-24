@@ -93,7 +93,9 @@ fn guest(block: [u8; LEN], engine: i32) -> (FakeGuest, [u32; 2]) {
     m.put_u32(points::GAME_GLOBALS.base, GAME_GLOBALS)
         .put_u32(points::GAME_TIME.base, GAME_TIME)
         .put_u32(points::GAME_ENGINE.base, ENGINE)
-        .put_u32(points::PLAYERS.base, PLAYERS);
+        .put_u32(points::PLAYERS.base, PLAYERS)
+        // No scenario loaded: the start gate's census reads none.
+        .put_u32(points::SCENARIO.base, 0);
     m.map(GAME_GLOBALS, 0x1200).map(GAME_TIME, 0x10).map(ENGINE, 0xc9c);
     m.put_u32(GAME_GLOBALS + 8, MODE_MULTIPLAYER)
         .put_u32(GAME_GLOBALS + guest::VARIANT + guest::VARIANT_ENGINE, engine as u32)
