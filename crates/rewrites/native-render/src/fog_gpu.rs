@@ -397,6 +397,16 @@ fn passes_of(
             .map_err(|r| FogRefusal::Look { pass: n, refusal: Refusal::EngineStates(r) })?;
         look.stage_states = applied.stage_states;
         let states = applied.render_states;
+        // Input masks also request evaluations whose result is never bound.
+        // The states above are resolved. Without a register write or a
+        // dynamic fragment selector, the shader itself is view-independent.
+        if layer.layer == crate::fog::FOG_LAYER
+            && !imp.pixel_constants_from_engine
+            && imp.vertex_defaults.iter().all(|r| r.origin != tags::material::Origin::Engine)
+            && (!imp.variant || imp.input_reads.ints & !tags::material::INSTANCE_INTS == 0)
+        {
+            look.per_draw_inputs = false;
+        }
         match fog_parity(&look) {
             Ok(()) => {}
             Err(FogParity::NoFinalCombiner) => return Err(FogRefusal::NoFinalCombiner { pass: n }),
@@ -1471,6 +1481,23 @@ mod selection_tests {
         assert_eq!(passes[0].look.textures[0], Stage::Bitmap { bitmap, image: 0 });
         assert_eq!(passes[0].look.textures[1], Stage::Bitmap { bitmap, image: 1 });
         assert!(crate::water_gpu::water_passes(&water, None).is_err());
+    }
+
+    #[test]
+    fn fog_ignores_an_unbound_input_and_retains_dynamic_bindings() {
+        let mut pass = imp(0, &[state(CULL_MODE, CW)]);
+        pass.per_draw_inputs = true;
+        pass.input_reads.vectors = 1;
+        let needs_inputs = |i| {
+            layer_passes(&material(16, vec![vec![i]]), 16).unwrap()[0].look.per_draw_inputs
+        };
+        assert!(!needs_inputs(pass.clone()));
+        pass.pixel_constants_from_engine = true;
+        assert!(needs_inputs(pass.clone()));
+        pass.pixel_constants_from_engine = false;
+        pass.variant = true;
+        pass.input_reads.ints = 1;
+        assert!(needs_inputs(pass));
     }
 
     #[test]

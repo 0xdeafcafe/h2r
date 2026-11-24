@@ -63,7 +63,9 @@ the cached pipelines with their own uniforms and sampled textures.
   `look::implementation_look` (a fog pass is exactly the "combiner that
   reads the fog register" that layer 3's `world_parity` refuses: its
   colour is `SET_FOG_COLOR` and its factor the fog unit's, both device
-  state at the layer). It refuses what layer 3 refuses — per-draw
+  state at the layer). An engine input mask can request an evaluation whose
+  value reaches no register, fragment selector or render state. Such a mask
+  alone allows a static fog shader. The pass refuses per-draw
   engine inputs, engine textures other than the lightmap, animated
   passes, engine-driven states from a source other than the instance's
   scalar 21 or a driven fog colour with the fog on
