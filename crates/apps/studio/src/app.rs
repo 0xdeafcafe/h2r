@@ -35,6 +35,7 @@ pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
 pub mod assets;
+pub mod preview_switch;
 pub mod problems;
 pub mod sound_import;
 pub mod tag_tree;
@@ -296,6 +297,11 @@ pub enum Action {
     RefreshProblems(Option<String>),
     /// Open the document of row `.0` of the Problems list (`app::problems`).
     OpenProblem(usize),
+    /// Run `pair.preview` for a document (the front one without `doc`),
+    /// as the **Preview in game** button does (`app::preview_switch`).
+    PreviewInGame(Option<Doc>),
+    /// Switch a document's preview target (`preview.target`).
+    SetPreviewTarget(Doc, preview_switch::PreviewTarget),
 
     // Document tabs (`shell`).
     /// Open a document as a tab and bring it to the front: a tag of the
@@ -602,6 +608,9 @@ pub struct App {
     pub tags: TagDoc,
     /// The Problems list as last read (`app::problems`).
     pub problems: problems::Problems,
+    /// Each document's preview target and the Preview in game ask
+    /// (`app::preview_switch`).
+    pub preview: preview_switch::PreviewSwitch,
     /// The fan-out of every write to the Preview, the own game and an
     /// attached game (docs/editor/live-editors.md).
     pub live: live::Fanout,
@@ -661,6 +670,7 @@ impl App {
             saved_path: None,
             tool: ToolKind::Scenario,
             problems: Default::default(),
+            preview: Default::default(),
             fly_speed: crate::camera::DEFAULT_SPEED,
             session: Session::new(),
             pending: None,
@@ -1109,6 +1119,12 @@ impl App {
             Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
             Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),
             Action::OpenProblem(index) => self.open_problem(index),
+            Action::PreviewInGame(doc) => self.preview_in_game(doc),
+            Action::SetPreviewTarget(doc, target) => {
+                if let Err(why) = self.set_preview_target(doc, target) {
+                    self.error(why);
+                }
+            }
             Action::OpenDoc(doc) => self.open_doc(doc),
             Action::FocusDoc(doc) => self.focus_doc(doc),
             Action::CloseDoc(doc) => self.close_doc(doc),

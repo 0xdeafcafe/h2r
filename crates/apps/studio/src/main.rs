@@ -793,6 +793,8 @@ impl ApplicationHandler for Runner {
         // Agent calls run between frames, on the app the window draws.
         if let Some((_, rx)) = &self.listening {
             self.api.pump(&mut self.app, rx);
+        } else {
+            self.api.run_preview_asks(&mut self.app);
         }
         if let Some(w) = &self.win {
             w.window.request_redraw();

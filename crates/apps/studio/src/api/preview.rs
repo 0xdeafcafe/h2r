@@ -74,6 +74,13 @@ const METHODS: &[MethodDef] = &[
         r#"{"what":"weapon","target":"objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}"#,
     ),
     def(
+        m::PREVIEW_TARGET,
+        "A document's preview switch: where its preview shows (studio, game for a game Studio started, attached for one someone else started), and what Preview in game asks of the paired game for its kind (`game`: the pair.preview params, or `why` it has none). With `target` the switch is set; a game target needs a paired game of that kind. The document is `doc` (a shell.tabs id) or the front one",
+        r#"{"doc?":"string (a tab id from shell.tabs)","target?":"studio|game|attached"}"#,
+        r#"{"doc":"string|null","target":"studio|game|attached","targets":"[{id,label,available,why?}]","game":"{what,target?}|null","why?":"string"}"#,
+        "{}",
+    ),
+    def(
         m::PAIR_AUDIO,
         "Sample the paired game's mixer voices (audio.voices) for some seconds, after an optional game call that makes the sound: each voice's peak applied gain, the loudest, and the looping sounds playing. Answers with a job id at once; pair.result has the outcome",
         r#"{"seconds?":"number","every_ms?":"integer","call?":{"method":"string","params?":"any"}}"#,
@@ -98,6 +105,7 @@ impl Provider for Preview {
         let p = P(params);
         Some(match method {
             m::PAIR_PREVIEW => self.preview(app, &p),
+            m::PREVIEW_TARGET => self.target(app, &p),
             m::PAIR_AUDIO => self.audio(app, &p),
             m::PAIR_RESULT => self.result(app, &p),
             _ => return None,
@@ -141,6 +149,43 @@ fn waiting(app: &App) -> usize {
 }
 
 impl Preview {
+    /// `preview.target`: read or set a document's preview switch.
+    fn target(&mut self, app: &mut App, p: &P) -> Reply {
+        use crate::app::preview_switch::PreviewTarget;
+        let doc = if p.has("doc") {
+            Some(super::shell::doc_param(app, p)?)
+        } else {
+            app.sync_tabs();
+            app.front_doc()
+        };
+        if let Some(t) = p.opt_str("target")? {
+            let target = PreviewTarget::parse(t)
+                .ok_or_else(|| err(code::INVALID_PARAMS, "target is studio, game or attached"))?;
+            let doc = doc.ok_or_else(|| err(code::INVALID_PARAMS, "no document is open"))?;
+            app.set_preview_target(doc, target)
+                .map_err(|why| err(code::REFUSED, why))?;
+        }
+        let targets: Vec<Value> = PreviewTarget::ALL
+            .iter()
+            .map(|t| match app.preview_target_available(*t) {
+                Ok(()) => json!({"id": t.id(), "label": t.label(), "available": true}),
+                Err(why) => json!({"id": t.id(), "label": t.label(), "available": false, "why": why}),
+            })
+            .collect();
+        let mut out = json!({
+            "doc": doc.map(|d| app.doc_id(d)),
+            "target": doc.map_or(PreviewTarget::Studio, |d| app.preview_target(d)).id(),
+            "targets": targets,
+            "game": null,
+        });
+        match doc.map(|d| app.game_preview(d)) {
+            None => out["why"] = json!("no document is open"),
+            Some(Ok(g)) => out["game"] = g.params(),
+            Some(Err(why)) => out["why"] = json!(why),
+        }
+        Ok(out)
+    }
+
     fn preview(&mut self, app: &mut App, p: &P) -> Reply {
         let what = p.str("what")?;
         let target = p.opt_str("target")?.map(str::to_owned);
