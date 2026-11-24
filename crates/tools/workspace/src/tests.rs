@@ -23,7 +23,7 @@ fn jpt() -> &'static tags::defs::StructDef {
     Defs::builtin().group(cc(b"jpt!")).expect("jpt! is defined")
 }
 
-fn zeroed_tag(set: &mut TagSet, group: &[u8; 4], name: &str) -> TagId {
+pub(crate) fn zeroed_tag(set: &mut TagSet, group: &[u8; 4], name: &str) -> TagId {
     let def = jpt();
     let block = to_built(def, &default_record(def), &mut |_| None).unwrap();
     set.add_tag(cc(group), name, TagPayload::Built(block))
