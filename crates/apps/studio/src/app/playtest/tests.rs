@@ -446,3 +446,103 @@ fn the_shown_result_follows_the_run_and_marks_stale() {
     shown.clear();
     assert!(!shown.is_shown() && shown.measures.is_none());
 }
+
+/// Before and after (slice PT6): the first run with a match that ended is
+/// the baseline; a second run on a new build over the same seeds is
+/// compared with it, the static problems it gained and lost named, and a
+/// run over other seeds is refused.
+#[test]
+fn a_new_run_is_compared_with_the_baseline_over_the_same_seeds() {
+    let (_t, f, mut r) = setup("compare");
+    f.w().jitter = true;
+    let spec = Spec {
+        seeds: Some(8),
+        ..Spec::default()
+    };
+    assert!(r.baseline().is_none());
+    go(&mut r, &f, &spec, &["Slayer"], 0.0).unwrap();
+    f.end_all();
+    pump(&mut r, &f, 1.0);
+    assert_eq!(r.baseline().unwrap().id, "r1");
+    assert!(!r.run(None).unwrap().unwrap().coarse());
+    // A bad reference starts nothing.
+    let bad = Spec {
+        compare_to: Some("r9".into()),
+        ..spec.clone()
+    };
+    assert!(go(&mut r, &f, &bad, &["Slayer"], 2.0).is_err());
+    // The edit: a new build where the fights are three times the number.
+    f.w().build_key = "b2".into();
+    f.w().kills = 36;
+    let again = Spec {
+        compare_to: Some("baseline".into()),
+        ..spec.clone()
+    };
+    go(&mut r, &f, &again, &["Slayer"], 2.0).unwrap();
+    assert_eq!(r.run(None).unwrap().unwrap().compare_to.as_deref(), Some("baseline"));
+    f.end_all();
+    pump(&mut r, &f, 3.0);
+    r.note_static("r1", vec!["off_mesh: start 1".into(), "island: 2".into()]);
+    r.note_static("r2", vec!["island: 2".into(), "sight: 0 and 1".into()]);
+
+    let c = r.compare("baseline", "r2", None).unwrap();
+    assert_eq!((c.a.as_str(), c.b.as_str(), c.game_type.as_str()), ("r1", "r2", "slayer"));
+    assert!(c.comparison.changed().contains(&"deaths_per_min"), "{:?}", c.comparison.scalars);
+    let deaths = c.comparison.diff.deaths.as_ref().unwrap();
+    assert!(!deaths.is_empty() && deaths.iter().all(|d| d.change() > 0.0));
+    assert_eq!(c.gained, ["sight: 0 and 1"]);
+    assert_eq!(c.lost, ["off_mesh: start 1"]);
+    let j = compared_json(&c);
+    assert_eq!(j["layers"]["deaths"]["marks"], deaths.len());
+    assert!(j["layers"]["traffic"]["refused"].is_string());
+
+    // A run with itself changes nothing.
+    let same = r.compare("r1", "r1", None).unwrap();
+    assert!(same.comparison.changed().is_empty());
+    assert!(same.comparison.diff.deaths.as_ref().unwrap().is_empty());
+
+    // Other seeds are not the same match.
+    f.w().build_key = "b3".into();
+    go(&mut r, &f, &Spec { seeds: Some(4), ..Spec::default() }, &["Slayer"], 4.0).unwrap();
+    f.end_all();
+    pump(&mut r, &f, 5.0);
+    let e = r.compare("r1", "r3", None).unwrap_err();
+    assert!(e.contains("same seeds"), "{e}");
+    assert!(r.compare("r1", "r9", None).is_err());
+}
+
+/// The shown result draws a difference when asked, and not otherwise.
+#[test]
+fn the_shown_result_draws_a_difference_when_asked() {
+    use crate::app::playtest_shown::Shown;
+    let (_t, f, mut r) = setup("shown-diff");
+    f.w().jitter = true;
+    let mut shown = Shown::default();
+    let spec = Spec {
+        seeds: Some(8),
+        ..Spec::default()
+    };
+    go(&mut r, &f, &spec, &["Slayer"], 0.0).unwrap();
+    f.end_all();
+    pump(&mut r, &f, 1.0);
+    shown.sync(&r);
+    shown.show(r.run(None).unwrap().unwrap(), None);
+    // The only run is the baseline: nothing to compare it with.
+    assert!(shown.set_diff(Some("default")).is_err());
+    assert!(shown.diff().is_none() && shown.diff_refusal().is_some());
+    shown.set_diff(None).unwrap();
+    f.w().build_key = "b2".into();
+    f.w().kills = 36;
+    go(&mut r, &f, &spec, &["Slayer"], 2.0).unwrap();
+    f.end_all();
+    pump(&mut r, &f, 3.0);
+    shown.sync(&r);
+    shown.show(r.run(None).unwrap().unwrap(), None);
+    let before = shown.rev;
+    shown.set_diff(Some("default")).unwrap();
+    assert!(shown.rev > before);
+    let c = shown.diff().unwrap();
+    assert_eq!((c.a.as_str(), c.b.as_str()), ("r1", "r2"));
+    shown.set_diff(None).unwrap();
+    assert!(shown.diff().is_none() && shown.diff_with().is_none());
+}

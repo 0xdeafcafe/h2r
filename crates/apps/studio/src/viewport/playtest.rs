@@ -13,10 +13,12 @@ use scenario_edit::geometry::{self, Vec3, add};
 use scenario_edit::layers::{LayerId, PlaytestLayer as L};
 use scenario_edit::nav_view::{BOT_LIFT, BotNav};
 use scenario_edit::render::{self, Viewport};
+use sim_bench::spatial::compare::{Diff, Marks};
 use sim_bench::spatial::{Bin, Measures};
 
 use super::nav::{Lines, ring_lines};
 use crate::app::App;
+use crate::app::playtest_shown::Shown;
 use crate::theme;
 
 /// Flow lines drawn: the most crossed.
@@ -68,6 +70,44 @@ pub fn refused(layer: L, m: &Measures) -> Option<String> {
         L::Stuck => m.stuck.as_ref().err(),
     };
     e.map(ToString::to_string)
+}
+
+/// A difference layer's marks; `None` for the sightlines, which have no
+/// difference layer.
+pub fn marks(layer: L, d: &Diff) -> Option<&Marks> {
+    Some(match layer {
+        L::Kills => &d.kills,
+        L::Deaths => &d.deaths,
+        L::Traffic => &d.traffic,
+        L::Flow => &d.flow,
+        L::Unvisited => &d.unvisited,
+        L::Spawns => &d.spawns,
+        L::WeaponUse => &d.weapon_use,
+        L::Stuck => &d.stuck,
+        L::Sightlines => return None,
+    })
+}
+
+/// How many marks `layer` of the shown result draws: its difference's when
+/// one is drawn, else its measure's.
+pub fn count_shown(layer: L, shown: &Shown) -> usize {
+    match shown.diff() {
+        Some(c) => marks(layer, &c.comparison.diff)
+            .and_then(|m| m.as_ref().ok())
+            .map_or(0, Vec::len),
+        None => shown.measures.as_ref().map_or(0, |m| count(layer, m)),
+    }
+}
+
+/// Why `layer` of the shown result has nothing to draw.
+pub fn refused_shown(layer: L, shown: &Shown) -> Option<String> {
+    if let Some(c) = shown.diff() {
+        return match marks(layer, &c.comparison.diff) {
+            None => Some("the sightlines have no difference layer".into()),
+            Some(m) => m.as_ref().err().cloned(),
+        };
+    }
+    shown.measures.as_ref().and_then(|m| refused(layer, m))
 }
 
 fn dim(color: [f32; 3], stale: bool) -> [f32; 3] {
@@ -315,14 +355,64 @@ pub fn build(layer: L, m: &Measures, nav: Option<&BotNav>, stale: bool) -> Drawn
     (Vec::new(), lines.0)
 }
 
+/// More here than before, and less.
+const MORE: [f32; 3] = [1.0, 0.3, 0.2];
+const LESS: [f32; 3] = [0.2, 0.5, 1.0];
+
+/// What the difference layer `layer` draws: a mark where the count moved,
+/// red for more and blue for less, larger the more it moved; a polygon
+/// opened (never entered before) is green and one closed is red.
+pub fn build_diff(layer: L, d: &Diff, nav: Option<&BotNav>, stale: bool) -> Drawn {
+    let Some(Ok(deltas)) = marks(layer, d) else {
+        return Drawn::default();
+    };
+    let max = deltas.iter().map(|m| m.change().abs()).fold(0.0, f32::max);
+    let (mut tris, mut lines) = (Vec::new(), Lines(Vec::new()));
+    for m in deltas {
+        let t = share(m.change().abs(), max);
+        let color = dim(if m.change() > 0.0 { MORE } else { LESS }, stale);
+        match layer {
+            L::Kills | L::Deaths | L::Traffic => {
+                tris.extend(square(m.at, 0.3 + 0.9 * t, color));
+                post(&mut lines, m.at, 0.3 + 1.5 * t, color);
+            }
+            L::Flow => {
+                if let Some(to) = m.to {
+                    lines.arrow(lift(m.at), lift(to), color);
+                }
+            }
+            L::Unvisited => {
+                let (Some(nav), Some(i)) = (nav, m.poly) else {
+                    continue;
+                };
+                // Opened is good news, closed is bad.
+                let color = dim(if m.a > m.b { [0.2, 0.9, 0.3] } else { MORE }, stale);
+                if let Some(ring) = poly_ring(nav, i) {
+                    ring_lines(&mut lines, &ring, color);
+                }
+            }
+            L::Spawns | L::WeaponUse | L::Stuck => {
+                diamond(&mut lines, m.at, 0.4 + 0.8 * t, color);
+                post(&mut lines, m.at, 0.5 + 1.0 * t, color);
+            }
+            L::Sightlines => {}
+        }
+    }
+    (tris, lines.0)
+}
+
 /// Upload the playtest overlays (empty when hidden, with no result, or
 /// refused).
 pub(crate) fn upload(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
     let nav = app.session.bot_nav().map(|n| &**n);
     for layer in L::ALL {
         let id = LayerId::Playtest(layer);
-        let (tris, lines) = match app.playtest.measures.as_ref() {
-            Some(m) if app.layers.visible(id) => build(layer, m, nav, app.playtest.stale),
+        let shown = &app.playtest;
+        let (tris, lines) = match (shown.diff(), shown.measures.as_ref()) {
+            (Some(c), _) if app.layers.visible(id) => {
+                build_diff(layer, &c.comparison.diff, nav, shown.stale)
+            }
+            (None, Some(m)) if app.layers.visible(id) => build(layer, m, nav, shown.stale),
             _ => Drawn::default(),
         };
         vp.set_layer_overlay(device, id, &tris, &lines);
@@ -333,6 +423,7 @@ pub(crate) fn upload(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
 mod tests {
     use super::*;
     use scenario_edit::nav_view::BotPoly;
+    use sim_bench::spatial::compare::Delta;
     use sim_bench::spatial::{
         Cell, TooFew,
         flow::{Crossing, Dwell, Flow},
@@ -570,6 +661,53 @@ mod tests {
         }
         assert_eq!(refused(L::Spawns, &m), None);
         assert!(count(L::Spawns, &m) > 0);
+    }
+
+    fn delta(x: f32, a: f32, b: f32) -> Delta {
+        Delta {
+            at: [x, 0.0, 0.0],
+            to: Some([x, 5.0, 0.0]),
+            poly: Some(x as u32),
+            a,
+            b,
+        }
+    }
+
+    fn diff(marks: Vec<Delta>) -> Diff {
+        let m = || Ok(marks.clone());
+        Diff {
+            a_traces: 4,
+            b_traces: 4,
+            kills: m(),
+            deaths: m(),
+            traffic: m(),
+            flow: m(),
+            unvisited: m(),
+            spawns: m(),
+            weapon_use: m(),
+            stuck: Err("stuck: too few samples (1, at least 300 needed)".into()),
+        }
+    }
+
+    /// A difference layer draws a mark for each place that moved, red for
+    /// more and blue for less; a layer refused says why; the sightlines
+    /// have none.
+    #[test]
+    fn a_difference_layer_marks_each_place_that_moved() {
+        let d = diff(vec![delta(0.0, 1.0, 5.0), delta(1.0, 4.0, 2.0)]);
+        let (tris, lines) = build_diff(L::Kills, &d, None, false);
+        assert_eq!((tris.len(), lines.len()), (12, 4));
+        assert!(tris[0].color[0] > tris[0].color[2], "more is red");
+        assert!(tris[6].color[2] > tris[6].color[0], "less is blue");
+        assert_eq!(build_diff(L::Flow, &d, None, false).1.len(), 2 * 2 * 3);
+        // Polygon 0 opened (green) and 1 closed (red) outline their rings.
+        let d = diff(vec![delta(0.0, 1.0, 0.0), delta(1.0, 0.0, 1.0)]);
+        let (_, lines) = build_diff(L::Unvisited, &d, Some(&nav()), false);
+        assert_eq!(lines.len(), 2 * 2 * 4);
+        assert!(build_diff(L::Stuck, &d, None, false).1.is_empty());
+        assert!(build_diff(L::Sightlines, &d, None, false).1.is_empty());
+        assert!(marks(L::Sightlines, &d).is_none());
+        assert!(marks(L::Stuck, &d).unwrap().is_err());
     }
 
     /// The layers that outline polygons need the mesh; without it they draw

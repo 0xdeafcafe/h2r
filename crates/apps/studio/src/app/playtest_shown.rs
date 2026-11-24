@@ -9,7 +9,7 @@
 
 use sim_bench::spatial::Measures;
 
-use super::playtest::{Run, State};
+use super::playtest::{Compared, Run, Runner, State, compare_runs};
 
 /// What `Shown::show` last took from a run, to tell a new result from the
 /// same one.
@@ -39,9 +39,103 @@ pub struct Shown {
     pub partial: bool,
     pub seeds: usize,
     pub measures: Option<Measures>,
+    /// The session's runs, so a difference layer can be asked for with no
+    /// runner in reach (`view.layers {diff}`).
+    runs: Vec<Run>,
+    /// The id of the baseline run (the first with a match that ended).
+    pub baseline: Option<String>,
+    /// What the layers are asked to be compared with: a run id, `baseline`,
+    /// or `default` (the shown run's own `compare_to`, else the baseline).
+    diff_want: Option<String>,
+    /// The comparison drawn, or why there is none; `diff_key` tells it from
+    /// a stale one.
+    diff: Option<Result<Compared, String>>,
+    diff_key: Option<(String, String, String, usize)>,
 }
 
 impl Shown {
+    /// Takes the session's runs.
+    pub fn sync(&mut self, runner: &Runner) {
+        self.runs = runner.runs().to_vec();
+        self.baseline = runner.baseline().map(|r| r.id.clone());
+    }
+
+    /// Asks for the layers to be drawn as a difference from `with` (a run
+    /// id, `baseline` or `default`), or for the plain result (`None`).
+    /// Refused when there is nothing to compare, so the caller says why.
+    pub fn set_diff(&mut self, with: Option<&str>) -> Result<(), String> {
+        self.diff_want = with.map(str::to_owned);
+        self.diff_key = None;
+        self.diff = None;
+        self.refresh_diff();
+        self.rev += 1;
+        match &self.diff {
+            Some(Err(why)) => Err(why.clone()),
+            _ => Ok(()),
+        }
+    }
+
+    /// What the layers are asked to be compared with.
+    pub fn diff_with(&self) -> Option<&str> {
+        self.diff_want.as_deref()
+    }
+
+    /// The comparison the layers draw, when one is asked for and stands.
+    pub fn diff(&self) -> Option<&Compared> {
+        self.diff.as_ref().and_then(|d| d.as_ref().ok())
+    }
+
+    /// Why a difference was asked for and none can be drawn.
+    pub fn diff_refusal(&self) -> Option<&str> {
+        self.diff
+            .as_ref()
+            .and_then(|d| d.as_ref().err().map(String::as_str))
+    }
+
+    /// Recomputes the comparison when its runs or their matches changed.
+    fn refresh_diff(&mut self) -> bool {
+        let Some(want) = self.diff_want.clone() else {
+            return self.diff.take().is_some();
+        };
+        let Some(shown) = self.runs.iter().find(|r| r.id == self.run) else {
+            self.diff = Some(Err("no result is shown".into()));
+            return true;
+        };
+        let with = match want.as_str() {
+            "default" => shown
+                .compare_to
+                .clone()
+                .or_else(|| self.baseline.clone())
+                .unwrap_or_else(|| "baseline".into()),
+            "baseline" => self.baseline.clone().unwrap_or_else(|| "baseline".into()),
+            id => id.to_owned(),
+        };
+        let key = (
+            with.clone(),
+            shown.id.clone(),
+            self.game_type.clone(),
+            shown.done(),
+        );
+        if self.diff_key.as_ref() == Some(&key) {
+            return false;
+        }
+        let result = match self.runs.iter().find(|r| r.id == with) {
+            None => Err(if with == "baseline" {
+                "no baseline yet: no run has a match that ended".to_owned()
+            } else {
+                format!("no run {with}")
+            }),
+            Some(base) if base.id == shown.id => Err(format!(
+                "{} is the run shown: nothing to compare it with",
+                base.id
+            )),
+            Some(base) => compare_runs(base, shown, Some(self.game_type.as_str())),
+        };
+        self.diff = Some(result);
+        self.diff_key = Some(key);
+        true
+    }
+
     /// Takes `run`'s result for `game_type`: by default the one already on
     /// show for this run, else its first played.
     pub fn show(&mut self, run: &Run, game_type: Option<&str>) {
@@ -81,6 +175,7 @@ impl Shown {
         self.coarse = run.coarse();
         self.partial = partial;
         self.seeds = run.seeds.len();
+        changed |= self.refresh_diff();
         if changed {
             self.rev += 1;
         }

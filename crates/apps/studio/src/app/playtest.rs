@@ -10,9 +10,11 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use sim_bench::config::{Arm, BatchConfig, BotSpec, BotThreads, GameType, MatchConfig};
+use sim_bench::spatial::compare::{self, Comparison};
 use sim_bench::spatial::{self, Measures, TICK_RATE, Trace};
 
 /// Seats in a match when the call names no number.
@@ -94,6 +96,9 @@ pub struct Spec {
     pub seeds: Option<u32>,
     pub minutes: Option<u32>,
     pub bots: Option<u32>,
+    /// The run the result is compared with: a run's id or `baseline`.
+    /// Not part of what a run plays, so not of its cache key.
+    pub compare_to: Option<String>,
 }
 
 impl Default for Spec {
@@ -104,6 +109,7 @@ impl Default for Spec {
             seeds: None,
             minutes: None,
             bots: None,
+            compare_to: None,
         }
     }
 }
@@ -247,7 +253,11 @@ pub struct Run {
     pub state: State,
     /// A newer build exists than the one this run played.
     pub stale: bool,
-    traces: Vec<(JobId, Trace)>,
+    /// What it is compared with by default: a run's id or `baseline`.
+    pub compare_to: Option<String>,
+    /// The static checks' problems when it started, as `kind: text`.
+    pub statics: Vec<String>,
+    traces: Arc<Vec<(JobId, Trace)>>,
     failed: Vec<(JobId, String)>,
     started_s: f64,
     last_s: f64,
@@ -294,13 +304,17 @@ impl Run {
 
     /// The measures of one game type's traces so far.
     pub fn measures(&self, game_type: &str) -> Option<Measures> {
-        let traces: Vec<Trace> = self
-            .traces
+        let traces = self.traces_of(game_type);
+        (!traces.is_empty()).then(|| spatial::measure(&traces))
+    }
+
+    /// One game type's traces so far, every leg of every seed.
+    pub fn traces_of(&self, game_type: &str) -> Vec<Trace> {
+        self.traces
             .iter()
             .filter(|(j, _)| j.game_type == game_type)
             .map(|(_, t)| t.clone())
-            .collect();
-        (!traces.is_empty()).then(|| spatial::measure(&traces))
+            .collect()
     }
 }
 
@@ -326,6 +340,11 @@ pub struct Runner {
 impl Runner {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Every run of the session, oldest first.
+    pub fn runs(&self) -> &[Run] {
+        &self.runs
     }
 
     /// The run named `id`, or the newest.
@@ -365,6 +384,9 @@ impl Runner {
         now_s: f64,
     ) -> Result<Started, String> {
         spec.check()?;
+        if let Some(r) = spec.compare_to.as_deref().filter(|r| *r != "baseline") {
+            self.reference(r)?;
+        }
         let game_types = choose(spec, ready)?;
         let built = source.build().map_err(|e| format!("build: {e}"))?;
         self.mark_stale(&built.key);
@@ -452,7 +474,9 @@ impl Runner {
             jobs,
             state: State::Running,
             stale: false,
-            traces: Vec::new(),
+            compare_to: spec.compare_to.clone(),
+            statics: Vec::new(),
+            traces: Arc::new(Vec::new()),
             failed: Vec::new(),
             started_s: now_s,
             last_s: now_s,
@@ -476,7 +500,7 @@ impl Runner {
                 continue;
             }
             match f.trace {
-                Ok(t) => run.traces.push((f.job, t)),
+                Ok(t) => Arc::make_mut(&mut run.traces).push((f.job, t)),
                 Err(why) => run.failed.push((f.job, why)),
             }
         }
@@ -513,6 +537,105 @@ impl Runner {
         self.runs[i].state = State::Cancelled;
         Ok(true)
     }
+}
+
+impl Runner {
+    /// The run kept as the baseline: the first of the session with a match
+    /// that ended.
+    pub fn baseline(&self) -> Option<&Run> {
+        self.runs.iter().find(|r| !r.traces.is_empty())
+    }
+
+    /// A run named `id`, or `baseline`.
+    pub fn reference(&self, id: &str) -> Result<&Run, String> {
+        if id == "baseline" {
+            return self
+                .baseline()
+                .ok_or_else(|| "no baseline yet: no run has a match that ended".to_owned());
+        }
+        self.runs
+            .iter()
+            .find(|r| r.id == id)
+            .ok_or_else(|| format!("no run {id}"))
+    }
+
+    /// Records the static checks' problems the run started under, for
+    /// [`Runner::compare`].
+    pub fn note_static(&mut self, id: &str, problems: Vec<String>) {
+        if let Some(r) = self.runs.iter_mut().find(|r| r.id == id) {
+            r.statics = problems;
+        }
+    }
+
+    /// Compares run `a` with run `b` (ids or `baseline`) over `game_type`
+    /// (the first both played by default).
+    pub fn compare(&self, a: &str, b: &str, game_type: Option<&str>) -> Result<Compared, String> {
+        compare_runs(self.reference(a)?, self.reference(b)?, game_type)
+    }
+}
+
+/// Two runs compared.
+#[derive(Clone, Debug)]
+pub struct Compared {
+    pub a: String,
+    pub b: String,
+    pub game_type: String,
+    pub comparison: Comparison,
+    /// Problems the static checks had at `b` and not at `a`, and the
+    /// reverse.
+    pub gained: Vec<String>,
+    pub lost: Vec<String>,
+}
+
+/// Compares `a` with `b` over the same seeds and match.
+pub fn compare_runs(a: &Run, b: &Run, game_type: Option<&str>) -> Result<Compared, String> {
+    if a.seeds != b.seeds || a.minutes != b.minutes || a.bots != b.bots || a.swapped != b.swapped {
+        return Err(format!(
+            "{} and {} did not play the same seeds and match ({} seeds, {} seeds)",
+            a.id,
+            b.id,
+            a.seeds.len(),
+            b.seeds.len()
+        ));
+    }
+    let played = |r: &Run| {
+        r.played()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let (pa, pb) = (played(a), played(b));
+    let game_type = match game_type {
+        Some(g) => g.to_owned(),
+        None => pa.iter().find(|g| pb.contains(g)).cloned().ok_or_else(|| {
+            format!(
+                "{} and {} played no game type with a result in common",
+                a.id, b.id
+            )
+        })?,
+    };
+    let (ta, tb) = (a.traces_of(&game_type), b.traces_of(&game_type));
+    if ta.is_empty() || tb.is_empty() {
+        return Err(format!(
+            "{game_type}: {} has {} matches that ended, {} has {}",
+            a.id,
+            ta.len(),
+            b.id,
+            tb.len()
+        ));
+    }
+    let comparison = compare::compare(&ta, &tb)?;
+    let gone = |x: &[String], y: &[String]| -> Vec<String> {
+        x.iter().filter(|p| !y.contains(p)).cloned().collect()
+    };
+    Ok(Compared {
+        a: a.id.clone(),
+        b: b.id.clone(),
+        game_type,
+        comparison,
+        gained: gone(&b.statics, &a.statics),
+        lost: gone(&a.statics, &b.statics),
+    })
 }
 
 /// The sim's names of the game types a run plays.
@@ -642,6 +765,39 @@ pub fn summary_json(m: &Measures) -> Value {
         o.insert(n.to_owned(), v);
     }
     Value::Object(o)
+}
+
+/// `playtest.compare`'s answer.
+pub fn compared_json(c: &Compared) -> Value {
+    json!({
+        "a": c.a,
+        "b": c.b,
+        "game_type": c.game_type,
+        "measures": c.comparison.scalars,
+        "changed": c.comparison.changed(),
+        "traces": {"a": c.comparison.diff.a_traces, "b": c.comparison.diff.b_traces},
+        "layers": layers_json(&c.comparison.diff),
+        "static": {"gained": c.gained, "lost": c.lost},
+    })
+}
+
+/// Each difference layer: its marks' count and the biggest, or why it has
+/// none.
+fn layers_json(d: &compare::Diff) -> Value {
+    let one = |m: &compare::Marks| match m {
+        Ok(v) => json!({"marks": v.len(), "top": v.iter().take(5).collect::<Vec<_>>()}),
+        Err(why) => json!({"marks": 0, "refused": why}),
+    };
+    json!({
+        "kills": one(&d.kills),
+        "deaths": one(&d.deaths),
+        "traffic": one(&d.traffic),
+        "flow": one(&d.flow),
+        "unvisited": one(&d.unvisited),
+        "spawns": one(&d.spawns),
+        "weapon_use": one(&d.weapon_use),
+        "stuck": one(&d.stuck),
+    })
 }
 
 #[cfg(test)]

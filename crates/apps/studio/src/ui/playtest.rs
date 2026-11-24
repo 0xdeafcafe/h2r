@@ -12,7 +12,7 @@ use sim_bench::spatial::{
 use crate::app::playtest_shown::Shown;
 use crate::app::{Action, App};
 use crate::theme;
-use crate::viewport::playtest::{count, refused};
+use crate::viewport::playtest::{count_shown, refused_shown};
 
 /// How a row reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +88,35 @@ pub fn rows(shown: &Shown) -> Vec<Row> {
         ));
     }
     o.push(row(Tone::Dim, "These are the bots, not people."));
+    if let Some(c) = shown.diff() {
+        o.push(row(
+            Tone::Plain,
+            format!(
+                "Layers show {} against {} (red: more, blue: less)",
+                c.b, c.a
+            ),
+        ));
+        for sc in c.comparison.scalars.iter().filter(|s| s.changed) {
+            o.push(row(
+                Tone::Warn,
+                format!(
+                    "{}: {} to {} (spread {})",
+                    sc.name,
+                    s1(sc.a),
+                    s1(sc.b),
+                    s1(sc.spread)
+                ),
+            ));
+        }
+        for p in &c.gained {
+            o.push(row(Tone::Warn, format!("New problem: {p}")));
+        }
+        for p in &c.lost {
+            o.push(row(Tone::Plain, format!("Problem gone: {p}")));
+        }
+    } else if let Some(why) = shown.diff_refusal() {
+        o.push(row(Tone::Warn, format!("No difference to show: {why}")));
+    }
     let Some(m) = &shown.measures else {
         o.push(row(Tone::Dim, "No match has ended yet."));
         return o;
@@ -236,18 +265,17 @@ pub fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         ui.same_line();
         let id = LayerId::Playtest(layer);
         let mut on = layers.visible(id);
-        let measures = app.playtest.measures.as_ref();
         let label = format!(
             "{} ({})##{}",
             layer.label(),
-            measures.map_or(0, |m| count(layer, m)),
+            count_shown(layer, &app.playtest),
             id.id()
         );
         if ui.checkbox(label, &mut on) {
             layers.set(id, on);
             changed = true;
         }
-        if let Some(why) = measures.and_then(|m| refused(layer, m)) {
+        if let Some(why) = refused_shown(layer, &app.playtest) {
             ui.set_item_tooltip(why);
         }
     }

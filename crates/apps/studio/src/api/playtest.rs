@@ -6,8 +6,8 @@
 //! `playtest.run`, `.status`, `.result` and `.cancel` are the runner's
 //! ([`crate::app::playtest`]; playtest.md, "What a run is"). The runner
 //! plays through a [`Source`] (the build, the bots' mesh and `h2 sim`);
-//! with none connected `playtest.run` is refused. Compare, the overlays
-//! and the pool come with PT5 to PT7.
+//! with none connected `playtest.run` is refused. `playtest.compare` is the
+//! runner's too, over two runs ([`crate::app::playtest::compare_runs`]).
 
 use std::time::Instant;
 
@@ -21,9 +21,11 @@ use crate::app::playtest::{self as run, Preset, Run, Runner, Source, Spec};
 use crate::app::playtest_static::{Report, Target};
 
 const RESULT: &str = r#"{"ok":"boolean","nav":"no_map|idle|loading|ready|failed","problems":"[{kind,text,target}]","ready":"[{game_type,engine,ok,missing}]"}"#;
-const RUN_PARAMS: &str = r#"{"preset?":"probe|standard|soak","game_types?":"[string]","seeds?":"number","minutes?":"number","bots?":"number"}"#;
+const RUN_PARAMS: &str = r#"{"preset?":"probe|standard|soak","game_types?":"[string]","seeds?":"number","minutes?":"number","bots?":"number","compare_to?":"run id|baseline"}"#;
+const COMPARE_PARAMS: &str = r#"{"a?":"run id|baseline","b?":"run id","game_type?":"string"}"#;
+const COMPARE_RESULT: &str = r#"{"compared":"boolean","why?":"string","a":"string","b":"string","game_type":"string","measures":"[{name,a,b,spread,n_a,n_b,changed}]","changed":"[string]","traces":"{a,b}","layers":"{layer: {marks, top?, refused?}}","static":"{gained: [string], lost: [string]}"}"#;
 const RUN_RESULT: &str = r#"{"run":"string","build":"string","matches":"number","parallel":"number","cached":"boolean"}"#;
-const STATUS_RESULT: &str = r#"{"run":"string|null","state":"none|running|done|failed|cancelled","preset":"string","build":"string","done":"number","total":"number","speedup":"number|null","stale":"boolean","coarse":"boolean","failed":"[{game_type,seed,swapped,why}]"}"#;
+const STATUS_RESULT: &str = r#"{"run":"string|null","state":"none|running|done|failed|cancelled","preset":"string","build":"string","compare_to":"string|null","done":"number","total":"number","speedup":"number|null","stale":"boolean","coarse":"boolean","failed":"[{game_type,seed,swapped,why}]"}"#;
 const RESULT_PARAMS: &str =
     r#"{"run?":"string","game_type?":"string","measure?":"heat|spawns|flow|sight|items|stuck"}"#;
 const RESULT_RESULT: &str = r#"{"run":"string|null","state":"string","stale":"boolean","coarse":"boolean","partial":"boolean","build":"string","map":"string","match_file":"string","seeds":"[number]","game_types":"[string]","game_type":"string","traces":"number","seconds":"number","measures":"{name: {ok, refused?}}","measure":"string?","ok":"boolean?","value":"any?","refused":"{measure,what,have,need}?"}"#;
@@ -102,6 +104,13 @@ impl Provider for Playtest {
                 "{}",
             ),
             def(
+                m::PLAYTEST_COMPARE,
+                "Compares two runs over the same seeds and match: each scalar measure as its mean on each side with the spread across seeds (a seed's swapped leg is one value) and changed only when the means differ by more than the larger spread; each layer as a difference layer (marks that moved by more than counting noise, the biggest first, or why it has none); and the static problems gained and lost. a defaults to the newest run's compare_to, else the baseline (the first run with a match that ended); b to the newest run. game_type defaults to the first both played. view.layers {diff} draws the same layers",
+                COMPARE_PARAMS,
+                COMPARE_RESULT,
+                "{}",
+            ),
+            def(
                 m::PLAYTEST_CANCEL,
                 "Stops the running run (or the one named); what came back stays",
                 r#"{"run?":"string"}"#,
@@ -118,6 +127,7 @@ impl Provider for Playtest {
             m::PLAYTEST_RUN => self.start(app, &p),
             m::PLAYTEST_STATUS => self.status(app, &p),
             m::PLAYTEST_RESULT => self.result(app, &p),
+            m::PLAYTEST_COMPARE => self.compare(app, &p),
             m::PLAYTEST_CANCEL => self.cancel(app, &p),
             _ => return None,
         })
@@ -160,6 +170,14 @@ impl Playtest {
             .runner
             .start(source, &spec, &ready, now)
             .map_err(|e| err(code::FAILED, e))?;
+        if !s.cached {
+            let problems = report
+                .problems
+                .iter()
+                .map(|p| format!("{}: {}", p.kind.name(), p.text))
+                .collect();
+            self.runner.note_static(&s.run, problems);
+        }
         self.publish(app, None);
         Ok(json!({
             "run": s.run,
@@ -168,6 +186,47 @@ impl Playtest {
             "parallel": s.parallel,
             "cached": s.cached,
         }))
+    }
+
+    fn compare(&mut self, app: &mut App, p: &P) -> Reply {
+        self.pump();
+        self.publish(app, None);
+        let bad = |e: String| err(code::INVALID_PARAMS, e);
+        let newest = self.runner.run(None).map_err(bad)?;
+        let Some(newest) = newest else {
+            return Ok(json!({"compared": false, "why": "no run yet"}));
+        };
+        let b = p
+            .opt_str("b")?
+            .map_or_else(|| newest.id.clone(), str::to_owned);
+        let a = match p.opt_str("a")? {
+            Some(a) => a.to_owned(),
+            None => newest
+                .compare_to
+                .clone()
+                .unwrap_or_else(|| "baseline".to_owned()),
+        };
+        if self.runner.baseline().is_none() && (a == "baseline" || b == "baseline") {
+            return Ok(json!({
+                "compared": false,
+                "why": "no baseline yet: no run has a match that ended",
+            }));
+        }
+        let same = self.runner.reference(&a).map_err(bad)?.id
+            == self.runner.reference(&b).map_err(bad)?.id;
+        if same && p.opt_str("a")?.is_none() {
+            return Ok(json!({
+                "compared": false,
+                "why": format!("{b} is the baseline: there is nothing before it to compare with"),
+            }));
+        }
+        let c = self
+            .runner
+            .compare(&a, &b, p.opt_str("game_type")?)
+            .map_err(bad)?;
+        let mut o = run::compared_json(&c);
+        o["compared"] = json!(true);
+        Ok(o)
     }
 
     fn the_run(&self, p: &P) -> Result<Option<&Run>, super::RpcError> {
@@ -180,6 +239,7 @@ impl Playtest {
     /// the panel (`app::playtest_shown`), for `game_type` or the first
     /// played.
     fn publish(&self, app: &mut App, game_type: Option<&str>) {
+        app.playtest.sync(&self.runner);
         match self.runner.run(None).ok().flatten() {
             Some(r) => app.playtest.show(r, game_type),
             None => app.playtest.clear(),
@@ -191,7 +251,7 @@ impl Playtest {
         self.publish(app, None);
         Ok(match self.the_run(p)? {
             None => json!({
-                "run": null, "state": "none", "preset": null, "build": null, "done": 0, "total": 0,
+                "run": null, "state": "none", "preset": null, "build": null, "compare_to": null, "done": 0, "total": 0,
                 "speedup": null, "stale": false, "coarse": false, "failed": [],
             }),
             Some(r) => status_json(r),
@@ -268,6 +328,7 @@ fn spec_of(p: &P) -> Result<Spec, super::RpcError> {
         seeds: num("seeds")?,
         minutes: num("minutes")?,
         bots: num("bots")?,
+        compare_to: p.opt_str("compare_to")?.map(str::to_owned),
     };
     spec.check().map_err(bad)?;
     Ok(spec)
@@ -280,6 +341,7 @@ pub fn status_json(r: &Run) -> Value {
         "state": r.state.name(),
         "preset": r.preset.name(),
         "build": r.build,
+        "compare_to": r.compare_to,
         "done": r.done(),
         "total": r.total(),
         "speedup": r.speedup(),

@@ -518,3 +518,107 @@ fn playtest_layers_count_the_result_and_draw_in_the_snapshot() {
     call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
     assert!(png_pixels(&out) == hidden, "a run with no match ended draws nothing");
 }
+
+/// Before and after (slice PT6): `playtest.compare` between the baseline
+/// and a new run, and `view.layers {diff}` drawing the same layers as
+/// differences, refused while there is nothing to compare.
+#[test]
+fn playtest_compare_and_difference_layers_over_a_fake_sim() {
+    let t = Temp::new("playtest-compare");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    ready_map(&t, &mut api, &mut app);
+    let (mut p, fake) = provider(&t);
+    let layer = |api: &mut Api, app: &mut App, params: Value, name: &str| -> Value {
+        let r = call(api, app, m::VIEW_LAYERS, params);
+        r["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == name)
+            .unwrap()
+            .clone()
+    };
+
+    // Nothing to compare yet.
+    let c = ok(&mut p, &mut app, m::PLAYTEST_COMPARE, json!({}));
+    assert_eq!(c["compared"], false);
+
+    fake.w().jitter = true;
+    ok(&mut p, &mut app, m::PLAYTEST_RUN, json!({"seeds": 8}));
+    let first = ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({}));
+    assert_eq!(first["compare_to"], Value::Null);
+    fake.end_all();
+    ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({}));
+    let c = ok(&mut p, &mut app, m::PLAYTEST_COMPARE, json!({}));
+    assert_eq!(c["compared"], false, "the baseline alone has nothing to be compared with: {c}");
+
+    // The run shown is the baseline: a difference is refused and the
+    // layers stay as they were.
+    let e = api
+        .call(&mut app, m::VIEW_LAYERS, json!({"diff": true}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED, "{}", e.message);
+    assert!(app.playtest.diff_with().is_none());
+    let e = api
+        .call(&mut app, m::VIEW_LAYERS, json!({"diff": 3}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+
+    // The edit: a new build where the fights are three times as many.
+    {
+        let mut w = fake.w();
+        w.build_key = "b2".into();
+        w.kills = 36;
+    }
+    let r = ok(
+        &mut p,
+        &mut app,
+        m::PLAYTEST_RUN,
+        json!({"seeds": 8, "compare_to": "baseline"}),
+    );
+    assert_eq!(r["run"], "r2");
+    fake.end_all();
+    let s = ok(&mut p, &mut app, m::PLAYTEST_STATUS, json!({}));
+    assert_eq!(s["compare_to"], "baseline");
+
+    let c = ok(&mut p, &mut app, m::PLAYTEST_COMPARE, json!({}));
+    assert_eq!((c["compared"].clone(), c["a"].clone(), c["b"].clone()), (json!(true), json!("r1"), json!("r2")));
+    assert!(
+        c["changed"].as_array().unwrap().contains(&json!("deaths_per_min")),
+        "{c}"
+    );
+    let deaths = c["measures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "deaths_per_min")
+        .unwrap();
+    assert_eq!(deaths["changed"], true);
+    assert!(deaths["spread"].as_f64().unwrap() >= 0.0);
+    assert!(c["layers"]["deaths"]["marks"].as_u64().unwrap() > 0, "{c}");
+    assert!(c["layers"]["traffic"]["refused"].as_str().is_some());
+    assert_eq!(c["static"], json!({"gained": [], "lost": []}));
+    for bad in [json!({"a": "r9"}), json!({"b": "r9"}), json!({"game_type": "ctf"})] {
+        let e = ask(&mut p, &mut app, m::PLAYTEST_COMPARE, bad.clone()).unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS, "{bad}");
+    }
+    let same = ok(&mut p, &mut app, m::PLAYTEST_COMPARE, json!({"a": "r1", "b": "r1"}));
+    assert_eq!(same["changed"], json!([]));
+
+    // The layers as differences: more deaths at each polygon.
+    let plain = layer(&mut api, &mut app, json!({"set": {"playtest_deaths": true}}), "playtest_deaths");
+    assert_eq!(plain["count"], 3);
+    let r = call(&mut api, &mut app, m::VIEW_LAYERS, json!({"diff": true}));
+    assert_eq!(r["diff"], json!({"a": "r1", "b": "r2", "game_type": "slayer"}));
+    let row = layer(&mut api, &mut app, Value::Null, "playtest_deaths");
+    assert_eq!(row["count"], c["layers"]["deaths"]["marks"], "{row}");
+    let sight = layer(&mut api, &mut app, Value::Null, "playtest_sightlines");
+    assert!(sight["refused"].as_str().is_some_and(|s| s.contains("no difference layer")));
+    // A named run does the same; false is the result itself again.
+    let r = call(&mut api, &mut app, m::VIEW_LAYERS, json!({"diff": "r1"}));
+    assert_eq!(r["diff"]["a"], "r1");
+    let r = call(&mut api, &mut app, m::VIEW_LAYERS, json!({"diff": false}));
+    assert_eq!(r["diff"], Value::Null);
+    assert_eq!(layer(&mut api, &mut app, Value::Null, "playtest_deaths")["count"], 3);
+}

@@ -297,7 +297,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
 | `markers` | `list {kind?, layer?}`, `render {kind?, team?, area?, view?, size?, out?}`: the game type markers of the open map, and the marker shapes drawn on a grid ([Game type markers](#game-type-markers)) |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
-| `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
+| `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?, compare_to?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `compare {a?, b?, game_type?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}`, `select_folder {folder \| root}`, `sheet {folder?, root?, states?, columns?, out?}`; the shown screen's edits, of our screens or a retail one: `select {id?}`, `move {id, dx, dy}`, `set_rect {id, rect}`, `set_text {id, text}`, `revert {id?}`, `undo`, `redo`, `edits`, `save`, `animate {phase, frames?, out?}` ([ui-builder.md](../game/ui-builder.md#editing-in-the-editor)); `check {screen?, state?, aspect?}` ([Content checks](#content-checks)) |
@@ -936,6 +936,14 @@ Notes on some:
   presets show them. Each `count` is its marks in the result `playtest.*`
   last published (below), 0 with none; a row also has `refused`, the
   measure's refusal text when it had too few events, else null.
+  `diff` draws them as differences: `true` compares the shown run with
+  its `compare_to`, else the baseline; a run id or `baseline` names the
+  other side; `false` draws the result itself. The reply's `diff` is
+  `{a, b, game_type}` while one is drawn, else null; each playtest row's
+  `count` is then its difference marks and `refused` says why a layer has
+  none (the sightlines have no difference layer). With nothing to compare
+  (only the baseline is shown, or no run) the call is `REFUSED` and
+  changes nothing.
 - **Trigger volumes.** `volume.list {}` returns `{volumes, kill_triggers,
   bsp_switches, selected, error}`. Each volume has its `index` in the
   scenario's trigger volume block, `name` (the string ID's text, or null),
@@ -1065,7 +1073,7 @@ Notes on some:
   cancels one still going. With no sim runner connected (none is wired
   to the window yet) it is `REFUSED`; with no game type ready it is
   `FAILED` and says what each lacks; a bad param is `INVALID_PARAMS`.
-  `playtest.status` gives `{run, state, preset, build, done, total,
+  `playtest.status` gives `{run, state, preset, build, compare_to, done, total,
   speedup, stale, coarse, failed}`: `state` is `none` (no run yet),
   `running`, `done`, `failed` (every match failed) or `cancelled`;
   `speedup` is game seconds played per wall second; `stale` is true once
@@ -1079,7 +1087,19 @@ Notes on some:
   `{ok: false, refused: {measure, what, have, need}}` when its events are
   too few. With `measure` it answers that one in full: `ok` and `value`
   (its bins) or `refused`. `playtest.cancel` stops the running run, or
-  the one named, and answers `{cancelled}`; what came back stays. A call
+  the one named, and answers `{cancelled}`; what came back stays. `compare_to` on `run` is a run's
+  id or `baseline` (the first run of the session with a match that
+  ended), kept on the run. `playtest.compare` compares two runs over the
+  same seeds, length, seats and sides (otherwise `INVALID_PARAMS`): `a`
+  defaults to the newest run's `compare_to`, else `baseline`, `b` to the
+  newest run, `game_type` to the first both played. It answers `measures`
+  (each scalar's `a` and `b` means over seeds, `spread`, `n_a`, `n_b` and
+  `changed`, true only when the means differ by more than the spread; the
+  spread is null with fewer than two seeds), `changed` (their names),
+  `layers` (each difference layer's `marks`, the five biggest as `top`,
+  or `refused`) and `static` (`gained` and `lost` problems), or
+  `{compared: false, why}` when the newest run is the baseline or no
+  match has ended. A call
   names a run by its id (`r1`), or the newest. Each of `run`, `status`,
   `result` and `cancel` publishes the newest run's result (for the
   `game_type` of a `result` call, else the one already shown, else the
@@ -2449,6 +2469,12 @@ system temp directory):
   the checks themselves on invented layouts: islands, slivers, one-way
   drops, sight through a wall and by team, each game type's needs
   (`app::playtest_static::tests`);
+- `playtest.compare` and `view.layers {diff}` over a fake sim: the
+  baseline, a second run on a new build compared with it, the problems
+  gained and lost, other seeds refused, a difference refused with nothing
+  to compare, and the layers counting and drawing the marks
+  (`api::tests::playtest_tests`, `app::playtest::tests`,
+  `sim::spatial::compare::tests`, `viewport::playtest::tests`);
 - `playtest.run`, `status`, `result` and `cancel` over a fake sim: the
   files written and read back by `h2 sim`'s batch planner, the presets'
   matches and seeds, only ready game types run, partial and whole
