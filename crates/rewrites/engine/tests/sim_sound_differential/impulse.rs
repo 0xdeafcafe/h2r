@@ -57,6 +57,42 @@ fn setup(g: &mut Guest, c: &mut Cpu, seed: u32) {
         .unwrap();
     g.set_u8(CACHE_ROWS + 7 * 16 + 4, seed as u8).unwrap();
     match c.eip {
+        0x218f10 => {
+            c.gpr[1] = 2;
+            c.gpr[2] = SOUND;
+            g.set_u8(SOUND + 12, if seed == 0 { 0xff } else { 1 })
+                .unwrap();
+            g.set_u32(GESTALT + 0x4c, ARENA + 0x6500).unwrap();
+            g.set_u32(ARENA + 0x6500 + 28 + 4, ARENA + 0x6700).unwrap();
+            g.set_u16(ARENA + 0x6720, if seed == 1 { 0xffff } else { 3 })
+                .unwrap();
+        }
+        0x218f50 => {
+            c.gpr[0] = if seed == 1 || seed == 7 { 1 } else { u32::MAX };
+            c.gpr[1] = SOUND;
+            c.xmm[1] = u128::from(
+                match seed {
+                    2 => -20f32,
+                    3 => 40f32,
+                    4 => f32::NAN,
+                    _ => 5f32,
+                }
+                .to_bits(),
+            );
+            g.set_u16(SOUND + 8, 0).unwrap();
+            g.set_u8(SOUND + 10, if seed == 0 { 0 } else { 3 }).unwrap();
+            g.set_u32(GESTALT + 0x1c, ARENA + 0x6600).unwrap();
+            for (i, low, high) in [(0u32, -9i16, -3i16), (1, 1, 12), (2, 12, 19)] {
+                let row = RANGES + 12 * i;
+                let bounds = ARENA + 0x6600 + 10 * i;
+                g.set_u16(row + 2, i as u16).unwrap();
+                g.set_u16(row + 10, if seed == 7 && i == 1 { 0 } else { 2 })
+                    .unwrap();
+                for (off, val) in [(2, low), (4, high), (6, low), (8, high)] {
+                    g.set_u16(bounds + off, val as u16).unwrap();
+                }
+            }
+        }
         0x126000 => {
             // Requests span rejection, a full pool, automatic and explicit
             // selections, a promotion rule, both immediate-play flags, a
@@ -189,6 +225,8 @@ fn reply(g: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
 
 pub(super) fn cases(entry: u32) -> Vec<Case> {
     let count = match entry {
+        0x218f10 => 3,
+        0x218f50 => 8,
         0x126000 => 7,
         0x1286b0 => 1,
         0x125e60 => 4,

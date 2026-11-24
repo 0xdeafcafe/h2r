@@ -42,7 +42,10 @@ const UNPIN: Point = Point::new(
     DOC,
 );
 
+mod ranges;
 pub const BODIES: &[Body] = &[
+    ranges::PROMOTED_BODY,
+    ranges::PITCH_BODY,
     Body {
         point: &points::SOUND_IMPULSE_ALLOCATE,
         sites: ADMIT_SITES,
