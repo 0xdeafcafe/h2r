@@ -1045,6 +1045,9 @@ impl hooks::Feature for MapSelect {
     fn manifest(&self) -> hooks::Manifest {
         hooks::Manifest::new(FEATURE, "The multiplayer map select by category")
             .doc("docs/game/map-select.md")
+            // ui-back records the replaced Game Setup before the folder
+            // focus is restored at SCREEN_PUSH.
+            .after_feature(crate::ui_back::FEATURE)
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use engine::points::{
