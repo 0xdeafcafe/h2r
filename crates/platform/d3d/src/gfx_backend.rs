@@ -170,6 +170,9 @@ pub struct GfxBackend {
     presented: Option<SurfaceId>,
     /// Last scene-owned display target, retained through the next display swap.
     scene_presented: Option<SurfaceId>,
+    /// The last display frame drawn between or for the guest's presents on
+    /// its own targets ([`Self::retain_shown`]), kept until the next.
+    shown_between: Option<SurfaceId>,
     scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
     guest_present_observer: Option<GuestPresentObserver>,
@@ -228,8 +231,6 @@ pub struct GfxBackend {
     pub(crate) single_copy_aliases: bool,
     only_display: bool,
     pub(crate) blitter: Option<gfx::blit::Blitter>,
-    /// The interpolated reprojection's warp pass (made on first use).
-    warper: Option<gfx::blit::Warper>,
     /// The latest queue submission.
     last_submit: Option<wgpu::SubmissionIndex>,
     /// The latest submission when the previous frame was presented: what a
@@ -376,6 +377,7 @@ impl GfxBackend {
             lighting: crate::Lighting::Retail,
             presented: None,
             scene_presented: None,
+            shown_between: None,
             scene_uploads: Default::default(),
             present_hook: None,
             guest_present_observer: None,
@@ -413,7 +415,6 @@ impl GfxBackend {
             alias_decoder: Default::default(),
             single_copy_aliases: false,
             only_display: false,
-            warper: None,
             last_submit: None,
             prev_frame_end: None,
             swap_finish: SwapFinish::Pipelined,
@@ -563,7 +564,28 @@ impl GfxBackend {
         Ok(())
     }
 
-    /// Observe the guest swaps on this backend. A host-only interpolated
+    /// Shows a display frame drawn between the guest's presents on its own
+    /// targets (`native_render::frame_graph::display_rate`) as a host-only
+    /// present: through the replay hook, with no frame count, shader
+    /// upkeep or swap wait. `image` is kept until the next one.
+    pub fn show_between(&mut self, image: SurfaceId, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        let shown = self.show_replay(None, image, gamma);
+        self.retain_shown(image);
+        shown
+    }
+
+    /// Keeps `image`, a display frame's own target, until the next display
+    /// frame replaces it: the window may read it after its present returns.
+    pub fn retain_shown(&mut self, image: SurfaceId) {
+        if let Some(old) = self.shown_between.replace(image)
+            && old != image
+        {
+            self.scales.remove(&old);
+            self.store.remove(old);
+        }
+    }
+
+    /// Observe the guest swaps on this backend. A host-only display-frame
     /// present does not consume a number or notify this observer. The lighting
     /// mode is the view policy in effect for this swap, before retargeting.
     pub fn observe_guest_present(
@@ -596,8 +618,7 @@ impl GfxBackend {
 
     /// Called instead of the [`Self::on_present`] hook for host-only frames
     /// shown between the guest's presents ([`Backend::present_replay`], the
-    /// interpolated replay's and the reprojection's in-between frames,
-    /// [`crate::interp`]), with flags 0. Without it they go through the
+    /// frame owner's display frames, [`Self::show_between`]), with flags 0. Without it they go through the
     /// present hook, as a window wants; a hook that counts the guest's
     /// swaps (the headless run's screenshots) sets this to keep them apart.
     pub fn on_present_replay(
@@ -1833,6 +1854,7 @@ impl Backend for GfxBackend {
             }
         }
         recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
+        crate::scene_stage::submitted(recording.stage, recording.copy == crate::TargetCopy::Display, recording.ranges);
         if recording.copy == crate::TargetCopy::Reference || recording.single_display {
             recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
         }
@@ -2199,32 +2221,6 @@ impl Backend for GfxBackend {
         self.present_from(None, surface, flags, gamma)
     }
 
-    fn warp_surface(
-        &mut self,
-        src: SurfaceId,
-        dst: SurfaceId,
-        h: [[f32; 3]; 3],
-    ) -> Result<bool, String> {
-        self.flush()?;
-        let s = self.store.get(src).map_err(|e| e.to_string())?;
-        let d = self.store.get(dst).map_err(|e| e.to_string())?;
-        if d.desc().samples > 1 {
-            // A multisampled target would load its stale samples over
-            // the warp at the next pass.
-            return Ok(false);
-        }
-        let (src_view, dst_view, format) = (s.view().clone(), d.view().clone(), d.wgpu_format());
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        self.store
-            .resolve_msaa(&mut enc, src)
-            .map_err(|e| e.to_string())?;
-        let ctx = &self.ctx;
-        self.warper
-            .get_or_insert_with(|| gfx::blit::Warper::new(ctx))
-            .warp(ctx, &mut enc, &src_view, &dst_view, format, h);
-        self.submit(enc);
-        Ok(true)
-    }
 
     fn measure_present_raster(&mut self, surface: Option<SurfaceId>) -> crate::backend::RasterMeasurement {
         self.measure_raster = true;
@@ -2281,31 +2277,13 @@ impl Backend for GfxBackend {
         Ok(Some((size, pixels)))
     }
 
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        if self.flush().is_err() {
-            return None;
-        }
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let set = std::sync::Arc::clone(&done);
-        self.ctx.queue.on_submitted_work_done(move || {
-            set.store(true, std::sync::atomic::Ordering::Release)
-        });
-        let device = self.ctx.device.clone();
-        Some(Box::new(move || {
-            if !done.load(std::sync::atomic::Ordering::Acquire) {
-                // Runs finished callbacks; never waits.
-                let _ = device.poll(wgpu::PollType::Poll);
-            }
-            done.load(std::sync::atomic::Ordering::Acquire)
-        }))
-    }
 
     fn present_replay(
         &mut self,
         surface: SurfaceId,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
-        // A host-only frame (crate::interp): submitted and shown through
+        // A host-only frame (a display frame): submitted and shown through
         // the hook; the frame count, shader upkeep, `presented` and the
         // swap wait belong to the guest's presents.
         self.show_replay(None, surface, gamma)

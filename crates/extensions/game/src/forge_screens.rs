@@ -100,6 +100,9 @@ struct Hub {
     keyboard_request: Mutex<Option<TypeSpec>>,
     /// Which number a keyboard edits; Save as has none.
     keyboard_field: Mutex<Option<NumberField>>,
+    /// The file stem of the map variant whose dialog is up: what Rename
+    /// and Duplicate act on.
+    variant_file: Mutex<Option<String>>,
     typing: AtomicBool,
     /// Yes to Leave Game: leave at the next UI update.
     leave: AtomicBool,
@@ -125,6 +128,7 @@ impl Hub {
             keyboard: AtomicU32::new(0),
             keyboard_request: Mutex::new(None),
             keyboard_field: Mutex::new(None),
+            variant_file: Mutex::new(None),
             typing: AtomicBool::new(false),
             leave: AtomicBool::new(false),
             passing_update: AtomicBool::new(false),
@@ -265,13 +269,15 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
         Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
         Kind::Options => sheet::options_with_groups(&f.folders, &f.placed),
+        Kind::Variants => variants::list_sheet(&f.variants, f.filename.as_deref()),
         Kind::Controls => sheet::controls(),
         Kind::Objects
         | Kind::Properties
         | Kind::Coordinates
         | Kind::Link
         | Kind::Question
-        | Kind::Games => {
+        | Kind::Games
+        | Kind::Variant => {
             return Err(format!(
                 "{} shows the session's objects; the session opens it",
                 kind.screen()
@@ -348,6 +354,12 @@ enum Step {
     Keyboard(TypeSpec),
 }
 
+/// A map variant's row on Map variants was pressed: its dialog's Rename
+/// and Duplicate act on `file`.
+fn target_variant(file: String) {
+    *lock(&hub().variant_file) = Some(file);
+}
+
 /// A Coordinates or item-property row asks for the game's keyboard.
 fn ask_keyboard(spec: TypeSpec) -> crate::ui::Chosen {
     if hub().typing.load(Ordering::SeqCst) {
@@ -364,11 +376,15 @@ fn step(m: &dyn GuestMemory) -> Option<Step> {
     if hub().leave.swap(false, Ordering::SeqCst) {
         return Some(Step::Leave);
     }
-    let objects = screen(Kind::Objects);
-    if objects.take_close_after_pick()
-        && let Some(s) = objects.screen()
-    {
-        return Some(Step::Close(s));
+    // The object menu closes after a pick; Map variants after its dialog
+    // chose a Load or a Delete, whose question needs no screen of ours up.
+    for kind in [Kind::Objects, Kind::Variants] {
+        let beneath = screen(kind);
+        if beneath.take_close_after_pick()
+            && let Some(s) = beneath.screen()
+        {
+            return Some(Step::Close(s));
+        }
     }
     let g = ReadGm(m);
     let pending = (0..=crate::ui_watch::SHARED).any(|slot| {
@@ -396,7 +412,19 @@ fn poll_keyboard(m: &dyn GuestMemory) -> Result<(), MemFault> {
     let text = crate::signin_keyboard::read_text(m, buffer, NAME_CHARS + 1)?;
     let text = text.trim();
     if let Some(field) = lock(&hub().keyboard_field).take() {
-        send(Choice::Number(field, text.into()));
+        let file = lock(&hub().variant_file).clone();
+        send(match (field, file) {
+            (NumberField::RenameVariant, Some(file)) => {
+                Choice::RenameVariant(file, text.to_string())
+            }
+            (NumberField::DuplicateVariant, Some(file)) => {
+                Choice::DuplicateVariant(file, text.to_string())
+            }
+            (NumberField::RenameVariant | NumberField::DuplicateVariant, None) => {
+                Choice::Notice("That map variant is gone.".into())
+            }
+            (field, _) => Choice::Number(field, text.into()),
+        });
     } else {
         send(if text.is_empty() {
             Choice::Notice("Not saved: the name was empty.".into())

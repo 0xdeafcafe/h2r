@@ -930,22 +930,10 @@ fn run_configured(
     // Sample the render thread too when profiling.
     #[cfg(all(feature = "perf", feature = "gpu"))]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
-    // In-between frames at the display rate (docs/game/high-framerate.md,
-    // "Phase 2" and "E1"): `impl.render.interpolate` or
-    // `impl.render.reproject`, render thread only; in a window, or on the
-    // headless GPU backend (`H2_BOOT_GFX`, paced on the wall clock).
+    // The frame rate for the frame owner's display frames between scenes
+    // (docs/graphics/framescene.md, section 7).
     #[cfg(feature = "gpu")]
-    let interp = if opts.d3d {
-        d3d_glue::interp_render_thread(
-            host.gfx.is_some(),
-            host.render_thread,
-            std::env::var_os("H2_BOOT_GFX").is_some(),
-            d3d_glue::render_thread_requested(),
-        )
-        .and_then(|render_thread| d3d_glue::interpolation(host.settings.as_ref(), render_thread))
-    } else {
-        None
-    };
+    let fps = opts.d3d.then(|| d3d_glue::frame_rate(host.settings.as_ref()));
     // No window: a headless run, which skips the movies by default.
     #[cfg(feature = "gpu")]
     let headless = host.gfx.is_none();
@@ -964,7 +952,7 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     // Match the paired reference path even when a film has no visible copy.
     if !protected_readbacks && opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none())
-        && interp.is_none() && let Some(b) = &mut host.gfx
+        && let Some(b) = &mut host.gfx
     {
         native_shadows_glue::configure_single(b);
     }
@@ -979,7 +967,6 @@ fn run_configured(
     // A film export presents each frame before the next is encoded.
     #[cfg(feature = "gpu")]
     let render_thread = host.render_thread.then_some(d3d_glue::RenderThread {
-        clip_capture: false,
         synchronous_presents: host.film_capture.is_some(),
     });
     #[cfg(feature = "gpu")]
@@ -1016,16 +1003,16 @@ fn run_configured(
                     stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
                 }));
                 d3d_glue::install_scaled_view(
-                    &loaded.runtime, b, interp, render_thread, render_hooks, private,
+                    &loaded.runtime, b, fps, render_thread, render_hooks, private,
                 )?
             }
             None => d3d_glue::install_game_view(
-                &loaded.runtime, b, interp, render_thread, render_hooks, private, host.settings.as_deref(),
+                &loaded.runtime, b, fps, render_thread, render_hooks, private, host.settings.as_deref(),
             )?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
         (true, None) => Some(d3d_glue::install_headless_with_scenes(
-            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), protected_readbacks, private,
+            &loaded.runtime, fps, render_hooks, host.settings.as_deref(), protected_readbacks, private,
         )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]

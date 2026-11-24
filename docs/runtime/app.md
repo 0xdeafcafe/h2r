@@ -640,10 +640,10 @@ surface, clearing the rest to black.
   one interval (`DisplaySchedule::published` books the grid's next slot one
   interval after each publish). Uncapped redraws every event-loop turn
   with vsync off. A gap-filling redraw repeats the newest picture. The
-  render thread's in-between frames are each drawn once, at their
-  publish: a window grid of its own beside the replay's would beat
-  against it and drop one made frame and repeat another several times a
-  second. [Host replay and reprojection](../game/high-framerate.md).
+  render thread's display frames between scenes are each drawn once, at
+  their publish: a window grid of its own beside the render thread's
+  would beat against it and drop one made frame and repeat another
+  several times a second. [Display frames](../game/high-framerate.md).
 - Surface format: the first non-sRGB format (`Bgra8Unorm` on Metal). The Xbox
   pipeline is gamma-encoded throughout, so no conversion happens anywhere.
 

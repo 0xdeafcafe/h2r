@@ -555,25 +555,30 @@ names it, and the format 2 `MapId`.
   not read at any named point).
 - **A game variant only suggests.** Picking a game variant never
   changes the lobby's map or map variant. When the lobby's map has a
-  suggested variant on this machine, the Map Variant picker opens on
-  it and its description says which game variant it was made for. What
+  suggested variant on this machine (`map_variant::suggest`: the
+  suggestion's base is the installed map's hash and its `variant` the
+  saved document's id), the Map Variant picker opens on it, with Original
+  still first and the rest by name, and its line ends "Made for
+  <game variant>."; a held pick wins, and a suggested variant that fails
+  the store's checks is not opened on. What
   a game variant *requires* of a map is its script's labels, which the
   start gate enforces.
 
 ### The lobby
 
 Game Setup has **Map Variant...** under **Change Map...** in the
-CUSTOM GAMES and FORGE modes (`lobby_mode::arrange`); in FORGE it takes
-the place of Forge Map....
+CUSTOM GAMES and FORGE modes (`lobby_mode::arrange`); in FORGE it picks
+the map variant the session opens.
 
 1. **Change Map...** picks the map as today
    ([map-select.md](map-select.md)). A new map clears the variant.
 2. **Map Variant...** opens a picker dialog on top of Game Setup
-   (`kit.picker.map-variant`, in place of `kit.picker.forge-map`):
+   (`kit.picker.map-variant`):
    **Original**, then this map's variants by name. The description
    gives the author, the counts by kind and the game types it has
-   goals for. A variant that cannot be used is listed with its reason
-   as its description and cannot be chosen.
+   goals for (`forge_screens::variants::detail` writes the author and the
+   counts by kind; the game types are not in it yet). A variant that cannot
+   be used is listed with its reason as its description and cannot be chosen.
 3. The lobby's panel shows the variant's name on the line under the
    map's (`lobby_mode::panel_lines`).
 4. In FORGE the pick is what the session opens: Original is a new

@@ -46,7 +46,7 @@ impl<B: Backend> Device<B> {
 #[cfg(feature = "gpu")]
 fn is_perspective(rows: &[[f32; 4]]) -> bool {
     let m = std::array::from_fn(|i| rows[i].map(f64::from));
-    crate::interp::camera::Persp::split(&m).is_some()
+    crate::clip_space::camera::Persp::split(&m).is_some()
 }
 
 /// Widen the horizontal row of a captured perspective matrix, leaving
@@ -78,7 +78,7 @@ impl DisplayProjection {
         let VertexProcessing::Program { microcode, .. } = &shader.vertex else {
             return None;
         };
-        let crate::interp::epilogue::Position::Rows(row) = microcode.clip_position() else {
+        let crate::clip_space::epilogue::Position::Rows(row) = microcode.clip_position() else {
             return None;
         };
         let row = usize::from(row);

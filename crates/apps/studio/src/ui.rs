@@ -5,6 +5,7 @@
 mod bar;
 pub mod browser;
 mod doc_tabs;
+mod game_view;
 mod layout;
 mod toolbar;
 pub(crate) mod inspector;
@@ -164,6 +165,7 @@ impl Studio {
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
         app.poll_cards();
+        app.poll_voice_batch();
         app.poll_bot_nav();
         app.poll_ground();
         // The workspace's background extraction, before the status bar
@@ -251,7 +253,7 @@ impl Studio {
             Surface::Hud => self.hud_windows(ui, app, gpu, &mut actions),
             Surface::Textures => self.textures_windows(ui, app, gpu, &mut actions),
         }
-        self.play.window(ui, app, &self.keys.game);
+        self.play.window(ui, app, &self.keys.game, gpu);
         self.previous_surface = Some(app.surface());
         self.previous_map = app.loaded_map().or_else(|| app.loaded_halo1()).map(str::to_owned);
         self.play.pending_window(ui, app, &self.keys.pending_edits);
@@ -268,7 +270,7 @@ impl Studio {
         sound::window(ui, app, gpu, &mut self.sound);
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
-        announcer::window(ui, app, &mut self.announcer);
+        announcer::window(ui, app, &mut self.announcer, self.dialogs);
         // The tag workspace's first-start page (a floating window; the
         // shell is another lane's).
         workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);

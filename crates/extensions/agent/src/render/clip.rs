@@ -1,5 +1,6 @@
 //! A bounded capture across guest ticks. The render thread writes the guest
-//! present and each interpolated present in order.
+//! present and each display frame after it in order, up to the slots its
+//! writer takes.
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -116,7 +117,7 @@ impl ClipCapture {
         if slots > *max_slots {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
-                "clip capture above 30 fps needs interpolated replay on the render thread and H2_FPS at least as high as fps",
+                "clip capture above 30 fps needs a frame writer that takes display frames; this one takes one frame per tick",
             ));
         }
         if self.active.load(Ordering::Relaxed) {
@@ -212,7 +213,7 @@ impl ClipCapture {
     }
 
     /// Only the display hooks call this, in order on the render thread.
-    /// A later guest present exposes any missing interpolated slots.
+    /// A later guest present exposes any missing display-frame slots.
     pub fn write(&self, present: u64, slot: u32, save: impl FnOnce(&Path) -> Result<(), String>) {
         if !self.active.load(Ordering::Acquire) {
             return;
@@ -232,7 +233,7 @@ impl ClipCapture {
             let index = (present - first) * u64::from(clip.slots) + u64::from(slot);
             if index != clip.written {
                 clip.error = Some(format!(
-                    "present {present} slot {slot} arrived after only {} of {index} display frames were written; see render.stats for interpolation holds",
+                    "present {present} slot {slot} arrived after only {} of {index} display frames were written; see render.stats' display_rate",
                     clip.written
                 ));
                 self.active.store(false, Ordering::Release);
@@ -345,7 +346,7 @@ mod tests {
                 .err()
                 .unwrap()
                 .message
-                .contains("interpolation holds")
+                .contains("display_rate")
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

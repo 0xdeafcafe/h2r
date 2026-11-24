@@ -367,6 +367,14 @@ pub trait ExternalPass: Send {
     /// it must be the whole draw the guest would issue.
     fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
 
+    /// The same pass drawing `draw` in place of its own (the draw
+    /// [`Self::resolved_fallback`] gives, with other constants): a display
+    /// frame between ticks moves a typed draw onto a blended camera this
+    /// way (`crate::scene_sink::Retarget`). `None` (the default): the pass
+    /// draws only what it was built with, and that frame draws it as the
+    /// tick did.
+    fn with_draw(&self, _draw: std::sync::Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> { None }
+
     /// An immutable packet for render diagnostics, independent of whether
     /// this pass can replay that packet as a fallback.
     fn diagnostic_draw(&self) -> Option<std::sync::Arc<ResolvedDraw>> {
@@ -707,6 +715,19 @@ pub struct QueuedExternalDraw<S> {
     pub fallback_depth: Option<S>,
     /// None on native commit, otherwise the result of the fallback draw.
     pub finished: Box<dyn FnOnce(Option<&Result<DrawOutcome, String>>) + Send>,
+}
+
+/// The typed admission a guest draw was offered as and did not take: the
+/// exact packet the pass would replace, and the pass, with the attachments it
+/// resolved. A backend that retains the frame keeps it beside the draw
+/// ([`Backend::draw_admitted`]) so replay can prepare the pass on its own
+/// attachments; any other backend drops it.
+pub struct RetainedAdmission<S> {
+    pub packet: std::sync::Arc<ResolvedDraw>,
+    pub surfaces: ExternalSurfaces<S>,
+    pub request: ExternalPassRequest,
+    pub plan: ExternalPlan,
+    pub pass: SharedReplacement,
 }
 
 /// A typed stage of the frame step's scene (docs/graphics/framescene.md,
@@ -1403,13 +1424,6 @@ pub trait Backend: Send {
     /// Marks this thread's frame-stat boundary. Asynchronous backends
     /// forward queued statistics without waiting for the render thread.
     fn frame_stats(&mut self) {}
-    /// When the guest called `Swap` for the present that comes next, read
-    /// on the guest's thread (a render thread passes it along with the
-    /// present). Only the interpolated replay uses it
-    /// (`crate::interp`); the default ignores it.
-    fn stamp_present(&mut self, at: std::time::Instant) {
-        let _ = at;
-    }
     /// Observe the next original Swap on this device. A wrapping display may
     /// provide the guest extent itself and arm its view with no surface.
     fn measure_present_raster(&mut self, _surface: Option<Self::Surface>) -> RasterMeasurement {
@@ -1423,8 +1437,8 @@ pub trait Backend: Send {
     /// Backends without display feedback leave the outcome unknown.
     fn last_present_unshown(&self) -> bool { false }
 
-    /// Shows a host-only frame between the guest's presents (an
-    /// interpolated replay, `crate::interp`): the present hook sees it,
+    /// Shows a host-only frame between the guest's presents (a display
+    /// frame between scenes): the present hook sees it,
     /// but it is not a guest frame, so frame counters, shader upkeep and
     /// the `D3DSWAP_FINISH` wait are left alone where a backend has them.
     /// The default presents with no flags.
@@ -1435,24 +1449,9 @@ pub trait Backend: Send {
     ) -> Result<(), String> {
         self.present_with_gamma(surface, 0, gamma)
     }
-    /// Draws colour surface `src` over all of `dst` (same guest size)
-    /// through a projective warp: `dst`'s texel at normalised `(u, v)`
-    /// samples `src` at `h * (u, v, 1)` (rows), filtered, clamped to the
-    /// edge. Host-only (the interpolated reprojection, `crate::interp`).
-    /// `Ok(false)`: the backend cannot (the default).
-    fn warp_surface(
-        &mut self,
-        src: Self::Surface,
-        dst: Self::Surface,
-        h: [[f32; 3]; 3],
-    ) -> Result<bool, String> {
-        let _ = (src, dst, h);
-        Ok(false)
-    }
     /// The size in host texels of what `surface` shows when presented (a
-    /// view backend's scaled copy, say). Host-only: the interpolated
-    /// replay checks its frames against the guest's with it
-    /// (`crate::interp`). `None` (the default): not known.
+    /// view backend's scaled copy, say). Host-only: a private draw pass
+    /// sizes its targets by it. `None` (the default): not known.
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         let _ = surface;
         None
@@ -1486,20 +1485,6 @@ pub trait Backend: Send {
         Ok(None)
     }
 
-    /// Submits the work recorded so far and returns a check that answers
-    /// whether the GPU has finished it, without waiting. Host-only: the
-    /// interpolated replay drops an in-between frame while the last one is
-    /// still on the GPU, so its work never queues up ahead of the guest's
-    /// frames (`crate::interp`). `None` (the default): never behind.
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        None
-    }
-    /// Host-only work a render thread runs when it has nothing queued (the
-    /// interpolated replay's in-between frames). Returns when it wants to
-    /// be called again; `None` (the default) waits for the next command.
-    fn idle(&mut self) -> Option<std::time::Instant> {
-        None
-    }
     /// Waits until a render thread has run everything queued so far
     /// (`ThreadedBackend::finish`). Host-only: a machine snapshot drains
     /// the render thread before it saves (docs/runtime/snapshots.md). The
@@ -1678,6 +1663,17 @@ pub trait Backend: Send {
         &mut self, _stage: SceneStage<Self::Surface>, copies: Vec<ExternalRecording>,
     ) {
         for copy in copies { self.commit_external(copy); }
+    }
+
+    /// The guest's one draw for a packet that was offered to a typed pass
+    /// and not taken. The draw, its outcome and its stream buffers are those
+    /// of [`draw_owned`](Self::draw_owned), which is all the default does.
+    /// A backend that retains the frame may keep `admission` beside it.
+    fn draw_admitted(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: ResolvedDraw,
+        textures: [Option<&Self::Texture>; 4], _admission: RetainedAdmission<Self::Surface>,
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.draw_owned(color, depth, draw, textures)
     }
 
     /// Try to enqueue an independently resolved draw with its exact fallback.
@@ -2080,15 +2076,6 @@ pub enum Recorded {
     },
     /// `clear_pixel_count`.
     ClearPixelCount,
-    /// `warp_surface`.
-    Warp {
-        /// Source.
-        src: u32,
-        /// Destination.
-        dst: u32,
-        /// The homography (rows).
-        h: [[f32; 3]; 3],
-    },
     /// `report_pixel_count`.
     ReportPixelCount {
         /// The ticket handed out.
@@ -2149,9 +2136,6 @@ pub struct RecordingBackend {
     /// What [`Backend::surface_extent`] answers, by surface (none listed:
     /// not known).
     pub extents: std::collections::HashMap<u32, (u32, u32)>,
-    /// While set, the checks [`Backend::gpu_fence`] hands out answer that
-    /// the GPU is still busy. `None` (the default): no fences.
-    pub gpu_busy: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Whether it takes external passes ([`Backend::external_pass`]; off
     /// by default). Taken, a pass is recorded in
     /// [`external`](Self::external), not encoded (there is no GPU).
@@ -2316,16 +2300,6 @@ impl Backend for RecordingBackend {
     }
     fn surface_extent(&self, surface: u32) -> Option<(u32, u32)> {
         self.extents.get(&surface).copied()
-    }
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        let busy = self.gpu_busy.clone()?;
-        Some(Box::new(move || {
-            !busy.load(std::sync::atomic::Ordering::Acquire)
-        }))
-    }
-    fn warp_surface(&mut self, src: u32, dst: u32, h: [[f32; 3]; 3]) -> Result<bool, String> {
-        self.calls.push(Recorded::Warp { src, dst, h });
-        Ok(true)
     }
     fn present_with_gamma(
         &mut self,

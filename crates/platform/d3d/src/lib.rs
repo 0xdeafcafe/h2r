@@ -29,11 +29,13 @@
 //!   (docs/graphics/framescene.md, slice 2);
 //! * [`scene_sink`]: the frame's carried part, filled from the guest's
 //!   work by slot (docs/graphics/framescene.md, slice 6);
-//! * `interp`: in-between frames replayed with interpolated matrices
-//!   (opt-in, docs/game/high-framerate.md).
+//! * `clip_space`: where a vertex program puts its clip position, which
+//!   the carried draws' camera classification reads.
 
 pub mod abi;
 pub mod backend;
+#[cfg(feature = "gpu")]
+pub mod clip_space;
 pub mod descriptor;
 pub mod device;
 pub mod dirty;
@@ -43,8 +45,6 @@ pub mod gfx_backend;
 pub mod glyph;
 pub mod guest;
 pub mod hw;
-#[cfg(feature = "gpu")]
-pub mod interp;
 pub mod layout;
 #[cfg(feature = "gpu")]
 pub mod nv2a;
@@ -85,8 +85,6 @@ pub use events::{D3dError, Event, HleStop};
 #[cfg(feature = "gpu")]
 pub use gfx_backend::{GfxBackend, SwapFinish};
 pub use guest::{GuestError, GuestMemory, SparseMemory};
-#[cfg(feature = "gpu")]
-pub use interp::InterpBackend;
 pub use layout::GuestLayout;
 #[cfg(feature = "gpu")]
 pub use nv2a::Nv2aShaders;

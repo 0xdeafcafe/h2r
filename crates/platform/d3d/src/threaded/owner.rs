@@ -76,6 +76,20 @@ pub trait OwnerEvents: Send + Sync {
 
 impl OwnerEvents for () {}
 
+/// Display frames between owned presents (docs/graphics/framescene.md,
+/// section 7 and slice 8). The render thread asks whenever nothing is
+/// queued, so the guest's commands always go first. A frame drawn here is
+/// host-only: it never touches the guest's attachments, tickets or
+/// sampled textures.
+pub trait DisplayRate<B: Backend>: Send {
+    /// Draws a display frame if one is due at `now`. Returns when to ask
+    /// again; `None` waits for the next command.
+    fn idle(&mut self, backend: &mut B, now: Instant) -> Option<Instant>;
+    /// A Swap went out without the graph: the scenes no longer follow on
+    /// from what is on screen.
+    fn declined(&mut self) {}
+}
+
 pub struct FrameOwner<B: Backend> {
     /// Guest Swap ordinal and the owner's generation at submission.
     pub select: Box<dyn FnMut(u64, u64) -> Option<Submission<B>> + Send>,
@@ -121,7 +135,6 @@ pub fn stats() -> Option<OwnerStats> {
 pub(super) struct Present<B: Backend> {
     pub n: u64,
     pub surface: u32,
-    pub at: Instant,
     pub flags: u32,
     pub gamma: Option<Box<[u8; 768]>>,
     pub candidate: Option<Submission<B>>,
@@ -220,6 +233,16 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             });
         }
         self.frame_owner = Some(owner);
+        self
+    }
+
+    /// Draw display frames between owned presents on the render thread
+    /// ([`DisplayRate`]).
+    pub fn with_display_rate(self, rate: Box<dyn DisplayRate<B>>) -> Self {
+        self.post(move |w| {
+            w.display_rate = Some(rate);
+            Ok(())
+        });
         self
     }
 }
@@ -385,8 +408,19 @@ impl<B: Backend> Worker<B> {
         Ok(game_queries)
     }
 
+    /// The display-rate loop's turn while nothing is queued. A refused
+    /// transaction runs the guest's commands on the device as they come,
+    /// so no display frame is drawn in the middle of one.
+    pub(super) fn display_idle(&mut self) -> Option<Instant> {
+        if self.transaction.as_ref().is_some_and(|t| t.refused) {
+            return None;
+        }
+        let rate = self.display_rate.as_mut()?;
+        rate.idle(&mut self.inner, Instant::now())
+    }
+
     pub(super) fn owner_present(&mut self, present: Present<B>) {
-        let Present { n, surface, at, flags, gamma, candidate, generation, events, metadata: _ } = present;
+        let Present { n, surface, flags, gamma, candidate, generation, events, metadata: _ } = present;
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
         let accepted = candidate.and_then(|submission| {
             if self.shared.failed.load(Ordering::Acquire) {
@@ -440,7 +474,6 @@ impl<B: Backend> Worker<B> {
         use crate::scene_sink::window::DisplayResult;
         let mut outcome = DisplayResult::Failed;
         let raster = self.measure_present_raster(surface);
-        self.inner.stamp_present(at);
         if let Some((frame, draw, targets, samples)) = accepted {
             // The worker owns this scene and all of its original commands.
             // A locked producer can queue the next scene while this draws.
@@ -471,6 +504,9 @@ impl<B: Backend> Worker<B> {
                 }
             }
         } else {
+            if let Some(rate) = self.display_rate.as_mut() {
+                rate.declined();
+            }
             for cmd in transaction.commands {
                 self.exec_original(cmd);
             }

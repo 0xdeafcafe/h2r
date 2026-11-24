@@ -28,7 +28,7 @@ impl Site {
     }
     pub fn accepts_caller(self, caller: Option<u32>) -> bool {
         match self {
-            Self::Billboard => matches!(caller, Some(0x0002_f24c | 0x0004_fddd)),
+            Self::Billboard => caller == Some(0x0004_fddd),
             Self::DepthBillboard => caller == Some(0x0004_fd9d),
             Self::MaterialStrip => matches!(caller, Some(0x0024_45fa | 0x002b_e647)),
             _ => caller.is_none(),
@@ -108,7 +108,8 @@ mod tests {
     use super::*;
     #[test]
     fn scope_and_rasterization_refuse_unknown_work() {
-        assert!(Site::Billboard.accepts_caller(Some(0x2f24c)));
+        assert!(Site::Billboard.accepts_caller(Some(0x4fddd)));
+        assert!(!Site::Billboard.accepts_caller(Some(0x2f24c)));
         assert!(!Site::Billboard.accepts_caller(Some(0x2f24d)));
         assert!(!Site::DepthBillboard.accepts_caller(Some(0x4fddd)));
         assert_eq!(

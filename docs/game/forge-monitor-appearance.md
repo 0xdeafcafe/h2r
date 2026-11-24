@@ -1,6 +1,6 @@
 # Forge monitor appearance
 
-Status: Partly built (ML1 to ML7). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the Appearance page's body (ML4b: its place beside the Spartan and `forge_glue::appearance_body` — pure, the model widget does not draw it yet), the host light (ML5: in each game view's light list and the E3 light choice, last, and drawn by the native light passes over the structure), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the kit's `Scene3d` preview widget exist; the look's page (ML6, a Forge screen of the game's), the film records (ML8), the lobby row (ML9) and a real body (ML10) do not.
+Status: Partly built (ML1 to ML8). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the Appearance page's body (ML4b: its place beside the Spartan and `forge_glue::appearance_body` — pure, the model widget does not draw it yet), the host light (ML5: in each game view's light list and the E3 light choice, last, and drawn by the native light passes over the structure), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the kit's `Scene3d` preview widget exist; film and Theater records (ML8: the record subtypes, the recorder and its checkpoint, the playback seats, the camera subjects and the `monitor_look_source` reason — pure; the game writes the records, and Theater's playback reader, camera rig and bar do not consume them yet), the look's page (ML6, a Forge screen of the game's), the lobby row (ML9) and a real body (ML10) do not.
 Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `look/body.rs` and `look/appearance.rs` (the drawn body in the world and on the Appearance page), `crates/rewrites/frame-scene/src/light.rs` (`Light::host_light`), `crates/rewrites/render-bridge/src/scene_step.rs` (`set_host_lights`), `crates/rewrites/native-render/src/light_choice.rs`, `crates/extensions/game/src/forge_hud.rs` (`Points`, the navpoints over other monitors), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/view.rs` (`Kind::Scene3d`). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_hud_tests.rs` and `crates/extensions/agent/src/forge/tests.rs`; `look/appearance.rs` (ML4b); `forge_glue.rs`, `frame-scene/src/builder.rs` and `light_choice.rs` (ML5); each later slice names its own.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -368,24 +368,43 @@ part of the game:
 
 A film of a Forge session already records each log entry under a Forge
 tag (forge-design.md, "Films and determinism"). That tag's payload
-starts with a subtype byte: 0 is a log entry, 1 a look, 2 a pose.
+starts with a subtype byte: 0 is the session's welcome and 1 a log
+item (`forge::net::film`); the look and the pose are 2 and 3
+(`forge::look::film`, `LOOK` and `POSE`).
 
-- The recorder writes a look record when the host's table changes and a
-  pose record for every monitor seat at 15 a second, its own included.
-  Each seek checkpoint repeats the table and each seat's last pose, as
-  tag 3's baselines do ([film-format.md](film-format.md), "Tag 3
-  presentation records").
-- Playback draws monitors from these records with the code the live
-  session uses. They are outside the gameplay digest, so a film
-  verifies the same with or without them.
-- `theater.camera {mode: "follow" | "orbit", seat}` on a monitor seat
-  follows its body; first person on that seat is the monitor's own
-  camera pose, with no body drawn.
+- The recorder (`look::film::Recorder`, fed by `forge_glue::net`) writes
+  a look record, JSON of `{seat, look, source}`, when the table changes
+  on the machine that records, and a pose record, 27 bytes of seat,
+  monitor flag, film tick and position, yaw and pitch, for every monitor
+  seat at most 15 a second (every second tick), its own included. A seat
+  stepping back into its biped writes its pose record at once. `source`
+  names the map the model was read from and its SHA-256, as the
+  recording machine's catalogue has them.
+- Each seek checkpoint repeats the table and each seat's last pose
+  (`Recorder::checkpoint`, written beside tag 3's baseline in
+  `theater/unified.rs`). A playback fed the checkpoint and the records
+  after it holds the table and every seat's pose that one fed the whole
+  film holds, at every tick from the checkpoint on.
+- Playback reads the records into the same `Seats` the live session
+  draws from (`look::film::Playback`, reached through
+  `net::film::Replay::presence`), and draws with `Bodies::draw`. The film's
+  tick is the render clock, 30 a second. The records are outside the
+  gameplay digest, so a film verifies the same with or without them, and
+  a record that is not readable is a named film error.
+- `Playback::subject(seat, tick, view)` gives the camera on a monitor
+  seat its subject: the body's pose for follow and orbit, the monitor's
+  own camera pose with no body drawn for first person
+  (`Playback::draws` hides that seat). A marker seat has a pose to
+  follow, though no body.
 - A playback machine that cannot draw a recorded look says so and draws
-  the marker in that look's colours: `theater.compat` gains the reason
-  `monitor_look_source` with the seat and the map, the film's detail
-  page lists it, and the Theater bar shows it once when the seat first
-  appears. Playback is not refused, because the simulation is whole.
+  the marker in that look's colours: `Playback::unseen` lists each
+  seat and the map it needs, `theater.compat` carries them as
+  `monitor_looks` entries with the reason `monitor_look_source`
+  (`agent_proto::theater::MonitorLookSource`,
+  `theater::compatibility::note_monitor_looks`), and the Theater bar
+  shows each once, when the seat first appears (`Playback::announce`).
+  They are not reasons the film is unavailable: playback is not refused,
+  because the simulation is whole.
 - A real body needs nothing here: it is a unit in the film's own state.
 
 ## Interfaces
@@ -473,10 +492,13 @@ data.
 | **ML9** | The lobby row and team colours | S | F14, ML6 | the lobby opens the page; the team lock holds and names itself |
 | **ML10** | A real body's look: the Bodies heading, the `body` op's colours, locked rows | M | F10, ML6 | the op writes the unit's change colours over a fake game and folds through the log; two fake peers hash alike |
 
-ML1 to ML7 are built, ML4, ML4b and ML5 as the data the renderer is
+ML1 to ML8 are built, ML4, ML4b and ML5 as the data the renderer is
 handed: the object pass, the model widget and the light passes do not
-draw them yet. ML8 waits for F5's film record; ML9 for F14; ML10 for
-F10.
+draw them yet. ML8 records and replays the look; drawing a body from
+another map's model waits for the shared asset store, so a playback
+machine draws the marker for a look whose model is not in its own map.
+Theater's reader, camera rig and bar do not consume the records yet.
+ML9 waits for F14; ML10 for F10.
 
 ## Decisions
 

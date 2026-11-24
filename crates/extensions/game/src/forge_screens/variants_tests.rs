@@ -80,3 +80,88 @@ fn the_questions_ask_in_the_specs_words_and_focus_no() {
         );
     }
 }
+
+fn row(file: &str, name: &str, saved: bool, problem: Option<Problem>) -> Row {
+    Row::of(&listed(
+        file,
+        if saved { Source::Saved } else { Source::Live },
+        problem,
+    ))
+    .named(name)
+}
+
+impl Row {
+    fn named(mut self, name: &str) -> Row {
+        self.name = name.into();
+        self
+    }
+}
+
+fn labels(sheet: &Sheet) -> Vec<&str> {
+    sheet.rows.iter().map(|r| r.label.as_str()).collect()
+}
+
+#[test]
+fn the_page_says_where_each_variant_is_or_why_it_cannot_be_used() {
+    let rows = vec![
+        row("a", "Arena", true, None),
+        row("b", "Tower", false, None),
+        row("c", "Old", true, Some(Problem::BaseHash)),
+    ];
+    let page = list_sheet(&rows, Some("arena"));
+    assert_eq!(page.kind, Kind::Variants);
+    assert_eq!(labels(&page), ["Arena", "Tower", "Old"]);
+    let values: Vec<_> = page.rows.iter().map(|r| r.value.as_deref()).collect();
+    assert_eq!(
+        values,
+        [Some(SAVED), Some(ON_LIVE), Some(UNUSABLE)]
+    );
+    assert_eq!(
+        page.rows[2].description.as_deref(),
+        rows[2].sentence.as_deref()
+    );
+    assert!(matches!(&page.rows[0].act, Act::Variant(file, _) if file == "a"));
+    // A map with none has one fact row.
+    let empty = list_sheet(&[], None);
+    assert_eq!(labels(&empty), [NO_VARIANTS]);
+    assert_eq!(empty.rows[0].act, Act::Info);
+}
+
+#[test]
+fn a_dialog_has_the_rows_the_variant_can_act_on() {
+    let saved = row("a", "Arena", true, None);
+    assert_eq!(
+        labels(&variant_sheet(&saved, Some("Other"))),
+        ["Load", "Rename", "Duplicate", "Delete"]
+    );
+    // The open variant's Delete is absent, and its row says why.
+    let open = variant_sheet(&saved, Some("ARENA"));
+    assert_eq!(labels(&open), ["Load", "Rename", "Duplicate", "Open now"]);
+    assert_eq!(
+        open.rows[3].description.as_deref(),
+        Some(OPEN_CANNOT_DELETE)
+    );
+    assert!(open.rows.iter().all(|r| r.act != Act::Choose(Choice::DeleteVariant("a".into()))));
+    // One that fails a check is renamed and deleted, not loaded.
+    let bad = row("c", "Old", true, Some(Problem::BaseHash));
+    assert_eq!(labels(&variant_sheet(&bad, None)), ["Rename", "Delete"]);
+    // A Live copy is not renamed or copied here.
+    let live = row("b", "Tower", false, None);
+    assert_eq!(labels(&variant_sheet(&live, None)), ["Delete"]);
+    // Rename and Duplicate type a name starting from the variant's.
+    let rename = &variant_sheet(&saved, None).rows[1];
+    assert!(matches!(
+        &rename.act,
+        Act::Type(TypeSpec { field: NumberField::RenameVariant, initial }) if initial == "Arena"
+    ));
+}
+
+#[test]
+fn the_notices_and_the_delete_question_say_what_happened() {
+    assert_eq!(renamed("Court"), "Renamed to Court.");
+    assert_eq!(duplicated("Court"), "Copied as Court.");
+    assert_eq!(deleted("Court"), "Deleted Court.");
+    let s = sheet::question(Ask::DeleteVariant, "Court");
+    assert_eq!(s.body, "Delete Court?");
+    assert_eq!(s.rows[s.focus].label, "No");
+}

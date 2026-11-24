@@ -1653,17 +1653,25 @@ there. [announcer.md](announcer.md) has the rest.
 
 ### Lines in a game character's voice
 
-In the same window, pick **Game character (local clone)** and a
-character. **Build dataset** reads that character's lines from your disc,
-cuts them into clean clips and pairs each with its subtitle; the lines
-with no subtitle are transcribed on your Mac. The first time, Studio also
-installs the voice model (a few GB, once); the window shows the progress.
-Then type a line and press **Say it**: the clone says it in the
-character's voice, copying the delivery of one of their own lines (name
-one under **Reference line**, or leave it to Studio), and brings it to the
-loudness of their lines on the disc. **Fine-tune** trains the clone on
-the whole dataset for a closer voice; it needs about ten minutes of their
-speech and takes a while.
+In the same window, pick **Game character (local clone)**. The window
+goes top to bottom: **1 Voice** (a picker with a search, each character
+showing its minutes of speech and whether it is fine-tuned, and the model),
+**2 Lines** (type or paste many lines, one per line, or import a text file;
+each row can have its own voice, an output name, and the game sound it
+replaces), **3 Say** (**Say all** says every row in turn; each row shows
+queued, running, done or why it failed, plays, and re-runs on its own),
+and **5 Use** (**Keep all done lines** copies them into the checkout or the
+edit target package in one step). Buttons that are off say why.
+
+The first time, open **Voice setup**: **Build dataset** reads that
+character's lines from your disc, cuts them into clean clips and pairs each
+with its subtitle; the lines with no subtitle are transcribed on your Mac.
+Studio also installs the voice model (a few GB, once); the window shows the
+progress. A line is said in the character's voice, copying the delivery of
+one of their own lines (name one under **Reference line**, or leave it to
+Studio), and brought to the loudness of their lines on the disc.
+**Fine-tune** trains the clone on the whole dataset for a closer voice; it
+needs about ten minutes of their speech and takes a while.
 
 Everything stays on your Mac: the clips, the transcripts, the model and
 the lines are under `<data>/voices/` and Studio's caches, and nothing is

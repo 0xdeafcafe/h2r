@@ -23,6 +23,7 @@ impl Library for FilmLibrary {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
+            .filter(is_game_film)
             .map(|entry| {
                 let compatibility = installation.compatibility(&entry);
                 let recording = entry.path.clone();
@@ -47,6 +48,19 @@ impl Library for FilmLibrary {
     fn delete(&self, id: &str) -> Result<(), String> {
         self.0.delete(id).map_err(|e| e.to_string())
     }
+}
+
+/// Whether a film is a game's: the library lists games only. A film with no
+/// map and no players (a session's menus, a tape sealed after a hard kill,
+/// whose descriptor died with the session) names nothing to watch.
+pub(crate) fn is_game_film(entry: &film::LibraryEntry) -> bool {
+    entry.meta.source == film::Source::Host
+        || !entry.meta.map.is_empty()
+        || !entry.meta.players.is_empty()
+        || entry
+            .summary
+            .as_ref()
+            .is_some_and(|s| !s.level.is_empty() || !s.players.is_empty())
 }
 
 /// Both the library selector and the playback transport use the sealed header
@@ -238,6 +252,44 @@ impl shell::Controller for Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_entry(map: &str) -> film::LibraryEntry {
+        film::LibraryEntry {
+            meta: film::FilmMeta {
+                id: "local".into(),
+                map: map.into(),
+                variant: String::new(),
+                started_ms: 1,
+                length_ticks: 100,
+                players: Vec::new(),
+                source: film::Source::Local,
+                image_stamp: String::new(),
+            },
+            summary: None,
+            version: 3,
+            ticks_per_second: None,
+            runtime_stamp: String::new(),
+            simulation_hooks: None,
+            xbe_sha256: String::new(),
+            guest_image: None,
+            saved: false,
+            lease_id: None,
+            game_id: None,
+            path: "local.h2film".into(),
+        }
+    }
+
+    #[test]
+    fn the_library_lists_games_not_nameless_films() {
+        assert!(!is_game_film(&local_entry("")), "no map, no players");
+        assert!(is_game_film(&local_entry("zanzibar")));
+        let mut scored = local_entry("");
+        scored.meta.players.push(film::Player { name: "Chief".into(), team: 0, score: 1 });
+        assert!(is_game_film(&scored));
+        let mut summarised = local_entry("");
+        summarised.summary = Some(film::blam::Summary { level: "a30".into(), ..Default::default() });
+        assert!(is_game_film(&summarised));
+    }
 
     #[test]
     fn exact_host_films_retain_the_live_id() {

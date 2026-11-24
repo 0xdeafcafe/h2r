@@ -166,6 +166,12 @@ impl ForgeScreen {
         self.close_after_pick.swap(false, Ordering::SeqCst)
     }
 
+    /// Asks this screen to close at the next UI update, as a closing pick
+    /// does: its dialog chose something that leaves it with nothing to show.
+    pub fn close_with_dialog(&self) {
+        self.close_after_pick.store(true, Ordering::SeqCst);
+    }
+
     /// The rows its text slots hold, and the in-game list's lines.
     pub fn max_rows(&self) -> usize {
         let slots = ((self.kind.family().len - ROWS) / 2) as usize;
@@ -187,10 +193,16 @@ impl ForgeScreen {
     }
 
     /// The legend: A acts on every screen but the Controls page, which
-    /// only lists.
+    /// only lists, and a sheet of facts alone (the Map variants page of a
+    /// map with none).
     pub fn prompts(&self) -> Vec<Prompt> {
+        let facts_only = {
+            let rows = self.sheet().rows;
+            !rows.is_empty() && rows.iter().all(|r| matches!(r.act, Act::Info))
+        };
         match self.kind {
             Kind::Controls => vec![Prompt::new(&[Glyph::B], "Back")],
+            _ if facts_only => vec![Prompt::new(&[Glyph::B], "Back")],
             _ => vec![
                 Prompt::new(&[Glyph::A], "Select"),
                 Prompt::new(&[Glyph::B], "Back"),
@@ -394,6 +406,11 @@ impl Rows for ForgeScreen {
                 Chosen::Act
             }
             Act::Choose(c) => {
+                if self.kind == Kind::Variant
+                    && matches!(c, Choice::Load(_) | Choice::DeleteVariant(_))
+                {
+                    super::screen(Kind::Variants).close_with_dialog();
+                }
                 lock(&self.outbox).push_back(c.clone());
                 self.closing.store(true, Ordering::SeqCst);
                 Chosen::Act
@@ -414,6 +431,15 @@ impl Rows for ForgeScreen {
                         Chosen::Act
                     }
                     Err(why) => Chosen::Stepped(format!("{}: {why}", self.kind.screen())),
+                }
+            }
+            Act::Variant(file, sheet) => {
+                super::target_variant(file.clone());
+                match super::push((**sheet).clone()) {
+                    Ok(chosen) => chosen,
+                    Err(why) => {
+                        Chosen::Stepped(format!("{}: not opened: {why}", sheet.kind.screen()))
+                    }
                 }
             }
             Act::Dialog(sheet) => match super::push((**sheet).clone()) {
@@ -508,6 +534,8 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
         Act::Dialog(sheet) => {
             RowSpec::action(&r.label).press(Press::Open(sheet.kind.screen().into()))
         }
+        Act::Variant(_, sheet) => RowSpec::value(&r.label, &[value.as_str()], 0)
+            .press(Press::Open(sheet.kind.screen().into())),
         Act::Tick(_) => RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Act),
         Act::Info => {
             // A fact takes no A: its legend is Back alone.
@@ -536,6 +564,10 @@ impl Describe for ForgeScreen {
             .collect();
         s.focus = sheet.focus.min(s.rows.len().saturating_sub(1));
         s.prompts = self.prompts();
+        // A dialog's legend follows its focused row: a fact takes no A.
+        if look != Look::List && matches!(sheet.rows.get(sheet.focus).map(|r| &r.act), Some(Act::Info)) {
+            s.prompts = vec![Prompt::new(&[Glyph::B], "Back")];
+        }
         s.inputs = self.inputs();
         s.footer = true;
         match look {

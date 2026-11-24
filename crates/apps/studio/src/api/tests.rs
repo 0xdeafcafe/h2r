@@ -14,6 +14,7 @@ use crate::app::{Action, PlaylistEdit, Selection};
 
 mod anim_save_tests;
 mod bitmaps_tests;
+mod game_tests;
 mod playtest_tests;
 mod image_gen_tests;
 mod markers_tests;
@@ -238,7 +239,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             app.tags = crate::app::TagDoc::new(super::curves::tests::registry());
             call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
-        m::SHADER_READ | m::SHADER_SET | m::SHADER_PREVIEW => {
+        m::SHADER_READ | m::SHADER_SET | m::SHADER_PREVIEW | m::SHADER_CODE => {
             // The invented material: the floor shader with a colour its
             // template's one pass in layer 5 reads.
             let map = t.path("shader.map");
@@ -257,7 +258,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             // Invented maps and the fake sidecar (never Python).
             super::voice_clone::test_setup(app, false, false);
         }
-        m::VOICE_CLONE_TRAIN | m::VOICE_CLONE_SAY => {
+        m::VOICE_CLONE_TRAIN
+        | m::VOICE_CLONE_SAY
+        | m::VOICE_SAY_BATCH
+        | m::VOICE_BATCH_STATUS
+        | m::VOICE_BATCH_RUN
+        | m::VOICE_BATCH_SAVE => {
             // The fake sidecar installed and Cortana's dataset built.
             super::voice_clone::test_setup(app, true, true);
         }
@@ -1280,6 +1286,8 @@ fn every_method_in_methods_has_a_test() {
                         | m::PAIR_PREVIEW
                         | m::PAIR_AUDIO
                         | m::PAIR_RESULT
+                        // No game, so no picture to save.
+                        | m::GAME_SNAPSHOT
                         | m::PACKAGE_PLAY
                         | m::RECORDING_PLAY
                         // No sim runner is wired to Studio's own API.

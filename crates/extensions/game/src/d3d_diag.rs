@@ -615,7 +615,7 @@ impl<B: Backend> DiagBackend<B> {
         color: B::Surface,
         depth: Option<B::Surface>,
         draw: &ResolvedDraw,
-        shared: Option<&Arc<ResolvedDraw>>,
+        issue: impl FnOnce(&mut B, [Option<&B::Texture>; 4]) -> Result<DrawOutcome, String>,
         textures: [Option<&Tracked<B::Texture, B::Surface>>; 4],
     ) -> Result<DrawOutcome, String> {
         let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
@@ -653,10 +653,7 @@ impl<B: Backend> DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
-        let r = match shared {
-            Some(packet) => self.inner.draw_shared(color, depth, Arc::clone(packet), inner).0,
-            None => self.inner.draw(color, depth, draw, inner),
-        };
+        let r = issue(&mut self.inner, inner);
         if probing {
             let mut info = probe_draw(color, depth, draw, &r);
             if self.probe.layout_requested() {
@@ -1060,14 +1057,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.external_pass(color, depth, sampled, request, pass)
     }
-    fn warp_surface(
-        &mut self,
-        src: Self::Surface,
-        dst: Self::Surface,
-        h: [[f32; 3]; 3],
-    ) -> Result<bool, String> {
-        self.inner.warp_surface(src, dst, h)
-    }
     fn queue_frame_probe_read(
         &mut self, surface: Self::Surface, width: u32, height: u32,
         done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
@@ -1100,9 +1089,6 @@ impl<B: Backend> Backend for DiagBackend<B> {
         &mut self, surface: Self::Surface,
     ) -> Result<Option<DisplaySurfacePixels>, String> {
         self.inner.read_display_surface(surface)
-    }
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        self.inner.gpu_fence()
     }
 
     fn depth_level_texture(
@@ -1171,7 +1157,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         draw: &ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
-        self.diagnosed_draw(color, depth, draw, None, textures)
+        self.diagnosed_draw(color, depth, draw, |backend, inputs| {
+            backend.draw(color, depth, draw, inputs)
+        }, textures)
     }
     fn draw_owned(
         &mut self,
@@ -1193,6 +1181,26 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.tally(&r, &target, &info);
         (r, spare)
     }
+    fn draw_admitted(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        draw: ResolvedDraw,
+        textures: [Option<&Self::Texture>; 4],
+        admission: d3d::backend::RetainedAdmission<Self::Surface>,
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if self.inspects_draw() {
+            let result = self.diagnosed_draw(color, depth, &draw, |backend, inputs| {
+                backend.draw_admitted(color, depth, draw.clone(), inputs, admission).0
+            }, textures);
+            return (result, draw.streams);
+        }
+        let (target, info) = (draw.target, draw.texture_info);
+        let inputs = textures.map(|t| t.map(|t| &t.inner));
+        let (result, spare) = self.inner.draw_admitted(color, depth, draw, inputs, admission);
+        self.tally(&result, &target, &info);
+        (result, spare)
+    }
     fn draw_shared(
         &mut self,
         color: Self::Surface,
@@ -1201,7 +1209,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         if self.inspects_draw() {
-            let result = self.diagnosed_draw(color, depth, &draw, Some(&draw), textures);
+            let result = self.diagnosed_draw(color, depth, &draw, |backend, inputs| {
+                backend.draw_shared(color, depth, Arc::clone(&draw), inputs).0
+            }, textures);
             return (result, Vec::new());
         }
         let (target, info) = (draw.target, draw.texture_info);
@@ -1215,20 +1225,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }
-    // The interpolated replay's host-only calls (d3d::interp): passed
-    // through, not counted as guest presents.
-    fn stamp_present(&mut self, at: std::time::Instant) {
-        self.inner.stamp_present(at)
-    }
     fn present_replay(
         &mut self,
         surface: Self::Surface,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         self.inner.present_replay(surface, gamma)
-    }
-    fn idle(&mut self) -> Option<std::time::Instant> {
-        self.inner.idle()
     }
     fn reset_present_metadata(&mut self) -> Result<(), String> {
         self.inner.reset_present_metadata()

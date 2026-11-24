@@ -1,6 +1,6 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
-Status: Design, slices K5, H1, H3, S1, S2, S4 and S6 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring feed yet (below), and its guide row says a refusal's sentence and, while an added thing is held with a tenth or less left, the binding limit (S6). The Properties page's rows are the doc's `props:` block (S1), with **Game types...** on an item spawner, which opens the Game types dialog (`forge.games`, S2; `forge_screens/games.rs`); the rows of the other slices are not built. `Session::budget_for` (S6; `extensions/forge/src/{budget.rs, session/budget.rs}`) is the budget's one source. Everything else named here as new is not built.
+Status: Design, slices K5, H1, H3, S1, S2, S3, S4, S5 and S6 built (S3's picker description lacks the game types with goals, and S5's dialog has no Upload to Xbox Live: the game has no Live client for it). The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring feed yet (below), and its guide row says a refusal's sentence and, while an added thing is held with a tenth or less left, the binding limit (S6). The Properties page's rows are the doc's `props:` block (S1), with **Game types...** on an item spawner, which opens the Game types dialog (`forge.games`, S2; `forge_screens/games.rs`); the rows of the other slices are not built. `Session::budget_for` (S6; `extensions/forge/src/{budget.rs, session/budget.rs}`) is the budget's one source. Everything else named here as new is not built.
 Code: `crates/extensions/game/src/forge_screens/` (the screens), `content/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, views/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime), `crates/extensions/game/src/forge_screens/props.rs` (the Properties rows). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -36,7 +36,7 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
   new property is a row in a doc and a line in `forge::props`.
 - **Bases.** A list page is on the in-game Controller Settings screen,
   a picker and a question on the large dialog, and in the lobby a
-  picker is over Game Setup, as `kit.picker.forge-map` is
+  picker is over Game Setup, as `kit.picker.map-variant` is
   ([forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). No
   screen here needs a base those do not give.
 - **The checks.** `ui_kit::content::check` (capitals in titles,
@@ -270,9 +270,9 @@ act on the variant store (`forge::files::variants`).
 | Screen | Doc | Opened by | Is |
 |---|---|---|---|
 | Name | the game's keyboard (`Effect::Keyboard`) | Save as; Rename; Save on a variant with no name | 16 characters (the title NAME MAP VARIANT is not set: the keyboard's open call takes none yet) |
-| Map variant picker | `kit.picker.map-variant` | Load; the lobby's Map Variant... | a picker: Original, then this map's variants by name; the description block has the author, the counts by kind and the game types with goals |
-| Map variants | `forge.variants` | **Map variants...** on Forge options | a list page: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) or why it cannot be used in the value column |
-| A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top: **Load**, **Rename**, **Duplicate**, **Upload to Xbox Live**, **Delete** |
+| Map variant picker | `kit.picker.map-variant` | the lobby's Map Variant... | a picker: Original, then this map's saved variants by name; the description block has the author and the counts by kind of what a variant adds (`forge_screens::variants::detail`), or the sentence of one that cannot be used, which A does not choose (`Pick::blocked`) |
+| Map variants | `forge.variants` | **Map variants...** on Forge options | a dialog (`forge_screens::variants::list_sheet`) on the large dialog, so each row's line shows beside it: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) in the value column, or `Unusable` and its sentence as the row's line |
+| A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top (`variant_sheet`): **Load**, **Rename**, **Duplicate** and **Delete**, each only where it can act. A row that is only a fact (the page's "No map variants", the open variant's "Open now") takes no A: while it is focused the legend is Back alone (`ForgeScreen::spec`, `prompts`) |
 | Questions | `forge.question` | below | Yes and No, No focused |
 
 - **Save** writes the open variant under its name
@@ -297,14 +297,20 @@ act on the variant store (`forge::files::variants`).
   change): every own entry the old variant touched is restored first.
   Each flow's decisions are `forge_screens::variants`; the editor
   (`forge_glue::editing`) runs the store calls off the game thread.
-- **Rename** opens the keyboard. A name that is taken is refused with
-  the store's sentence as the dialog's status line; nothing is
-  replaced by a rename. The name is part of the document, so a renamed
+- **Rename** opens the keyboard (`NumberField::RenameVariant`; the
+  screens hold the dialog's file stem, `forge_screens::target_variant`).
+  A name that is taken is refused with the store's sentence as the
+  notice; nothing is replaced by a rename. Renaming the open variant
+  renames the session. **Duplicate** types the copy's name the same way
+  and copies the file (`variants::duplicate`). The name is part of the document, so a renamed
   variant has a new id and a copy already on Live keeps the old name.
-- **Delete** asks "Delete <name>?". The open variant cannot be
-  deleted; its row says so.
-- **Upload to Xbox Live** is present for a signed-in player on a
-  variant Live does not have. It ends in a notice with Live's answer.
+- **Delete** asks "Delete <name>?" (`Ask::DeleteVariant`, No focused);
+  Load and Delete close Map variants first, so the question opens over
+  the world. The open variant cannot be deleted: an info row says so in
+  place of Delete.
+- **Upload to Xbox Live** joins the dialog for a signed-in player on a
+  variant Live does not have, when the game has a Live client for it. It
+  is not built.
 - **Unsaved edits** show as the Save row's value on GAME MENU and in
   `forge.status`. Leave Game asks before it leaves.
 - A variant that fails a check
@@ -339,7 +345,9 @@ h2 hud preview forge-all --out DIR
   as `superbounce-all` does for its two
   (`huds::forge_all::MOMENTS`): the moments of one edit, from flying
   with nothing aimed at, through aim, pick up, a snapped hold, a
-  refused drop, a drop, a field change and a save.
+  refused drop, a drop, a field change and a save. It is the
+  monitor's and fullscreen only, as the readout is; the save's notice
+  is "Saved <name>.".
 - The HUD kit's checks hold in every state: fit, glyphs, frame,
   retail, own, one layout, prompt, modes, drawn and world
   ([hud-kit.md](hud-kit.md), "The preview and the checks").
@@ -391,13 +399,13 @@ they start with `assets/` or `docs/`.
 |---|---|---|---|---|
 | **K5** | World marks: `Shape::Line`, `Style::Team`, `Describe::never_with`. The team colour's source is traced first and written into hud-kit.md, "Colours" | `rewrites/hud-kit-core/src/{world.rs, model.rs, tests.rs}`, `tools/hud-kit/src/{check.rs, preview.rs, tests.rs}`, `extensions/game/src/hud_kit_world.rs`, `docs/game/hud-kit.md` | `world::edges` of a line is one segment; the world check refuses `Team` off a world mark; two HUDs that declare each other are not compared by `own`; the preview draws both | the synthetic sheet passes |
 | **H1** | The readout's description: elements, `View`, `values`, the states and their sample poses | `rewrites/hud-kit-core/src/views/{forge_readout.rs (new), mod.rs}`, `rewrites/hud-kit-core/src/tests.rs` | every state passes every check on the synthetic source; a table of views and their three texts; no state's text is wider than its `longest`; an overrun drops the last fact whole | `h2 hud preview forge-readout --state all --synthetic` writes every state |
-| **H2** | `forge-all`: the moments of an edit, both HUDs in one frame | `rewrites/hud-kit-core/src/views/{forge_all.rs (new), mod.rs}` | each moment names a state of each HUD that exists; the sheet passes | `h2 hud preview forge-all --synthetic` writes the moments. Needs U3 |
+| **H2** (built) | `forge-all`: the moments of an edit, both HUDs in one frame | `rewrites/hud-kit-core/src/views/{forge_all.rs (new), mod.rs}` | each moment names a state of each HUD that exists; the sheet passes | `h2 hud preview forge-all --synthetic` writes the moments. Needs U3 |
 | **H3** | The runtime: register after the `forge` HUD, feed the view, choose the near pool, set the poses | `extensions/game/src/forge_readout.rs` (new), `extensions/game/src/forge_glue.rs` | a table from `Facts` to `View`; the twelve nearest of thirty things, by distance then identity; a held thing's `under` and `from` poses; with the monitor off every element is hidden | tests pass. Needs H1, M5, M7 |
 | **S1** | Properties from its doc: the row keys, the binder, the page's states, `sheet::PROPERTIES` removed | `content/ui/screens/forge.properties.yaml`, `extensions/game/src/ui_kit/data.rs`, `extensions/game/src/forge_screens/{props.rs (new), sheet.rs, pages.rs, tests.rs}` | the doc loads and round-trips through `data::to_yaml`; an unknown `prop` is a `DataError` naming the row; a `Page` table a kind; a property the map lacks has no row; the content check passes in every state | `h2 ui preview forge.properties --state all` writes a state a kind. Needs M6 |
 | **S2** (built) | The Game types dialog | `content/ui/screens/forge.games.yaml`, `extensions/game/src/forge_screens/games.rs` (new), one line of `ui_kit/screens.rs` | a `Page` table: ticks, All game types, Done writes one step, five engines show the refusal as the status line and write nothing | preview in every state. Needs D2, S1 |
-| **S3** | The map variant picker and the lobby's row | `content/ui/screens/kit.picker.map-variant.yaml` (in place of `kit.picker.forge-map.yaml`), `extensions/game/src/{lobby_mode.rs, lobby_options.rs}`, one line of `ui_kit/screens.rs` | `Page` tables for Game Setup in CUSTOM GAMES and FORGE; Original is first; an unusable variant shows its sentence and cannot be chosen; a map change clears the panel line | `h2 ui preview kit.picker.map-variant`. Needs V1, V2 |
+| **S3** (built) | The map variant picker and the lobby's row | `content/ui/screens/kit.picker.map-variant.yaml` (in place of `kit.picker.forge-map.yaml`), `extensions/game/src/{lobby_mode.rs, lobby_options.rs}`, one line of `ui_kit/screens.rs` | `Page` tables for Game Setup in CUSTOM GAMES and FORGE; Original is first; an unusable variant shows its sentence and cannot be chosen; a map change clears the panel line | `h2 ui preview kit.picker.map-variant`. Needs V1, V2 |
 | **S4** | Save, Save as and Load on the store, with their questions and notices | `extensions/game/src/forge_screens/{variants.rs (new), game_menu.rs}`, `extensions/game/src/forge_glue/editing.rs`, `content/ui/screens/forge.question.yaml` | a table of flows: unnamed Save opens the keyboard; a taken name asks; No is focused; Load with edits asks first; each ends in its notice | tests pass. Needs V1 |
-| **S5** | Map variants and a variant's actions | `content/ui/screens/{forge.variants.yaml, forge.variant.yaml}`, `extensions/game/src/forge_screens/variants.rs`, `forge_screens/sheet.rs` (`OPTIONS`), two lines of `ui_kit/screens.rs` | `Page` tables; rename to a taken name writes nothing; the open variant's Delete is absent; Upload is absent when signed out | previews in every state. Needs S4 |
+| **S5** (built) | Map variants and a variant's actions | `content/ui/screens/{forge.variants.yaml, forge.variant.yaml}`, `extensions/game/src/forge_screens/variants.rs`, `forge_screens/sheet.rs` (`OPTIONS`), two lines of `ui_kit/screens.rs` | `Page` tables; rename to a taken name writes nothing; the open variant's Delete is absent; Upload is absent when signed out | previews in every state. Needs S4 |
 | **S6** (built, but the Map limits rows are P4's, and the kit rows and the pool are not limits) | The budget by kind: `Session::budget_for`, the pill's feed, the guide line, the refusal's sentence | `extensions/forge/src/session.rs`, `extensions/forge/src/tests.rs`, `extensions/game/src/forge_readout.rs` | a table of counts and which limit binds; the sentence names it; an own entry's move costs nothing | tests pass. Needs M5, H3 |
 
 K5 and H1 need nothing built here and can start at once. S2, S3 and

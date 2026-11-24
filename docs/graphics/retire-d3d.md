@@ -66,12 +66,12 @@ these per caller with every stage on: the column "Count" says what exists.
 | Particles `0x0023ed5c`, decals `0x00044161`, effect quads and contrails `0x0004b252`, `0x0004b28c` | inline quads and strips | the draw packet | iteration, property evaluation, ribbon construction, the per-view update `0x00174420`; unknown builders | not broken out |
 | Lens flares: writer `0x00020bb0`, reader `0x00020770` | a counted draw between an inline begin and `EndVisibilityTest` | the pixel counter, on the GPU | the counted draw, the report slots, `GetVisibilityTestResult` | none |
 | Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
-| `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | counted draws and quads into the target `[0x00485602]`, a stipple | none | never claimed | none |
+| `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans | committed fan ranges per copy in `render.scene` |
 | Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse | none |
 | HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | the quad's vertices | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
 | UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | the quad, the backdrop fans, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
 | Fade `0x00040890`, menu rectangles and bars (`0x0004b252` from `0x00052ce7`), outlines `0x0001ed98` | immediate fans, a line strip | the geometry | state setup, the line state | none |
-| Untraced `D3DDevice_Begin` callers `0x00029b00`, `0x00037a60`, `0x0003bf20`, `0x00046ea0` | immediate | none | not read (**S**: what they draw) | none |
+| Untraced `D3DDevice_Begin` callers `0x00029b00`, `0x0003bf20` | immediate | none | not read (**S**: what they draw) | none |
 | Loading `0x000289e0`, spinner `0x0002a1f4`, bitmaps `0x0002ae60` | immediate fans | each fan | the animation's clears, binds and presents | none |
 | Movies: tick `0x00156040`, blit `0x001568d0`, quad `0x00156960` | a texture lock and upload, one quad | none | all of it ([bink-hle.md](../audio/bink-hle.md)) | none |
 | Alternate view `0x0002c790` (`0x0002c863`, `0x0002c884`, `0x0002c889`), fallback view `0x002232a0` | whatever its scene and UI draw | as the callers above | view setup and finish | none |
@@ -353,7 +353,7 @@ classified readers, 73 read run state and 30 start from it.
 | Effects and particles | the producers, their property evaluation, ribbon construction, `0x00174420`, the sorted dispatch `0x0001e370` | a Rust effect pass that walks the effect and particle datums, makes the same draws from the effects seed, writes the same stamps and emits instanced quads and ribbons | packet only |
 | Decals | `0x00044161` and its list | typed from the decal datums ([native-decals-research.md](native-decals-research.md)) | packet only |
 | Fog, water, camouflage, hologram | layers 16, 6, 18, 19, 21 | typed late passes sampling the scene's depth and colour on the GPU | fog, water, 18, 19 and 21 partly built |
-| Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | counter built |
+| Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | GPU counter and native colour fans built, fade state guest-owned |
 | Post | `0x00013870`, `0x000214f0`, `0x0002d140`, `0x0002dd30`, `0x0002df00`, layer 17 | typed post from the scenario's screen effects and the camera's parameters | glow and screen effects built |
 | HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | quads only |
 | Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | quads only |
@@ -423,8 +423,8 @@ independent of all of them once its slice 6 holds.
 `glyph.rs`, `pipeline_store.rs`, `device/` except what R11 lists,
 `backend.rs`, `gfx_backend.rs` and `gfx_backend/`, `scaled.rs` and
 `scaled/`, `threaded.rs` and `threaded/`, `scene_sink.rs` and
-`scene_sink/`, `scene_stage.rs`, `interp/` if framescene.md slice 8 has
-not already; `DrawAdmission` and every `render_bridge::native_*` hook;
+`scene_sink/` (with `retarget.rs`, moved to the native side first),
+`scene_stage.rs`, `clip_space/`; `DrawAdmission` and every `render_bridge::native_*` hook;
 `frame_types::carried` (the `frame-types` crate's carried part); in `gfx`, what only a resolved D3D draw uses
 (`state.rs`, `translate.rs`, `xdk.rs`, the D3D pipeline key); the
 `render-timing` and `render-census` features and `render.parity`.
@@ -477,8 +477,7 @@ reference page.
   effects seed and the particle stamps decide how much guest code R1 and
   R2 can drop. If they cannot be reproduced in order, the guest functions
   that make them keep running and those slices save less.
-- **Code nobody has read.** The flare writer's callbacks (`0x0002e540`,
-  `0x0002e9e0`) and the flare draw `0x00046ea0`, three more untraced `Begin` callers, `0x0002c370`'s seven calls
+- **Code nobody has read.** The remaining untraced `Begin` callers, `0x0002c370`'s seven calls
   and `0x0003c3c0`. R5's size is a guess until they are read.
 - **The UI is large.** The widget system is the guest's and stays. R7
   ports only its drawing, but every widget kind and every screen has to

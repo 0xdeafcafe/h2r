@@ -46,7 +46,7 @@ pub const DYNAMIC: [(&str, &str); 9] = [
     ("forge.properties", "title"),
     ("kit.picker", "title"),
     ("kit.picker.game", "title"),
-    ("kit.picker.forge-map", "title"),
+    ("kit.picker.map-variant", "title"),
     ("kit.picker.mode", "title"),
     // The card's profile line: the bot's, live.
     (crate::clanker_card::SCREEN, "description"),

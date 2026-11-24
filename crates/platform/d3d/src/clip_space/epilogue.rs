@@ -6,9 +6,9 @@
 //! from constants (docs/graphics/shaders.md, "Position fixup"). D3D's own
 //! epilogue reads `c-38`/`c-37` (`c[58]`/`c[59]`, which `SET_VIEWPORT_*`
 //! also write), but Halo 2's programs keep their own (`c[10]`/`c[11]`), so
-//! the push-buffer registers say nothing about where a draw lands. E1
-//! needs that mapping twice: the warp maps through it, and the world image
-//! is overscanned by scaling it.
+//! the push-buffer registers say nothing about where a draw lands. The
+//! carried draws' camera classification needs the row its clip position
+//! comes from ([`Position::Rows`]).
 //!
 //! [`Epilogue::of`] runs the program over a small symbolic domain: once
 //! `oPos` holds the clip position (whatever computed it), it follows
@@ -19,7 +19,7 @@
 //! flow nowhere else (so scaling them moves the position and nothing
 //! more). Anything else (a program that writes window coordinates its own
 //! way, writes constants, or reads the scale for something else) is not
-//! known: E1 holds such frames.
+//! known.
 
 use shaders::vsh::{IluOp, MacOp, OutDest, OutReg, Program, ProgramKind, Source, SrcReg, Unit};
 

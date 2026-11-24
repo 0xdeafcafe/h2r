@@ -132,9 +132,5 @@ libc = { workspace = true }
 name = "menu_cpu"
 required-features = ["gpu"]
 
-[[test]]
-name = "headless_interp"
-required-features = ["gpu"]
-
 [lints]
 workspace = true

@@ -93,6 +93,10 @@ pub struct Pick {
     /// place of `description` (the object menu's object lines). Empty:
     /// `description` for every value.
     pub details: Vec<String>,
+    /// Values that cannot be chosen (the map variant picker's unusable
+    /// ones): A on one stays in the picker and says its line. Empty or
+    /// shorter than `values`: the rest can be.
+    pub blocked: Vec<bool>,
     /// What the picker opened over, for the preview.
     pub opener: Opener,
     /// Stores value `i`; what to log.
@@ -129,6 +133,7 @@ impl Pick {
             values,
             description: description.into(),
             details: Vec::new(),
+            blocked: Vec::new(),
             opener: Opener::MAIN_MENU,
             set,
             after: None,
@@ -148,6 +153,15 @@ impl Pick {
     pub fn details(mut self, details: Vec<String>) -> Pick {
         self.details = details;
         self
+    }
+    /// The values that cannot be chosen ([`Pick::blocked`]).
+    pub fn blocked(mut self, blocked: Vec<bool>) -> Pick {
+        self.blocked = blocked;
+        self
+    }
+    /// Whether value `i` cannot be chosen.
+    pub fn is_blocked(&self, i: usize) -> bool {
+        self.blocked.get(i).copied().unwrap_or(false)
     }
     /// What the right side says while value `i` has the focus.
     pub fn line(&self, i: usize) -> &str {
@@ -414,6 +428,9 @@ impl Rows for Picker {
         let Some(i) = usize::try_from(row).ok().filter(|i| *i < p.values.len()) else {
             return Chosen::Nothing;
         };
+        if p.is_blocked(i) {
+            return Chosen::Stepped(format!("{}: {}", self.name, p.line(i)));
+        }
         eprintln!("{}: {}", self.name, (p.set)(i));
         with_pick(|held| {
             if let Some(held) = held.as_mut() {

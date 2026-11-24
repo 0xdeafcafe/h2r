@@ -195,6 +195,20 @@ pub struct Compatibility {
     pub reasons: Vec<String>,
     pub film: FilmContract,
     pub installed: Vec<InstalledImage>,
+    /// Monitor looks in the film this machine cannot draw. They are not
+    /// reasons: the film still plays, and the seat draws the marker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitor_looks: Vec<MonitorLookSource>,
+}
+
+/// A recorded Forge monitor look this machine cannot draw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorLookSource {
+    pub seat: u8,
+    /// The source map the look's model needs.
+    pub map: String,
+    /// `monitor_look_source`.
+    pub reason: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]

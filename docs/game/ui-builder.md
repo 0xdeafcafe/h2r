@@ -83,8 +83,8 @@ options, Controls), opened over the running world
 [forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). A value
 row opens `kit.picker.game` over them. Their preview pages are
 `forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`,
-`forge.link`, `forge.question`, `forge.options`, `forge.controls` and
-`forge.games`, drawn over the main menu, which stands in for the game.
+`forge.link`, `forge.question`, `forge.options`, `forge.controls`,
+`forge.games`, `forge.variants` and `forge.variant`, drawn over the main menu, which stands in for the game.
 
 **Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,

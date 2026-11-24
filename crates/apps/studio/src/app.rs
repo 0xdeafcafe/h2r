@@ -51,6 +51,7 @@ pub mod bitmap_import;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
+pub mod voice_batch;
 pub mod voices;
 pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};

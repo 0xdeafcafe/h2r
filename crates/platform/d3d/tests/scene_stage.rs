@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use d3d::{
-    Device, ExternalPass, ExternalPlan, InterpBackend, Recorded, RecordingBackend, SparseMemory, ThreadedBackend,
+    Device, ExternalPass, ExternalPlan, Recorded, RecordingBackend, SparseMemory, ThreadedBackend,
     UploadPolicy,
 };
 use timeline::native::Stage;
@@ -124,16 +124,6 @@ fn without_a_render_thread_no_scene_stage_is_taken() {
 }
 
 #[test]
-fn a_replaying_backend_takes_no_scene_stage() {
-    let replaying = InterpBackend::new(recorder(), || 60);
-    let (d, _) = create(ThreadedBackend::new(replaying).unwrap(), UploadPolicy::Always);
-    assert!(!d.queues_scene_stages(Stage::Gels));
-    let off = InterpBackend::new(recorder(), || 30);
-    let (d, _) = create(ThreadedBackend::new(off).unwrap(), UploadPolicy::Always);
-    assert!(d.queues_scene_stages(Stage::Gels));
-}
-
-#[test]
 fn a_stage_that_dropped_one_stands_down_and_the_others_do_not() {
     let (mut d, mut m) = create(ThreadedBackend::new(recorder()).unwrap(), UploadPolicy::Always);
     set_states(&mut d, &mut m);
@@ -212,4 +202,21 @@ fn scene_asset_upload_runs_once_on_the_display_worker_without_a_frame_or_attachm
     }));
     sink.inner_mut().with_inner(|gpu| assert!(gpu.last_presented().is_none())).unwrap();
     assert_eq!(recv.recv().unwrap(), (32, Some("d3d-render".to_string())));
+}
+
+#[test]
+fn flare_counters_follow_committed_draws_only() {
+    let read = |name: &str| {
+        d3d::scene_stage::counters().into_iter().find(|(k, _)| k == name).map(|(_, v)| v).unwrap()
+    };
+    let (display, reference) = (read("scene_submitted_flares_display_draws"), read("scene_submitted_flares_reference_draws"));
+    // Queueing a flare stage, or committing another stage, counts no flare draw.
+    d3d::scene_stage::queued(Stage::Flares);
+    d3d::scene_stage::submitted(Stage::Fog, true, 7);
+    assert_eq!(read("scene_submitted_flares_display_draws"), display);
+    d3d::scene_stage::submitted(Stage::Flares, true, 3);
+    d3d::scene_stage::submitted(Stage::Flares, false, 5);
+    assert_eq!(read("scene_submitted_flares_display_draws"), display + 3);
+    assert_eq!(read("scene_submitted_flares_reference_draws"), reference + 5);
+    assert!(d3d::scene_stage::counters().iter().all(|(k, _)| !k.starts_with("scene_stages_flares") && !k.starts_with("scene_dropped_flares")));
 }

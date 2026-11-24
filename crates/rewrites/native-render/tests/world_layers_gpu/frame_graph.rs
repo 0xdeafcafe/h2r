@@ -40,7 +40,7 @@ fn sealed() -> Arc<FrameScene> {
     builder.seal(Stamp::default()).unwrap()
 }
 
-fn replay() -> ReplayFrame {
+pub(super) fn replay() -> ReplayFrame {
     let colour = AuxTarget {
         width: SIZE,
         height: SIZE,
@@ -59,18 +59,18 @@ fn replay() -> ReplayFrame {
     }
 }
 
-fn op(frame: &mut ReplayFrame, slot: Slot, op: ReplayOp) {
+pub(super) fn op(frame: &mut ReplayFrame, slot: Slot, op: ReplayOp) {
     frame.ops.push((SlotAt { slot, view: 0 }, op));
 }
 
-fn bind() -> ReplayOp {
+pub(super) fn bind() -> ReplayOp {
     ReplayOp::Bind {
         colour: MAIN,
         depth: Z,
     }
 }
 
-fn clear() -> ReplayOp {
+pub(super) fn clear() -> ReplayOp {
     ReplayOp::Clear {
         colour: MAIN,
         depth: Z,
@@ -87,6 +87,7 @@ fn guest_triangle(x: f32, colour: [f32; 4], texture: Option<u32>) -> ReplayOp {
         draw: draw.into(),
         textures: [texture.map(ReplayTexture::Sample), None, None, None],
         camera: CameraUse::Unknown,
+        external: None,
     }
 }
 
@@ -969,6 +970,7 @@ fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
             draw: Arc::new(add),
             textures: [None, None, None, None],
             camera: CameraUse::Unknown,
+            external: None,
         },
     );
     let targets = HashMap::from([(MAIN, colour), (Z, depth)]);

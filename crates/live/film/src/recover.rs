@@ -18,9 +18,11 @@
 //! chunk stay: a chunk is never split, and the replay stops at the end
 //! before reading them.
 //!
-//! The recovered film keeps no map, variant or scores: the descriptors of
-//! an unsealed tape live in the recorder's memory, not in the file. It
-//! lists unnamed and plays from boot. A tape with no usable capture mark
+//! The recovered film keeps no scores and no descriptor: those live in the
+//! recorder's memory, not in the file. Its map, variant and players come
+//! from the last header the recorder appended to the tape when a game
+//! started or its roster changed, so a game a crash cut off is named; a
+//! tape of menus is unnamed. It plays from boot. A tape with no usable capture mark
 //! — a session that died outside a game, or before its first capture —
 //! has no exact end; [`recover_tape`] says so and the caller deletes it.
 
@@ -137,7 +139,11 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
                 .is_some_and(|tick| tick <= end_tick),
             t if t == blam::DESC || t == blam::SUMM || t == blam::TIDX => false,
             t if t == *b"PSUM" || t == range::CIDX || t == crate::INDX => false,
-            crate::HEAD | crate::DATA => true,
+            // The tape's later headers (the one that carries the simulation
+            // hook digest, a sealing session's own) are read for their
+            // digest and rewritten as the one sealed header below.
+            crate::HEAD => false,
+            crate::DATA => true,
             _ => true,
         };
         if keep {
@@ -261,6 +267,23 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     }
 
     let mut header = boot.clone();
+    // The recorder appends a header once the installed hooks are known, and
+    // another each time the game on the tape changes (its map, variant and
+    // players; an empty one when it is gone). The boot header holds none of
+    // them, so the tape's own later headers supply them: the digest from
+    // the last that has one, the game from the last header of all.
+    for later in rest.iter().filter(|e| e.tag == HEAD) {
+        if let Ok(later) = crate::decode::<_, crate::Header>(&mut source, later)
+            && later.meta.id == boot.meta.id
+        {
+            if later.simulation_hooks.is_some() {
+                header.simulation_hooks = later.simulation_hooks;
+            }
+            header.meta.map = later.meta.map;
+            header.meta.variant = later.meta.variant;
+            header.meta.players = later.meta.players;
+        }
+    }
     header.meta.length_ticks = end_tick;
     let mut ranges = range::Build::new(&boot);
     ranges.directory = range::Directory { version: 1, chunks, keyframes: keys };

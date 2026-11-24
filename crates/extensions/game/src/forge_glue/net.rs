@@ -12,6 +12,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use forge::look::MonitorLook;
+use forge::look::film::{Recorder, Source};
+use forge::look::session::Pose;
 use forge::net::{BEAT_BYTES, Beat, Lane, Seat};
 
 const _: () = assert!(BEAT_BYTES == coop::wire::BEAT);
@@ -143,6 +146,7 @@ pub(super) fn clear() {
     *OFFER.lock().unwrap_or_else(|e| e.into_inner()) = None;
     CHANGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
     OFFERED.store(false, Ordering::Release);
+    *PRESENCE.lock().unwrap_or_else(|e| e.into_inner()) = Recorder::default();
 }
 
 static FILM: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
@@ -156,4 +160,37 @@ pub(super) fn record(payload: Vec<u8>) {
 /// The film's Forge records written since the last call, in order.
 pub fn take_film() -> Vec<Vec<u8>> {
     std::mem::take(&mut *FILM.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// What the film's look and pose records have said so far, to repeat at a
+/// seek checkpoint (docs/game/forge-monitor-appearance.md, "Theater").
+static PRESENCE: Mutex<Recorder> = Mutex::new(Recorder::new());
+
+/// A seat's accepted look, as this machine applies it: a film record when
+/// the table changed.
+pub(super) fn record_look(seat: u8, look: &MonitorLook, source: Option<Source>) {
+    let payload = PRESENCE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .look(seat, look.clone(), source);
+    if let Some(payload) = payload {
+        record(payload);
+    }
+}
+
+/// A seat's monitor pose at `tick`: a film record at most 15 a second.
+pub(super) fn record_pose(tick: u32, seat: u8, pose: Pose, monitor: bool) {
+    let payload = PRESENCE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pose(tick, seat, pose, monitor);
+    if let Some(payload) = payload {
+        record(payload);
+    }
+}
+
+/// The records a seek checkpoint repeats: the table and each seat's last
+/// pose. The recorder adds them beside the checkpoint's own baseline.
+pub fn film_checkpoint() -> Vec<Vec<u8>> {
+    PRESENCE.lock().unwrap_or_else(|e| e.into_inner()).checkpoint()
 }

@@ -20,6 +20,7 @@ pub mod launch;
 pub mod link;
 pub mod pair;
 pub mod objects;
+pub mod picture;
 pub mod playtest;
 pub mod recording_path;
 pub(crate) mod presence;

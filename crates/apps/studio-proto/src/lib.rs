@@ -156,6 +156,8 @@ pub mod method {
     pub const SHADER_READ: &str = "shader.read";
     pub const SHADER_SET: &str = "shader.set";
     pub const SHADER_PREVIEW: &str = "shader.preview";
+    // The Code section (slice S4): a pass's programs as text.
+    pub const SHADER_CODE: &str = "shader.code";
 
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
@@ -183,6 +185,11 @@ pub mod method {
     pub const VOICE_DATASET_STATUS: &str = "voice.dataset.status";
     pub const VOICE_CLONE_TRAIN: &str = "voice.clone.train";
     pub const VOICE_CLONE_SAY: &str = "voice.clone.say";
+    // The Voices batch: many lines at once (api/voice_clone.rs).
+    pub const VOICE_SAY_BATCH: &str = "voice.say_batch";
+    pub const VOICE_BATCH_STATUS: &str = "voice.batch.status";
+    pub const VOICE_BATCH_RUN: &str = "voice.batch.run";
+    pub const VOICE_BATCH_SAVE: &str = "voice.batch.save";
 
     // Every content check in one list (api/checks.rs).
     pub const CHECK_RUN: &str = "check.run";
@@ -279,6 +286,9 @@ pub mod method {
     pub const PAIR_PREVIEW: &str = "pair.preview";
     pub const PAIR_AUDIO: &str = "pair.audio";
     pub const PAIR_RESULT: &str = "pair.result";
+
+    pub const GAME_STATUS: &str = "game.status";
+    pub const GAME_SNAPSHOT: &str = "game.snapshot";
 
     pub const MIRROR_STATUS: &str = "mirror.status";
     pub const MIRROR_PENDING: &str = "mirror.pending";

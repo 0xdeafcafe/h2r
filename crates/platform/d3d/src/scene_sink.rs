@@ -20,11 +20,15 @@ mod frozen;
 #[cfg(feature = "gpu")]
 pub use frozen::{FrozenImages, FrozenSample};
 mod replay;
+#[cfg(feature = "gpu")]
+mod retarget;
+#[cfg(feature = "gpu")]
+pub use retarget::{Retarget, RetargetCounts, Retargeted};
 mod seeds;
 pub use seeds::TargetSeed;
 
 pub use census::{Census, TargetUse, Uses, census};
-pub use replay::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture, SinkTexture};
+pub use replay::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture, RetainedExternal, SinkTexture};
 use replay::{Origin, Recorder};
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -229,6 +233,60 @@ impl<B: Backend> SceneSink<B> {
         (self.replay_target(colour), depth.map_or(TargetRef::None, |d| self.replay_target(d)))
     }
 
+    /// The one path of a shared or admitted draw: the backend gets it and
+    /// answers as for any guest draw, and a replay under record carries it
+    /// (with `admission`, when exact) only if it was drawn.
+    fn draw_carried(
+        &mut self, color: B::Surface, depth: Option<B::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&SinkTexture<B::Texture>>; 4],
+        admission: Option<crate::backend::RetainedAdmission<B::Surface>>,
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.record_draw(color, depth, &draw);
+        let inputs = textures.map(|t| t.map(|t| &t.inner));
+        if !self.replaying() {
+            return self.inner.draw_shared(color, depth, draw, inputs);
+        }
+        let result = self.inner.draw_shared(color, depth, Arc::clone(&draw), inputs);
+        if matches!(result.0, Ok(DrawOutcome::Drawn)) {
+            let external = admission.and_then(|a| self.retain_admission(a, &draw, color, depth));
+            self.replay_draw(color, depth, draw, textures, external);
+        }
+        result
+    }
+
+    /// What a replay keeps of a typed admission offered with the guest's
+    /// one draw, or `None`: the admission is not exact for this draw and
+    /// replay draws the packet alone. Checked here, at capture; replay
+    /// checks again against what it resolves.
+    fn retain_admission(
+        &mut self, admission: crate::backend::RetainedAdmission<B::Surface>, draw: &Arc<ResolvedDraw>,
+        colour: B::Surface, depth: Option<B::Surface>,
+    ) -> Option<Box<RetainedExternal>> {
+        use timeline::native::Stage;
+        let s = &admission.surfaces;
+        let known = |surface: &B::Surface| self.surfaces.iter().any(|&(id, _)| id == *surface);
+        let attachments = s.color == colour && s.depth == depth.unwrap_or(colour);
+        let room = self.replay.as_ref()?.frame.aux.len() + self.surfaces.len() <= usize::from(u16::MAX) + 1;
+        if (self.guest_reference)()
+            || !attachments
+            || !s.sampled.is_empty() || !s.slots.is_empty() || !s.slot_sizes.is_empty()
+            || !known(&s.color) || !known(&s.depth) || !room
+            || admission.plan.stage != Stage::Flares
+            || draw.writes_depth_stencil()
+            || !(Arc::ptr_eq(&admission.packet, draw) || *admission.packet == **draw)
+            || !admission.pass.lock().is_ok_and(|p| p.replays_scene())
+        {
+            return None;
+        }
+        let surfaces = s.try_map(|surface| Some(self.replay_target(*surface)))?;
+        Some(Box::new(RetainedExternal {
+            packet: Arc::clone(draw),
+            surfaces,
+            request: admission.request,
+            plan: admission.plan,
+            pass: admission.pass,
+        }))
+    }
+
     fn replay_stage(&mut self, stage: &SceneStage<B::Surface>) -> Option<(SlotAt, ReplayOp)> {
         let at = self.write_slot()?;
         self.replay.as_ref()?;
@@ -338,7 +396,10 @@ impl<B: Backend> SceneSink<B> {
         self.frame.push(at, GuestOp::Draw(kept));
     }
 
-    fn replay_draw(&mut self, colour: B::Surface, depth: Option<B::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&SinkTexture<B::Texture>>; 4]) {
+    fn replay_draw(
+        &mut self, colour: B::Surface, depth: Option<B::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&SinkTexture<B::Texture>>; 4],
+        external: Option<Box<RetainedExternal>>,
+    ) {
         let Some(at) = self.at() else { return };
         let (c, d) = self.replay_attachments(colour, depth);
         let replay = self.replay.as_mut().expect("recording replay");
@@ -389,7 +450,7 @@ impl<B: Backend> SceneSink<B> {
         } else {
             frame_types::carried::CameraUse::Unknown
         };
-        replay.push(at, ReplayOp::Draw { draw, textures: inputs, camera });
+        replay.push(at, ReplayOp::Draw { draw, textures: inputs, camera, external });
     }
 
     fn record_clear(&mut self, colour: B::Surface, depth: Option<B::Surface>, rects: bool) {
@@ -571,30 +632,22 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn draw_shared(
         &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
-        self.record_draw(color, depth, &draw);
-        let inputs = textures.map(|t| t.map(|t| &t.inner));
+        self.draw_carried(color, depth, draw, textures, None)
+    }
+    fn draw_admitted(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: ResolvedDraw, textures: [Option<&Self::Texture>; 4],
+        admission: crate::backend::RetainedAdmission<Self::Surface>,
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         if !self.replaying() {
-            return self.inner.draw_shared(color, depth, draw, inputs);
+            return self.draw_owned(color, depth, draw, textures);
         }
-        let result = self.inner.draw_shared(color, depth, Arc::clone(&draw), inputs);
-        if matches!(result.0, Ok(DrawOutcome::Drawn)) {
-            self.replay_draw(color, depth, draw, textures);
-        }
-        result
+        self.draw_carried(color, depth, Arc::new(draw), textures, Some(admission))
     }
     fn frame_stats(&mut self) {
         self.inner.frame_stats()
     }
-    fn stamp_present(&mut self, at: std::time::Instant) {
-        self.inner.stamp_present(at)
-    }
     fn present_replay(&mut self, surface: Self::Surface, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.inner.present_replay(surface, gamma)
-    }
-    fn warp_surface(&mut self, src: Self::Surface, dst: Self::Surface, h: [[f32; 3]; 3]) -> Result<bool, String> {
-        let warped = self.inner.warp_surface(src, dst, h)?;
-        if warped { self.refuse_replay("warp_surface"); }
-        Ok(warped)
     }
     fn queue_frame_probe_read(
         &mut self, surface: Self::Surface, width: u32, height: u32,
@@ -629,12 +682,6 @@ impl<B: Backend> Backend for SceneSink<B> {
         surface: Self::Surface,
     ) -> Result<Option<DisplaySurfacePixels>, String> {
         self.inner.read_display_surface(surface)
-    }
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        self.inner.gpu_fence()
-    }
-    fn idle(&mut self) -> Option<std::time::Instant> {
-        self.inner.idle()
     }
     fn reset_present_metadata(&mut self) -> Result<(), String> {
         self.inner.reset_present_metadata()
@@ -767,7 +814,9 @@ impl<B: Backend> Backend for SceneSink<B> {
         if let Some((at, op)) = retained { self.replay_op(at, op); }
     }
     // A one-shot replacement cannot draw again into a private target.
-    // Declining before commit leaves its original packet in this slot.
+    // Declining before commit leaves its original packet in this slot; the
+    // draw's typed admission, when it has one, travels with that packet
+    // ([`Backend::draw_admitted`]).
     fn queue_external_draw(&mut self, candidate: QueuedExternalDraw<Self::Surface>, textures: [Option<&Self::Texture>; 4]) -> bool {
         if self.replaying() { return false; }
         self.untracked_write();

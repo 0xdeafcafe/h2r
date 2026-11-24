@@ -1,6 +1,8 @@
 //! Voices as the agent API ([`super::Provider`], registered in
 //! [`super::seams`]): `voice.characters`, `voice.dataset.build`,
-//! `voice.dataset.status`, `voice.clone.train` and `voice.clone.say`, over
+//! `voice.dataset.status`, `voice.clone.train`, `voice.clone.say` and the
+//! batch (`voice.say_batch`, `voice.batch.status`, `voice.batch.run`,
+//! `voice.batch.save`), over
 //! `app::voices` and `app::announcer`, so the Voices window and the API
 //! are one path. docs/editor/agent-api.md, "Voices";
 //! docs/editor/voice-cloning.md.
@@ -58,6 +60,35 @@ const SAY: MethodDef = def(
     r#"{"character":"string","text":"string (at most 500 characters)","reference?":"string","speed?":"number (0.5 to 2)","out?":"string","clip?":"string","play?":"boolean (default true)","target_lufs?":"number","fresh?":"boolean","backend?":"string (f5-mlx or qwen3-tts)"}"#,
     r#"{"engine":"clone","character":"string","backend":"string","model":"string","reference":"{id,text,source_tag,duration_ms}|null","text":"string","cached":"boolean","key":"string","file":"string","raw":"string","levels":"levels","raw_levels":"levels","trimmed_ms":"{head,tail}","gain_db":"number","limited":"boolean","target":"{lufs,from:given|character|fallback,lines,why?,lufs_spread,peak_dbfs_spread}","verdict":"{level,over_p90_db,peak_over_p90_db,text}","playback":"{playing,output?,duration_ms?,why?}","ready?":"{clip,repo_path,clips_entry,exists,commit}"}"#,
     r#"{"character":"cortana","text":"Hold on, Chief.","play":false}"#,
+);
+
+const SAY_BATCH: MethodDef = def(
+    m::VOICE_SAY_BATCH,
+    "Say many lines in game characters' voices as one batch, the way the Voices window's \"Say all\" does: each row is said exactly as voice.clone.say says a line (cached, trimmed, brought to the character's loudness, saved under <data root>/voices/<character>, never played). Rows come from `rows` (each {text, character?, clip?, tag?}: `character` defaults to the batch's, `clip` is the output name that voice.batch.save copies to art/announcer/<clip>.wav, `tag` a snd! path that voice.batch.save puts in the edit target package instead), from `lines` (one row per line of the text; a tab splits an output name from the text) and from `file` (a text file of lines, at most 1 MB). The previous batch is replaced, unless `append`, and is REFUSED while rows are still queued or running. A row with a problem (no text, no voice, a bad or repeated output name) is failed at once with why; the others are queued. With `wait` the call returns when every row has ended; without it the Voices window's frames say one row each, so poll voice.batch.status. A row's model failure fails that row only. The model is `backend`",
+    r#"{"character?":"string (the batch's default voice; an id of voice.characters)","rows?":"[{text,character?,clip?,tag?}]","lines?":"string","file?":"string","append?":"boolean","wait?":"boolean (default false)","backend?":"string (f5-mlx or qwen3-tts)"}"#,
+    r#"{"added":"integer","queued":"integer","counts":"{idle,queued,running,done,failed}","active":"boolean","rows":"[row of voice.batch.status]"}"#,
+    r#"{"character":"cortana","rows":[{"text":"Hold on, Chief.","clip":"cortana-hold"}],"wait":true}"#,
+);
+const BATCH_STATUS: MethodDef = def(
+    m::VOICE_BATCH_STATUS,
+    "The batch: its rows, each with its state (idle, queued, running, done or failed with `why`), character, output name `clip`, target `tag`, and when said the `file`, `levels` (lufs, peak_dbfs, duration_ms), the loudness `verdict` and whether it came from the cache; `saved` or `save_failed` after voice.batch.save. Nothing is asked of the model",
+    r#"{"ids?":"[integer] (only these rows)"}"#,
+    r#"{"default_character":"string|null","active":"boolean","counts":"{idle,queued,running,done,failed}","rows":"[{id,text,character,clip,tag,state,why?,file?,cached?,levels?,verdict?,saved?,save_failed?}]"}"#,
+    "{}",
+);
+const BATCH_RUN: MethodDef = def(
+    m::VOICE_BATCH_RUN,
+    "Say the batch's idle and failed rows again, or the rows in `ids` (a done row too: the model is asked again, not the cache). With `wait` the call returns when they have ended",
+    r#"{"ids?":"[integer]","wait?":"boolean (default false)"}"#,
+    r#"{"queued":"integer","counts":"{idle,queued,running,done,failed}","active":"boolean","rows":"[row]"}"#,
+    r#"{"wait":true}"#,
+);
+const BATCH_SAVE: MethodDef = def(
+    m::VOICE_BATCH_SAVE,
+    "Keep the done rows in one step, as voice.commit does for one: a row with a `tag` becomes a sound item of `package` (default the edit target; its row fails with the NO_TARGET message with none), one with an output name `clip` is copied to art/announcer/<clip>.wav of the checkout `repo` (default the one the editor runs in), replacing a clip the checkout has only with `replace`; a row with neither fails. Each row's result is its `saved` or `save_failed`. It runs no git and edits no CLIPS; `ids` limits it. Nothing is uploaded",
+    r#"{"ids?":"[integer]","repo?":"string","package?":"string","replace?":"boolean"}"#,
+    r#"{"saved":"integer","failed":"integer","rows":"[{id,saved?,why?}]"}"#,
+    "{}",
 );
 
 /// The error, with what to do next for a clone that is not ready.
@@ -211,9 +242,155 @@ fn say(app: &mut App, p: &P) -> Reply {
     Ok(v)
 }
 
+fn ids(p: &P) -> Result<Option<Vec<u64>>, RpcError> {
+    match p.get("ids") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_array()
+            .and_then(|a| a.iter().map(Value::as_u64).collect())
+            .map(Some)
+            .ok_or_else(|| {
+                err(code::INVALID_PARAMS, format!("ids: expected a list of row ids, not {v}"))
+            }),
+    }
+}
+
+/// The batch's counts and rows, with `added` and `queued` as given.
+fn batch_reply(app: &App, added: usize, queued: usize) -> Value {
+    let mut v = app.voices.batch.json();
+    v["added"] = json!(added);
+    v["queued"] = json!(queued);
+    v
+}
+
+fn say_batch(app: &mut App, p: &P) -> Reply {
+    backend(app, p)?;
+    let append = flag(p, "append", false)?;
+    let wait = flag(p, "wait", false)?;
+    if !append && app.voices.batch.active() {
+        return Err(err(
+            code::REFUSED,
+            "the batch still has rows queued or running: voice.batch.status shows them, or pass append",
+        ));
+    }
+    let character = p.opt_str("character")?.map(str::to_owned);
+    if let Some(c) = &character {
+        crate::voice::dataset::check_id(c).map_err(voice_error)?;
+    }
+    // Everything is read before the batch changes: a bad param adds nothing.
+    let mut rows: Vec<(String, Option<String>, String, Option<String>)> = Vec::new();
+    if let Some(v) = p.get("rows") {
+        let list = v
+            .as_array()
+            .ok_or_else(|| err(code::INVALID_PARAMS, format!("rows: expected a list, not {v}")))?;
+        for (i, r) in list.iter().enumerate() {
+            let text = r["text"].as_str().ok_or_else(|| {
+                err(code::INVALID_PARAMS, format!("rows[{i}].text: expected a string"))
+            })?;
+            let field = |k: &str| r[k].as_str().map(str::to_owned);
+            if let Some(c) = field("character") {
+                crate::voice::dataset::check_id(&c).map_err(voice_error)?;
+            }
+            rows.push((
+                text.to_owned(),
+                field("character"),
+                field("clip").unwrap_or_default(),
+                field("tag"),
+            ));
+        }
+    }
+    let mut batch = crate::app::voice_batch::Batch::default();
+    if let Some(t) = p.opt_str("lines")? {
+        batch.paste(t, None);
+    }
+    if let Some(f) = p.opt_str("file")? {
+        batch.import(std::path::Path::new(f), None).map_err(voice_error)?;
+    }
+    if rows.is_empty() && batch.rows.is_empty() {
+        return Err(err(code::INVALID_PARAMS, "rows, lines or file: at least one line to say"));
+    }
+    let b = &mut app.voices.batch;
+    if !append {
+        b.rows.clear();
+    }
+    if let Some(c) = character {
+        b.default_character = c;
+    }
+    let mut added = 0;
+    for (text, c, clip, tag) in rows {
+        b.add(&text, c.as_deref(), &clip);
+        b.rows.last_mut().expect("added").tag = tag;
+        added += 1;
+    }
+    for r in batch.rows {
+        b.add(&r.text, None, &r.clip);
+        added += 1;
+    }
+    let queued = b.queue(None);
+    if wait {
+        app.voice_batch_run();
+    }
+    Ok(batch_reply(app, added, queued))
+}
+
+fn batch_status(app: &mut App, p: &P) -> Reply {
+    let mut v = app.voices.batch.json();
+    if let Some(ids) = ids(p)? {
+        v["rows"] = Value::Array(
+            app.voices
+                .batch
+                .rows
+                .iter()
+                .filter(|r| ids.contains(&r.id))
+                .map(|r| app.voices.batch.row_json(r))
+                .collect(),
+        );
+    }
+    Ok(v)
+}
+
+fn batch_run(app: &mut App, p: &P) -> Reply {
+    backend(app, p)?;
+    let ids = ids(p)?;
+    let queued = app.voices.batch.queue(ids.as_deref());
+    if flag(p, "wait", false)? {
+        app.voice_batch_run();
+    }
+    Ok(batch_reply(app, 0, queued))
+}
+
+fn batch_save(app: &mut App, p: &P) -> Reply {
+    app.voices.batch.replace = flag(p, "replace", false)?;
+    let ids = ids(p)?;
+    let rows = app.voice_batch_save(
+        ids.as_deref(),
+        p.opt_str("repo")?.map(std::path::Path::new),
+        p.opt_str("package")?,
+    );
+    let saved = rows.iter().filter(|(_, r)| r.is_ok()).count();
+    Ok(json!({
+        "saved": saved,
+        "failed": rows.len() - saved,
+        "rows": rows.iter().map(|(id, r)| match r {
+            Ok(to) => json!({"id": id, "saved": to}),
+            Err(why) => json!({"id": id, "why": why}),
+        }).collect::<Vec<_>>(),
+    }))
+}
+
 impl Provider for VoiceClone {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![CHARACTERS, BUILD, STATUS, TRAIN, SAY]
+        vec![
+            CHARACTERS,
+            BUILD,
+            STATUS,
+            TRAIN,
+            SAY,
+            SAY_BATCH,
+            BATCH_STATUS,
+            BATCH_RUN,
+            BATCH_SAVE,
+        ]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -224,6 +401,10 @@ impl Provider for VoiceClone {
             m::VOICE_DATASET_STATUS => status(app, &p),
             m::VOICE_CLONE_TRAIN => train(app, &p),
             m::VOICE_CLONE_SAY => say(app, &p),
+            m::VOICE_SAY_BATCH => say_batch(app, &p),
+            m::VOICE_BATCH_STATUS => batch_status(app, &p),
+            m::VOICE_BATCH_RUN => batch_run(app, &p),
+            m::VOICE_BATCH_SAVE => batch_save(app, &p),
             _ => return None,
         })
     }

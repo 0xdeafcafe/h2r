@@ -2,6 +2,7 @@
 //! backend keeps one colour byte per surface so that reads and subsequent
 //! frames can observe exactly which target a command wrote.
 
+mod display_rate;
 mod pacing;
 mod probe;
 mod live_views;

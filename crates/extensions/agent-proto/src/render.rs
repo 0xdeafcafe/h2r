@@ -395,12 +395,45 @@ pub struct RenderStats {
     /// The latest completed private-target draw while its renderer is installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
-    /// In-between frames (`impl.render.interpolate`, `.reproject`):
-    /// `d3d::interp::InterpStats`, every field, including the hold reasons
-    /// (`unsure_*`, `mismatch_*`, `dropped`).
-    pub interp: Value,
+    /// The frame owner's display-rate loop: display frames between sealed
+    /// scenes (docs/graphics/framescene.md, section 7). Absent without a
+    /// paced frame owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rate: Option<DisplayRateStats>,
     /// The frame-stats window's per-frame means of the render counters.
     pub counters: Value,
+}
+
+/// `render.stats`' `display_rate`: counters since the loop was installed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct DisplayRateStats {
+    /// The display rate the frame-rate setting asks for; 0 at 30 fps.
+    pub rate_hz: u32,
+    /// The rate the loop holds after measuring its own frames' cost.
+    pub shown_hz: u32,
+    /// Whether that cost holds the loop below `rate_hz`.
+    pub capped: bool,
+    /// Owned presents the loop saw.
+    pub swaps: u64,
+    /// Display frames drawn with a blended camera, at a Swap or between.
+    pub blended: u64,
+    /// Of `blended`, the ones shown at a Swap in place of its scene.
+    pub swap_blends: u64,
+    /// Display frames between Swaps that drew the newest scene as it is
+    /// (a cut, a gap, or waiting on the next scene).
+    pub between_newest: u64,
+    /// Display frames that failed; the window kept the frame before.
+    pub failed: u64,
+    /// Times the loop dropped its two scenes (a Swap without the graph).
+    pub resets: u64,
+    /// Mean cost of a display frame on the render thread, microseconds.
+    pub avg_cost_us: u64,
+    /// Carried draws moved onto a blended camera.
+    pub moved_draws: u64,
+    /// Typed stages moved onto a blended camera.
+    pub moved_stages: u64,
+    /// Typed stages in a game view drawn as their tick drew them.
+    pub held_stages: u64,
 }
 
 /// `render.compare`: two PNG files compared pixel by pixel

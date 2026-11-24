@@ -139,8 +139,15 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   so its slice, tick and call counts are exact, and at most 150 ticks of
   the game are lost. Everything past that mark is dropped, including
   checkpoints and call batches recorded past it, so a replay is never
-  asked for state the tape does not hold. A recovered film lists with no
-  map, variant or scores, and opens at boot; a tape with no such mark —
+  asked for state the tape does not hold. The recorder
+  appends a header naming the game when it starts and when its roster
+  changes (`Session::describe_tape`: map, variant, players), and an empty
+  one when the game is cut or left; recovery takes the game from the
+  tape's last header, so a game a crash cut off is listed with its map and
+  players, without scores, and opens at boot. A tape of menus, or one
+  whose game was already cut into its own film, recovers with no map and
+  no players; Theater's list shows games only, so it is on disk and not
+  listed; a tape with no such mark —
   a session that died outside a game — is deleted, as a session that
   played no game leaves no film.
 
@@ -378,7 +385,7 @@ sparse scene checkpoints in `CIDX`.
 | 4 | Hash | Eight little-endian bytes for the post-tick gameplay digest. The reader checks it after the matching tick completes. |
 | 5 | Marker | UTF-8 chapter name. The recording marks its start and the first active map. |
 | 6 | Clock | One ULEB for the current guest match tick, or empty while unavailable. The index mirrors clock discontinuities for clip lookup. |
-| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. The record is private: `film::privacy` never makes it public. |
+| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. Subtype 2 is a seat's monitor look (JSON) and subtype 3 its monitor pose (27 bytes, with its tick); both repeat at each seek checkpoint ([forge-monitor-appearance.md](forge-monitor-appearance.md), "Theater"). The record is private: `film::privacy` never makes it public. |
 | 8 | Firefight entry | One entry of the Firefight host log, its canonical JSON (`host_log::Entry::canonical_bytes`), at the tick the machine applied it; the mode state rides in its `ModeState` entries. Playback hands a tick's records to the replica before the tick ([firefight.md](firefight.md#theater)). The record is private: `film::privacy` never makes it public. |
 
 For tag 1, start each chunk with 16 empty seats. A state begins with a flags
@@ -667,8 +674,13 @@ execution order and the core game, clock, player and object table addresses.
 It includes hook owners, guest addresses, calling conventions, hook kinds,
 instruction sites, permitted continuation addresses, guest-callable entries
 and the allocations placed for those features.
-The player checks it after installing its features and before entering the
-guest. The guest image has its own stamp. Editing Live, the web viewer,
+The recorder's boot header is written before the features are installed, so
+it holds no digest: once the features are installed the recorder appends a
+header that carries it (`Session::set_simulation_hooks`). A cut copies the
+tape with that header and writes its final header from the tape's, and
+recovery takes the digest from the tape's later header, so every film
+carries it. The player checks it after installing its features and before
+entering the guest. The guest image has its own stamp. Editing Live, the web viewer,
 codecs, diagnostic labels or documentation leaves this contract intact.
 Earlier experimental v2/v3 recordings with source-based runtime stamps
 require their corresponding simulator for engine playback.

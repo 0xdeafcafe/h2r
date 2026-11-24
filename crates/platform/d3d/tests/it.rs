@@ -29,10 +29,6 @@ mod fragments;
 mod guest_draw_pass;
 #[path = "glyph_text.rs"]
 mod glyph_text;
-#[path = "interp.rs"]
-mod interp;
-#[path = "interp_gpu.rs"]
-mod interp_gpu;
 #[path = "light_tail.rs"]
 mod light_tail;
 #[path = "native_residual.rs"]

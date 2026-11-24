@@ -11,6 +11,7 @@
 pub mod blend;
 pub mod builder;
 pub mod decorator;
+pub mod display;
 pub mod late;
 pub mod layer;
 pub mod light;
@@ -18,6 +19,7 @@ pub mod light_group;
 pub mod mailbox;
 pub mod node;
 pub mod object;
+pub mod pace;
 pub mod scene;
 pub mod summary;
 

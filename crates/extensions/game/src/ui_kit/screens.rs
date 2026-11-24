@@ -267,7 +267,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 71] = [
+pub const NAMES: [&str; 73] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -277,6 +277,8 @@ pub const NAMES: [&str; 71] = [
     "forge.options",
     "forge.controls",
     "forge.games",
+    "forge.variants",
+    "forge.variant",
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -308,7 +310,7 @@ pub const NAMES: [&str; 71] = [
     crate::theater_ui::PAUSE_MENU,
     "kit.picker",
     "kit.picker.game",
-    FORGE_MAP_PICKER,
+    MAP_VARIANT_PICKER,
     MODE_PICKER,
     crate::custom_games::browser_filters::SCREEN,
     "design.title",
@@ -341,9 +343,9 @@ pub const NAMES: [&str; 71] = [
     "layout.picker",
 ];
 
-/// The value picker as the Forge Map row opens it, with two saved maps
-/// (`crate::lobby_mode::forge_map_pick`).
-pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
+/// The value picker as the Map Variant row opens it, with two usable map
+/// variants and one that cannot be used (`crate::lobby_mode::map_variant_pick`).
+pub const MAP_VARIANT_PICKER: &str = "kit.picker.map-variant";
 
 /// The GAME MODE picker X opens in the pregame lobby, over the lobby
 /// (docs/game/party-lobby.md, "Changing mode"; `crate::lobby_tabs::picker`).
@@ -377,7 +379,8 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
-        | "forge.question" | "forge.options" | "forge.controls" | "forge.games" => {
+        | "forge.question" | "forge.options" | "forge.controls" | "forge.games"
+        | "forge.variants" | "forge.variant" => {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
@@ -449,20 +452,43 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
     .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
-/// The lobby's pickers' samples: [`FORGE_MAP_PICKER`], New with two
-/// saved maps, the second held; [`MODE_PICKER`], the GAME MODE picker X
+/// The lobby's pickers' samples: [`MAP_VARIANT_PICKER`], Original and
+/// three map variants, the second usable one held and the last unusable; [`MODE_PICKER`], the GAME MODE picker X
 /// opens (`crate::lobby_tabs::picker::pick`) for the leader of an Xbox
 /// Live custom game lobby with every mode on, Custom Games held. Their
 /// choices write nothing.
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
     match name {
-        FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
-            Ok(vec![
-                ("castle-keep".into(), "Castle Keep".into()),
-                ("lockout-towers".into(), "Lockout Towers".into()),
-            ]),
-            Some("lockout-towers"),
-        )),
+        MAP_VARIANT_PICKER => {
+            use crate::lobby_mode::VariantEntry;
+            let usable = |file: &str, name: &str, detail: &str| VariantEntry {
+                file: file.into(),
+                name: name.into(),
+                sentence: None,
+                detail: detail.into(),
+                id: None,
+                suggested_for: None,
+            };
+            Some(crate::lobby_mode::map_variant_pick(
+                Ok(vec![
+                    usable("castle-keep", "Castle Keep", "By Builder. Adds 4 Crates, 2 Spawns."),
+                    usable("lockout-towers", "Lockout Towers", "By Builder. Adds 3 Scenery."),
+                    VariantEntry {
+                        file: "old-keep".into(),
+                        name: "Old Keep".into(),
+                        sentence: Some(
+                            ::forge::files::variants::Problem::BaseHash
+                                .sentence("Old Keep", "court"),
+                        ),
+                        detail: String::new(),
+                        id: None,
+                        suggested_for: None,
+                    },
+                ]),
+                Some("lockout-towers"),
+                Arc::new(|_| String::new()),
+            ))
+        }
         MODE_PICKER => {
             use crate::lobby_tabs::{Facts, Place, Present, Tab, header::Shown, row};
             let facts = Facts {
@@ -662,7 +688,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             ));
             list(ListPage::new(p.class(), described(&p)))
         }
-        FORGE_MAP_PICKER => {
+        MAP_VARIANT_PICKER => {
             crate::ui_kit::picker::offer_list(lobby_pick_sample(name)?)?;
             let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
             list(ListPage::new(p.class(), described(&p)))
@@ -1076,10 +1102,11 @@ mod tests {
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
                 | crate::variant_quick::page::SCREEN
-                | FORGE_MAP_PICKER
+                | MAP_VARIANT_PICKER
                 | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
-                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question" | "forge.games",
+                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question" | "forge.games"
+                | "forge.variant",
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")

@@ -1,7 +1,7 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
 Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built; the rest is design.
-Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Forge Map row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
+Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
 Forge and Firefight are modes of the party lobby
@@ -190,8 +190,8 @@ back by `h1_options_row::rewrite_rows`):
 
 | Mode | Rows |
 |---|---|
-| CUSTOM GAMES | retail's, with ours as they are |
-| FORGE | Change Map..., Forge Map... (action 15), then the rest with Clanker Options...; Firefight Options... is hidden |
+| CUSTOM GAMES | retail's, with ours as they are, and Map Variant... (action 15) after Change Map... while the `forge` feature is on |
+| FORGE | Change Map..., Map Variant... (action 15), then the rest with Clanker Options...; Firefight Options... is hidden |
 | FIREFIGHT | Change Map..., Firefight Options..., then the rest with Clanker Options...; the game type row is hidden |
 
 Every mode's list loses the Switch To rows: the GAME MODE picker changes the mode
@@ -199,12 +199,18 @@ Every mode's list loses the Switch To rows: the GAME MODE picker changes the mod
 seats its Clankers in all three modes
 ([party-lobby.md](party-lobby.md#clankers-by-tab)).
 
-- **Forge Map...** opens the value picker (`kit.picker.forge-map`) over
-  Game Setup with New and the map variants of the lobby's map that can be
-  used (`lobby_mode::forge_map_list`, over `forge::files::variants::list`);
-  its help line names the chosen map. The pick is the variant's file stem,
-  the draft the session opens with (`lobby_start::forge_map`) and the
-  start gate's census applies (`rules::gate`, `variants::load`).
+- **Map Variant...** opens the value picker (`kit.picker.map-variant`)
+  over Game Setup with Original and the map variants saved for the lobby's
+  map (`lobby_mode::map_variant_list`, over `forge::files::variants::list`);
+  a variant that cannot be used is listed with its sentence as its line and
+  A on it stays in the picker. The picker opens on a map variant the lobby's
+  game variant suggests (`lobby_mode::map_variant_list_for`) when none is held.
+  Its help line names the chosen variant. In
+  FORGE the pick is the variant's file stem, the draft the session opens
+  with (`lobby_start::forge_map`), and the start gate's census applies
+  (`rules::gate`, `variants::load`); in CUSTOM GAMES it is the variant the
+  game is built from (`map_variant::pick_installed`), and the variant
+  panel's line under the map's is its name.
 - **Change Map...** opens the map select on the mode's category: the
   original maps for Forge, a **Firefight** category of kit maps for
   Firefight ([map-select.md](map-select.md), `map_select::mode_category`).
@@ -458,7 +464,7 @@ their first user. The editing slices P1 to P6 are in
 
 | # | Slice | Size | Needs | Proofs |
 |---|---|---|---|---|
-| **U2** (built) | Lobby modes: `lobby_start::Mode` (picked in the party lobby's GAME MODE picker, [party-lobby.md](party-lobby.md)), Game Setup rows by mode, Forge Map picker, the Firefight map category, variant panel lines, the monitor only in Forge mode, the remote-member refusal; delete the kit lobbies | M | nothing | `Page` tables for Game Setup in each mode (`mode_lists_only_enabled_features`, `forge_mode_lists_change_map_and_forge_map`, `leaving_the_lobby_clears_the_mode`, `forge_with_a_remote_member_is_refused`, `the_monitor_needs_forge_mode`); `h2 ui preview kit.picker.forge-map`; `lobby_options` tests for the panel lines; content checks (no colon values, no repeated spaces) |
+| **U2** (built) | Lobby modes: `lobby_start::Mode` (picked in the party lobby's GAME MODE picker, [party-lobby.md](party-lobby.md)), Game Setup rows by mode, Map Variant picker, the Firefight map category, variant panel lines, the monitor only in Forge mode, the remote-member refusal; delete the kit lobbies | M | nothing | `Page` tables for Game Setup in each mode (`mode_lists_only_enabled_features`, `forge_mode_lists_change_map_and_forge_map`, `leaving_the_lobby_clears_the_mode`, `forge_with_a_remote_member_is_refused`, `the_monitor_needs_forge_mode`); `h2 ui preview kit.picker.map-variant`; `lobby_options` tests for the panel lines; content checks (no colon values, no repeated spaces) |
 | **U1** (built) | Main menu: six rows. Remove the FORGE and FIREFIGHT entries, place Theater after System Link, re-pitch if needed | S | U2, landed together | table tests `the_main_menu_has_six_rows_with_theater`, `five_rows_without_theater`, `pitch_keeps_six_rows_above_the_footer`; the `main-menu` opener's preview with six rows; the layout checks |
 | **U4** | Forge screens in the game: the bindings table and Halo 3 pad gate, object menu, Properties from a table, Tools picker, Tool settings (Rotation snap), Link, questions, GAME MENU rows, Forge options, Controls; input handover | L | nothing | `h2 ui preview forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`, `forge.link`, `forge.question`, `forge.options`, `forge.controls --state all --animation all`; `Page` tables carried over from `ui_kit/forge/tests.rs` plus `x_opens_objects_or_properties_by_aim`, `no_is_focused_on_every_question`, `every_action_has_one_binding`, `the_controls_page_lists_the_bindings_table`, `game_menu_adds_five_rows`; a gate table test that RB and LB rise and fall, RT held manipulates, hold Y deletes and B cancels; `list_class` runner test that a picker opens with its pick in a game; layout and content checks in every state; a disc test that each base resolves in `shared` |
 | **K1** (built) | HUD kit: monitor mode (retail widgets gated off per user but the motion tracker, grenade origins without the row) | S | the HUD kit on `master` | `hud_kit_tests`: a retail widget of a monitor user is not drawn, the motion tracker is, and another user's widgets are; `h2 hud preview forge --state all --mode all --synthetic` |
@@ -567,7 +573,7 @@ The owner's choices, which the sections above follow.
   (Split Screen, a hosted System Link game, an Xbox Live custom game).
 - That hiding, adding and reordering Game Setup's rows leaves each row
   drawing its own text and working.
-- That the Forge Map picker opens on the dialogs' window over Game
+- That the Map Variant picker opens on the dialogs' window over Game
   Setup, and that the variant panel updates when the lobby returns.
 - That the status line's text call covers every start state the
   refusal shows in, and that holding the start state composes with the

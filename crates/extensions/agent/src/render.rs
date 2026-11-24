@@ -580,43 +580,9 @@ fn reply(s: &ProbeState) -> FrameReply {
     }
 }
 
-/// A struct's `Debug` text (`Name { a: 1, b: 2 }`) as a JSON object of its
-/// numeric and boolean fields. How counters from crates without serde
-/// (`d3d::interp::InterpStats`) reach the wire without listing their
-/// fields here, so a field added there shows up with no change here.
-pub fn debug_fields(text: &str) -> Value {
-    let body = match (text.find('{'), text.rfind('}')) {
-        (Some(a), Some(b)) if a < b => &text[a + 1..b],
-        _ => return Value::Null,
-    };
-    let mut out = Map::new();
-    for part in body.split(',') {
-        let Some((k, v)) = part.split_once(':') else {
-            continue;
-        };
-        let (k, v) = (k.trim(), v.trim());
-        if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            continue;
-        }
-        let v = match v {
-            "true" => json!(true),
-            "false" => json!(false),
-            _ => match v.parse::<u64>() {
-                Ok(n) => json!(n),
-                Err(_) => match v.parse::<f64>() {
-                    Ok(f) => json!(f),
-                    Err(_) => continue,
-                },
-            },
-        };
-        out.insert(k.to_owned(), v);
-    }
-    Value::Object(out)
-}
-
 /// What `render.stats` reads, each `None` where that piece isn't running.
 pub struct RenderSources {
-    pub interp: Box<dyn Fn() -> Option<Value> + Send>,
+    pub display_rate: Box<dyn Fn() -> Option<agent_proto::DisplayRateStats> + Send>,
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
@@ -667,7 +633,7 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
         let s = RenderStats {
             display_frame: private_graph::display_stats(),
             private_frame: private_graph::last_stats(),
-            interp: (sources.interp)().unwrap_or(Value::Null),
+            display_rate: (sources.display_rate)(),
             counters: (sources.counters)().unwrap_or(Value::Null),
         };
         serde_json::to_value(s).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
@@ -1612,32 +1578,6 @@ mod tests {
         assert!(arm((0..33).collect(), true).is_err(), "at most 32");
         assert!(arm(vec![0], false).is_err(), "only on listed draws");
         assert!(arm(vec![-96, 95], true).is_ok());
-    }
-
-    #[test]
-    fn debug_text_becomes_fields() {
-        #[derive(Debug, Default)]
-        #[allow(dead_code)]
-        struct S {
-            frames: u64,
-            unsure_camera: u64,
-            ratio: f64,
-            on: bool,
-        }
-        let v = debug_fields(&format!(
-            "{:?}",
-            S {
-                frames: 9,
-                unsure_camera: 2,
-                ratio: 0.5,
-                on: true
-            }
-        ));
-        assert_eq!(
-            v,
-            json!({"frames": 9, "unsure_camera": 2, "ratio": 0.5, "on": true})
-        );
-        assert_eq!(debug_fields("no braces"), Value::Null);
     }
 }
 

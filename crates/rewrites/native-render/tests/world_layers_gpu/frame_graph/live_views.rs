@@ -48,6 +48,7 @@ fn live_frame(binding: &FrozenSample) -> ReplayFrame {
                     None,
                 ],
                 camera: CameraUse::Unknown,
+                external: None,
             },
         );
     }

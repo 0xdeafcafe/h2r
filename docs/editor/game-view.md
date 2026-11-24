@@ -1,7 +1,7 @@
 # The game view: the game's picture inside Studio
 
-Status: Partly built. The frame feed (`render.picture`, GV1) is built; the panel, editor mode, input and cameras are not, so Studio starts and pairs a separate game ([editor.md](editor.md#play-and-pair)) and shows none of its pixels.
-Code: built in `crates/extensions/agent/src/render/picture.rs` and `crates/extensions/agent-proto/src/picture.rs` (the frame feed, `render.picture`); planned in Studio's `play` and `ui` modules (the panel, launch and input, slices GV2 to GV5) and `crates/apps/cli/src/play_cmd.rs` (editor mode). Tests: `agent::render::picture::tests`.
+Status: Partly built. The frame feed (`render.picture`, GV1) and the Game panel in attached mode (GV2: the ring's picture of the paired game, `game.status`, `game.snapshot`) are built; editor mode, the own game, input and cameras are not, so Studio starts and pairs a separate game ([editor.md](editor.md#play-and-pair)) and the panel shows what that game shows. A game over `tcp://` has no picture in Studio yet: the JPEG stream is not decoded.
+Code: built in `crates/extensions/agent/src/render/picture.rs` and `crates/extensions/agent-proto/src/picture.rs` (the frame feed, `render.picture`) and in Studio's `crates/apps/studio/src/play/picture.rs` (the ring reader), `src/ui/game_view.rs` (the panel's texture) and `src/api/game.rs` (`game.status`, `game.snapshot`); planned in Studio's `play` and `ui` modules (launch and input, slices GV3 to GV5) and `crates/apps/cli/src/play_cmd.rs` (editor mode). Tests: `agent::render::picture::tests`, `studio::play::picture::tests`, `studio::api::tests::game_tests`, `headless::tests::the_game_panel_shows_the_picture_and_its_stall`.
 Switch: none.
 
 Studio has a **Game** panel that shows a running game's own frames, live.
@@ -92,10 +92,19 @@ mode nothing waits in Pending for a click.
 ### Attached mode
 
 The pairing is the existing one (`pair.*`, auto-pair, View by default).
-The panel opens the paired game's picture, by the ring when the socket
-is local and by the stream when it is not, and shows the game's map,
-phase and the link plate's state above it. The game keeps its own
-window and its own input. Studio does not load maps into it; what F5
+When the paired game offers `render.picture.open`, the pairing opens its
+picture (`Bridge.picture`, `play::picture::Picture`): a connection of its
+own asks for the ring, and the panel maps it. The panel polls the ring once
+a frame while it is drawn, takes the newest frame, uploads it to a texture
+(`ui::game_view`) and draws it above the session controls, under the
+game's map, phase and the link plate's state. Under it, the size, rate,
+dropped frames and the frame's tick; a ring that has published nothing for
+two seconds says how long, and keeps the last frame. A hidden panel does
+not poll, and the game stops reading frames back a second after the newest
+one went unread. A game over `tcp://` has no ring and the panel says why
+(the stream's JPEG frames are not decoded yet). The picture ends with the
+pairing and is opened again after the game closed it. The game keeps its
+own window and its own input. Studio does not load maps into it; what F5
 may do to a foreign game is unchanged ([editor.md](editor.md#play-and-pair)).
 
 The panel has a switch between the two when both exist. Starting the own
@@ -132,11 +141,11 @@ Studio ([agent-api.md](agent-api.md)):
 
 | Method | Access | Does |
 |---|---|---|
-| `game.status` | read | the own game (`none`, `starting`, `running`, its map, tier and socket), the attached game, the panel's mode and camera, the picture's rate, age and drops |
+| `game.status` | read | the own game (`none`, `starting`, `running`, its map, tier and socket), the attached game, the panel's mode and camera, the picture's state, rate, age, drops and tick lag (built for the attached game; `own` is always `none`) |
 | `game.start`, `game.stop` | act | start the own game on the open document, or stop it |
 | `game.mode {own \| attached}` | act | which game the panel and the mirror follow |
 | `game.camera {player \| free \| editor}` | act | the own game's camera |
-| `game.snapshot {out}` | act | the panel's newest frame as a PNG, refused in a Git checkout |
+| `game.snapshot {out}` | act | the panel's newest frame as a PNG, refused in a Git checkout (built for the attached game's picture) |
 
 `pair.play` and F5 start the own game through `game.start`.
 
@@ -169,8 +178,12 @@ Studio ([agent-api.md](agent-api.md)):
   `crates/apps/studio/src/play/launch.rs`, `play/playtest.rs`).
 - `input.pad` drives a player on a headless or windowed game (**Code**,
   [agent-api.md](../runtime/agent-api.md#input-act-like-a-player)).
+- The panel reads the ring, counts its frames and drops, and shows a
+  stall, over an invented ring (**Code**,
+  `crates/apps/studio/src/play/picture/tests.rs`,
+  `crates/apps/studio/src/api/tests/game_tests.rs`, `headless.rs`).
 - The readback's cost at 60 Hz, and the panel's latency, are not
-  measured (**S**: GV2's note).
+  measured; [the note](notes/game-view.md) says how.
 
 ## Not verified
 

@@ -502,6 +502,19 @@ Notes on some:
   answers `passes_drawn`, each left-out layer in `refusals` with its pass
   count and reason, `base` when the base look does not draw, and
   `covered`. With no renderer `png` is null and the counts still answer.
+  `shader.code {tag, pass?, implementation?}` reads one pass's programs
+  as text (`native_view::code`, the Shader tab's Code section): `pass`
+  counts the passes across the layers of the first level of detail in
+  layer order (default 0), `implementation` picks one of the pass's
+  (default 0). The answer gives `passes`, `layer`, `pass_in_layer`,
+  `pass_tag`, `implementations`, and for `vertex` (the world
+  classification, `classification: "world"`) and `pixel` each
+  `{listing, wgsl, warnings}`: the disassembly, the WGSL the translator
+  makes of it and the translator's warnings. A state program has its
+  listing, a null `wgsl` and the refusal in `warnings`; a program that
+  does not decode has a null `listing` too. A pass or implementation the
+  shader lacks, or a tag that is not a `shad`, is `REFUSED`. It reads
+  with the document's edits and writes nothing.
 - **Curves.** `function.read {tag, path}` reads the function blob a
   `view=function` data field points at
   ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
@@ -912,6 +925,31 @@ Notes on some:
   waits for an outstanding batch, reverts the journal, and disconnects on
   acknowledgement. Omitting `leave` opens the prompt in the window. Both `edit.set` and
   `edit.revert` enforce the same game-side session check as `edit.batch`.
+- **Game picture.** The Game panel shows the paired game's own frames,
+  read from the game's `render.picture` ring ([game-view.md](game-view.md),
+  `play/picture.rs`). `game.status` answers `{mode, camera, own, attached,
+  picture}`: `mode` is `attached` and `camera` is `player` (the editor's own
+  game, `game.start` and `game.camera` are not built, so `own` is
+  `{state: "none"}`); `attached` repeats `pair.status`'s socket, map, phase
+  and tick with the link plate's state and text, and is null before the
+  window has run its game link; `picture` is null with no pairing. Its
+  `state` is `connecting`, `open`, `stalled` (no new frame for two
+  seconds; `age_ms` says how long), `closed` (the game closed the picture)
+  or `failed` (`why`: a game over `tcp://`, whose JPEG stream Studio does
+  not decode, a game with no frame source, a lost connection). It also has
+  `size` of the newest frame, `asked_fps`, the frames taken, `dropped`
+  (frames the game published that no poll took), `fps` over the last
+  second, `age_ms`, the frame's game `tick`, `tick_lag` (the game's tick at
+  the link's last poll minus the frame's) and `events` (the `picture`
+  events the game sent). Reading it takes the newest frame, so the numbers
+  are those of a reader that polls once per call.
+  `game.snapshot {out?}` takes the newest frame and writes it as a PNG at
+  the size the game published (default under the output directory,
+  `game/<map>.png`), answering `{path, width, height, frame, tick}`. It is
+  `REFUSED` with no picture, with no frame yet, after a failed or closed
+  picture, and for a path inside a Git checkout. The picture is opened when
+  the pairing learns the game offers `render.picture.open`, and again when
+  the game closed it; it ends with the pairing.
 - **Live mirror.** The paired editor reads the game's `objects`,
   `players` and `camera` stream. `mirror.status.stream.refused.camera`
   says why a game has no camera layer. `mirror.status` reports the stream state, layers,
@@ -1962,7 +2000,8 @@ needs `replace`. `clip`, `repo` and `replace` are refused with `tag`.
 ## Voices
 
 `voice.characters`, `voice.dataset.build`, `voice.dataset.status`,
-`voice.clone.train` and `voice.clone.say` (`api/voice_clone.rs`, over
+`voice.clone.train`, `voice.clone.say` and the batch (`voice.say_batch`,
+`voice.batch.status`, `voice.batch.run`, `voice.batch.save`) (`api/voice_clone.rs`, over
 `app/voices.rs` and `app/announcer.rs`) clone a game character's voice from
 the user's own disc and say new lines with it, all on this machine. The
 design, the dataset, the sidecar and the models are in
@@ -2017,6 +2056,37 @@ model is installed it starts the install and is `REFUSED` with
 `data.step` is `dataset`. A model failure is `FAILED` with the sidecar's
 message. To hear a committed clip in the game, `voice.commit` it and use
 `pair.audio` as for any announcer clip.
+
+**`voice.say_batch {character?, rows?, lines?, file?, append?, wait?,
+backend?}`** says many lines as the Voices window's **Say all** does, each
+row as `voice.clone.say` says a line (cached, levelled, saved under
+`<data root>/voices/<character>`, never played). `rows` is a list of
+`{text, character?, clip?, tag?}` (`character` defaults to the batch's;
+`clip` is the output name; `tag` a `snd!` path for the edit target
+package), `lines` one row per line of a text (a tab splits an output name
+from the text) and `file` a text file of at most 1 MB. The previous batch
+is replaced unless `append`; while rows are queued or running it is
+`REFUSED`. A bad param adds nothing. A row with a problem fails at once with
+`why`; the others are queued. With `wait` the call returns when every row
+has ended; without it the window's frames say one row each, so poll
+`voice.batch.status`. It answers `added`, `queued`, `counts` (`idle`,
+`queued`, `running`, `done`, `failed`), `active` and `rows`.
+
+**`voice.batch.status {ids?}`** answers the same without asking the model:
+each row's `id`, `text`, `character`, `clip`, `tag`, `state` (`idle`,
+`queued`, `running`, `done`, `failed` with `why`), and once said its `file`,
+`levels` (`lufs`, `peak_dbfs`, `duration_ms`), `verdict` and `cached`;
+`saved` or `save_failed` after a save.
+
+**`voice.batch.run {ids?, wait?, backend?}`** says the idle and failed rows
+again, or `ids` (a done row too, asking the model again, not the cache).
+
+**`voice.batch.save {ids?, repo?, package?, replace?}`** keeps the done
+rows in one step: a row with a `tag` becomes a `sound` item of `package`
+(default the edit target), one with a `clip` is copied to
+`art/announcer/<clip>.wav` of `repo`, replacing a clip only with `replace`;
+a row with neither fails with why. It answers `saved`, `failed` and each
+row's result, runs no git and edits no `CLIPS`.
 
 ## Extension points
 
@@ -2139,9 +2209,10 @@ the window and the API stay one path.
   is `app::tag_api::set_field` with `fields::colour::from_json`, a
   `TagAction::Write` of the field's own length, as the dialog writes.
 - **Shaders (rich editors S1).** `api/shader.rs` registers `Shader` for
-  `shader.read`, `shader.set` and `shader.preview`, over `app/shader.rs`
-  (the Shader tab's read, on the shown map with the document's edits)
-  and `native_view::preview::material`; `shader.set` is `tag.set` at the
+  `shader.read`, `shader.set`, `shader.preview` and `shader.code`, over
+  `app/shader.rs` (the Shader tab's read, on the shown map with the
+  document's edits), `native_view::preview::material` and
+  `native_view::code::pass_code` (S4); `shader.set` is `tag.set` at the
   slot's path (`SlotKind::path`) through `tag_fields::perform`, one undo
   step.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for

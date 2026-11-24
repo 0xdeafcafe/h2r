@@ -245,6 +245,15 @@ file, so it carries no signature.
   ([rules-engine.md](../game/rules-engine.md#carrying-a-script)).
   `Bundle::canonical` is compact JSON in field order, and `Bundle::id` is
   its SHA-256: the same variant has the same id everywhere.
+- **Suggested maps** are `maps: [{base, variant, name}]`, at most eight
+  (`MAX_MAPS`): the base map's SHA-256, the map variant's document id (both
+  64 lowercase hex digits) and its name (1 to 63 characters, under the
+  name rules below), none listed twice. The field is absent when empty, so
+  a bundle without suggestions keeps its bytes and id. `Bundle::with_maps`
+  sets them and `portable::read` refuses a file over the cap, by
+  name. A suggestion only focuses a map variant in the lobby's picker
+  ([forge-map-variants.md](../game/forge-map-variants.md), "How a pick names a map variant");
+  the record is untouched.
 - **Reading** (`portable::read`) checks a version-2 file's integrity:
   the record decodes, `engine` and `name` match it, and a script is
   present exactly when the record names one, its IR hashes to `hash`,

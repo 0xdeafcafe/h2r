@@ -337,9 +337,19 @@ impl Seats {
     /// is not a monitor at all.
     pub fn body(&self, seat: u8, now: f32) -> Option<(Pose, f32)> {
         let look = self.looks.get(&seat)?;
-        let track = self.poses.get(&seat)?;
-        if !track.monitor || look.is_marker() {
+        if look.is_marker() {
             // A marker seat is drawn by the compositor's ring, not a body.
+            return None;
+        }
+        self.pose_at(seat, now)
+    }
+
+    /// The seat's monitor pose at `now` and how faded it is, whatever its
+    /// look: a marker seat has a pose too, which a camera may follow.
+    /// `None` while the seat is not a monitor or its samples are gone.
+    pub fn pose_at(&self, seat: u8, now: f32) -> Option<(Pose, f32)> {
+        let track = self.poses.get(&seat)?;
+        if !track.monitor {
             return None;
         }
         let pose = track.at(now)?;

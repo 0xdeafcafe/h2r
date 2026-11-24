@@ -304,6 +304,25 @@ fn the_combined_preview_draws_no_part_of_the_block_alone() {
     }
 }
 
+/// The combined Forge preview (`h2 hud preview forge-all`) in every screen
+/// mode: no part of the block is drawn without the rest, as for
+/// `superbounce-all`.
+#[test]
+fn the_forge_preview_draws_no_part_of_the_block_alone() {
+    use crate::views::forge_all::All;
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&All], &Mode::ALL).unwrap();
+    let modes: Vec<_> = r.of(Check::Modes).collect();
+    assert!(modes.is_empty(), "{modes:#?}");
+    let hud = All.hud();
+    for s in r.shots.iter().filter(|s| s.mode != Mode::Full) {
+        for d in s.elements.iter().filter(|d| d.drawn) {
+            let e = hud.element(d.id).unwrap();
+            assert!(e.kind.is_channel(), "{} {:?}: {}", s.state, s.mode, d.id);
+        }
+    }
+}
+
 /// Each navpoint of a HUD has a sample of its own, so two shown at once
 /// (the readout's two targets, the ranked seams after a bounce) draw
 /// apart: neither's arrow, marker and number is over the other's.

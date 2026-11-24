@@ -512,6 +512,64 @@ mod tests {
     use crate::app::Action;
     use scenario_edit::{BlockKind, fixture};
 
+    /// The Game panel uploads the paired game's newest frame from its ring
+    /// and says how long a ring has been still. The ring is written by the
+    /// test, as the game would. Skipped without a wgpu adapter.
+    #[cfg(unix)]
+    #[test]
+    fn the_game_panel_shows_the_picture_and_its_stall() {
+        use crate::play::picture::Picture;
+        use crate::play::testing::{Temp, fake};
+        use agent_proto::picture::{Opened, Ring, SlotMeta, Transport};
+        use agent_proto::sim::SessionKind;
+        use std::time::{Duration, Instant};
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let mut app = App::new();
+        let temp = Temp::new("game-panel");
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        let game = fake::Game::start("game-panel", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+
+        let path = temp.0.join("picture.ring");
+        let writer = Ring::create(&path, (8, 8)).unwrap();
+        let opened = Opened {
+            id: 1,
+            transport: Transport::Ring,
+            path: Some(path.clone()),
+            size: [8, 8],
+            format: "rgba8".into(),
+            fps: 60,
+        };
+        writer.publish(
+            SlotMeta { frame: 1, tick: Some(5), present: 1, time_us: 0, width: 4, height: 2 },
+            &[120; 32],
+        );
+        let reader = || Ring::open(&path).unwrap();
+        app.pairing.picture = Some(Picture::with_ring(reader(), opened.clone(), Instant::now()));
+        h.frames(&mut app, 3).unwrap();
+        let view = &h.studio.play.game_view;
+        assert_eq!(view.uploaded, Some((1, [4, 2])), "the frame reached the texture");
+        assert!(view.line.contains("4x2") && view.line.contains("tick 5"), "{}", view.line);
+
+        // A ring that has published nothing for longer than the stall says so.
+        let old = Instant::now() - Duration::from_secs(6);
+        let quiet = temp.0.join("quiet.ring");
+        let _quiet_writer = Ring::create(&quiet, (8, 8)).unwrap();
+        let opened = Opened { path: Some(quiet.clone()), ..opened };
+        app.pairing.picture =
+            Some(Picture::with_ring(Ring::open(&quiet).unwrap(), opened, old));
+        h.frames(&mut app, 2).unwrap();
+        assert!(
+            h.studio.play.game_view.line.contains("no new frame for 6"),
+            "{}",
+            h.studio.play.game_view.line
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_game_link_shows_in_every_tool() {

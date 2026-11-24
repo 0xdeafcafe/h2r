@@ -15,6 +15,9 @@
 //! composition root supplies the [`Maps`] (`boot`'s `forge_maps`), through
 //! [`install`].
 //!
+//! **Suggestions.** [`suggest`] marks the variants a game variant's `maps`
+//! name; the picker opens on the first.
+//!
 //! **The hold.** Start Game is held while the pick builds, and while it is
 //! refused: [`hold`] is the status line's sentence, which
 //! `crate::lobby_mode::start_refused` and `crate::lobby_status` use. Every
@@ -142,6 +145,24 @@ pub fn installed(map: &str) -> Option<Sha256> {
     let maps = with_maps(|m| m.clone())?;
     let hash = maps.lock().unwrap_or_else(|e| e.into_inner()).installed(map);
     hash
+}
+
+/// Marks the map variants `game` suggests among `listed`: those whose
+/// document id a suggestion on the base map `base` (this machine's
+/// SHA-256 of it) names. Suggestions for another base, or for a variant
+/// not on this machine, mark nothing. `game` only suggests: the pick is
+/// not changed (docs/game/forge-map-variants.md, "How a pick names a map variant").
+pub fn suggest(
+    listed: &mut [crate::lobby_mode::VariantEntry],
+    game: &::variants::portable::Bundle,
+    base: &Sha256,
+) {
+    let ids: Vec<String> = game.suggested_for(base).map(|m| m.variant.clone()).collect();
+    for entry in listed {
+        if entry.id.is_some_and(|id| ids.contains(&id.to_string())) {
+            entry.suggested_for = Some(game.name.clone());
+        }
+    }
 }
 
 /// The lobby's pick.

@@ -384,6 +384,7 @@ mod tests {
             draw: packet(),
             textures: [texture.map(ReplayTexture::Sample), None, None, None],
             camera: frame_types::carried::CameraUse::Unknown,
+            external: None,
         }
     }
 

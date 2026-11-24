@@ -91,6 +91,7 @@ are under [Reviews](#reviews).
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): native and fixed output sizes, per-axis raster scaling, and widescreen projection
 - [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/rewrites/native-render`): the frame, the stages and how a frame is checked
+- [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
 - [native-decorators.md](graphics/native-decorators.md): native decorators: the BSP's model decorators typed into the scene and drawn instanced
@@ -181,6 +182,7 @@ are under [Reviews](#reviews).
 - [shadow-exec.md](engine/shadow-exec.md): shadow execution: native ports checked against the lifted original on the states the game reaches (`shadow.*`, `scripts/shadow-gate.sh`), and the shared `lifted` crate
 - [havok-runtime.md](engine/havok-runtime.md): how the retail game keeps its Havok world in guest memory: world, islands, bodies, shapes, contacts, agents
 - [collision-queries.md](engine/collision-queries.md): the native collision world behind `impl.sim.native.collision`: entries, contract and bail reasons
+- [asset-store.md](engine/asset-store.md): the asset store (not built): every disc tag extracted once into a shared, deduplicated store; levels assembled from it as images and extents; mods as packages of patches and new assets; `LevelId`
 - [sim-rewrite.md](engine/sim-rewrite.md): plan for rewriting the simulation as Rust subsystems (not built), with the phase specs [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) (phase 2), [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) (phase 3) and [sim-rewrite-havok.md](engine/sim-rewrite-havok.md) (phase 4)
 - Notes: [2026-11-21-engine-vtables.md](engine/notes/2026-11-21-engine-vtables.md) (the retail game engines' vtables and the slots that make rules), [2026-11-22-script-scoring-and-roles.md](engine/notes/2026-11-22-script-scoring-and-roles.md) (the carriers' scoring sites, Juggernaut's role and Oddball's ball return, for script games), [2026-11-23-round-start-and-player-quit.md](engine/notes/2026-11-23-round-start-and-player-quit.md) (the round reset and the player-left notice that deliver `on round_start` and `on quit`), [feature-engine.md](engine/notes/feature-engine.md) (feature engine and engine contracts evidence)
 
@@ -205,7 +207,7 @@ are under [Reviews](#reviews).
 - [bounce-search.md](game/bounce-search.md): the bots learn each superbounce spot by a per-spot knob search in headless sims (design): the knobs, the search, `<map>.learned`, `h2 sim train`
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
-- [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
+- [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness and display frames between two scenes (built, not yet run in game)
 - [theater.md](game/theater.md): the in-game film library, host-film playback and seeking, with real-host verification pending
 - [Theater seek measurements](game/notes/theater-seek.md): cold launch, keyframe capture and tape size procedure
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks

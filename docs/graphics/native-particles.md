@@ -1,6 +1,6 @@
 # Native particles and effect geometry
 
-Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, lens reflections, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
+Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
 Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -140,6 +140,24 @@ Explicit assumptions and limits:
 - The stage replaces D3D's GPU recording and keeps guest geometry construction and resolved-draw capture. Uploads are owned per recording so cancellation stays correct. The feature's armed count is not replacement coverage; the stage counters are.
 
 
+### Colour flare fans
+
+`native_render::flares::Site` names the colour flare fans: Reflection, Mask,
+MaskSample, FilterSource, Filter and Composite. Each is one `TriangleFan` of
+four vertices with no indices. The bridge decides which draws are flares;
+`Site::registers` is the written register set per site, and registers
+outside it come from the carried defaults.
+
+`FlareGpu::prepare(site, target, draw, frame)` checks that the draw is a
+fan of four vertices with a vertex program, one stride-256 stream 0 of
+`Float4` registers at `16 * register`, a written set that equals the site's
+and the shader's `provided_inputs`, only 2D textures and no glyph filter.
+The shared GPU path translates the resolved shader and raster state. A missing
+sampled view, unsupported shader or attachment mismatch leaves the packet
+on the guest path. The offscreen tests in `tests/world_layers_gpu/flares.rs`
+check blended pixels, a carried register's colour and a filter sampling a
+replayed target on both the native and fallback paths.
+
 ### Additional immediate effect leaves
 
 The adapter also owns narrowly scoped immediate draws. These use the same
@@ -151,7 +169,6 @@ also match a researched caller; another caller gives `UnownedCaller`.
 
 | Producer | Researched path | Admission |
 | --- | --- | --- |
-| Lens-flare reflections | `0x0002e9e0`, call `0x0002f247` to `0x000480a0` | Four-vertex triangle fan; saved caller `0x0002f24c` |
 | Light volumes (`MGS2`) | Sorted handler `0x0004f010` → `0x0004f7e0` → `0x000480a0` or `0x000484b0` | Four-vertex triangle fan; saved callers `0x0004fddd` / `0x0004fd9d` |
 | Light trails (`tdtl`) | Sorted handler `0x000508d0` → `0x0004f7e0` | Same billboards, preserving every trail update and material change |
 | Weather layer | `0x00037a60` | Four-vertex quad strip |
@@ -217,7 +234,8 @@ invokes callback `0x0002e540` through `0x00020bb0` with query work enabled;
 its END at `0x0002e9b6` is explicitly `VisibilityQuery`. The queue helper
 brackets this callback with z-pass query packets and retains its readback
 lifecycle. Reflection pass `0x0002df00` invokes `0x0002e9e0` without those
-queries; its visible billboards use the admitted leaf above. Neither queue
+queries. Its visible billboards go to the native flare stage through the shared
+leaf at `0x000480a0` when the saved caller is `0x0002f24c`. Neither queue
 nor visibility-history logic is replaced. The central handoff also rejects
 query-counted draws before asking admission owners.
 
