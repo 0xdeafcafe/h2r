@@ -21,8 +21,8 @@
 //! playlist screen with the Clanker and the human playlists on one page
 //! (`crate::clankermatch::Scope::All`).
 //!
-//! **Forge Map...** opens the picker of New and the maps saved under
-//! `<data>/forge` ([`forge_map_pick`]); the Forge session loads the choice
+//! **Forge Map...** opens the picker of New and the map variants of the
+//! lobby's map that can be used ([`forge_map_list`], [`forge_map_pick`]); the Forge session loads the choice
 //! as it opens ([`crate::forge_glue`]).
 //!
 //! **The panel** ([`panel_ids`]): the lobby's variant panel update
@@ -54,7 +54,7 @@
 //! ([`crate::lobby_start::clear`]), as does building the main menu or the
 //! Xbox Live menu again (`crate::layout_glue`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -184,35 +184,56 @@ pub fn forge_map_help(name: Option<&str>) -> String {
     }
 }
 
-/// The Forge Map row's pick over `saved` (`forge::saved_names`): New, then
-/// each saved map; the lobby's held. A list that cannot be read is named in
-/// the description, and New still starts a fresh map.
-pub fn forge_map_pick(saved: Result<Vec<String>, String>, current: Option<&str>) -> Pick {
-    let (names, description) = match saved {
-        Ok(names) => (
-            names,
-            "New starts from the map as it is. A saved map loads its edits.".to_owned(),
+/// The map variants of the lobby's map `map` (its list id) the picker
+/// offers, as (file stem, name): the ones saved on this machine that pass
+/// the store's checks (`forge::files::variants::list`, against the
+/// installed map's hash).
+pub fn forge_map_list(data: &Path, map: Option<u32>) -> Result<Vec<(String, String)>, String> {
+    let base = map
+        .and_then(crate::map_select::short_name_of)
+        .ok_or("the lobby's map is not known")?;
+    let installed = crate::map_variant::installed(&base);
+    let listed = ::forge::files::variants::list(data, &base, installed.as_ref())
+        .map_err(|e| e.to_string())?;
+    Ok(crate::forge_screens::variants::rows(&listed)
+        .into_iter()
+        .filter(|r| r.loadable())
+        .map(|r| (r.file, r.name))
+        .collect())
+}
+
+/// The Forge Map row's pick over `saved` ([`forge_map_list`]): New, then
+/// each map variant by name; the lobby's held (a file stem). A list that
+/// cannot be read is named in the description, and New still starts a fresh
+/// map.
+pub fn forge_map_pick(saved: Result<Vec<(String, String)>, String>, current: Option<&str>) -> Pick {
+    let (saved, description) = match saved {
+        Ok(saved) => (
+            saved,
+            "New starts from the map as it is. A map variant loads its edits.".to_owned(),
         ),
         Err(why) => (
             Vec::new(),
-            format!("The saved maps cannot be listed: {why}. New still starts a fresh map."),
+            format!("The map variants cannot be listed: {why}. New still starts a fresh map."),
         ),
     };
     let mut values = vec![NEW_MAP.to_owned()];
-    values.extend(names);
+    values.extend(saved.iter().map(|(_, name)| name.clone()));
     let held = current
-        .and_then(|c| values.iter().skip(1).position(|v| v == c).map(|i| i + 1))
+        .and_then(|c| saved.iter().position(|(file, _)| file == c).map(|i| i + 1))
         .unwrap_or(0);
-    let chosen = values.clone();
+    let chosen: Vec<String> = std::iter::once(String::new())
+        .chain(saved.into_iter().map(|(file, _)| file))
+        .collect();
     Pick::new(
         "Forge Map",
         values,
         held,
         &description,
         Arc::new(move |i: usize| match chosen.get(i) {
-            Some(name) if i > 0 => {
-                lobby_start::set_forge_map(Some(name.clone()));
-                format!("lobby mode: Forge map {name}")
+            Some(file) if i > 0 => {
+                lobby_start::set_forge_map(Some(file.clone()));
+                format!("lobby mode: Forge map {file}")
             }
             Some(_) => {
                 lobby_start::set_forge_map(None);
@@ -509,7 +530,7 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
 }
 
 fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, GuestFault> {
-    let (action, player, stack) = {
+    let (action, player, stack, lobby_map) = {
         let mem = c.ctx.runtime().memory();
         let row = mem.u32(c.cpu.esp + 8).ok().and_then(|p| mem.u32(p).ok());
         let action = row.and_then(|row| h1row::row_action(&*mem, c.cpu.ecx, row));
@@ -521,13 +542,14 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
                 mem.u32(s + crate::ui_kit::lifecycle::SCREEN_SLOT).ok()?,
             ))
         });
-        (action, player, stack)
+        let lobby_map = mem.u32(crate::h1_options_row::LOBBY_MAP).ok();
+        (action, player, stack, lobby_map)
     };
     if action != Some(FORGE_MAP_ACTION) {
         return Ok(Flow::Continue);
     }
     let pick = forge_map_pick(
-        ::forge::saved_names(&me.data),
+        forge_map_list(&me.data, lobby_map),
         lobby_start::forge_map().as_deref(),
     );
     let what = "Forge Map";

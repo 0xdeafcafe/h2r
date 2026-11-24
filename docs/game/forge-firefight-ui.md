@@ -200,9 +200,11 @@ seats its Clankers in all three modes
 ([party-lobby.md](party-lobby.md#clankers-by-tab)).
 
 - **Forge Map...** opens the value picker (`kit.picker.forge-map`) over
-  Game Setup with New and the saved maps (`forge::saved_names`); its
-  help line names the chosen map. The pick is the draft the session
-  opens with (`lobby_start::forge_map`).
+  Game Setup with New and the map variants of the lobby's map that can be
+  used (`lobby_mode::forge_map_list`, over `forge::files::variants::list`);
+  its help line names the chosen map. The pick is the variant's file stem,
+  the draft the session opens with (`lobby_start::forge_map`) and the
+  start gate's census applies (`rules::gate`, `variants::load`).
 - **Change Map...** opens the map select on the mode's category: the
   original maps for Forge, a **Firefight** category of kit maps for
   Firefight ([map-select.md](map-select.md), `map_select::mode_category`).

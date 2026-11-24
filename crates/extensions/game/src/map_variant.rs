@@ -136,6 +136,14 @@ pub fn install(maps: Box<dyn Maps>) {
     with_maps(|m| *m = Some(Arc::new(Mutex::new(maps))));
 }
 
+/// The SHA-256 of this machine's map `map`, from the installed [`Maps`];
+/// `None` without them or without that map.
+pub fn installed(map: &str) -> Option<Sha256> {
+    let maps = with_maps(|m| m.clone())?;
+    let hash = maps.lock().unwrap_or_else(|e| e.into_inner()).installed(map);
+    hash
+}
+
 /// The lobby's pick.
 pub fn picked() -> Option<Picked> {
     with_pick(|p| p.clone())

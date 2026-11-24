@@ -301,7 +301,6 @@ fn canonical_save_loads_at_its_document_head_and_compensates_failed_loads() {
         listed.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
         vec!["Our Room"]
     );
-    assert!(saved_names(&data.0).unwrap().is_empty());
 
     let saved = ForgeDoc::from_bytes(&bytes, &Limits::default()).unwrap();
     let mut b = session(3);

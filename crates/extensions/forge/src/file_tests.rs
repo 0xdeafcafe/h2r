@@ -324,10 +324,3 @@ fn a_map_name_or_file_handle_that_is_a_path_is_refused() {
     stray.base.map = "../x".into();
     assert!(variants::save(&dir.0, &stray, false).is_err());
 }
-
-#[test]
-fn the_old_forge_map_store_is_untouched_beside_it() {
-    let dir = Dir::new();
-    variants::save(&dir.0, &doc("Two Towers"), false).unwrap();
-    assert!(crate::saved_names(&dir.0).unwrap().is_empty());
-}

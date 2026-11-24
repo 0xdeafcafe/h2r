@@ -372,7 +372,13 @@ impl Sources for InGame {
             .file_source(&path)
             .ok_or_else(|| format!("{path} is not served"))?;
         let doc = forge_map
-            .map(|name| forge::load_saved(&self.data, name))
+            .map(|file| {
+                let base = crate::map_select::short_name_of(map)
+                    .ok_or_else(|| format!("map {map} is not in the catalogue"))?;
+                let installed = crate::map_variant::installed(&base);
+                forge::files::variants::load(&self.data, &base, file, installed.as_ref())
+                    .map_err(|e| e.to_string())
+            })
             .transpose()?;
         match source {
             vfs::FileSource::Memory(bytes) => {

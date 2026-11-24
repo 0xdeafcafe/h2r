@@ -1340,6 +1340,13 @@ pub fn selected_path(id: u32) -> Option<String> {
     crate::map_slots::slot_file(&format!("{}.map", map.path))
 }
 
+/// The short name (`lockout`) of the catalogue's map `id`: the base map
+/// a map variant of the lobby's map is stored under.
+pub fn short_name_of(id: u32) -> Option<String> {
+    let cat = PREPARED.get()?.catalogue();
+    Some(cat.all().find(|map| map.id == id)?.short_name())
+}
+
 pub(super) fn opened_pack_name(id: u32) -> Option<String> {
     Some(PREPARED.get()?.catalogue().pack_row(id)?.name.clone())
 }
