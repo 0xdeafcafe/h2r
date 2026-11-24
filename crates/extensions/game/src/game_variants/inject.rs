@@ -9,16 +9,15 @@
 //!    after the retail and community entries ([`crate::community_variants::extend_with`]);
 //! 2. the string lookup serves their names ("<name> U+E007") and
 //!    descriptions from a private id range ([`text`], [`FAMILY`]);
-//! 3. at `GAME_ACTIVATE`, before the game copies the options, a variant
-//!    built from one of our entries gets its bundle's `hx` block written
-//!    into the options' record ([`apply_block`]): the pairs carry the
-//!    settings, the block the extras and the script reference, so the host
-//!    runs the variant's script.
+//! 3. after the goof loader creates the records, [`restore_listed`] puts
+//!    the script index and bundle block on each template. The lobby, pause
+//!    menu and saved copies can then resolve its type. [`apply_block`]
+//!    restores the active selection's options at `GAME_ACTIVATE`.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
-use variants::record::{GameType, GameVariant, MAX_NAME_UNITS, SettingId, all_settings};
+use variants::record::{self, GameType, GameVariant, MAX_NAME_UNITS, SettingId, all_settings};
 
 use super::store::Store;
 use crate::community_variants::{Mem, NewEntry};
@@ -212,13 +211,17 @@ fn description_number(i: usize) -> u32 {
 /// The name as the list shows it: the name, a space and [`ICON`], in at
 /// most the record's 0x1f units.
 pub fn display_name(name: &str) -> String {
-    let room = MAX_NAME_UNITS - 2;
+    suffixed_name(name, "")
+}
+
+fn suffixed_name(name: &str, suffix: &str) -> String {
+    let room = MAX_NAME_UNITS - 2 - suffix.len();
     let mut units: Vec<u16> = name.trim().encode_utf16().take(room).collect();
     // Never end on half a surrogate pair.
     if units.last().is_some_and(|u| (0xd800..0xdc00).contains(u)) {
         units.pop();
     }
-    format!("{} {ICON}", String::from_utf16_lossy(&units))
+    format!("{}{suffix} {ICON}", String::from_utf16_lossy(&units))
 }
 
 /// The record's name field as `0x149f88` writes it: up to 0x1f units, the
@@ -281,7 +284,7 @@ pub fn entries(
             continue;
         };
         let ty = v.game_type();
-        let Some(list_type) = GameType::ALL.iter().position(|t| *t == ty) else {
+        let Some(list_type) = crate::community_variants::goof_type(ty) else {
             lines.push(format!(
                 "game variants: {name} left out: engine {} has no list type",
                 ty.engine()
@@ -297,17 +300,16 @@ pub fn entries(
         };
         let mut display = display_name(name);
         let mut n = 2;
-        while l
-            .iter()
-            .any(|x| x.display == display && x.engine == ty.engine())
-        {
-            display = display_name(&format!("{name} {n}"));
+        while l.iter().any(|x| {
+            x.display == display && GameType::from_engine(x.engine).menu_template() == ty.menu_template()
+        }) {
+            display = suffixed_name(name, &format!(" {n}"));
             n += 1;
         }
         let i = out.len();
         out.push(NewEntry {
             name_id: name_id(i),
-            list_type: list_type as u32,
+            list_type,
             pairs,
             description: description_number(i),
         });
@@ -321,6 +323,32 @@ pub fn entries(
     }
     *listed() = l;
     (out, lines)
+}
+
+/// The retail loader builds the goof entry using a retail template. Put the
+/// store variant's script reference and record index back before the lobby
+/// can copy or edit it. Keep the name and common settings from the loader.
+fn restore<'a>(raw: &mut [u8; record::RECORD_SIZE], entries: &'a [Listed]) -> Option<&'a Listed> {
+    let engine_bytes = &raw[record::ENGINE_AT..record::ENGINE_AT + 4];
+    let engine = i32::from_le_bytes(engine_bytes.try_into().unwrap());
+    let entry = entries.iter().find(|entry| {
+        let ty = GameType::from_engine(entry.engine);
+        entry.name_field[..] == raw[4..record::ENGINE_AT]
+            && (entry.engine == engine || ty.menu_template().engine() == engine)
+    })?;
+    let before = *raw;
+    crate::community_variants::finish_record(raw, GameType::from_engine(entry.engine), &entry.block);
+    (*raw != before).then_some(entry)
+}
+
+pub fn restore_listed(m: &mut dyn engine::GuestMemory, record: u32) -> Result<bool, engine::MemFault> {
+    let mut raw = [0; record::RECORD_SIZE];
+    m.read(record, &mut raw)?;
+    if restore(&mut raw, &listed()).is_none() {
+        return Ok(false);
+    }
+    m.write(record, &raw)?;
+    Ok(true)
 }
 
 /// The options' record (`options + 0x134`): when it is a variant built
@@ -343,25 +371,14 @@ pub fn apply_block<M: Mem>(m: &mut M, options: u32) -> Option<String> {
             "game variants: the sim's script block could not be written".to_string()
         });
     }
-    let mut head = [0u8; 0x48];
-    if !m.rd(record, &mut head) {
+    let mut raw = [0; record::RECORD_SIZE];
+    if !m.rd(record, &mut raw) {
         return None;
     }
-    let engine = i32::from_le_bytes(head[0x44..0x48].try_into().unwrap());
-    let found = listed()
-        .iter()
-        .find(|l| l.engine == engine && l.name_field[..] == head[4..0x44])
-        .cloned()?;
-    let at = record.wrapping_add(variants::ext::AT as u32);
-    let mut now = [0u8; variants::ext::LEN];
-    if m.rd(at, &mut now) && now == found.block {
-        return None;
-    }
-    if !m.wr(at, &found.block) {
-        return Some(format!(
-            "game variants: {}: its block could not be written",
-            found.display
-        ));
+    let entries = listed();
+    let found = restore(&mut raw, &entries)?;
+    if !m.wr(record, &raw) {
+        return Some(format!("game variants: {}: its record could not be written", found.display));
     }
     let e = variants::ext::Ext::in_effect(&found.block);
     Some(format!(

@@ -37,7 +37,7 @@ pub fn from_live(v: &LiveVariant, ir: Option<&[u8]>) -> Result<Bundle, String> {
     let record = unhex(v.record_hex.trim())
         .and_then(|r| variants::GameVariant::from_bytes(&r).ok())
         .ok_or("its record is not 0x130 bytes of hex")?;
-    let b = Bundle {
+    let mut b = Bundle {
         format: FORMAT.into(),
         version: VERSION,
         name: v.name.clone(),
@@ -51,7 +51,9 @@ pub fn from_live(v: &LiveVariant, ir: Option<&[u8]>) -> Result<Bundle, String> {
         record_hex: hex(record.bytes()),
         script,
     };
-    b.integrity().map_err(|e| e.to_string())?;
+    if let Some((_, ir)) = b.integrity().map_err(|e| e.to_string())?.script {
+        b.game_type = ir.header.game_type.row().label.into();
+    }
     Ok(b)
 }
 
