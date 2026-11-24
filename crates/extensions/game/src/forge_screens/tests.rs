@@ -99,6 +99,14 @@ fn page_tables() {
             ],
             after: "FORGE OPTIONS | focus 1 Controls",
         },
+        // A tick row acts and a Down moves on; Done is the last row.
+        Case {
+            kind: Kind::Games,
+            from: "open",
+            inputs: &[A, Down, A, Up],
+            effects: vec![Action, Focus(1), Action, Focus(0)],
+            after: "GAME TYPES | focus 0 All game types = Off",
+        },
         // The Controls page only lists: A does nothing.
         Case {
             kind: Kind::Controls,

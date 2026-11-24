@@ -34,6 +34,8 @@ pub enum Kind {
     Options,
     /// Every control, from the bindings table.
     Controls,
+    /// The game types of an item spawner, ticked a row each.
+    Games,
 }
 
 /// How a screen is built, each on a retail screen tag the game maps have.
@@ -52,7 +54,7 @@ pub enum Look {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Objects,
         Kind::Properties,
         Kind::Coordinates,
@@ -62,6 +64,7 @@ impl Kind {
         Kind::Question,
         Kind::Options,
         Kind::Controls,
+        Kind::Games,
     ];
 
     /// The name `Open` rows, `h2 ui preview` and the loader know it by.
@@ -76,6 +79,7 @@ impl Kind {
             Kind::Question => "forge.question",
             Kind::Options => "forge.options",
             Kind::Controls => "forge.controls",
+            Kind::Games => "forge.games",
         }
     }
 
@@ -91,6 +95,7 @@ impl Kind {
             Kind::Question => "forge-question",
             Kind::Options => "forge-options",
             Kind::Controls => "forge-controls",
+            Kind::Games => "forge-games",
         }
     }
 
@@ -105,12 +110,13 @@ impl Kind {
             Kind::Question => const { ids::family("forge question") },
             Kind::Options => const { ids::family("forge options") },
             Kind::Controls => const { ids::family("forge controls") },
+            Kind::Games => const { ids::family("forge games") },
         }
     }
 
     pub const fn look(self) -> Look {
         match self {
-            Kind::Objects | Kind::Tools => Look::Picker,
+            Kind::Objects | Kind::Tools | Kind::Games => Look::Picker,
             Kind::Properties
             | Kind::Coordinates
             | Kind::Settings
@@ -268,6 +274,9 @@ pub enum Choice {
     Save,
     SaveAs(String),
     Load(String),
+    /// The Game types dialog's Done: give the aimed or held item spawner
+    /// this set, as one step.
+    Games(forge_doc::games::GameSet),
     /// Why a row did nothing, for the HUD's notice.
     Notice(String),
 }
@@ -287,6 +296,13 @@ pub enum Act {
     Info,
     /// Close the screen, choosing nothing (Done).
     Close,
+    /// Open this sheet above the screen; B comes back (a row whose
+    /// dialog depends on the thing shown).
+    Dialog(Box<Sheet>),
+    /// The Game types dialog's tick rows.
+    Tick(super::games::Tick),
+    /// The Game types dialog's Done: [`super::games::done`].
+    Done,
 }
 
 /// A row's value picker: its values, the held one, what it says, and the

@@ -35,6 +35,8 @@ enum After {
     Shared(Vec<forge::net::Stamped>),
     Load(String),
     Proposal(mpsc::Sender<Result<Entry, String>>),
+    /// An edit that leaves the tool's state as it is.
+    Edited,
 }
 
 struct Pending {
@@ -600,6 +602,7 @@ impl Editor {
                 match after {
                     After::Shared(items) => self.shared_applied(&items),
                     After::Tool(command) => self.tool.applied(&command),
+                    After::Edited => {}
                     After::Load(name) => {
                         self.notice = Some((format!("Loaded {name}."), tick));
                         self.filename = Some(name);
@@ -1157,6 +1160,14 @@ impl Editor {
                         after: After::Load(name),
                     }))
                 });
+            }
+            Choice::Games(set) => {
+                let id = self
+                    .tool
+                    .held_thing
+                    .or(self.tool.aimed_thing)
+                    .ok_or("Aim at an item entry.")?;
+                return self.stage(After::Edited, move |s, w| s.set_games(w, tick, id, set));
             }
             Choice::Notice(text) => self.notice = Some((text, tick)),
         }

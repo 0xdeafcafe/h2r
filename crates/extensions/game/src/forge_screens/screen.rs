@@ -399,6 +399,27 @@ impl Rows for ForgeScreen {
                 Chosen::Act
             }
             Act::Pick(p) => self.press_pick(i, &r.label, p),
+            Act::Tick(t) => {
+                let mut sheet = lock(&self.sheet);
+                super::games::tick(&mut sheet, *t);
+                let now = sheet.rows.get(i).and_then(|r| r.value.clone());
+                Chosen::Stepped(format!("{}: {}", r.label, now.unwrap_or_default()))
+            }
+            Act::Done => {
+                let verdict = super::games::done(&mut lock(&self.sheet));
+                match verdict {
+                    Ok(set) => {
+                        lock(&self.outbox).push_back(Choice::Games(set));
+                        self.closing.store(true, Ordering::SeqCst);
+                        Chosen::Act
+                    }
+                    Err(why) => Chosen::Stepped(format!("{}: {why}", self.kind.screen())),
+                }
+            }
+            Act::Dialog(sheet) => match super::push((**sheet).clone()) {
+                Ok(chosen) => chosen,
+                Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", sheet.kind.screen())),
+            },
             Act::Type(spec) => super::ask_keyboard(spec.clone()),
             // Above this screen on its window and slot, so B comes back.
             Act::Open(k) if *k == Kind::Coordinates => {
@@ -484,8 +505,12 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
         }
         Act::Type(_) => RowSpec::action(&r.label).press(Press::Act),
         Act::Open(k) => RowSpec::action(&r.label).press(Press::Open(k.screen().into())),
+        Act::Dialog(sheet) => {
+            RowSpec::action(&r.label).press(Press::Open(sheet.kind.screen().into()))
+        }
+        Act::Tick(_) => RowSpec::value(&r.label, &[value.as_str()], 0).press(Press::Act),
         Act::Info => RowSpec::info(&r.label, &value),
-        Act::Choose(_) | Act::Close => RowSpec::action(&r.label).press(Press::Act),
+        Act::Choose(_) | Act::Close | Act::Done => RowSpec::action(&r.label).press(Press::Act),
     };
     match (&r.description, described) {
         (Some(d), true) => row.describe(d),

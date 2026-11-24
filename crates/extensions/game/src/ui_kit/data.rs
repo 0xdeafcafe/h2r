@@ -283,8 +283,8 @@ pub struct PropDoc {
     /// The kinds of thing it is for ([`PROP_KINDS`]); none is any.
     #[serde(default)]
     pub on: Vec<String>,
-    /// The property: a name in `forge::props`, or `coordinates` or
-    /// `heading`, which are not fields.
+    /// The property: a name in `forge::props`, or `coordinates`,
+    /// `heading` or `games`, which are not fields.
     pub prop: String,
     /// What A does: `picker`, `keyboard`, or the name of a Forge screen.
     pub open: String,
@@ -295,7 +295,7 @@ pub struct PropDoc {
 /// The kinds a [`PropDoc`] may be `on`.
 pub const PROP_KINDS: [&str; 6] = ["any", "object", "spawner", "starting-point", "goal", "teleporter"];
 /// The properties that are not fields of a thing.
-pub const PROP_VIRTUAL: [&str; 2] = ["coordinates", "heading"];
+pub const PROP_VIRTUAL: [&str; 3] = ["coordinates", "heading", "games"];
 
 /// A settings dialog's own: which host it sits on, its static header
 /// (icon, name, what the window is for), the row elsewhere that opens it

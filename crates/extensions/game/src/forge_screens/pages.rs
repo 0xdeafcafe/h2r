@@ -135,6 +135,12 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             let last = at(&open, open.rows.len() - 1);
             vec![("open", open), ("last", last)]
         }
+        Kind::Games => {
+            use forge_doc::games::GameSet;
+            let open = super::games::sheet(GameSet::of(&[2, 3]));
+            let done = at(&super::games::sheet(GameSet::ALL), 8);
+            vec![("open", open), ("all", done)]
+        }
     }
 }
 

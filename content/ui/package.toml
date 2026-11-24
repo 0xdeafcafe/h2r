@@ -42,6 +42,7 @@ inputs = [
     "screens/firefight.yaml",
     "screens/forge.controls.yaml",
     "screens/forge.hud.yaml",
+    "screens/forge.games.yaml",
     "screens/forge.link.yaml",
     "screens/forge.menu.yaml",
     "screens/forge.objects.yaml",
