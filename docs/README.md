@@ -99,6 +99,7 @@ are under [Reviews](#reviews).
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
 - [native-decorators.md](graphics/native-decorators.md): native decorators: the BSP's model decorators typed into the scene and drawn instanced
 - [native-transparents.md](graphics/native-transparents.md): native renderer stage 3: transparents
+- [Campaign frame time and retained render state](graphics/notes/2026-11-24-campaign-frame-time.md): play-run observations and source audit
 - [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
 - [native-light-gather.md](graphics/native-light-gather.md): the light gather, the first-person lights, the object shadows and the light passes as Rust bodies (design, retire-d3d R3): the model, the guest state per step, the slices and their checks
 - [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
