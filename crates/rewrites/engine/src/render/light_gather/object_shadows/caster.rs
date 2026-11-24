@@ -12,6 +12,8 @@ use crate::memory::{GuestMemory, MemFault};
 
 /// Locals and the four saved registers below the entry ESP.
 pub const FRAME: u32 = 0xb50;
+/// Return from the reset, cluster, placement and object record wrapper.
+pub const RECORDS_RETURN: u32 = 0x0003_288e;
 /// The return site of the no-argument object filter wrapper.
 pub const FILTER_RETURN: u32 = 0x0003_2966;
 
@@ -506,7 +508,7 @@ pub async fn run(cx: &Cx, p: Plan) -> Result<Ret, EntryError> {
     let record_mode = cx.read(|m| m.u32(s + 0x28))?;
     p.call(
         cx,
-        0x0003_288e,
+        RECORDS_RETURN,
         gather(0x0002_cbc0).eax(record_mode).args([record_mode]),
     )
     .await?;
