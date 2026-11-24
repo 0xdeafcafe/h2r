@@ -34,6 +34,57 @@ use crate::objects::{ItemDraw, ItemKey, ObjectFrame};
 use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, LayerItem, LayerOwner, LayerPass, Lighting, PartDraw, PartFlags, Subparts};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
+/// Shader state for the object-layer prefix. The hardware row is the drained device's;
+/// material bank 1 register 0 is the source of a subsequent dirty upload
+/// (shader context +0x1630, dirty mask +0x1734).
+pub struct ObjectLayerEntry {
+    pub states: EntryStates,
+    pub c18: MaterialConstant18,
+}
+
+#[derive(Clone, Copy)]
+pub struct MaterialConstant18 {
+    device: [u32; 4],
+    bank: Option<[u32; 4]>,
+    dirty: Option<bool>,
+}
+
+impl MaterialConstant18 {
+    pub fn new(device: Row, bank: Option<[u32; 4]>, dirty: Option<bool>) -> Self {
+        Self { device: device.map(f32::to_bits), bank, dirty }
+    }
+
+    /// A dirty upload differing from hardware needs the material binder
+    /// even when the selected implementation has no binding for the row.
+    fn unchanged_at_upload(self) -> bool {
+        self.dirty == Some(false) || self.bank == Some(self.device)
+    }
+
+    fn apply(self, compiled: &ObjectPass, vertex: &mut VertexUniforms) -> Result<(), String> {
+        if !self.unchanged_at_upload() {
+            return Err("a pending c[18] upload requires the material binder".into());
+        }
+        if compiled.inherits_c18 {
+            vertex.constants[18] = self.device.map(f32::from_bits);
+        } else if crate::layer_pass::writes_material_c18(&compiled.implementation) {
+            // An instance or engine binding can overwrite only some cache
+            // lanes, yet 0x18e80 uploads the entire row. Both the cache and
+            // hardware must already agree to skip it state-neutrally.
+            if compiled.implementation.dimension_bindings.iter().any(|c| {
+                c.bank == 1 && c.reg == 0 && (1..=4).contains(&c.stage)
+                    && (compiled.texaccum[usize::from(c.stage - 1)] || compiled.view[usize::from(c.stage - 1)])
+            }) {
+                return Err("a c[18] write needs the bound target's dimensions".into());
+            }
+            let planned = vertex.constants[18].map(f32::to_bits);
+            if self.bank != Some(planned) || self.device != planned {
+                return Err("a c[18] write requires the material binder".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One section's vertices through one declaration: per vertex, per
 /// register in `registers` order, its guest bytes in a slot
 /// ([`crate::object_streams::gather`]) of the guest format in `formats`,
@@ -1220,7 +1271,7 @@ impl LitObjects {
     /// a part or implementation that is not native, or an input or state
     /// that does not resolve.
     pub fn plan_layer_item(
-        &self, index: u32, layer: u8, scene: &FrameScene, pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
+        &self, index: u32, layer: u8, scene: &FrameScene, pass: &LayerPass, item: &LayerItem, entry: &ObjectLayerEntry,
     ) -> Result<Vec<PlannedDraw>, String> {
         let LayerOwner::Object(instance) = item.owner else { return Err("not an object's item".into()) };
         if let Some(why) = item.refusal {
@@ -1235,7 +1286,7 @@ impl LitObjects {
                 item.key.shader, item.key.section, item.key.part
             ));
         }
-        plan_layer_part(&m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, entry)
+        plan_layer_part_at_entry(&m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, &entry.states, Some(entry.c18))
     }
 
     /// Gathers a layer-5 PRT draw's stream (planned with the item's
@@ -1640,6 +1691,16 @@ pub fn plan_layer_part<'a>(
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
 ) -> Result<Vec<PlannedDraw>, String> {
+    plan_layer_part_at_entry(layers, at, pass_of, instance, layer, rows, pass, item, entry, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_layer_part_at_entry<'a>(
+    layers: &[LitLayerPart], at: Option<usize>,
+    pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
+    c18: Option<MaterialConstant18>,
+) -> Result<Vec<PlannedDraw>, String> {
     if let Some(why) = item.refusal {
         return Err(why.name().into());
     }
@@ -1690,6 +1751,11 @@ pub fn plan_layer_part<'a>(
         let compiled = pass_of(program).ok_or("its program is missing")?;
         let (vertex_base, pixel_base) = animated_blocks(compiled, pass.inputs.time)?;
         let mut vertex = object_vertex_uniforms(&vertex_base, &compiled.implementation, &inputs, rows, p.decompression)?;
+        if matches!(layer, 1 | 17) && let Some(c18) = c18 {
+            c18.apply(compiled, &mut vertex)?;
+        } else if compiled.inherits_c18 {
+            return Err("the inherited c[18] needs the draw's material state".into());
+        }
         if let Some(prt) = &item.prt {
             let input = compiled.prt.as_ref().ok_or("its PRT variant has no PRT stream")?;
             let first = usize::from(frame_scene::PRT_FIRST_CONSTANT);
@@ -3553,6 +3619,72 @@ mod tests {
         // The program reads c[70]: two constants do not reach it.
         let short = LayerItem { prt: Some(PrtStream { constants: vec![[0.0; 4]; 2], ..stream }), ..item };
         assert!(plan(&short).unwrap_err().contains("c[70]"));
+    }
+
+    #[test]
+    fn layers_1_and_17_read_the_material_register_left_on_the_device() {
+        use crate::object_program::tests::rigid_program;
+        use frame_scene::{InstanceKey, LayerInputs};
+        let mut imp = additive(0);
+        imp.vertex_constants.retain(|r| r.index != 18);
+        imp.vector_bindings.clear();
+        imp.scalar_bindings.clear();
+        imp.input_reads = Default::default();
+        let compiled = object_layer_pass(map::TagId(1), &imp, &[], &rigid_program(),
+            crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16]).unwrap();
+        assert!(compiled.inherits_c18);
+        let instance = InstanceKey(3);
+        let item = LayerItem {
+            slot: 0, key: key(4, 0, 0), owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
+            lighting: None, flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
+        };
+        let mut states = entry();
+        states.0.retain(|(t, _)| *t != RenderStateType::BlendOp);
+        states.0.push((RenderStateType::BlendOp, 0x8006));
+        let device: Row = [-0.0, -4.0, 2.5, 0.75];
+        let stale_bank = Some([0; 4]);
+        for layer in [1, 17] {
+            let parts = [LitLayerPart {
+                layer, section: 4, part: 0, shader_tag: item.key.shader, shader: Default::default(),
+                decompression: [[0.0; 4]; 3], indices: 0..3, subparts: None, listed: None,
+                passes: vec![LitLayerPass { count: 1, implementations: [Some((0, 0)), None, None, None, None], ..Default::default() }],
+            }];
+            let pass = LayerPass {
+                layer, stencil_off: false, texaccum: false, items: 0..1, remainder: 0,
+                inputs: LayerInputs { defaults: Some(Defaults::default()), ..Default::default() },
+            };
+            let plan = |dirty| plan_layer_part_at_entry(&parts, Some(0), &|_| Some(&compiled), instance,
+                layer, &[[0.0; 4]; 3], &pass, &item, &states, Some(MaterialConstant18::new(device, stale_bank, dirty)));
+            assert_eq!(plan(Some(false)).unwrap()[0].vertex.constants[18].map(f32::to_bits), device.map(f32::to_bits));
+            assert!(plan(Some(true)).unwrap_err().contains("pending c[18] upload"));
+            assert!(plan(None).is_err());
+        }
+    }
+
+    #[test]
+    fn a_bound_material_row_can_only_be_skipped_if_hardware_and_bank_already_match() {
+        use crate::object_program::tests::rigid_program;
+        let mut writer = object_layer_pass(map::TagId(1), &additive(0), &[], &rigid_program(),
+            crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16]).unwrap();
+        assert!(!writer.inherits_c18);
+        let mut vertex = writer.program.vertex.clone();
+        vertex.constants[18] = [-0.0, 0.0, 3.0, 9.0];
+        let hardware = vertex.constants[18];
+        let bank = hardware.map(f32::to_bits);
+        assert!(MaterialConstant18::new(hardware, Some(bank), Some(true)).apply(&writer, &mut vertex).is_ok());
+        let mut other = bank;
+        other[0] = 0;
+        assert!(MaterialConstant18::new(hardware, Some(other), Some(false)).apply(&writer, &mut vertex).is_err());
+        assert!(MaterialConstant18::new(other.map(f32::from_bits), Some(bank), Some(false)).apply(&writer, &mut vertex).is_err());
+
+        writer.implementation.dimension_bindings.push(tags::material::EngineVertexConstant {
+            bank: 1, reg: 0, mode: 9, stage: 2, source: 0,
+        });
+        writer.texaccum[1] = true;
+        let held = MaterialConstant18::new(hardware, Some(bank), Some(false));
+        assert!(held.apply(&writer, &mut vertex).unwrap_err().contains("bound target"));
+        writer.texaccum[1] = false;
+        assert!(held.apply(&writer, &mut vertex).is_ok());
     }
 
     #[test]

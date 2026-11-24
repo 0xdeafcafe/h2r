@@ -158,6 +158,8 @@ pub fn sets_cull(imp: &ResolvedImplementation) -> bool {
 #[derive(Clone, Debug)]
 pub struct ObjectPass {
     pub program: MaterialProgram,
+    /// The material leaves hardware c[18] untouched and the program reads it.
+    pub inherits_c18: bool,
     /// The object program supplies D3D's default final combiner using
     /// the fog and specular uniforms.
     pub default_final: bool,
@@ -271,7 +273,7 @@ fn object_pass_with(
         }
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
-    let mut program = compile_object_stages(
+    let (mut program, inherits_c18) = compile_with_layer_constants(
         &look,
         EngineBound {
             normalization,
@@ -282,6 +284,7 @@ fn object_pass_with(
         state.alpha_test,
         provided,
         fetch,
+        blends,
     )?;
     let default_final = !program.def.has_final_combiner();
     program.state = Some(state);
@@ -303,6 +306,7 @@ fn object_pass_with(
     };
     Ok(ObjectPass {
         program,
+        inherits_c18,
         default_final,
         blend_color: None,
         implementation: baseline.clone(),
@@ -496,6 +500,20 @@ pub fn compile_object_stages(
     provided_inputs: u16,
     input_fetch: [shaders::vsh::InputFetch; 16],
 ) -> Result<MaterialProgram, String> {
+    compile_with_layer_constants(look, engine, microcode, alpha_test, provided_inputs, input_fetch, false)
+        .map(|(program, _)| program)
+}
+
+fn compile_with_layer_constants(
+    look: &PassLook,
+    engine: EngineBound,
+    microcode: &[u8],
+    alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    provided_inputs: u16,
+    input_fetch: [shaders::vsh::InputFetch; 16],
+    inherits_material_constants: bool,
+) -> Result<(MaterialProgram, bool), String> {
+    let mut inherits_c18 = false;
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     for i in &program.instructions {
         for s in i.sources() {
@@ -507,6 +525,10 @@ pub fn compile_object_stages(
                     ));
                 }
                 if !relative && !object_sets(look, c) {
+                    if c == 18 && inherits_material_constants {
+                        inherits_c18 = true;
+                        continue;
+                    }
                     return Err(format!(
                         "vertex program reads c[{c}], which the object pass does not set"
                     ));
@@ -545,7 +567,7 @@ pub fn compile_object_stages(
     let mut vertex = t.vertex;
     vertex.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION]
         .copy_from_slice(&decompression_rows(&Compression::default()));
-    Ok(MaterialProgram {
+    Ok((MaterialProgram {
         wgsl: t.wgsl,
         stages: look.textures,
         samplers: t.samplers,
@@ -560,7 +582,7 @@ pub fn compile_object_stages(
         inherits_cull: false,
         rigid: None,
         animation: None,
-    })
+    }, inherits_c18))
 }
 
 /// Puts the texture accumulation target's size (`guest_size`, what

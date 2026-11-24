@@ -861,9 +861,22 @@ pub(crate) fn layer_models<B: d3d::backend::Backend>(
 
 /// The render states an object's draw inherits at a layer call
 /// ([`EntryStates`]), and whether the device's draws are W-buffered.
-pub(crate) fn entry_states<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> (EntryStates, bool) {
+pub(crate) fn entry_states<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory,
+) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
+    use native_render::object_program_gpu::{MaterialConstant18, ObjectLayerEntry};
+    use engine::render_loop::layer::SETUP_CONTEXT;
     let entry = LayerEntry::read(device, mem);
-    (entry.states, entry.w_buffered)
+    let bank = (|| {
+        let mut row = [0; 4];
+        for (lane, word) in row.iter_mut().enumerate() {
+            *word = mem.u32(SETUP_CONTEXT + 0x1630 + lane as u32 * 4).ok()?;
+        }
+        Some(row)
+    })();
+    let dirty = mem.u32(SETUP_CONTEXT + 0x1734).ok().map(|mask| mask & 1 != 0);
+    let c18 = MaterialConstant18::new(device.constant(18), bank, dirty);
+    (ObjectLayerEntry { states: entry.states, c18 }, entry.w_buffered)
 }
 
 /// The device's specular bit, which a draw on the implicit final combiner
