@@ -94,6 +94,16 @@ fn document_frame(clip: &AnimDoc, frame: f32) -> f32 {
 }
 
 impl App {
+    /// A new session document, its steps numbered on the tag document's
+    /// clock (`TagDoc::next_step`): the steps of a graph's tab are its
+    /// tag's writes and its documents' edits, undone in the order made
+    /// (docs/editor/studio-flow.md, "Shared patterns").
+    fn anim_add(&mut self, doc: AnimationDocument) -> u64 {
+        let mut doc = doc;
+        doc.clip.share_steps(self.tags.step_clock());
+        self.anim.insert(doc)
+    }
+
     fn anim_document(&self, doc: u64) -> Result<&AnimationDocument, AnimError> {
         self.anim
             .docs
@@ -171,7 +181,7 @@ impl App {
             summary.name = format!("animation {index}");
         }
         let clip = document_from_read(read, summary.name.clone())?;
-        Ok(self.anim.insert(AnimationDocument {
+        Ok(self.anim_add(AnimationDocument {
             graph,
             summary,
             retail_index: Some(index),
@@ -186,7 +196,7 @@ impl App {
         let clip =
             AnimDoc::new(name.to_owned(), frames, loaded.skeleton()).map_err(AnimError::Refused)?;
         let graph = loaded.key.clone();
-        Ok(self.anim.insert(AnimationDocument {
+        Ok(self.anim_add(AnimationDocument {
             graph,
             summary: AnimSummary {
                 index: 0,
@@ -212,7 +222,7 @@ impl App {
         let read = self.anim_read(id, animation, Tolerance::DEFAULT)?;
         let clip = document_from_read(&read, name.to_owned())?;
         let graph = self.anim_graph_key(id);
-        Ok(self.anim.insert(AnimationDocument {
+        Ok(self.anim_add(AnimationDocument {
             graph,
             summary: authored_summary(read.animation, &clip),
             retail_index: None,
@@ -233,7 +243,65 @@ impl App {
             retail_index: None,
             clip,
         };
-        Ok(self.anim.insert(doc))
+        Ok(self.anim_add(doc))
+    }
+
+    /// The number of the newest step of `tag`'s documents not undone:
+    /// the documents are those of the map the Tags tool shows, and the
+    /// steps of a graph's tab are undone in the order of these numbers
+    /// (`App::anim_add`).
+    pub(crate) fn anim_step_serial(&self, tag: TagId) -> Option<u64> {
+        let graph = self.anim_graph_key(tag);
+        self.anim
+            .docs
+            .iter()
+            .filter(|doc| doc.graph == graph)
+            .filter_map(|doc| doc.clip.step_serial())
+            .max()
+    }
+
+    /// The number of the step a redo of `tag`'s documents takes next: the
+    /// oldest undone step of a document (a document undoes newest first)
+    /// that is newer than `floor`, the tab's newest step not undone. An
+    /// undone step at or below it was made wrong by a later step.
+    pub(crate) fn anim_redo_serial(&self, tag: TagId, floor: u64) -> Option<u64> {
+        let graph = self.anim_graph_key(tag);
+        self.anim
+            .docs
+            .iter()
+            .filter(|doc| doc.graph == graph)
+            .filter_map(|doc| doc.clip.redo_serial())
+            .filter(|serial| *serial > floor)
+            .min()
+    }
+
+    /// Undo the newest step of `tag`'s documents; whether one moved.
+    pub(crate) fn anim_undo_in(&mut self, tag: TagId) -> bool {
+        let graph = self.anim_graph_key(tag);
+        self.anim
+            .docs
+            .iter_mut()
+            .filter(|doc| doc.graph == graph)
+            .filter_map(|doc| doc.clip.step_serial().map(|serial| (serial, doc)))
+            .max_by_key(|(serial, _)| *serial)
+            .is_some_and(|(_, doc)| doc.clip.undo())
+    }
+
+    /// Redo the step [`Self::anim_redo_serial`] names; whether one moved.
+    pub(crate) fn anim_redo_in(&mut self, tag: TagId, floor: u64) -> bool {
+        let graph = self.anim_graph_key(tag);
+        self.anim
+            .docs
+            .iter_mut()
+            .filter(|doc| doc.graph == graph)
+            .filter_map(|doc| {
+                doc.clip
+                    .redo_serial()
+                    .filter(|serial| *serial > floor)
+                    .map(|serial| (serial, doc))
+            })
+            .min_by_key(|(serial, _)| *serial)
+            .is_some_and(|(_, doc)| doc.clip.redo())
     }
 
     /// Every session document made from scratch, any map: its id, name,

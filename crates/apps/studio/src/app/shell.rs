@@ -10,12 +10,16 @@
 //! open one a tab and drops the tab of a closed one. A tag tab is opened by
 //! [`Action::OpenDoc`]; it belongs to the map it was opened on and closes
 //! with it. Its undo stack is its tag's steps of the map's tag document
-//! ([`super::TagDoc::undo_tag`]). Closing a tag tab keeps its edits: they
-//! are the map's, saved or dropped with it.
+//! ([`super::TagDoc::undo_tag`]) and the steps of the editors that work on
+//! the tag outside its bytes ([`Stack`]), taken in the order they were
+//! made. Closing a tag tab keeps its edits: they are the map's, saved or
+//! dropped with it.
 //!
 //! The window's tab strip and `shell.*` both run [`Action::OpenDoc`],
 //! [`Action::FocusDoc`], [`Action::CloseDoc`], [`Action::UndoDoc`] and
-//! [`Action::RedoDoc`], so they leave the same state.
+//! [`Action::RedoDoc`], so they leave the same state. The editors' own
+//! Undo and Redo buttons, and the Cmd+Z of the window, run the same two
+//! (docs/editor/studio-flow.md, "Shared patterns").
 //!
 //! [`Action::OpenDoc`]: super::Action::OpenDoc
 //! [`Action::FocusDoc`]: super::Action::FocusDoc
@@ -29,6 +33,49 @@ use serde_json::{Value, json};
 use super::kinds::{self, Editor};
 use super::textures::BitmapAction;
 use super::{Action, App, Pick, TagAction, ToolKind};
+
+/// The stacks a tag document's steps are kept in: the map's tag document
+/// (writes of the tag's bytes), and the editor of the tag's kind whose
+/// edits are not writes of them, if its kind has one. Every stack numbers
+/// its steps on the tag document's counter ([`super::TagDoc::next_step`]),
+/// so a document takes them newest first wherever they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stack {
+    /// The tag's own fields: [`super::TagDoc`].
+    Tags,
+    /// A sound's mouth curves ([`super::sound_mouth`]).
+    Mouth,
+    /// A bitmap's pixels and shape ([`super::textures`]).
+    Textures,
+    /// An animation graph's documents ([`super::anim`]).
+    Anim,
+}
+
+impl Stack {
+    /// What a step of this stack changed, for the log.
+    fn what(self) -> &'static str {
+        match self {
+            Stack::Tags => "the tag",
+            Stack::Mouth => "the mouth curve",
+            Stack::Textures => "the bitmap",
+            Stack::Anim => "the animation",
+        }
+    }
+
+    /// Take its step of tag `id`'s document in `app`: the newest not undone
+    /// (`undo`), or the oldest undone that is newer than `floor`. Whether
+    /// one moved. The tag document's steps are taken by `App::doc_step`,
+    /// which names the field the step wrote.
+    fn take_in(self, app: &mut App, id: TagId, undo: bool, floor: u64) -> bool {
+        match self {
+            Stack::Mouth => app.sound_mouth_step_in(id, undo),
+            Stack::Textures => app.textures_undo_in(id, undo),
+            Stack::Anim if undo => app.anim_undo_in(id),
+            Stack::Anim => app.anim_redo_in(id, floor),
+            Stack::Tags => unreachable!("the tag document's steps are taken by App::doc_step"),
+        }
+    }
+}
 
 /// What a tab holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -328,10 +375,26 @@ impl App {
         }
     }
 
-    /// The tab's own undo stack can undo, and redo.
+    /// The tab's own undo stack can undo, and redo. A tag's is every step
+    /// of its document (`Stack`): it can undo while one is not undone,
+    /// and redo while an undone step is newer than every step that is (a
+    /// step made after an undo leaves the undone ones wrong). The map's
+    /// scripts are the map document's while the Scripts surface shows them,
+    /// and a target in edit mode takes the map's undo
+    /// (docs/editor/modeling.md).
     pub fn doc_can(&self, doc: Doc) -> (bool, bool) {
         match doc {
-            Doc::Tag(id) => (self.tags.can_undo_tag(id), self.tags.can_redo_tag(id)),
+            Doc::Tag(id) => {
+                let top = self.doc_top(id);
+                let floor = top.map_or(0, |(_, serial)| serial);
+                (top.is_some(), self.doc_redo(id, floor).is_some())
+            }
+            Doc::Map if self.tool == ToolKind::Scripts => {
+                self.scripts.edit.as_ref().map_or((false, false), |d| {
+                    let (undo, redo) = d.depth();
+                    (undo > 0, redo > 0)
+                })
+            }
             Doc::Map if self.modeling.session.active.is_some() => {
                 let g = &self.modeling.session;
                 (g.can_undo(), g.can_redo())
@@ -535,6 +598,90 @@ impl App {
         }
     }
 
+    /// The stacks that hold the steps of tag `id`'s document
+    /// ([`Stack`]): the tag document's, then its kind's editor's.
+    fn doc_stacks(&self, id: TagId) -> impl Iterator<Item = Stack> {
+        let editor = match self.shown_tags().tag(id).map(|t| &t.group.0) {
+            Some(b"snd!") => Some(Stack::Mouth),
+            Some(b"bitm") => Some(Stack::Textures),
+            Some(b"jmad") => Some(Stack::Anim),
+            _ => None,
+        };
+        [Some(Stack::Tags), editor].into_iter().flatten()
+    }
+
+    /// The stack holding the newest step of tag `id`'s document that is not
+    /// undone, with the step's number.
+    fn doc_top(&self, id: TagId) -> Option<(Stack, u64)> {
+        self.doc_stacks(id)
+            .filter_map(|stack| self.stack_top(stack, id).map(|serial| (stack, serial)))
+            .max_by_key(|(_, serial)| *serial)
+    }
+
+    /// The stack holding the step a redo of tag `id`'s document takes: the
+    /// oldest undone one that is newer than `floor`, the newest step not
+    /// undone. An undone step at or below it was made wrong by that step.
+    fn doc_redo(&self, id: TagId, floor: u64) -> Option<Stack> {
+        self.doc_stacks(id)
+            .filter_map(|stack| {
+                self.stack_redo(stack, id, floor)
+                    .filter(|serial| *serial > floor)
+                    .map(|serial| (serial, stack))
+            })
+            .min_by_key(|(serial, _)| *serial)
+            .map(|(_, stack)| stack)
+    }
+
+    /// The number of the newest step of tag `id` not undone in `stack`.
+    fn stack_top(&self, stack: Stack, id: TagId) -> Option<u64> {
+        match stack {
+            Stack::Tags => self.tags.step_serial(id),
+            Stack::Mouth => self.sound_mouth_step(id),
+            Stack::Textures => self.textures.step_serial(id),
+            Stack::Anim => self.anim_step_serial(id),
+        }
+    }
+
+    /// The number of the step of tag `id` a redo of `stack` takes next.
+    fn stack_redo(&self, stack: Stack, id: TagId, floor: u64) -> Option<u64> {
+        match stack {
+            Stack::Tags => self.tags.redo_serial(id),
+            Stack::Mouth => self.sound_mouth_redo_step(id),
+            Stack::Textures => self.textures.redo_serial(id),
+            Stack::Anim => self.anim_redo_serial(id, floor),
+        }
+    }
+
+    /// A step of tag `id`'s document: the newest not undone (`undo`), or
+    /// the oldest undone that is still right. The stack it came from and
+    /// what it changed; `Ok(None)` with no step to take, `Err` when the tag
+    /// document refuses.
+    fn doc_step(&mut self, id: TagId, undo: bool) -> Result<Option<(Stack, String)>, String> {
+        let top = self.doc_top(id);
+        let floor = top.map_or(0, |(_, serial)| serial);
+        let stack = if undo {
+            top.map(|(stack, _)| stack)
+        } else {
+            self.doc_redo(id, floor)
+        };
+        let from = match stack {
+            // The tag document names the field its step wrote.
+            Some(Stack::Tags) => {
+                let step = if undo {
+                    self.tags.undo_tag(id)
+                } else {
+                    self.tags.redo_tag(id)
+                };
+                self.push_tag_patches();
+                return Ok(step?.map(|label| (Stack::Tags, label)));
+            }
+            Some(from) if from.take_in(self, id, undo, floor) => from,
+            // Chosen from its stack, the step was gone or could not be taken.
+            _ => return Ok(None),
+        };
+        Ok(Some((from, from.what().to_owned())))
+    }
+
     /// [`super::Action::UndoDoc`] and [`super::Action::RedoDoc`]: a step of
     /// the tab's own undo stack.
     pub(super) fn undo_redo_doc(&mut self, doc: Doc, undo: bool) {
@@ -542,19 +689,20 @@ impl App {
             return self.info("the script editor keeps its own undo: use it in the text");
         }
         let Doc::Tag(id) = doc else {
-            return self.undo_redo(self.doc_tool(doc), undo);
+            // The map's scripts are the map document's while the Scripts
+            // surface shows them: a compile is its step.
+            let tool = if doc == Doc::Map && self.tool == ToolKind::Scripts {
+                ToolKind::Scripts
+            } else {
+                self.doc_tool(doc)
+            };
+            return self.undo_redo(tool, undo);
         };
         self.sync_tags();
-        let r = if undo {
-            self.tags.undo_tag(id)
-        } else {
-            self.tags.redo_tag(id)
-        };
-        self.push_tag_patches();
-        match r {
-            Ok(Some(label)) => {
+        match self.doc_step(id, undo) {
+            Ok(Some((_, what))) => {
                 let verb = if undo { "undid" } else { "redid" };
-                self.info(format!("{verb} {label} in {}", self.doc_title(doc)));
+                self.info(format!("{verb} {what} in {}", self.doc_title(doc)));
             }
             Ok(None) => self.info(if undo {
                 "nothing to undo"
@@ -565,20 +713,22 @@ impl App {
         }
     }
 
-    /// The tab whose undo stack Undo and Redo take: the front tag tab
-    /// while the Tags tool shows its tag, else none (the tool's own).
+    /// The document whose undo stack Undo and Redo take: the tag tab in
+    /// front while the Tags tool shows it, or the bitmap on the Textures
+    /// canvas (its tab or not); else none (the tool's own).
     pub(super) fn undo_target(&self) -> Option<Doc> {
-        self.tabs
-            .front()
-            .filter(|&d| matches!(d, Doc::Tag(_)) && self.tool == ToolKind::Tags)
-            .filter(|&d| self.shows(d, ToolKind::Tags))
+        match self.tool {
+            ToolKind::Tags => self.tabs.front().filter(|&d| self.shows(d, ToolKind::Tags)),
+            ToolKind::Textures => self.textures.selected.map(Doc::Tag),
+            _ => None,
+        }
     }
 
     /// The tag whose tab is in front while the Tags tool shows it: the
     /// document a tag-kind editor (the sound editor) draws.
     pub fn front_tag_doc(&self) -> Option<TagId> {
         match self.undo_target()? {
-            Doc::Tag(id) => Some(id),
+            Doc::Tag(id) if self.tool == ToolKind::Tags => Some(id),
             _ => None,
         }
     }

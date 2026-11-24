@@ -8,7 +8,9 @@
 //!
 //! The canvas shows the layer's pixels through a texture that is updated
 //! from the bitmap's dirty rectangles (`Bitmap::take_view_dirty`), so a
-//! stroke shows as it is made and an undo shows the tiles it swapped.
+//! stroke shows as it is made and an undo shows the tiles it swapped. Undo
+//! and Redo take the bitmap's document (`Action::UndoDoc`), its paint and
+//! shape steps beside the bitmap's own writes.
 
 use std::path::PathBuf;
 
@@ -21,7 +23,7 @@ use tags::bitmap_grow::SpriteView;
 
 use crate::app::image_gen::ImageAction;
 use crate::app::textures::{BitmapAction, PaintTool};
-use crate::app::{Action, App};
+use crate::app::{Action, App, Doc};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
@@ -680,15 +682,19 @@ pub fn inspector(
         }
     }
     ui.separator();
-    let d = ui.begin_disabled_with_cond(!app.textures.can_undo());
+    // The bitmap's document: its paint and shape steps beside the bitmap's
+    // own writes, as Cmd+Z takes them (docs/editor/studio-flow.md, "Shared
+    // patterns").
+    let (can_undo, can_redo) = app.doc_can(Doc::Tag(tag));
+    let d = ui.begin_disabled_with_cond(!can_undo);
     if ui.button(format!("{} Undo##tex-undo", icon::UNDO)) {
-        actions.push(Action::Bitmap(BitmapAction::Undo));
+        actions.push(Action::UndoDoc(Doc::Tag(tag)));
     }
     d.end();
     ui.same_line();
-    let d = ui.begin_disabled_with_cond(!app.textures.can_redo());
+    let d = ui.begin_disabled_with_cond(!can_redo);
     if ui.button(format!("{} Redo##tex-redo", icon::REDO)) {
-        actions.push(Action::Bitmap(BitmapAction::Redo));
+        actions.push(Action::RedoDoc(Doc::Tag(tag)));
     }
     d.end();
     ui.same_line();

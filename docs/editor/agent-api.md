@@ -92,7 +92,7 @@ What goes through actions, from both sides:
 | Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, View > Halo 1 overlay | `view.layers` |
 | Choose what the level is drawn with | `SetLighting` | the toolbar's Lighting menu | `view.lighting` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
-| Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
+| Undo, redo | `Undo`, `Redo` (the front document: the tool's, or the tag tab in front), `UndoDoc(doc)`, `RedoDoc(doc)`, `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys, every editor's Undo and Redo button | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
 | Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
@@ -124,8 +124,9 @@ A `doc` param names one: `map` (the scenario tool's map), `tags` (the
 Tags tool's edits to the same map: their own undo stack; they save and
 diff with the map), `variant`, `playlists`, `ui`, `hud` (the HUD tool's
 map: its widget edits, with their own undo stack and save), `scripts`
-(the Scripts tool's view of the open map: read only, never dirty;
-`doc.save` and `doc.save_as` refuse it). Without one, a `doc.*` call means the tool shown.
+(the Scripts tool's view of the open map: read only, never dirty, and
+`doc.save` and `doc.save_as` refuse it; its undo stack is the compiles,
+as `script.undo`'s). Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
 whether it can undo and redo. An open tag tab (below) is a document too:
 its id is a `doc`, and `doc.list` lists it after the tools' documents.
@@ -142,14 +143,21 @@ names (`tag.kinds`): bitmaps open in the Textures tool, the scenario tag
 is the map's own tab, the rest open in the Tags tool's field panel. A
 tag tab belongs to the map it was opened on and closes with it.
 
-Each tab has its own undo stack. A tag's is its tag's steps of the map's
-tag document (`TagDoc::undo_tag`): two tag tabs undo and redo their own
-edits in any order, and a new edit drops its own tag's redo and keeps
-the others'. An undo is `REFUSED` while a later edit of another tag
-writes the same bytes, or both added strings; that one is undone first.
-Undo and Redo in the window take the front tab's stack while the Tags
-tool shows its tag, else the tool's. Closing a tag tab keeps its edits:
-they are the map's, saved or dropped with it.
+Each tab has its own undo stack. A tag's holds its steps in the order
+they were made, wherever each is kept: its writes in the map's tag
+document (`TagDoc::undo_tag`), a sound's mouth curves (`sound.mouth`), a
+bitmap's pixels and shape (`bitmap.*`), an animation graph's documents
+(`anim.*`). Two tag tabs undo and redo their own in any order, and a new
+edit drops its own tag's redo and keeps the others'. Undo takes the
+newest step not undone. Redo takes the oldest undone one, unless a newer
+step of the document was made after it was undone: that step made it
+wrong. An undo is `REFUSED` while a later
+edit of another tag writes the same bytes, or both added strings; that
+one is undone first. Undo and Redo in the window, and every editor's
+Undo and Redo button, take the front tab's stack while the Tags tool
+shows its tag, or the canvas bitmap's in the Textures tool; else the
+tool's. Closing a tag tab keeps its edits: they are the map's, saved or
+dropped with it.
 
 | Method | Does |
 |---|---|

@@ -200,9 +200,11 @@ Scene, viewport, inspector, Log and status bar.*
   the Tags tool's panel (`fields::panel`). Named links lead to the object
   model and other dependencies, with other links under **All references**.
   The **Show in** button opens a tag whose metadata lives in a shared cache
-  in the Tags tool, read-only. An edit affects every use of the tag. Use
-  **Undo tag edit** and **Redo tag edit** for the tag history. The map
-  save includes the tag edits alongside the placement edits.
+  in the Tags tool, read-only. An edit affects every use of the tag. **Undo
+  tag edit** and **Redo tag edit** step through the tag's history, its
+  fields and its editor's steps alike ([studio-flow.md](studio-flow.md),
+  "Shared patterns"). The map save includes the tag edits alongside the
+  placement edits.
   A reference field's **Show this tag** button focuses the target in the
   inspector and keeps the placement selected. Breadcrumbs lead back to
   any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
@@ -223,7 +225,7 @@ Scene, viewport, inspector, Log and status bar.*
 Shortcuts include Cmd/Ctrl+O to open, Cmd/Ctrl+S to save, Shift+Cmd/Ctrl+S
 to export a map or save a playlist to a chosen path, Cmd/Ctrl+P to open Go to
 anything, Cmd/Ctrl+Z to undo and Shift+Cmd/Ctrl+Z or
-Cmd/Ctrl+Y redo (in the active tool), F5 Play, Shift+F5 stop the
+Cmd/Ctrl+Y redo (in the front document), F5 Play, Shift+F5 stop the
 game the editor started, and Cmd/Ctrl+Q quit. In the scenario tool,
 Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
 selection), F frame the selection, Home frame all, W/E/R gizmo mode, X

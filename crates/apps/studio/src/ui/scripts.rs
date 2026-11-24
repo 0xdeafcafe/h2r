@@ -17,7 +17,7 @@ use scenario_edit::layout;
 
 use crate::app::script_edit::{Outcome, Refusal};
 use crate::app::scripts::{LinkKind, Loaded, Target};
-use crate::app::{Action, App, ScriptAction};
+use crate::app::{Action, App, Doc, ScriptAction};
 use crate::theme::{self, Fonts, icon};
 
 /// The tab's own state: the searches.
@@ -655,22 +655,23 @@ fn edit_row(
             st.edit = None;
         }
     }
-    if let Some(doc) = &app.scripts.edit {
-        let (undo, redo) = doc.depth();
-        if undo + redo > 0 {
-            ui.same_line();
-            let off = ui.begin_disabled_with_cond(undo == 0);
-            if ui.button("Undo compile##script-undo") {
-                actions.push(Action::Script(ScriptAction::CompileUndo { redo: false }));
-            }
-            off.end();
-            ui.same_line();
-            let off = ui.begin_disabled_with_cond(redo == 0);
-            if ui.button("Redo compile##script-redo") {
-                actions.push(Action::Script(ScriptAction::CompileUndo { redo: true }));
-            }
-            off.end();
+    // The compiles are the map document's steps while the Scripts surface
+    // shows it (docs/editor/studio-flow.md, "Shared patterns"): Undo and
+    // Redo run on that document, as Cmd+Z does.
+    let (undo, redo) = app.doc_can(Doc::Map);
+    if undo || redo {
+        ui.same_line();
+        let off = ui.begin_disabled_with_cond(!undo);
+        if ui.button("Undo compile##script-undo") {
+            actions.push(Action::UndoDoc(Doc::Map));
         }
+        off.end();
+        ui.same_line();
+        let off = ui.begin_disabled_with_cond(!redo);
+        if ui.button("Redo compile##script-redo") {
+            actions.push(Action::RedoDoc(Doc::Map));
+        }
+        off.end();
     }
     match &app.scripts.compile {
         None => {}

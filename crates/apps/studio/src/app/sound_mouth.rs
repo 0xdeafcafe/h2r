@@ -9,7 +9,11 @@
 //! ([`scenario_edit::RawPatch`], `map::MapEditor::patch_raw`, handed to the
 //! save by [`App::push_sound_changes`]). Nothing else in the file changes
 //! but the checksum. The edits live here until the map is saved; each is
-//! one undo step ([`App::sound_mouth_undo`]).
+//! one step of its sound's document beside the sound's own writes, numbered
+//! with them ([`super::TagDoc::next_step`]), so the sound's tab undoes them
+//! in the order they were made (docs/editor/studio-flow.md, "Shared
+//! patterns"). `sound.mouth`'s `undo` takes the last redraw of the shown
+//! map, any sound ([`App::sound_mouth_undo`]).
 //!
 //! **What is refused, by name** ([`check_writable`]): a sound whose
 //! extra-info resource is in another cache file (the editor never writes
@@ -41,13 +45,59 @@ struct Edit {
     drawn: Arc<[u8]>,
 }
 
-/// The redrawn curves of the shown map and their undo steps.
+/// One redraw of one permutation's curve, a step of its sound's document:
+/// the curve as drawn before it and after it (`None`: as the file stores
+/// it), and its number among the document's steps.
+struct Step {
+    slot: Slot,
+    span: MouthSpan,
+    before: Option<Arc<[u8]>>,
+    after: Option<Arc<[u8]>>,
+    serial: u64,
+}
+
+/// The redrawn curves of the shown map and their steps, not undone and
+/// undone.
 #[derive(Default)]
 pub struct Edits {
     edits: BTreeMap<Slot, Edit>,
-    /// Each step: the slot, where its curve is stored, and the curve it
-    /// held before (`None`: as stored).
-    undo: Vec<(Slot, MouthSpan, Option<Arc<[u8]>>)>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
+}
+
+impl Edits {
+    /// Take the last step `of` accepts from the undo list (`undo`) or the
+    /// redo list, and put it on the other: the slot, where its curve is
+    /// stored, and the curve it shows now (`None`: as the file stores it).
+    fn step_back(
+        &mut self,
+        undo: bool,
+        of: impl Fn(&Step) -> bool,
+    ) -> Option<(Slot, MouthSpan, Option<Arc<[u8]>>)> {
+        let (from, to) = if undo {
+            (&mut self.undo, &mut self.redo)
+        } else {
+            (&mut self.redo, &mut self.undo)
+        };
+        let i = from.iter().rposition(of)?;
+        let step = from.remove(i);
+        let shown = if undo {
+            step.before.clone()
+        } else {
+            step.after.clone()
+        };
+        let place = (step.slot.clone(), step.span.clone());
+        to.push(step);
+        Some((place.0, place.1, shown))
+    }
+
+    /// Record `step` as made: the curve at its slot was `before` and is
+    /// `after`. A new step leaves nothing of the same sound's to redo.
+    fn note(&mut self, step: Step) {
+        let (key, sound, ..) = &step.slot;
+        self.redo.retain(|s| s.slot.0 != *key || s.slot.1 != *sound);
+        self.undo.push(step);
+    }
 }
 
 /// What a write did.
@@ -149,10 +199,64 @@ impl App {
         self.mouth_edited(id, range, permutation).is_some()
     }
 
-    /// Whether any mouth curve of the shown map is redrawn.
-    pub fn sound_mouth_can_undo(&self) -> bool {
-        let key = self.sound_key(TagId(0)).0;
-        self.audition.mouth.undo.iter().any(|(s, ..)| s.0 == key)
+    /// Show `drawn` (`None`: the file's curve) as the curve at `slot`: what
+    /// an undone or a redone step leaves.
+    fn mouth_show(&mut self, slot: &Slot, span: &MouthSpan, drawn: Option<Arc<[u8]>>) {
+        match drawn {
+            Some(drawn) => {
+                self.audition.mouth.edits.insert(
+                    slot.clone(),
+                    Edit {
+                        span: span.clone(),
+                        drawn,
+                    },
+                );
+            }
+            None => {
+                self.audition.mouth.edits.remove(slot);
+            }
+        }
+        self.push_sound_changes();
+    }
+
+    /// The number of sound `id`'s newest step not undone, in the map shown.
+    pub(super) fn sound_mouth_step(&self, id: TagId) -> Option<u64> {
+        let (key, ..) = self.sound_key(id);
+        self.audition
+            .mouth
+            .undo
+            .iter()
+            .rev()
+            .find(|s| s.slot.0 == key && s.slot.1 == id)
+            .map(|s| s.serial)
+    }
+
+    /// The number of sound `id`'s oldest undone step in the map shown, the
+    /// next a redo takes.
+    pub(super) fn sound_mouth_redo_step(&self, id: TagId) -> Option<u64> {
+        let (key, ..) = self.sound_key(id);
+        self.audition
+            .mouth
+            .redo
+            .iter()
+            .rev()
+            .find(|s| s.slot.0 == key && s.slot.1 == id)
+            .map(|s| s.serial)
+    }
+
+    /// Undo (or redo) a step of sound `id`'s curve: the newest not undone,
+    /// or the oldest undone. Whether one moved.
+    pub(super) fn sound_mouth_step_in(&mut self, id: TagId, undo: bool) -> bool {
+        let (key, ..) = self.sound_key(id);
+        let Some((slot, span, shown)) = self
+            .audition
+            .mouth
+            .step_back(undo, |s| s.slot.0 == key && s.slot.1 == id)
+        else {
+            return false;
+        };
+        self.mouth_show(&slot, &span, shown);
+        true
     }
 
     /// Redraw the curve of permutation `permutation` of pitch range `range`
@@ -182,7 +286,8 @@ impl App {
         let key = self.sound_key(id).0;
         // Other maps' edits are gone with their map.
         self.audition.mouth.edits.retain(|s, _| s.0 == key);
-        self.audition.mouth.undo.retain(|(s, ..)| s.0 == key);
+        self.audition.mouth.undo.retain(|s| s.slot.0 == key);
+        self.audition.mouth.redo.retain(|s| s.slot.0 == key);
         let slot = (key, id, range, permutation);
         let shown: Arc<[u8]> = self
             .audition
@@ -192,10 +297,14 @@ impl App {
             .map_or_else(|| span.curve.as_slice().into(), |e| e.drawn.clone());
         let changed = shown.iter().zip(curve).filter(|(a, b)| a != b).count();
         let before = self.mouth_edited(id, range, permutation);
-        self.audition
-            .mouth
-            .undo
-            .push((slot.clone(), span.clone(), before));
+        let edited = curve != span.curve.as_slice();
+        self.audition.mouth.note(Step {
+            serial: self.tags.next_step(),
+            slot: slot.clone(),
+            span: span.clone(),
+            before,
+            after: edited.then_some(curve.into()),
+        });
         // Permutations that share a descriptor share the bytes: the last
         // drawing wins for all of them.
         let at = span.offset;
@@ -203,7 +312,6 @@ impl App {
             .mouth
             .edits
             .retain(|s, e| *s == slot || !(s.1 == id && e.span.offset == at));
-        let edited = curve != span.curve.as_slice();
         if edited {
             self.audition.mouth.edits.insert(
                 slot,
@@ -255,10 +363,13 @@ impl App {
         let Some(old) = self.audition.mouth.edits.remove(&slot) else {
             return Ok(false);
         };
-        self.audition
-            .mouth
-            .undo
-            .push((slot, old.span, Some(old.drawn)));
+        self.audition.mouth.note(Step {
+            serial: self.tags.next_step(),
+            slot,
+            span: old.span,
+            before: Some(old.drawn),
+            after: None,
+        });
         self.push_sound_changes();
         Ok(true)
     }
@@ -267,25 +378,11 @@ impl App {
     /// `None` when there is nothing to undo.
     pub fn sound_mouth_undo(&mut self) -> Option<(TagId, usize, usize)> {
         let key = self.sound_key(TagId(0)).0;
-        let i = self
+        let (slot, span, shown) = self
             .audition
             .mouth
-            .undo
-            .iter()
-            .rposition(|(s, ..)| s.0 == key)?;
-        let (slot, span, before) = self.audition.mouth.undo.remove(i);
-        match before {
-            Some(drawn) => {
-                self.audition
-                    .mouth
-                    .edits
-                    .insert(slot.clone(), Edit { span, drawn });
-            }
-            None => {
-                self.audition.mouth.edits.remove(&slot);
-            }
-        }
-        self.push_sound_changes();
+            .step_back(true, |s| s.slot.0 == key)?;
+        self.mouth_show(&slot, &span, shown);
         Some((slot.1, slot.2, slot.3))
     }
 
