@@ -530,6 +530,7 @@ impl super::App {
         };
         let set = || super::assets::read_set(&self.data_root());
         match doc {
+            Doc::Package => self.package_document.id().map(|id| format!("package:{id}")),
             Doc::Voice => self.voices.doc.as_ref().map(|v| format!("voice:{v}")),
             Doc::Tag(id) => tag(id),
             Doc::Map => self.session.scenario().and_then(|s| tag(s.tag)),

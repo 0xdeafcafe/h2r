@@ -1644,14 +1644,9 @@ fn go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open()
     assert_eq!(app.loaded_map(), Some("fixture"));
     assert_eq!(app.front_doc(), Some(Doc::Map));
 
-    // The package's and the item's documents are slices to come (FL10
-    // the package document, FL4 items): their rows already carry the
-    // `OpenAsset` those slices teach to open, which says why it cannot yet.
-    let why = app.perform(package.action, false).unwrap_err();
-    assert!(
-        matches!(&why, Refused::Failed(m) if m.contains("package:map-kit")),
-        "{why:?}"
-    );
+    app.perform(package.action, false).unwrap();
+    assert_eq!(app.front_doc(), Some(Doc::Package));
+    assert_eq!(app.doc_asset(Doc::Package).as_deref(), Some("package:map-kit"));
     let why = app.perform(item.action, false).unwrap_err();
     assert!(
         matches!(&why, Refused::Failed(m) if m.contains("item:map-kit:0")),

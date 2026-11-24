@@ -176,6 +176,7 @@ impl App {
     /// The `pair.preview` a document's kind takes.
     pub fn game_preview(&self, doc: Doc) -> Result<GamePreview, String> {
         match doc {
+            Doc::Package => Err("use Play in the package document".into()),
             Doc::Tag(id) => {
                 let t = self.tags.tag(id).ok_or("the tag is not in the open map")?;
                 plan_for_tag(t.group, &t.name)

@@ -105,6 +105,7 @@ pub mod method {
     pub const PACKAGE_ORDER: &str = "package.order";
     pub const PACKAGE_CHECK: &str = "package.check";
     pub const PACKAGE_BUILD: &str = "package.build";
+    pub const PACKAGE_EXPORT: &str = "package.export";
     pub const PACKAGE_PLAY: &str = "package.play";
     pub const PACKAGE_DIFF: &str = "package.diff";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).

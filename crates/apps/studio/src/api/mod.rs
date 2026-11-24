@@ -50,7 +50,7 @@ mod ground;
 mod nav_mesh;
 mod pair;
 mod params;
-mod packages;
+pub(crate) mod packages;
 mod preview;
 mod playlists;
 mod playtest;
@@ -360,6 +360,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"id":"kit-test","map":"example"}"#,
     ),
     def(
+        m::PACKAGE_EXPORT,
+        "Export a local package manifest, lock, and named files to a new folder",
+        r#"{"id":"string","out":"string"}"#,
+        r#"{"id":"string","out":"string","files":"integer"}"#,
+        r#"{"id":"export-example","out":"$OUT/export-example"}"#,
+    ),
+    def(
         m::PROBLEMS_LIST,
         "The Problems panel's list, read again: every source or one. `check` is check.run's models and sounds, `ui` is ui.check, `hud` is hud.check and the HUD kit's, `package` is the manifest checks over the packages under <data>/packages/, `build` is what the game's package set refuses to load; the open script's diagnostics are `check` rows of area `scripts`, with their `line` and `col`. `asset` (an asset id) keeps the rows about that asset, as the count on the header's Check is. Worst first; each row names what opens it (`asset`: a tag, a package or an item; `field`; or the `tool` that holds a screen or a HUD). A check that cannot run is under `skipped`",
         r#"{"source?":"check|ui|hud|package|build","asset?":"string"}"#,
@@ -452,8 +459,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SHELL_OPEN,
-        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` the tag as the Browser does",
-        r#"{"asset?":"string (voice:<id> or tag:<group>:<path>)","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` the tag as the Browser does, and `package:<id>` opens the package document",
+        r#"{"asset?":"string (voice:<id>, tag:<group>:<path> or package:<id>)","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
         r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
         r#"{"tag":"itmc:objects\\test\\kit"}"#,
     ),
@@ -1218,5 +1225,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::Hud => "hud",
         crate::ToolKind::Scripts => "scripts",
         crate::ToolKind::Textures => "textures",
+        crate::ToolKind::Package => "package",
     }
 }

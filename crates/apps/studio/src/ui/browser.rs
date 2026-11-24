@@ -33,6 +33,7 @@ struct Key {
     query: String,
     /// The tree may have appeared or grown with the first start page.
     start_page: bool,
+    package_revision: u64,
     refresh: u32,
 }
 
@@ -69,6 +70,8 @@ pub struct BrowserUi {
     linked: Option<Vec<String>>,
     /// The asset ids the last frame drew a row for, for scripts and tests.
     pub shown: Vec<String>,
+    new_package_name: String,
+    pub(super) add_item: super::package::AddItem,
 }
 
 impl Default for BrowserUi {
@@ -84,6 +87,8 @@ impl Default for BrowserUi {
             cache: None,
             linked: None,
             shown: Vec::new(),
+            new_package_name: String::new(),
+            add_item: Default::default(),
         }
     }
 }
@@ -266,6 +271,9 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
             return;
         }
     }
+    if st.root == Root::Packages {
+        super::package::new_package(ui, &mut st.new_package_name, actions);
+    }
     let key = Key {
         root: root_id(st.root),
         package: st.package.clone(),
@@ -273,6 +281,7 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         map: st.map.clone(),
         query: st.query.clone(),
         start_page: app.workspace_start_page(),
+        package_revision: app.package_document.revision,
         refresh: st.refresh,
     };
     let (key, list) = match st.cache.take() {
@@ -371,11 +380,43 @@ fn body(ui: &Ui, app: &App, st: &mut BrowserUi, list: &Listing, actions: &mut Ve
     theme::panel_body(ui, "##browser-rows", || {
         for l in ListClipper::new(lines.len()).begin(ui).iter() {
             match lines[l] {
-                Line::Row(i) => row(ui, app, st, list, &list.rows[i], actions),
+                Line::Row(i) => {
+                    let entry = &list.rows[i];
+                    if let Some(asset) = entry["asset"].as_str().filter(|asset| asset.starts_with("package:"))
+                        && entry["root"] == "packages"
+                    {
+                        package_row(ui, st, entry, asset, actions);
+                    } else {
+                        row(ui, app, st, list, entry, actions);
+                    }
+                }
                 Line::Variant(i, v) => variant(ui, app, st, &list.rows[i], v, actions),
             }
         }
     });
+}
+
+fn package_row(ui: &Ui, st: &mut BrowserUi, entry: &Value, asset: &str, actions: &mut Vec<Action>) {
+    st.shown.push(asset.to_owned());
+    if ui.selectable_config(format!("{}##browser-{asset}", label(entry)))
+        .selected(st.selected.as_deref() == Some(asset)).build()
+    {
+        st.selected = Some(asset.to_owned());
+    }
+    if ui.is_item_hovered() {
+        tooltip(ui, entry);
+        if ui.is_mouse_double_clicked(MouseButton::Left) {
+            open(actions, asset, None);
+        }
+    }
+    if let Some(_menu) = ui.begin_popup_context_item() {
+        if ui.menu_item("Open") {
+            open(actions, asset, None);
+        }
+        if ui.menu_item("Show items in Browser") {
+            st.package = entry["id"].as_str().map(str::to_owned);
+        }
+    }
 }
 
 fn glyph(row: &Value) -> &'static str {
