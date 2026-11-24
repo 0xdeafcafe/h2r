@@ -30,7 +30,7 @@ Everything not marked **Code** is **Design**.
 | Gap | Where it shows |
 |---|---|
 | A label is a string interned at each use (`Cx::label`). A typo is an empty set, and nothing says what a map must hold. | `siege.rules`: `first(objects labelled "core")` is `none` on a map with no core, and `create` gets `none` |
-| `player`, `team`, `object` and `tag` always admit `none` (`Ty::nullable`); a read through `none` gives the slot's initial value. | `koth.rules`: `lead.team` is read when `first(...)` found nobody; `ctf.rules`: `f.at_home = true` through a neutral bomb's `none` team |
+| `player`, `team`, `object` and `tag` always admit `none` (`Ty::nullable`); a read through `none` gives the slot's initial value. | `koth.rules`: `lead.team` is read when `first(...)` found nobody |
 | Ticks and seconds are both `int`. | every timer and counter relies on the author writing `seconds(...)` |
 | Every placed thing is `object`. | `inside(p, o)` accepts a crate; `on enter(zone, o)` gives two `object`s |
 | Any tag path fits any `tag` parameter. | `set_loadout` accepts a vehicle's path |

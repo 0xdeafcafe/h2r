@@ -217,8 +217,12 @@ mod tests {
             assert_eq!(of_type(ir.header.game_type), Some(src), "engine {index}");
             let report = crate::verify::verify(&ir).unwrap();
             assert!(report.fits(), "engine {index}: worst tick {}", report.worst_tick);
-            // A port declares nothing: it does what its retail engine does.
-            assert!(ir.header.requires.is_empty(), "engine {index}");
+            // A port declares nothing but what it does itself: a carried
+            // objective's script returns it by removing it (`delete`), as
+            // no engine slot runs for it.
+            let carried = matches!(index, 1 | 3 | 9);
+            let wants: &[&str] = if carried { &["objects.delete"] } else { &[] };
+            assert_eq!(ir.header.requires, wants, "engine {index}");
         }
         for index in [1, 2, 3, 4, 7, 8, 9] {
             assert!(builtin(index).is_some(), "engine {index}");
@@ -297,13 +301,25 @@ mod tests {
         // type-area row of the settings table, at the record's own range,
         // and the built-in's options must fit the record's 32 option bits
         // together (docs/game/notes/2026-11-24-game-type-engine-reads.md).
+        // A row a built-in has an option for (`own`, by the row's name and
+        // the option's) is that option's bits, counted once.
+        let own = [
+            ("oddball_ball_count", "ball_count"),
+            ("ctf_flag_type", "flag_type"),
+            ("ctf_reset_time", "reset_time"),
+            ("ctf_touch_return", "touch_return"),
+            ("ctf_flag_at_home", "flag_at_home"),
+            ("assault_arm_time", "arm_time"),
+        ];
         let width = |(lo, hi): (i32, i32)| 64 - ((hi - lo).max(0) as u64).leading_zeros();
         let mut counted = Vec::new();
         for b in ALL {
             let ir = crate::lang::compile(b.source).unwrap();
+            let has = |name: &str| (0..ir.options.len()).any(|i| ir.option_name(i) == name);
             let area: u32 = crate::settings::TABLE
                 .iter()
                 .filter(|r| !r.carriers.is_empty() && r.applies(b.engine))
+                .filter(|r| !own.iter().any(|&(row, option)| row == r.name && has(option)))
                 .map(|r| width(r.kind.range()))
                 .sum();
             let total = option_bits(&ir) + area;
@@ -313,7 +329,7 @@ mod tests {
         // (engine, the built-in's options, the type area).
         assert_eq!(
             counted,
-            [(1, 3, 19), (2, 4, 0), (3, 6, 5), (4, 0, 15), (7, 5, 6), (8, 4, 18), (9, 3, 22)]
+            [(1, 20, 0), (2, 4, 0), (3, 8, 3), (4, 0, 15), (7, 5, 6), (8, 4, 18), (9, 20, 0)]
         );
         for b in LISTED.iter().chain(&[Builtin { name: "Infection", engine: 2, source: INFECTION }]) {
             let ir = crate::lang::compile(b.source).unwrap();
