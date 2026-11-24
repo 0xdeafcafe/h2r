@@ -75,7 +75,7 @@ What goes through actions, from both sides:
 |---|---|---|---|
 | Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Browser, map grid | `source.open`, `doc.open` |
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
-| Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
+| Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}`; each change is then written as an edit line to the edit target | the Tags tool | `tag.set`, `tag.block.*` |
 | Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
 | Show unnamed fields, Show as, focus a field, the filter row | `App::tag_fields` (`fields::Settings`), `Navigate(Go)`, `fields::find` | the Tags tool's **Show unnamed fields**, **Show as**, **Search fields** and **Changed only** | `tag.view`, `tag.find` |
 | What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
@@ -167,9 +167,12 @@ Short forms: `tabs`, `focus <doc>`, `close <doc>`.
 
 `doc.save_as` takes a path. `doc.save` writes a variant to its save
 storage under the data root or a playlist file to its own path. For a
-map, `App::save_target` chooses the open package or the last standalone
-output. For a base map it opens the package form and returns
-`{saved: false, package_form: {name, dir}}`. The API keeps map outputs outside Git
+map, `App::save_target` chooses the open package, the last standalone
+output (**Export map...**) or the edit target. For a base map the edits
+are already lines in the edit target (`app::edit_target`), and `doc.save`
+returns `{saved: true, edit_target}`; with no target it answers
+`NO_TARGET`. `tag.set` and `tag.block.*` answer `NO_TARGET` the same way
+with no edit target, where the window asks for one. The API keeps map outputs outside Git
 checkouts and uses a destination separate from the base source. Renders
 (`ui.render`, `view.snapshot`) default to `studio/` in the cache directory
 and refuse paths in Git checkouts.

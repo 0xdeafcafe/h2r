@@ -1173,7 +1173,8 @@ mod tests {
         let mut app = App::new();
         app.set_data_root(t.0.join("data"));
         app.dispatch(Action::OpenSource(map));
-        app.dispatch(Action::SavePackage(app.session.form_defaults()));
+        let form = app.session.form_defaults();
+        app.save_map_package(&form);
         app.dispatch(Action::SelectMap("example".into()));
         app.dispatch(Action::OpenPackageEntry("example-edit".into()));
         let manifest = app.session.maps_dir().join("example-edit/manifest.toml");
@@ -1190,7 +1191,6 @@ mod tests {
         h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
         h.step(&mut app, &Step::Key(Key::S, 1)).unwrap();
         h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
-        assert!(app.package_form.is_none());
         assert!(!app.is_dirty());
         assert_ne!(std::fs::read(manifest).unwrap(), first);
     }

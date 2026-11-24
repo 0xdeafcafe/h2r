@@ -788,3 +788,38 @@ fn the_first_party_huds_read() {
         ]
     );
 }
+
+#[test]
+fn edits_text_reads_back_to_the_same_entries() {
+    let edits = vec![
+        TagEdit {
+            tag: format!("jpt!:{A}"),
+            was: None,
+            block: vec![BlockLine {
+                path: "player_responses".into(),
+                op: Op::Add,
+                like: Some(0),
+                index: None,
+            }],
+            set: vec![
+                SetLine::from_json("damage_lower_bound", &serde_json::json!(12.5)).unwrap(),
+                SetLine::from_json("flags", &serde_json::json!(["a", "b"])).unwrap(),
+            ],
+        },
+        TagEdit {
+            tag: format!("jpt!:{C}"),
+            was: None,
+            block: Vec::new(),
+            set: vec![SetLine::from_json("name", &serde_json::json!("x")).unwrap()],
+        },
+    ];
+    let text = edits_text(&edits).unwrap();
+    let back = parse_edits(&text).unwrap();
+    assert_eq!(back.len(), 2);
+    assert_eq!(back[0].0.tag, edits[0].tag);
+    assert_eq!(back[0].0.block[0].like, Some(0));
+    assert_eq!(back[0].0.set[0].path, "damage_lower_bound");
+    assert_eq!(back[0].0.set[1].value, edits[0].set[1].value);
+    assert_eq!(back[1].0.set[0].path, "name");
+    assert_eq!(edits_text(&[]).unwrap(), "");
+}

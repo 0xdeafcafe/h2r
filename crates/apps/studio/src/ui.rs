@@ -42,13 +42,13 @@ use editor_core::Status;
 use scenario_edit::BlockKind;
 
 use crate::app::commands::MenuCommand;
-use crate::app::{Action, Answer, App, NavAction, SaveTarget, ToolKind};
+use crate::app::{Action, Answer, App, EditChoice, NavAction, SaveTarget, ToolKind};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::{GizmoOp, Gpu, ViewportView};
 use layout::Keys;
 
 const UNSAVED: &str = "Unsaved changes###unsaved";
-const SAVE_PACKAGE: &str = "Save as package###save-package";
+const EDIT_TARGET: &str = "Edit target###edit-target";
 const OPEN_PACKAGE: &str = "Open package###open-package";
 
 /// A tab of the Map workspace's left dock node.
@@ -289,7 +289,7 @@ impl Studio {
         let cmd = io.key_ctrl() || io.key_super();
         if cmd && ui.is_key_pressed(Key::P)
             && app.pending().is_none()
-            && app.package_form.is_none()
+            && app.edits.picker.is_none()
             && !ui.is_popup_open(OPEN_PACKAGE)
         {
             self.palette.open();
@@ -411,7 +411,7 @@ impl Studio {
             return None;
         }
         rfd::FileDialog::new()
-            .set_title("Save map as")
+            .set_title("Export map")
             .add_filter("Map", &["map"])
             .set_file_name(app.suggested_save_name())
             .save_file()
@@ -447,19 +447,12 @@ impl Studio {
             let map_tool = bar::is_map(app.tool);
             menu_action(ui, app, MenuCommand::Save, Some(icon::SAVE), false, actions);
             if ui.menu_item_enabled_selected_with_shortcut(
-                "Save as...",
+                "Export map...",
                 if map_tool { "Shift+Cmd+S" } else { "" },
                 false,
                 open,
             ) {
                 self.save_map_dialog(app, actions);
-            }
-            if ui.menu_item_enabled_selected_no_shortcut(
-                format!("{} Save as package...", icon::PACKAGE),
-                false,
-                open,
-            ) {
-                app.open_package_form();
             }
             if ui.menu_item_enabled_selected_no_shortcut(
                 format!("{} Open package...", icon::PACKAGE_OPEN),
@@ -1203,11 +1196,11 @@ impl Studio {
             let mut answer = None;
             match tool {
                 ToolKind::Scenario => {
-                    if matches!(app.save_target(), SaveTarget::File(_) | SaveTarget::Package(_)) {
+                    if matches!(app.save_target(), SaveTarget::File(_) | SaveTarget::Package(_) | SaveTarget::EditTarget(Some(_))) {
                         if ui.button(format!("{} Save", icon::SAVE)) {
                             answer = Some(Answer::Save);
                         }
-                    } else if ui.button(format!("{} Save as...", icon::SAVE))
+                    } else if ui.button(format!("{} Export map...", icon::SAVE))
                         && let Some(p) = self.save_path_dialog(app)
                     {
                         answer = Some(Answer::SaveAs(p));
@@ -1257,52 +1250,50 @@ impl Studio {
             }
         }
 
-        // Save as package.
-        if app.package_form.is_some() && !ui.is_popup_open(SAVE_PACKAGE) {
-            ui.open_popup(SAVE_PACKAGE);
+        // The first edit's target: a local package, or a new one.
+        if app.edits.picker.is_some() && !ui.is_popup_open(EDIT_TARGET) {
+            ui.open_popup(EDIT_TARGET);
         }
         if let Some(_m) = ui
-            .begin_modal_popup_config(SAVE_PACKAGE)
+            .begin_modal_popup_config(EDIT_TARGET)
             .flags(WindowFlags::ALWAYS_AUTO_RESIZE)
             .begin()
         {
-            match app.package_form.take() {
+            match app.edits.picker.take() {
                 None => ui.close_current_popup(),
-                Some(mut form) => {
-                    ui.text_disabled(format!("in {}", app.session.maps_dir().display()));
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Name", &mut form.name).build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Author", &mut form.author).build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Description", &mut form.description).build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Image (PNG/JPEG)", &mut app.package_image)
-                        .hint("optional, at most 512 KB")
-                        .build();
-                    ui.set_next_item_width(320.0);
-                    ui.input_text("Directory", &mut form.dir).build();
-                    ui.checkbox(
-                        "Make it the active package for this map",
-                        &mut form.activate,
-                    );
-                    if app.session.package_dir() == Some(form.dir.as_str()) {
-                        ui.text_disabled("Replaces this package's patch.");
+                Some(mut picker) => {
+                    ui.text("Which package gets your edits?");
+                    ui.text_disabled("Each change becomes an edit line in it.");
+                    ui.spacing();
+                    let mut answer = None;
+                    for (id, name) in app.local_packages() {
+                        if ui.button(format!("{id}##edit-target-{id}")) {
+                            answer = Some(EditChoice::Existing(id.clone()));
+                        }
+                        ui.same_line();
+                        ui.text_disabled(name);
                     }
                     ui.spacing();
-                    let save = ui.button(format!("{} Save package", icon::PACKAGE));
+                    ui.set_next_item_width(240.0);
+                    ui.input_text("##new-package-name", &mut picker.new_name)
+                        .hint("New package name")
+                        .build();
                     ui.same_line();
-                    let cancel = ui.button("Cancel") || ui.is_key_pressed(Key::Escape);
-                    if save {
-                        let image = app.package_image.trim();
-                        form.image = (!image.is_empty()).then(|| PathBuf::from(image));
-                        actions.push(Action::SavePackage(form.clone()));
+                    let d = ui.begin_disabled_with_cond(picker.new_name.trim().is_empty());
+                    if ui.button(format!("{} New package...", icon::PACKAGE)) {
+                        answer = Some(EditChoice::New(picker.new_name.clone()));
                     }
-                    if cancel {
-                        ui.close_current_popup();
-                    } else {
-                        // Saving closes it (App::run clears the form) on success.
-                        app.package_form = Some(form);
+                    d.end();
+                    ui.spacing();
+                    if ui.button("Cancel") || ui.is_key_pressed(Key::Escape) {
+                        answer = Some(EditChoice::Cancel);
+                    }
+                    match answer {
+                        Some(choice) => {
+                            ui.close_current_popup();
+                            actions.push(Action::ChooseEditTarget(choice));
+                        }
+                        None => app.edits.picker = Some(picker),
                     }
                 }
             }

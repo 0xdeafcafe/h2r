@@ -187,9 +187,27 @@ edit target (`edits/<name>.yaml`, the format of
 [tag-workspace.md](tag-workspace.md), "Edits are data"); the inspector
 marks the row and names the package. There is no "Save as package" form
 and no standalone-map save: **Save** writes the package's files, and
-**Package > Export map...** writes a whole `.map` for use outside the
-game. With no edit target set, the first edit asks for one (a picker
-dialog: an existing package or **New package...**).
+**Export map...** (File menu, `doc.save_as`) writes a whole `.map` for use
+outside the game. With no edit target set, the first edit asks for one (a
+picker dialog: an existing package or **New package...**); the change
+waits for the answer and runs when it is given, and the agent API answers
+`NO_TARGET` instead of asking.
+
+`app::edit_target` is the one path. The tag editor holds the bytes
+(`TagDoc`); after every write, undo and redo `app::edit_lines` says what
+differs from the file as `set` lines by field path, and the lines go to
+the target as `edits/<map>.yaml`, an `edits` item for that map
+(`package_doc::put_edits`, which locks the package). The window's field
+row and `tag.set` both write bytes through `TagDoc`, so a field set either
+way is the same line; the file is the journal, so an undo that returns a
+field to the file's value takes its line out, after a save too. Lines of
+tags the session has not changed stay as the file has them. What a `set`
+line cannot say (a list that grew, shrank or moved, a data reference's
+bytes, a field the definition does not name) is reported once in the log
+and is not written; those edits are not in the package yet. The edit
+target is `<data>/packages/target.txt`. Studio sets
+`App::edits_to_target`; a document held by a test does not write into
+`<data>/packages/`.
 
 ### Preview and the paired game
 
@@ -986,7 +1004,7 @@ Rows are in build order.
 | PK4 | **Pogo as a package** (built): `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
 | PK5 | **Screens as a package** (built): the always-on `content/ui/` package serves `screens` and `screen-edits` through `PackageRewrite`; `ui.save` writes our screen YAML into the checkout’s UI package | M | PK3 | `workspace::screen_tests` compare the package with applying the retail edits and calling `ui_kit::inject::tag::add_screens` on each invented UI map; the Studio save test checks that only the package screen source changes |
 | PK6 (built: `app/package_doc.rs`, `api/packages.rs`) | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play, over the always-on rule `content::package::Set` keeps | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
-| PK7 | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
+| PK7 (built: `app/edit_target.rs`, `app/edit_lines.rs`; the group of the game's `active.toml` readers stands) | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
 | SH3 | **Problems** (built: `app/problems.rs`, `ui/problems.rs`, `problems.list`): one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
 | SH4 | **The preview switch** (built: `app/preview_switch.rs`, `ui/preview_switch.rs`, `api/preview.rs`; the Problems rows for a finished preview wait for the Game panel): `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
 | GT0 to GT7, GE0 to GE5, GM1 to GM4 | **Game types without carriers**, no retail engine object, and maps for scripted games ([game-types-without-carriers.md](../game/game-types-without-carriers.md)) | S to L | GT6 needs PK11; GM2 needs PK9 | as there |

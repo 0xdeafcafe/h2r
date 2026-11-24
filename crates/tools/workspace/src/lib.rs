@@ -63,7 +63,7 @@ pub use build::{
     cache_key, wants_shading,
 };
 pub use builders::{BUILDERS_VERSION, Builder, Job, builder, changes_map, registry};
-pub use edit::{BlockLine, Op, SetLine, TagEdit, parse_edits};
+pub use edit::{BlockLine, Op, SetLine, TagEdit, edits_text, parse_edits};
 pub use game::{CACHE_DIR, Entry, GameSet, Listed, Off, Origin, PACKAGES_DIR, baked};
 pub use hash::tag_hash;
 pub use hud::huds;

@@ -1726,7 +1726,7 @@ last. The flags that set the scene up:
 | `--copy-variant <name>` | copy it to an editable variant named `<name>` |
 | `--hopper <file>\|default --playlist <1..16>` | open a playlist file (or the default lineup) at a playlist |
 | `--preset <n>` | pick historical preset `n` for that playlist |
-| `--dialog package\|unsaved` | open the Save as package window, or nudge the selection and ask to quit (the unsaved-changes window) |
+| `--dialog edit-target\|unsaved` | open the first-edit picker (the edit target), or nudge the selection and ask to quit (the unsaved-changes window) |
 | `--nudge <x>,<y>,<z>` | move the selection by that much, as an edit |
 | `--page <title>` | in the variant tool, open only the settings pages whose title contains it |
 | `--no-disc` | open no disc and no Halo 1 source (the first run) |
