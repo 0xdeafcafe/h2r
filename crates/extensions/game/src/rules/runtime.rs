@@ -1430,11 +1430,12 @@ impl Runtime {
                 .with_zones(zones)
                 .with_film(self.film);
             f(vm, &mut g);
-            if let Some(ty) = g.start_line {
-                r.start_line = Some(ty);
-            }
-            g.error
+            (g.start_line, g.error)
         };
+        let (start_line, error) = error;
+        if let Some(ty) = start_line {
+            r.start_line = Some(ty);
+        }
         let saved = save(r, &mut *self.store);
         if let Some(e) = error {
             self.error(tick, "script", describe(&e));

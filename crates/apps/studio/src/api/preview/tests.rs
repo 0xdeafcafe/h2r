@@ -473,7 +473,7 @@ mod switch {
         let p = tag(b"wgit", "ui\\screens\\main_menu").unwrap();
         assert_eq!((p.what, p.target.as_deref()), ("ui", Some("main_menu")));
         let p = tag(b"nhdt", "ui\\hud\\a").unwrap();
-        assert_eq!((p.what, p.target), ("hud", None));
+        assert_eq!((p.what, p.target.as_deref()), ("hud", None));
         assert_eq!(p.params(), json!({"what": "hud"}));
         for g in [b"snd!", b"proj", b"hlmt", b"mode", b"bitm", b"itmc"] {
             assert!(tag(g, "x").is_err(), "{g:?}");
