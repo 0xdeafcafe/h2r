@@ -8,7 +8,7 @@ use scene_extract::visibility::{
 };
 use std::sync::Mutex;
 
-const CALLER: u32 = 0x0017_2f71;
+use engine::points::scene_effects::{PORTAL_WINDOW_CALL, PORTAL_WINDOW_READY};
 const VALIDATE_PLANES: u32 = 0x0047_ff86;
 const WINDOWS: u32 = 0x1974;
 const COUNT: u32 = 0x1970;
@@ -86,13 +86,13 @@ impl Window {
         if cpu.edi != dest {
             return Err(Refusal::Layout);
         }
-        let frustum = stack(mem, cpu, 4)?;
-        let argument_addr = at(cpu.esp, 8)?;
+        let frustum = stack(mem, cpu, 0)?;
+        let argument_addr = at(cpu.esp, 4)?;
         let ordinal = mem.u32(argument_addr)?;
         // The original writes interleaved with its reads. Overlapping the
         // input frustum, rectangle or call frame requires those writes.
         let end = at(dest, SIZE as u32)?;
-        for (addr, size) in [(frustum, 0x1bc), (cpu.ecx, 16), (cpu.esp, 12)] {
+        for (addr, size) in [(frustum, 0x1bc), (cpu.ecx, 16), (cpu.esp, 8)] {
             if dest < at(addr, size)? && end > addr {
                 return Err(Refusal::Layout);
             }
@@ -163,96 +163,93 @@ pub(super) fn install(b: &mut Builder) {
     let before = Arc::clone(&state);
     let stage = SceneList::WindowRecord;
     b.raw()
-        .before(
-            &points::VIEW_WINDOW_BUILD,
-            "materialize portal window",
-            move |c| {
-                if c.addr != points::VIEW_WINDOW_BUILD.base {
-                    return Ok(Flow::Continue);
-                }
-                let runtime = Arc::clone(c.ctx.runtime());
-                let mut mem = runtime.memory();
-                if mem.u32(c.cpu.esp).ok() != Some(CALLER) {
-                    return Ok(Flow::Continue);
-                }
-                let mut state = before.lock().unwrap_or_else(|e| e.into_inner());
-                state.scope();
-                let key = (c.ctx.thread_id, c.cpu.esp.wrapping_add(12));
-                state.pending.remove(&key);
-                let plan = match Window::read(&*mem, c.cpu) {
-                    Ok(window) => window,
-                    Err(why) => {
-                        stage.count(SceneListResult::Fallback);
-                        stage.count(match why {
-                            Refusal::Memory => SceneListResult::Memory,
-                            Refusal::Unsupported => SceneListResult::Unsupported,
-                            _ => SceneListResult::Layout,
-                        });
-                        return Ok(Flow::Continue);
-                    }
-                };
-                if state.verified.get(&plan.dest) != Some(&plan.inputs) {
-                    state.pending.insert(key, plan);
+        .before(&PORTAL_WINDOW_CALL, "materialize portal window", move |c| {
+            if c.addr != PORTAL_WINDOW_CALL.base {
+                return Ok(Flow::Continue);
+            }
+            let runtime = Arc::clone(c.ctx.runtime());
+            if !runtime.read_dispatch(|d| {
+                d.has_generated(PORTAL_WINDOW_READY.base)
+                    && d.override_name(points::VIEW_WINDOW_BUILD.base).is_none()
+            }) {
+                stage.count(SceneListResult::Fallback);
+                stage.count(SceneListResult::Unsupported);
+                return Ok(Flow::Continue);
+            }
+            let mut mem = runtime.memory();
+            let mut state = before.lock().unwrap_or_else(|e| e.into_inner());
+            state.scope();
+            let key = (c.ctx.thread_id, c.cpu.esp.wrapping_add(8));
+            state.pending.remove(&key);
+            let plan = match Window::read(&*mem, c.cpu) {
+                Ok(window) => window,
+                Err(why) => {
                     stage.count(SceneListResult::Fallback);
+                    stage.count(match why {
+                        Refusal::Memory => SceneListResult::Memory,
+                        Refusal::Unsupported => SceneListResult::Unsupported,
+                        _ => SceneListResult::Layout,
+                    });
                     return Ok(Flow::Continue);
                 }
-                // Preflight before changing ESP, memory, or the return registers.
-                if plan.accepted
-                    && (mem.check(plan.dest, SIZE, Access::Write, 1).is_err()
-                        || mem.check(plan.argument_addr, 4, Access::Write, 1).is_err())
-                {
-                    stage.count(SceneListResult::Memory);
-                    stage.count(SceneListResult::Fallback);
-                    return Ok(Flow::Continue);
+            };
+            if state.verified.get(&plan.dest) != Some(&plan.inputs) {
+                state.pending.insert(key, plan);
+                stage.count(SceneListResult::Fallback);
+                return Ok(Flow::Continue);
+            }
+            // Preflight before changing ESP, memory, or the return registers.
+            if plan.accepted
+                && (mem.check(plan.dest, SIZE, Access::Write, 1).is_err()
+                    || mem.check(plan.argument_addr, 4, Access::Write, 1).is_err())
+            {
+                stage.count(SceneListResult::Memory);
+                stage.count(SceneListResult::Fallback);
+                return Ok(Flow::Continue);
+            }
+            if plan.accepted {
+                for (offset, bytes) in [
+                    (0u32, &plan.image[..4]),
+                    (0x10, &plan.image[0x10..0x20]),
+                    (0x24, &plan.image[0x24..]),
+                ] {
+                    mem.write_bytes_from(c.addr, plan.dest + offset, bytes, 1)?;
                 }
-                let ret = mem.ret(c.cpu, 8)?;
-                if plan.accepted {
-                    for (offset, bytes) in [
-                        (0u32, &plan.image[..4]),
-                        (0x10, &plan.image[0x10..0x20]),
-                        (0x24, &plan.image[0x24..]),
-                    ] {
-                        mem.write_bytes_from(c.addr, plan.dest + offset, bytes, 1)?;
-                    }
-                    mem.write_bytes_from(
-                        c.addr,
-                        plan.argument_addr,
-                        &plan.argument_after.to_le_bytes(),
-                        1,
-                    )?;
-                }
-                plan.registers.apply(c.cpu);
-                stage.count(SceneListResult::Native);
-                Ok(Flow::Return(ret))
-            },
-        )
+                mem.write_bytes_from(
+                    c.addr,
+                    plan.argument_addr,
+                    &plan.argument_after.to_le_bytes(),
+                    1,
+                )?;
+            }
+            plan.registers.apply(c.cpu);
+            stage.count(SceneListResult::Native);
+            c.cpu.esp = c.cpu.esp.wrapping_add(8);
+            Ok(Flow::Return(TransferAbi::jump(PORTAL_WINDOW_READY.base)))
+        })
         .optional()
         .context_only();
     b.raw()
-        .observe_after(
-            &points::VIEW_WINDOW_BUILD,
-            "compare portal window",
-            move |o| {
-                let mem = o.guest();
-                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                state.scope();
-                if let Some(plan) = state.pending.remove(&(o.thread_id, o.cpu.esp)) {
-                    stage.count(SceneListResult::Compared);
-                    if plan.matches(&*mem, o.cpu) == Ok(true) {
-                        // Two visibility buffers, each with at most LIMIT windows.
-                        if state.verified.len() >= 2 * usize::from(LIMIT)
-                            && !state.verified.contains_key(&plan.dest)
-                        {
-                            state.verified.clear();
-                        }
-                        state.verified.insert(plan.dest, plan.inputs);
-                    } else {
-                        state.verified.remove(&plan.dest);
-                        stage.count(SceneListResult::Mismatch);
+        .observe_before(&PORTAL_WINDOW_READY, "compare portal window", move |o| {
+            let mem = o.guest();
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            state.scope();
+            if let Some(plan) = state.pending.remove(&(o.thread_id, o.cpu.esp)) {
+                stage.count(SceneListResult::Compared);
+                if plan.matches(&*mem, o.cpu) == Ok(true) {
+                    // Two visibility buffers, each with at most LIMIT windows.
+                    if state.verified.len() >= 2 * usize::from(LIMIT)
+                        && !state.verified.contains_key(&plan.dest)
+                    {
+                        state.verified.clear();
                     }
+                    state.verified.insert(plan.dest, plan.inputs);
+                } else {
+                    state.verified.remove(&plan.dest);
+                    stage.count(SceneListResult::Mismatch);
                 }
-            },
-        )
+            }
+        })
         .optional()
         .context_only();
 }
@@ -270,8 +267,8 @@ mod tests {
         m.put_u32(objects::MAIN_VIS, regions);
         m.put_u16(regions + COUNT, 1);
         m.put(regions + WINDOWS, &[0x93; SIZE]);
-        m.put_u32(stack + 4, camera);
-        m.put_u32(stack + 8, 3);
+        m.put_u32(stack, camera);
+        m.put_u32(stack + 4, 3);
         m.put_u32(guest::FRUSTUM_BOUNDS, bounds);
         m.map(bounds, 24);
         m.put_f32(guest::FRUSTUM_UNIT, 1.);

@@ -191,6 +191,18 @@ one; axes right, up and back), out to the distance `k` at view frustum `+0x88`:
   A local plane goes to the world as `n = (r2·z + r1·y) + r0·x`,
   `d = ((t.y·n.y + d) + t.z·n.z) + t.x·n.x`.
 
+At the merged node's call to `0x00163db0`, the native record builder
+uses the live frustum's scaled matrix and tangent rectangle. It writes
+the view ordinal, rectangle, four corners, eye, bounds, six planes and
+four corner-to-eye vectors. The reference arm at `0x00172f71` checks all
+0x108 slot bytes, the argument word used as scratch, and the returned
+general registers. Exact repeats in that slot and BSP use the Rust writer.
+Camera or rectangle changes reopen the comparison. An armed plane
+diagnostic, unsupported FP state or unread input leaves the guest call in
+place. Frame counters use the prefix `native_scene_lists_window_record_`.
+See `scene_extract::visibility::window_record` and
+`render_bridge::native_scene_lists::window`.
+
 In mode 0 an object is listed when its sphere reaches a frustum of the
 cluster it is referenced from (`0x00165010` over `0x00181800`): it is out
 when wholly past a side of the box, or when

@@ -7,6 +7,9 @@ use super::{
 };
 
 const RENDERER: &str = "docs/graphics/native-renderer.md";
+/// The merged node's window call and the first instruction that uses AL.
+pub const PORTAL_WINDOW_CALL: Point = Point::new("PORTAL_WINDOW_CALL", 0x0017_2f6c, Sig::Site, RENDERER);
+pub const PORTAL_WINDOW_READY: Point = Point::new("PORTAL_WINDOW_READY", 0x0017_2f71, Sig::Site, RENDERER);
 const PARTICLES: &str = "docs/graphics/native-particles.md";
 const DECALS: &str = "docs/graphics/native-decals-research.md";
 
@@ -114,6 +117,8 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         SCENE_TRANSPARENTS_END.base,
         WATER_INDEX_READY.base,
         WATER_INDEX_END,
+        PORTAL_WINDOW_CALL.base,
+        PORTAL_WINDOW_READY.base,
         HUD_QUAD_READY.base,
         SCREEN_STRIP_READY.base,
         PARTICLE_EMIT_READY.base,
