@@ -13,6 +13,10 @@
 //! body to the guest untouched. No guest code resumes inside a skipped
 //! slot.
 //!
+//! At the entry, before either, E3's chosen first-person lights that
+//! have no slot are queued over the first-person parts
+//! (`chosen::first_person::at_pass`).
+//!
 //! With the walk off, L6 runs the body in Rust: every callee a guest
 //! call naming the guest's return site through `passes::caller`, so the
 //! layer draws and the walk's builds that tell the first-person layers
@@ -86,6 +90,14 @@ pub(super) fn install(b: &mut Builder) {
                 forget();
                 if addr != points::FIRST_PERSON_LIGHTS.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
+                }
+                {
+                    // E3's chosen first-person lights that have no slot
+                    // here: queued as E3 stages before the slots' passes,
+                    // whatever runs the body.
+                    let runtime = Arc::clone(ctx.runtime());
+                    let mut mem = runtime.memory();
+                    super::chosen::first_person::at_pass(&mut *mem);
                 }
                 let fpu = Fpu {
                     mxcsr: cpu.mxcsr,

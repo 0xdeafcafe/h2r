@@ -277,6 +277,18 @@ pub fn plan(m: &dyn GuestMemory, entry_esp: u32, fpu: Fpu) -> Result<Plan> {
     Ok(Plan { entry_esp, fpu })
 }
 
+/// The light datums the table holds for this view's first-person pass,
+/// in slot order (`[0x00509440]` slots of `0x004c6b00 + 0x408·n`), a
+/// slot with no records included: the lights retail's pass
+/// (`0x000404b0`) replays or considered. A count past the table's eight
+/// slots reads eight; a negative one, none.
+pub fn recorded(m: &dyn GuestMemory) -> std::result::Result<Vec<u32>, MemFault> {
+    let n = m.i32(FIRST_PERSON_COUNT)?.clamp(0, SLOTS) as u32;
+    (0..n)
+        .map(|s| m.u32(slot_base(s).wrapping_add(SLOT_LIGHT)))
+        .collect()
+}
+
 /// What one slot's light did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FirstPersonLight {
@@ -954,6 +966,24 @@ mod tests {
         assert!(RECEIVERS.end < TARGET_1.target && TARGET_1.end < DIFFUSE.target);
         assert!(DIFFUSE.end < SPECULAR.target && SPECULAR.end < site::STENCIL_ENABLE);
         assert!(site::PUSH_STATE < site::VIEW_TARGET);
+    }
+
+    #[test]
+    fn the_recorded_lights_are_the_tables_slots_up_to_its_count() {
+        let mut m = crate::memory::FlatMemory::new(FIRST_PERSON_TABLE, 0x0005_0000);
+        for s in 0..SLOTS as u32 {
+            m.set_u32(slot_base(s) + SLOT_LIGHT, 0x00a0_0000 | s)
+                .unwrap();
+        }
+        m.set_i32(FIRST_PERSON_COUNT, 3).unwrap();
+        assert_eq!(
+            recorded(&m).unwrap(),
+            [0x00a0_0000, 0x00a0_0001, 0x00a0_0002]
+        );
+        m.set_i32(FIRST_PERSON_COUNT, 12).unwrap();
+        assert_eq!(recorded(&m).unwrap().len(), SLOTS as usize, "eight at most");
+        m.set_i32(FIRST_PERSON_COUNT, -1).unwrap();
+        assert!(recorded(&m).unwrap().is_empty());
     }
 
     #[test]

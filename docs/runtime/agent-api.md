@@ -1977,6 +1977,15 @@ h2 agent render.parity '{"arm": true}'
   lights beyond the guest's, queued as E3 stages, ready but not queued,
   with no constants to draw from, and handed to the host with their
   shadowed implementations over the renderer's cone shadow),
+  `scene_e3_first_person_lights_drawn`, `scene_e3_first_person_lights_kept`,
+  `scene_e3_first_person_lights_unread` and
+  `scene_e3_first_person_lights_far` (E3's chosen first-person lights
+  retail's first-person pass did not record: queued as E3 stages over the
+  first-person parts, ready but not queued, with no constants, and whose
+  sphere does not reach the eye), `scene_e3_first_person_parts` and
+  `scene_e3_first_person_parts_left` (the first-person object parts
+  offered with them, and those left out: subparts, auxiliary depth or no
+  rows),
   `scene_light_entries` and
   `scene_light_entry_remainder_<cause>` (sorted entries left to the
   guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
