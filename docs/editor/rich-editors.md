@@ -530,7 +530,7 @@ scenario, so edits save as an overlay the converter applies, the way
 
 | Editor | Payoff | Stands on | Blocked by |
 |---|---|---|---|
-| **Model poses and animations**: pick an animation, scrub it on the model | high: it is the preview every character, weapon and vehicle edit wants, and the face preview needs it | `tags::anim::AnimationGraph`, `anim_sample` (every retail codec), the native view | nothing; slice M1. Editing animation data is out of scope ([modeling.md](modeling.md)) |
+| **Model poses and animations**: pick an animation, scrub it on the model | high: it is the preview every character, weapon and vehicle edit wants, and the face preview needs it | `tags::anim::AnimationGraph`, `anim_sample` (every retail codec), the native view | nothing; slice M1. Editing animation data is the animation editor of [studio-redesign.md](studio-redesign.md) |
 | **Sound audition**: play any sound, loop or dialogue line | high for little work | as "Sounds" | nothing; slice A1 |
 | **Strings**: every `unic` string by name and language, searched | medium: the first thing a map author changes | `tags::localization` (read only) | writing: string bytes live in the cache's language tables, outside the metadata, and no writer exists. Slice N1 is the viewer; the write is named, not sliced |
 | **Effects, particles, lights and flares** with a preview | high, but large | `tags::effects::{effect, particle, movement, contrail, light, lens}`, curves and colours from this page | a preview needs effect drawing in the native view, which is the game renderer's work first |

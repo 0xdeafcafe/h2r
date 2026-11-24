@@ -1,0 +1,811 @@
+# Studio, redesigned: workspaces, packages, and the animation and sound editors
+
+Status: Design. Nothing on this page is built except what "What exists" names; the slices at the end are the order to build it in.
+Code: `crates/apps/studio/src` (the shell, `ui.rs`, `ui/layout.rs`, `app.rs`), `crates/apps/studio-proto/src` (the API's wire), `crates/formats/content/src/package/` (new: manifest, id, set), `crates/tools/workspace` (new: builders and the build), `crates/apps/boot/src/packages.rs` (new: the game's side). Tests: each slice names its own.
+Switch: none.
+
+Studio is one window with eight workspaces over one asset browser, one
+inspector and one preview, and every piece of content we add to the game
+is a **package**: a folder with a manifest that the game build, the game's
+boot, Studio and Live all read the same way. Halo 1 maps, the Pogo Stick,
+our menu screens, the HUD kit's HUDs, Firefight, Forge, the Map Pack's
+rotations and the rules modes stop being separate injection paths in
+`boot` and become packages in one load order. The rules that must hold:
+a package holds our own content and patches, never bytes from a disc;
+every action in the window is a method of the agent API
+([agent-api.md](agent-api.md)); Studio stays native Rust on Dear ImGui.
+
+Evidence labels are those of [docs-style.md](../meta/docs-style.md).
+"**E first**" marks a step that needs a read of the retail executable
+before its slice starts.
+
+## What exists
+
+| Part | State | Where |
+|---|---|---|
+| The window: tool tabs (Map, Variants, Playlists, UI, HUD), a dock layout per tool, Go to anything, the game link bar | built | `ui/bar.rs`, `ui/layout.rs`, `ui/palette.rs`, `app::ToolKind` |
+| One command layer for the window and the API | built | `App::dispatch`, `App::perform` (`app.rs`), `api/mod.rs` |
+| The kind registry: which editor and preview a tag group gets | built | `app/kinds.rs`, `tag.kinds` |
+| The field panel and its row model | built | `fields.rs`, `fields/row.rs` |
+| Pairing, the live mirror, `pair.preview`, `pair.audio` | built | `play/`, `api/preview.rs`, `api/pair.rs` |
+| Map packages: a base plus patch layers, `MapId`, the resolver, Live sharing, mod packs | built | `crates/formats/content`, `crates/runtime/vfs/src/packages.rs`, [maps.md](../game/maps.md) |
+| Sound audition (A1), sound measurement | built | `app/audition.rs`, `ui/sound.rs`, `api/sound.rs`, `api/sound_measure.rs` |
+| Announcer lines and voice cloning | built | [announcer.md](announcer.md), [voice-cloning.md](voice-cloning.md) |
+| Animation graphs read and sampled, every retail codec | built, no view | `crates/formats/tags/src/anim.rs`, `anim_sample.rs` ([animation.md](../formats/animation.md)) |
+| A `jmad` writer (static stream and the 8-byte quantised codec) | built, inside the Halo 1 converter | `crates/tools/h1-assets/src/models/jmad.rs` |
+| An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
+| Layers, projects, kits as build steps, edit files | design | [tag-workspace.md](tag-workspace.md) |
+
+Each piece of new content reaches the game by a path of its own
+(**Code**, `crates/apps/boot/src/lib.rs`, the `vfs::Chain` of rewrites and
+the calls before it):
+
+| Content | Source in Git | How it gets in |
+|---|---|---|
+| Halo 1 maps and campaign | none (the user's disc) | `h1_import::auto_import` before boot (`crates/apps/cli/src/h1_import.rs`) writes `<data>/maps/h1_<map>/` and `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
+| Pogo Stick | `art/pogo/` | `pogo_kit::rewrite::PogoRewrite`, a `vfs::Rewrite` with its own cache |
+| Menu screens, retail screen edits | `assets/ui/screens/`, `assets/ui/retail-edits/`, `assets/ui/design.yaml` | `ui_kit::inject::ScreensRewrite::baked` |
+| HUD kit HUDs | Rust (`crates/rewrites/hud-kit-core/src/huds/`) | `hud_kit::install` in `boot/src/registration.rs`, compiled against the loaded map |
+| Firefight | Rust (`crates/tools/firefight-kit`), wave sets in `crates/formats/firefight` | `firefight_kit::build_package` writes a map package per base map (`h2 firefight kit`, `boot/src/test_maps_recipes.rs`, `crates/live/host-data/src/bundle/kits.rs`) |
+| Forge | `.h2forge` documents | `forge_build::build` materialises a format 2 map package ([forge-design.md](../game/forge-design.md)) |
+| Map Pack maps and rotations | none (the user's disc) | `h2 import-mappack` and the automatic install ([map-pack.md](../game/map-pack.md)); rotations in `crates/live/live-proto/src/hopper/defaults.rs` |
+| Rules modes and variants | `crates/formats/rules/src/builtin/*.rules` | `include_str!` in `rules::builtin`; list entries by `community_variants` |
+| Campaign cards, icon fonts, the bot gear glyph | Rust and baked art | `campaign_cards::CardRewrite`, `icons::font_rewrite`, `bot_mark::GearRewrite` |
+| Announcer clips | `art/announcer/` | baked; one WAV per medal of ours (`art/announcer/README.md`) |
+| Community mods | none (Live) | imported as map packages with credit (`h2 live mods import`), grouped as mod packs |
+
+## The new UI
+
+### The shell
+
+One window. The workspace bar replaces the tool tabs. A workspace is a
+dock layout, a filter on the browser and a default editor; it holds no
+document of its own. Documents are tabs in the centre, and any document
+opens in any workspace.
+
+```
++--------------------------------------------------------------------------------------+
+| File  Edit  View  Package  Game  Help                                                |
++--------------------------------------------------------------------------------------+
+| Content | Map | Animation | Sound | UI/HUD | Rules | Playtest | Packages             |
+|                              into: pogo *  [v]          (o) Paired: h2 fast  > || >| |
++----------------+---------------------------------------------------+-----------------+
+| BROWSER        | pogo_unsc.weap x | pogo_unsc.mode | lockout.scnr  | INSPECTOR       |
+| [search......] +---------------------------------------------------+ pogo_unsc       |
+| Kind: [All  v] |                                                   | Weapon          |
+|                |                                                   | > Handling      |
+| v Packages     |              editor and preview                   |   Ready time    |
+|   v pogo  (*)  |          of the document in front                 |   0.25 s        |
+|     weapons    |                                                   | > Barrel        |
+|     models     |                                                   | > Model         |
+|     sounds     |                                                   |   -> pogo_unsc  |
+|   > ui         |                                                   |      .hlmt      |
+| v Disc         |  Preview: (o) Studio  ( ) My game  ( ) Attached   |                 |
+|   > Halo 2     |                                                   | Where used (3)  |
+|   > Map Pack   |                                                   | Changed by: pogo|
+|   > Halo 1     |                                                   |                 |
++----------------+---------------------------------------------------+-----------------+
+| Problems (2) | Timeline | Pending | Game | Log                                       |
+|  ! pogo  weapons\pogo_unsc.weap  barrels[0].rounds_per_second: no such field         |
++--------------------------------------------------------------------------------------+
+| pogo: 14 items, built 0.8 s ago                         hint under the pointer  60fps|
++--------------------------------------------------------------------------------------+
+```
+
+- **Workspace bar** (`ui/bar.rs`). Left: the eight workspaces. Middle:
+  the **edit target**, the package that receives every edit ("into:
+  pogo"), with `*` while it has unsaved edits. Right: the game link pill
+  and its Play, Pause and Step controls, as built.
+- **Browser** (left). One tree for everything Studio can open, in place
+  of the Maps list, the Tags tab, the Variants and Playlists lists, the
+  screen folders and the HUD list.
+- **Documents** (centre). One tab per open asset. Each has its own undo
+  stack, as `doc.list` reports them. The editor is the one
+  `app::kinds::KINDS` names for the asset's kind.
+- **Inspector** (right). The field panel's rows (`fields::rows`) for the
+  selection in the front document, with **Where used** and **Changed
+  by** (the packages whose edit lines touch the tag).
+- **Bottom dock.** **Problems** is one list for every check and build
+  error; **Timeline** is shared by the Animation, Sound and Playtest
+  workspaces; **Pending**, **Game** and **Log** are the built panels.
+- **Go to anything** (`ui/palette.rs`) searches assets of every source,
+  commands and workspaces.
+
+### The browser
+
+Three roots: **Packages** (ours and the user's, the edit target first),
+**Disc** (the Halo 2 disc, the Map Pack and the Halo 1 disc, read-only,
+through `editor_core`'s sources) and **Live** (packages the server
+offers). Under a root, assets group by kind, not by map: Maps, Objects,
+Models, Animations, Bitmaps, Shaders, Effects, Sounds, Screens, HUDs,
+Rules, Variants, Playlists, Strings. A **Kind** picker and a search box
+(every word must match) narrow the tree; the workspace sets the picker's
+default.
+
+A row shows a thumbnail (a bitmap's image, a model through
+`model.render`, a sound's waveform, a screen through `ui.render`), the
+name, and a badge: **disc**, **edited by <package>**, **new in
+<package>**. A disc asset that several maps hold is one row, with the
+maps as its children; tags that differ between maps are told apart by the
+tag tree's variants ([tag-repo.md](../formats/tag-repo.md)), and until the
+tree is extracted (slice W3 of [tag-workspace.md](tag-workspace.md)) the
+Disc root lists per map, as the Maps list and Tags tab do.
+
+Double-click opens a document. Right-click offers **Open**, **Open in
+workspace**, **Copy into <edit target>** (for a disc asset: a new tag
+`like:` it, which holds no disc bytes), **Show edits**, **Where used**.
+Dragging a source file (PNG, WAV, glTF, YAML, `.rules`) onto a package
+runs the importer for its type.
+
+### Editing a disc asset
+
+A disc asset opens editable. The first change adds an edit line to the
+edit target (`edits/<name>.yaml`, the format of
+[tag-workspace.md](tag-workspace.md), "Edits are data"); the inspector
+marks the row and names the package. There is no "Save as package" form
+and no standalone-map save: **Save** writes the package's files, and
+**Package > Export map...** writes a whole `.map` for use outside the
+game. With no edit target set, the first edit asks for one (a picker
+dialog: an existing package or **New package...**).
+
+### Preview and the paired game
+
+Every document's preview has one target switch, the three views of
+[live-editors.md](live-editors.md): **Studio** (the native view or the
+kind's own renderer), **My game** (a game Studio started) and
+**Attached** (a game someone else started). The link pill, pairing and
+Pending are the built ones ([live-mirror.md](live-mirror.md)). The
+**Game** panel shows the game's frames once
+[game-view.md](game-view.md)'s panel is built. **Preview in game**
+(Cmd/Ctrl+Enter) runs `pair.preview` for the front document's kind and
+puts the picture and its findings in Problems.
+
+### The workspaces
+
+| Workspace | Browser shows | Centre | Bottom | Holds today's |
+|---|---|---|---|---|
+| **Content** | objects, models, bitmaps, shaders, effects, strings | the kind's editor with the model or bitmap preview | Problems | Tags tool, Textures tool, Modeling section, `model.*`, image generation |
+| **Map** | maps, and the open map's Scene as a second tab | the viewport with gizmo and layers | Pending, Game | Scenario tool, Scene, layers, collision and nav picks, Halo 1 overlay |
+| **Animation** | animation graphs and models | the posed model | Timeline with tracks and curves | nothing (new) |
+| **Sound** | sounds, dialogue, voices | waveform, permutations, mouth track | Timeline | the Sound and Voices windows |
+| **UI/HUD** | screens and HUDs | the 640 by 480 canvas | Problems | UI Screens tool, HUD tool |
+| **Rules** | scripts, variants, playlists | variant settings, script read-only, check and sim reports | Problems | Variants tool, Playlists tool, Scripts tab, the game type script window |
+| **Playtest** | maps and saved runs | the viewport with result overlays | Timeline (a run's ticks) | `playtest.*` and its overlays ([playtest.md](playtest.md)) |
+| **Packages** | packages only | the manifest, items, order and build | Problems, Log | Save as package, the Maps list's package cards, the Map Pack window |
+
+**Map.**
+
+```
++----------------+---------------------------------------------------+-----------------+
+| BROWSER | SCENE| lockout.scnr x                                    | INSPECTOR       |
+| [filter......] | [Move][Rotate][Scale] Snap 0.5  Show v  Lighting v| Weapon spawn #4 |
+| v Weapons (12) |                                                   | Transform       |
+|   #4 battle r. |                 3D viewport                       |  x 3.2 y 1 z 0.4|
+| v Vehicles (0) |           placements, layers, gizmo               | Object          |
+| v Spawns (24)  |                                                   |  battle_rifle > |
+| v Volumes (3)  |                                                   | Tags            |
++----------------+---------------------------------------------------+-----------------+
+```
+
+**Rules.** Scripts are written in VS Code or Zed through the extensions
+([rules-editors.md](rules-editors.md)). Studio shows a script read-only
+with its problems, its options as a form, its check and simulation
+reports (`rules::workbench`), **Open in editor** (`app/external.rs`) and
+**Reload into game** (`rules.reload`). The text editing of
+`app/rules_edit.rs` and `ui/game_script.rs` (completion, rename, the
+formatter) is deleted; the language server is its one home.
+
+### Navigation
+
+- Cmd/Ctrl+1 to 8 switch workspace; Cmd/Ctrl+P is Go to anything;
+  Cmd/Ctrl+Tab cycles documents; Alt+Left and Alt+Right step the
+  navigation history across documents (`app/navigation.rs`).
+- A reference row's **Show this tag** opens or focuses the target's
+  document. A document remembers the workspace it was last used in.
+- One layout per workspace persists in `h2-editor.ini`; **View > Reset
+  layout** restores the workspace shown.
+
+### The API
+
+Every row above is a method. The shell's own, in
+`crates/apps/studio/src/api/shell.rs` (new):
+
+| Method | Does |
+|---|---|
+| `shell.workspace {name?}` | reads or sets the workspace |
+| `shell.tabs`, `shell.open {asset}`, `shell.focus {doc}`, `shell.close {doc, discard?}` | the document tabs; `doc.*` takes the same ids |
+| `asset.list {root?, package?, kind?, query?, limit?}` | the browser's rows with kind, origin badge and the packages that edit them |
+| `asset.thumb {asset, out?}` | a thumbnail as a PNG path |
+| `asset.copy {asset, package}` | Copy into a package |
+| `problems.list {source?}` | the Problems panel |
+| `preview.target {doc?, target?}` | the preview switch |
+| `package.*` | below, "Studio's side" |
+
+`doc.open` loses its per-tool forms and takes an asset. `tag.*`,
+`scenario.*`, `variant.*`, `playlist.*`, `ui.*`, `hud.*`, `pair.*` and
+`mirror.*` keep their params; where they took `doc: "map"` they take a
+document id.
+
+### What goes away
+
+- `ToolKind` as a mode, the tool tabs and the per-tool `ToolWindows`
+  (`ui/layout.rs`): a workspace is a layout.
+- The Maps list and its cards (`ui/map_list.rs`, `app/map_cards.rs`),
+  the Tags tab's tree as a separate list, the per-tool list panels: the
+  browser.
+- **Save as package...**, the package form of `doc.save`, **Save as...**
+  for a `.map`, `active.toml`: the edit target and **Export map...**.
+- The floating Sound, Voices, Image and Map Pack windows: panes of the
+  Sound, Content and Packages workspaces.
+- The in-window script text editor (above).
+- `.h2tag` bundles as a way to move content between maps
+  (`app/tag_bundle.rs`): a bundle copies a map's bytes, so it cannot go
+  in a package. Moving a tag is **Copy into**, which writes text.
+
+## Packages
+
+### The model
+
+A package is a folder with `package.toml` and the files it names. It is
+the unit of authoring, building, enabling, sharing and credit.
+
+- Ours live in Git under `packages/<id>/` and are baked into `h2`
+  (`include_dir`-style, as `pogo_kit::source` and
+  `ui_kit::inject::ScreensRewrite::baked` bake theirs).
+- The user's live under `<data>/packages/<id>/`; so do packages
+  installed from Live.
+- A package holds **sources and data**, never code. What turns a source
+  into tags is a **builder**: a Rust function in a closed registry
+  (`workspace::builders`, new). A package names builders; it cannot add
+  one. Behaviour stays where it is: game features in Rust
+  (`pogo_ride.rs`, the Firefight runtime) and `.rules` scripts in the
+  rules VM. A package says which features it needs.
+
+```toml
+# packages/pogo/package.toml
+[package]
+format = 1
+id = "pogo"                        # lowercase letters, digits, '-'; unique in a set
+name = "Pogo Stick"
+description = "The stick a Superbounce player carries, in three looks."
+image = "preview.png"
+requires = ["core"]                # must be present and load first
+after = ["superbounce"]            # order only, when present
+features = ["pogo"]                # game features the content needs
+
+[credit]                           # live_proto::maps::Credit
+authors = ["Alexander Forbes-Reed"]
+notes = "Original shapes and paint."
+
+[[item]]
+kind = "model"                     # a builder
+source = "models/unsc.yaml"
+tag = 'objects\weapons\multiplayer\pogo\unsc\pogo_unsc'
+maps = "multiplayer"               # where it is added
+
+[[item]]
+kind = "tag"
+source = "tags/pogo_unsc.weap.yaml"
+maps = "multiplayer"
+
+[[item]]
+kind = "sound"
+source = "sounds/spring.wav"
+tag = 'sound\weapons\pogo\spring'
+maps = "multiplayer"
+```
+
+`maps` is `"multiplayer"`, `"campaign"`, `"mainmenu"`, `"shared"`,
+`"all"` or a list of map names. Unknown keys are refused
+(`deny_unknown_fields`, as `content::Manifest`).
+
+### Contents
+
+| `kind` | Source in the package | Builds | Scope |
+|---|---|---|---|
+| `tag` | `<path>.<group>.yaml`: `like:` a disc tag or the group's defaults, then fields by name ([tag-workspace.md](tag-workspace.md), "Authoring and importing") | a new tag | sim |
+| `edits` | an edit file: `set` and `block` lines on tags that exist | changed fields | sim |
+| `model` | our primitive YAML (`art/pogo/*.yaml`'s form) or glTF | `mode`, `coll`, `phmo`, `hlmt` | sim |
+| `bitmap` | PNG | `bitm` | client |
+| `animation` | `.anim.yaml` or glTF clips, with the graph and action they join | animations in a `jmad` | sim |
+| `sound` | WAV and an optional `.sound.yaml` (permutations, class, edits, mouth curve) | `snd!`, the gestalt merged | client |
+| `screens` | screen YAML and `design.yaml` | `wgit` tags and `wgtz` rows ([ui-in-maps.md](../game/ui-in-maps.md)) | client |
+| `screen-edits` | retail screen edit files | changed `wgit` fields | client |
+| `hud` | HUD kit YAML (a `hud_kit_core::model::Hud` as data) | HUD kit records | client |
+| `strings` | YAML by name and language | `unic` rows | client |
+| `rules` | `.rules` | a compiled script in the rules registry | sim |
+| `variant` | `.h2variant` or a script name | a built-in list entry | sim |
+| `playlist` | a hopper fragment: playlists and entries by map name or `MapId` | rows of the default hopper | Live |
+| `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, `scenario`, the items it takes | a map package under `<data>/maps/` | sim |
+| `map-patch` | a PPF, IPS or BPS file with the base's name and SHA-256 | a map package with that layer | sim |
+| `convert` | a recipe: a converter name and its settings; the input is the user's own disc | map packages and campaign files | sim |
+| `data` | a file a named game feature reads (the Pogo's pose set, Firefight's wave sets) | handed to the feature at boot | per feature |
+| `kit` | a named code builder's settings (`firefight`, `forge-slots`, `campaign-cards`, `glyphs`) | what that builder adds | per builder |
+
+**Scope** is the builder's, not the author's: `sim` items change what the
+simulation reads, so every peer of a networked game needs them; `client`
+items change only what one player sees and hears; `Live` items are read
+by the server. Which tag groups a client item may touch without moving
+the sim hash is **S**: the check is a lockstep run with and without the
+item ([live-coop.md](../live/live-coop.md)).
+
+**What a package may not hold.** `package.check` refuses, naming the
+file: a cache map; a `.h2tag` bundle; a `tag` item whose YAML carries raw
+bytes; a `map-patch` without its base hash; anything under a voice
+dataset or model weights folder ([voice-cloning.md](voice-cloning.md));
+a file over the store's size cap. Live refuses any blob whose hash is on
+the retail list, as it does for maps ([maps.md](../game/maps.md) section
+5).
+
+### Identity, dependencies and load order
+
+- **`PackageId`** is the SHA-256 of the manifest's canonical JSON
+  (`content::canonicalize`) with each `source` replaced by its file's
+  SHA-256, and without the display fields and `[credit]`, the way
+  `MapId` is made. The build writes the file hashes to `package.lock`
+  beside the manifest; the lock is what is signed.
+- **`requires`** names packages that must be in the set. A missing one
+  disables the package with a line in Problems and the boot log; it is
+  never loaded half.
+- **Order**: a topological sort over `requires` and `after`, ties broken
+  by the user's order (`<data>/packages/set.toml`, which also holds what
+  is switched off), then by id. A cycle is refused, naming its members.
+  Every package is on unless the set file turns it off.
+- **Conflicts.** Two packages that add the same tag path stop the build,
+  naming both. Two edit lines on the same field: the later package wins
+  and Problems lists the override. An edit whose path or `was` hash does
+  not match stops the build with the line.
+- **The content set** of a game is the ordered list of the `PackageId`s
+  that have a `sim` item. Its hash goes where `map_id` goes (below).
+
+### How the game consumes packages
+
+`boot` builds one `content::package::Set` (baked packages, then
+`<data>/packages/`, then `set.toml`) and uses it in four places, which
+replace the paths in "What exists":
+
+1. **Prepare**, before boot (`h2 play`, `h2 run`, `h2 serve`, in place
+   of `h1_import::auto_import` and the Map Pack's automatic install):
+   `convert` items run when their input disc is present and their stamp
+   is stale; `map` and `map-patch` items build to map packages under
+   `<data>/maps/`. `new_maps::install_at_boot`, the resolver and `MapId`
+   are unchanged: a map package stays the form the VFS loads and Live
+   names.
+2. **Per-map items**: one `vfs::Rewrite`, `PackageRewrite`
+   (`crates/apps/boot/src/packages.rs`), is the whole chain. For a map
+   the game reads, it runs every enabled item whose `maps` matches, in
+   order, through `workspace::build` on a `TagSet`, and serves the
+   result from `<data>/packages/cache/<map sha>-<set fingerprint>.map`.
+   A second read is a cache hit. The four rewrites with caches of their
+   own (`PogoRewrite`, `ScreensRewrite`, `CardRewrite`, the font
+   rewrites) are deleted.
+3. **Set items**: `rules` items fill the registry `rules::builtin::ALL`
+   is today; `variant` items are the built-in list entries
+   `community_variants` builds; `hud` items are what `hud_kit::install`
+   compiles against the loaded map; `playlist` items are merged into the
+   default hopper by the server (`live-server/src/default_hopper.rs`).
+4. **Features**: a package whose `features` names a switch that is off
+   is skipped whole, so turning `pogo` off still removes the stick.
+
+Studio's build of a map (`package.build`) calls the same
+`workspace::build`, with a package's sources read from its folder
+instead of the baked copy, which is how a lane sees a changed atlas
+without rebuilding `h2`. A dedicated host gets the same set in its data
+bundle (`crates/live/host-data`).
+
+This is the build of [tag-workspace.md](tag-workspace.md) with packages
+as its unit: a project is a `map` item, a `ContentKit` is a builder, and
+`KitRewrite` is `PackageRewrite`.
+
+### Each content path as a package
+
+| Package | Items | Replaces |
+|---|---|---|
+| `core` | `rules` (the seven engine ports), `strings`, `kit: glyphs` (icon fonts, the gear) | `rules::builtin`'s engine constants, `icons::font_rewrite`, `bot_mark::GearRewrite` |
+| `ui` | `screens`, `screen-edits`, `bitmap` | `assets/ui/`, `ScreensRewrite` |
+| `modes` | `rules`, `variant` (the community modes), `playlist` | the rest of `rules/src/builtin/`, `community_variants`' table of scripts |
+| `superbounce` | `rules`, `hud`, `sound` (the announcer clips), `screens` | `hud-kit-core/src/huds/superbounce*.rs`, `art/announcer/` |
+| `pogo` | `model`, `bitmap`, `tag`, `sound`, `data` (the pose set `pogo_pose.rs` reads) | `art/pogo/`, `pogo_kit::{kit, inject, rewrite}`; `pogo_kit::mesh` becomes the `model` builder |
+| `firefight` | `kit: firefight` on the maps that take one, `data` (the wave sets), `hud`, `screens`, `rules` | `firefight_kit::build_package` callers, `huds/firefight.rs` |
+| `forge` | `kit: forge-slots`, `screens`, `hud`, the object palette as data | `forge_build::kit`, the Forge screens' place in `assets/ui/` |
+| `halo1` | `convert` (converter `halo1`: every multiplayer map in both sandboxes, the campaign), `kit: campaign-cards`, `screens` | `h1_import.rs`'s entry points, `CardRewrite` |
+| `map-pack` | `convert` (converter `map-pack`: the nine maps from the user's Map Pack disc), `playlist` | `mappack_cmd.rs`'s automatic install, the Map Pack rotations in `hopper/defaults.rs` |
+| `stage` | `map` (`fresh`), `model`, `bitmap` | `art/stage/project.toml` ([content-stage.md](content-stage.md)) |
+| a community mod pack | `map-patch` per map, `[credit]` | a Live mod pack's member manifests ([maps.md](../game/maps.md), "The mod repository") |
+| a test map | `map` (`onto`) with `edits` | `scenario_edit::recipe` through `boot/src/test_maps_recipes.rs` ([test-maps.md](../game/test-maps.md)) |
+
+A `convert` item holds the recipe only: which maps, which sandbox, which
+base. The Halo 1 or Map Pack bytes come from the user's disc at prepare
+time and the outputs stay under the data root. The converters stay Rust
+(`crates/tools/h1convert`); the package is what names and orders them,
+and what other packages build on: an `edits` item whose `maps` names a
+converted map is the overlay [modeling.md](modeling.md), "Converted Halo 1
+maps" describes.
+
+### Live: sharing, signing and credit
+
+A package is published as a mod pack is today: files into the content
+store by SHA-256, and the manifest with its lock as a document signed by
+the author's key (the `MapPublished` flow of `live_proto::maps`).
+
+- **Routes.** `GET /v1/packages` lists, `GET /v1/packages/{id}` gives
+  the signed manifest and lock, blobs come from `/v1/content/{hash}`.
+  The mod pack routes become these; a mod pack is a package whose items
+  are `map-patch`. Both homes implement them over the same store trait
+  and the parity suite runs them.
+- **Signing.** The server verifies the signature and every hash in the
+  lock on upload. A client verifies both again on install. Baked
+  packages are trusted as part of the binary. A local, unsigned package
+  loads on its own machine.
+- **Joining.** A session carries the content set's hash and its
+  `PackageId`s beside `map_id`. A joiner missing one downloads it,
+  rebuilds its cache and joins; one it cannot have (blocked, or its base
+  is missing from the joiner's disc) fails the join with the reason,
+  before any map load. Ranked hoppers pin the set.
+- **Credit.** `[credit]` is `live_proto::maps::Credit`. The order of
+  truth stays: an admin's correction, then the publisher's signed
+  credit, then the manifest. The publisher is shown as "uploaded by",
+  never as the author. `docs/game/mod-credits.toml` and
+  `mod-details.toml` keep their role for imported community packs.
+- **Models.** A package with a `model` or `animation` item needs the
+  uploader's `model_uploads` flag
+  ([forge-features.md](../game/forge-features.md), "Custom models on
+  Live").
+- **In game.** The Mods screens (`mods_screen.rs`) list packages; a
+  package's page lists its maps, modes and credit.
+
+### Studio's side
+
+The **Packages** workspace:
+
+```
++----------------+---------------------------------------------------+-----------------+
+| PACKAGES       | pogo  x                                           | INSPECTOR       |
+| [x] core       | Pogo Stick             id pogo    [Check] [Build] | models/unsc.yaml|
+| [x] ui         | requires: core         features: pogo             | kind   model    |
+| [x] modes      +---------------------------------------------------+ tag    ...\pogo_|
+| [x] superbounce| Items (14)                    kind     maps       |        unsc     |
+| [x] pogo    *  |  models/unsc.yaml             model    multiplayer| maps   multipl. |
+| [x] firefight  |  models/covenant.yaml         model    multiplayer| scope  sim      |
+| [ ] halo1  (no |  tags/pogo_unsc.weap.yaml     tag      multiplayer| builds mode coll|
+|      disc)     |  sounds/spring.wav            sound    multiplayer|        phmo hlmt|
+| -- mine --     |  ...                                              |                 |
+| [x] my-lockout | Credit: Alexander Forbes-Reed                     | [Open] [Remove] |
+| -- Live --     | Last build: lockout 0.8 s, 31 tags, +212 KB       |                 |
+|    Get more... | [Set as edit target]  [Publish...]  [Export...]   |                 |
++----------------+---------------------------------------------------+-----------------+
+```
+
+The list is the load order; dragging a row reorders within what
+`requires` allows. A greyed row says why it is off.
+
+| Method | Does |
+|---|---|
+| `package.list` | the set in order: id, name, `PackageId`, on or off and why, item counts, scopes |
+| `package.read {id}` | the manifest, items with what each builds, the lock, problems |
+| `package.new {id, name}`, `package.set {id, path, value}`, `package.item.add`, `package.item.remove` | edits the manifest |
+| `package.target {id?}` | reads or sets the edit target |
+| `package.enable {id, on}`, `package.order {ids}` | writes `set.toml` |
+| `package.check {id}` | the refusals above, missing sources, unknown builders, conflicts with the rest of the set |
+| `package.build {id?, map?}` | builds what the package gives a map, or every map it touches; `{maps: [{map, took_ms, tags, bytes, problems}]}` |
+| `package.play {id, map}` | builds, then loads the map in the paired game |
+| `package.publish {id}`, `package.install {id \| hash}`, `package.export {id, out}` | Live and a folder or archive |
+
+`h2 package check|build|prepare|publish` is the same crate from the
+command line, for the coordinator and CI.
+
+## The animation editor
+
+The Animation workspace reads a `jmad`, poses a model with it, edits
+keys on a timeline and writes the graph back.
+
+```
++----------------+---------------------------------------------------+-----------------+
+| BROWSER        | masterchief.jmad x            on: masterchief.hlmt| INSPECTOR       |
+| Kind: Anim.    |                                                   | r_forearm       |
+| v combat       |                 posed model                       | Rotation        |
+|   rifle        |          (bones, markers, ground)                 |  y 12 p -4 r 0  |
+|     idle       |                                                   | Translation     |
+|     walk_front |   [|<] [<] [ > ] [>] [>|]  frame 14 / 42   30 Hz  |  0  0  0        |
+|   > pistol     |                                                   | Key: linear [v] |
++----------------+---------------------------------------------------+-----------------+
+| Timeline | Curves                              0    10    20    30    40             |
+|  v pelvis        R T        o-----o-----------o---------------------o                |
+|  v spine         R          o-----------o---------------------------o                |
+|    r_forearm     R          o--o--o-----------o---------o-----------o                |
+|  events          sound ^         effect ^                                            |
++--------------------------------------------------------------------------------------+
+```
+
+**Read and pose (slice M1 of [rich-editors.md](rich-editors.md)).**
+`tags::anim::AnimationGraph` lists modes, classes, types and actions;
+`anim_sample::AnimationClip::sample` gives a pose at a frame for every
+retail codec. The native view takes node matrices from the pose in place
+of `rest_nodes` (`crates/tools/scenario-edit/src/native_view.rs`). The
+frame a decoded rotation is in relative to the render model's skeleton
+is an open item of [animation.md](../formats/animation.md); M1 settles it
+against the engine's composition rule
+([anim-sampling.md](../engine/anim-sampling.md)), which the Halo 1
+converter already writes to ([models.md](../halo1/models.md)).
+
+**Timeline.** One row per node with its rotation, translation and scale
+channels, a ruler in frames at the graph's 30 Hz, a scrub head, loop and
+speed. Overlays show their base beside them. An **events** row shows the
+animation's sound and effect events; their blocks are counted but not
+decoded ([animation.md](../formats/animation.md), "Open items"), so the
+row is **E first** and read-only until then. Root movement (the frame
+info data) is the same: shown as a path once decoded, **E first**.
+
+**The document.** `AnimDoc` (`crates/tools/anim-edit`, new) holds a clip
+as sparse keys per channel with an interpolation per key (step, linear,
+smooth). Opening a retail animation decodes it to dense frames and
+reduces them to keys within a tolerance shown in the status line;
+nothing is stored until an edit. The source form is `.anim.yaml` in the
+package: the graph it joins, the mode, class and action it is filed
+under, the node names and the keys. It holds our numbers only.
+
+**Curves.** The Curves tab plots a channel against frames, a rotation as
+three angles unwrapped for display and stored as a quaternion. Handles
+edit the key's value and tangent; a drag is one undo step. The plot
+widget is the curve editor's ([rich-editors.md](rich-editors.md), slice
+F1) with a frame axis.
+
+**Editing keys.** Select nodes in the view or the rows. Rotate and move
+with the gizmo at the scrub head: a change sets a key on that channel.
+Keys move, copy, paste, scale in time and delete on the timeline. **New
+animation** makes an empty clip on a graph's skeleton; **Duplicate**
+starts from a decoded one.
+
+**Retarget.** **Retarget from...** takes a clip of another graph. Nodes
+match by name (`h1-assets`' `models/names.rs` maps Halo 1 names the same
+way), with a table to fix the rest. Rotations carry as deltas from each
+skeleton's rest pose; translations scale by bone length. The report
+lists unmatched nodes and channels dropped.
+
+**Import.** A glTF file's clips import through the same retarget, which
+is the "own animation" row of
+[forge-features.md](../game/forge-features.md).
+
+**Writing the tag.** The encoder is the converter's, lifted to
+`crates/formats/tags/src/anim_write.rs` (new): a static stream (codec 1)
+for channels that do not move and the 8-byte quantised codec (codec 3)
+for those that do. `decode(encode(clip))` equals the clip within the
+codec's quantisation. The keyframe codecs are a later size saving and
+change no behaviour. A build bakes keys to dense frames and:
+
+- **replaces** an animation: its record and its raw stream, grown
+  through `TagDoc::resize_data` and `MapEditor::append_raw` in an `onto`
+  build, or as a loose tag in a `fresh` one;
+- **adds** one: a new record, and an action under its mode and class.
+
+Refused, by name: a graph that inherits from a parent graph (the parent
+reference of [animation.md](../formats/animation.md), whose meaning is
+**S**); a graph in a shared cache; an animation with inline data; a
+frame-info type other than none until root movement is decoded.
+
+**In the running game.** A written `jmad` reaches a paired game as a tag
+edit; the game drops its decoded clips for that tag
+(`engine::sim_anim::STORE.flush_range`,
+[realtime-edits.md](realtime-edits.md), "Tag-write notices") and decodes
+the new ones. `pair.preview {what: "animation", target, animation}`
+spawns the object as `what: "object"` does, plays the animation on it
+and captures frames at chosen ticks. Starting a named animation on an
+object from the host needs a game method (`world.object.animate`), and
+which guest entry it calls is **E first**.
+
+| Method | Does |
+|---|---|
+| `anim.list {graph}` | modes, classes, actions, animations with frames, codec and type |
+| `anim.pose {graph, animation, frame, model?, out?}` | node transforms, or a render |
+| `anim.read {graph, animation}` | channels as keys, events |
+| `anim.key {doc, node, channel, frame, value?, interp?, remove?}` | sets or removes a key |
+| `anim.new`, `anim.duplicate`, `anim.retarget {from, to, map?}`, `anim.import {file}` | the commands above |
+| `anim.check {doc}` | quantisation error per node, feet under the ground plane, a loop's seam |
+
+## The sound editor
+
+The Sound workspace is the built audition (A1) with editing around it.
+
+```
++----------------+---------------------------------------------------+-----------------+
+| BROWSER        | spring.snd! x                 [> Play] [Loop] [In game]  INSPECTOR  |
+| Kind: Sounds   | Pitch range 0   permutations: 3                   | Permutation 1   |
+| v pogo         |  [1] spring_a  0.42 s  w 1.0   -14.2 LUFS         | Weight   1.0    |
+|   spring       |  [2] spring_b  0.39 s  w 1.0   -14.6 LUFS         | Gain     0 dB   |
+|   compress     |  [3] spring_c  0.45 s  w 0.5   -13.9 LUFS         | Skip     0      |
+|   settle       +---------------------------------------------------+ Class            |
+| v announcer    |  waveform  ~~~~^^^^~~~~~~^^~~~~~~~~~~_____________|  weapon_fire  > |
+|   double-bounce|  [Trim] [Fade in] [Fade out] [Gain] [Normalise]   | Distance        |
++----------------+---------------------------------------------------+  1 .. 9 wu      |
+| Timeline         0.0      0.1      0.2      0.3      0.4           |                 |
+|  mouth          ___/^^^^\__/^^\______                              | vs retail: ok   |
+|  edits          trim 0.02..0.44   fade out 0.05                    |                 |
++--------------------------------------------------------------------------------------+
+```
+
+**Audition (built).** `app/audition.rs` decodes a permutation and plays
+it through the game's own sink; `ui/sound.rs` draws the waveform;
+`sound.read`, `sound.play`, `sound.stop` and `sound.measure` are the
+API. The floating window becomes this document.
+
+**Waveform editing.** Edits apply to a package's source WAV and are kept
+as a list in `<name>.sound.yaml`: trim, fade in, fade out, gain,
+normalise to a target, silence a range. The WAV is never rewritten; the
+build renders the list, so every edit can be undone and reordered.
+`voice/audio.rs` has the trim and normalise the announcer uses; they
+move to `crates/tools/sound-edit` (new) with the rest. A disc sound is
+not edited in place: **Copy into** makes a `sound` item from a WAV the
+user supplies, and a disc sound's fields (gain, distances, class) change
+through `edits`.
+
+**Permutations.** Add, remove and reorder permutations and pitch ranges,
+with weight, gain and skip fraction as rows. Each is a file in the
+`.sound.yaml`. The list shows each one's loudness beside the reference
+lines `sound.measure` compares against.
+
+**Mouth curves (slices A2 to A4).** The track under the waveform is the
+permutation's mouth curve, one value per 30 Hz tick
+([rich-editors.md](rich-editors.md), "Sounds and facial animation"). A2
+reads it, A3 drives a picked model's `talk` overlay with it (needs M1),
+A4 draws on it and fills it **From the sound**. For a package sound the
+curve is part of the `.sound.yaml` and the build writes it with the
+gestalt's extra info; for a disc sound A4's in-place write stands.
+
+**Import and encode.** `import.sound` takes a WAV at any rate and makes
+what the game reads: resampled to a rate the format field names, mono or
+stereo, encoded by `audio::adpcm::encode`, split into chunks, written as
+a `snd!` with its rows merged into the map's gestalt by the converter's
+`merge_sound` moved into `workspace::import`. Looping sounds (`lsnd`)
+take a start, a loop and an end file. The codec stream form (WMA) is
+decoded for audition only; nothing encodes it. That every sound class,
+dialogue included, plays from ADPCM is **S**: the converted Halo 1
+campaign's dialogue is the evidence to check
+([sounds.md](../halo1/sounds.md)).
+
+**The announcer and cloned voices.** `voice.say` makes a line and
+`voice.commit` puts it in the edit target as a `sound` item, in place of
+copying into `art/announcer`. A cloned line
+([voice-cloning.md](voice-cloning.md)) commits the same way and may ship
+in a package; the dataset and the weights stay under the data root and
+`package.check` refuses them.
+
+**In the running game.** `pair.audio` measures what the game's mixer
+does while a call makes the sound. **In game** on a sound document runs
+`pair.preview {what: "sound", target}`: the package builds, the edit
+reaches the game, the sound plays at the player and `pair.audio`'s
+readings come back with the editor's own measure beside them. Playing a
+sound tag by name from the host needs a game method (`audio.play`), and
+its guest entry is **E first**.
+
+| Method | Does |
+|---|---|
+| `sound.read`, `sound.play`, `sound.stop`, `sound.measure` | built |
+| `sound.mouth {sound, permutation, set?}` | reads or writes a curve (A2, A4) |
+| `sound.edit {doc, op, ...}`, `sound.render {doc, out}` | the edit list and its result as a WAV |
+| `sound.permutation {doc, add \| remove \| set}` | the list |
+| `import.sound {file, package, tag, class?}` | a new `sound` item |
+
+## Other editors
+
+Each is a document kind in `app::kinds::KINDS`, opened from the browser
+into the Content workspace unless noted, and each writes through
+`TagDoc` into the edit target.
+
+| Editor | Fits as | Stands on | First step |
+|---|---|---|---|
+| **Bitmaps** | the Textures tool as a document: paint, import, mips, sequences | `crates/tools/bitmap-edit` ([modeling.md](modeling.md), "Texture editing") | LE3 of [live-editors.md](live-editors.md) |
+| **Shaders** | a Shader tab with a sphere, quad or object preview | `tags::shader`, rich-editors S1 to S6 | S1 |
+| **Colours and curves** | pickers and plots inside any field panel | rich-editors C1 to C3, F1, F2 | X1 |
+| **Effects and particles** | one document for an `effe` and what it spawns, with curves on the shared Timeline; the preview is the paired game, because the native view draws no effects | `tags::effects`, the game view | LE7; a host call that spawns an effect at a point is **E first** |
+| **Objects** | one editor per object: model, variants, markers, attachments, the tuning sheet | `tags::object`, `model.*` | LE5 |
+| **Scenario placement** | the Map workspace | `crates/tools/scenario-edit` | built; AI squads and zones wait on the engine's AI readers ([scenario-editor.md](scenario-editor.md) section 6) |
+| **Level geometry and collision** | the Modeling tools in the Map workspace's viewport | [modeling.md](modeling.md), [realtime-edits.md](realtime-edits.md) | their own slices |
+| **Scripts (HaloScript)** | read-only in the Rules workspace, edited outside | rich-editors H1 to H4 | H2 |
+| **Recordings** | a document on the shared Timeline | rich-editors K1 to K4 | K1 |
+| **Strings** | a table by name and language; a `strings` item for ours | `tags::localization` | N1 |
+| **Sky and fog** | a tag view with the dome | `tags::lighting` | LE8 |
+
+## Rules and limits
+
+- No game data in a package, in Git or on Live. A package names disc
+  content by tag path and map name, and a base by hash only in a
+  `map-patch`.
+- A package runs no code. Builders are ours and the registry is closed;
+  `.rules` scripts run in the rules VM under its tick budget
+  ([rules-engine.md](../game/rules-engine.md)).
+- Menu and HUD content is data in map files. No builder draws a screen
+  in Rust.
+- A package is loaded whole or not at all.
+- An edit is never dropped: a line that does not apply stops the build.
+- The window has no action the API lacks. `session.methods` lists every
+  method, and each slice's headless test drives its feature through the
+  API.
+- Nothing is carried over: saved patch packages, `active.toml`, `.h2tag`
+  bundles and saved layouts of the old tools are not read.
+
+## Slices
+
+Sizes: S under 800 lines with tests, M under 2,500, L more. One lane
+each. Every test is headless on invented data. `W`, `LE`, `GV` and
+`PT` numbers are slices of [tag-workspace.md](tag-workspace.md),
+[live-editors.md](live-editors.md), [game-view.md](game-view.md) and
+[playtest.md](playtest.md); `M1`, `A2` to `A4`, `F1` and `X2` are
+[rich-editors.md](rich-editors.md)'s. PK2, PK3 and PK7 are W2, W4 and W5
+cut to the package model; PK4, PK5 and PK9 to PK12 are W8's migrations.
+
+| # | Slice | Size | Needs | Accepted when |
+|---|---|---|---|---|
+| SH1 | **Workspaces and document tabs**: `ToolKind` becomes a workspace (layout only) and a document id; `shell.workspace`, `shell.tabs`, `shell.open`, `shell.focus`, `shell.close`; a layout per workspace | M | nothing | each workspace draws at 1000 by 420 with no stray child window (`every_panel_scrolls_as_a_whole_on_a_short_window`); two documents have two undo stacks; the window's clicks and `shell.*` leave the same state |
+| PK1 | **Manifest and set**: `content::package::{Manifest, PackageId, Lock, Set}`, validation, the canonical id, `requires`, `after`, `set.toml`, the order | M | nothing | golden ids on invented hashes; unknown keys, a cycle and a missing `requires` are refused by name; display fields and credit do not move the id; the order is stable |
+| PK2 | **Builders and the build**: `crates/tools/workspace` with the registry, `Layered`, `build` on a `TagSet`, conflicts, the cache key, the `tag`, `edits` and `bitmap` builders, `h2 package check` and `build` | M | PK1 | on an invented map: two packages build in order; the same tag path twice stops naming both; a stale `was` stops with its line; `onto` output differs from its base only in changed tags |
+| SH2 | **The browser**: `asset.list`, `asset.thumb`, `asset.copy`, the three roots, kinds, search, badges; the Maps list, Tags tab list and per-tool lists removed | M | SH1, PK1 | an invented source with two maps and one package lists by kind; each word of a query must match; a tag an edit line touches carries the package's badge; **Copy into** writes a `tag` item with no bytes of the source |
+| PK3 | **The game's side**: `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
+| PK4 | **Pogo as a package**: `packages/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
+| PK5 | **Screens as a package**: `packages/ui/`, the `screens` and `screen-edits` builders over `ui_kit::inject::tag::add_screens`; `ScreensRewrite` deleted; `ui.save` writes into the edit target | M | PK3 | `ui_kit::inject::tests` pass through the package; a screen saved from the window is a changed file in the package and nowhere else |
+| PK6 | **The Packages workspace and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play | M | PK2, SH1 | every method's example runs; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
+| PK7 | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |
+| SH3 | **Problems**: one panel and `problems.list` over `check.run`, `ui.check`, `hud.check`, `package.check` and build errors, each row opening its asset | S | SH1 | findings from two invented sources list together; opening a row focuses the document and the field |
+| SH4 | **The preview switch**: `preview.target`, **Preview in game** by kind over `pair.preview` | S | SH1 | on the fake game each kind sends the calls its `what` lists; a paused game refuses with the built message |
+| PK8 | **Rules, variants and playlists as items**: `packages/core/` and `packages/modes/`; the registry from the set; `community_variants` and the default hopper read it | M | PK3 | `crates/formats/rules/tests/modes.rs` pass with scripts from the set; a package off removes its list entries; the hopper built from fragments equals `hopper/defaults.rs`'s |
+| PK9 | **Whole maps**: `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
+| PK10 | **Conversions**: `convert` items, `h2 package prepare`, stamps; `packages/halo1/` and `packages/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
+| PK11 | **HUDs as data**: the `hud` builder, HUD kit YAML for the superbounce and Firefight HUDs | M | PK3 | each YAML compiles to the records its Rust definition compiled to (`hud-kit-core/src/tests.rs`' fixtures) |
+| PK12 | **Kits**: `kit: firefight`, `forge-slots`, `campaign-cards`, `glyphs`; boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
+| PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
+| PK14 | **Live, game and Studio**: install, the content set in a session, the join check, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
+| M1 | **Model poses** (rich-editors) | M | nothing | as there |
+| AN1 | **The Animation workspace, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
+| AN2 | **The encoder**: `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |
+| AN3 | **Keys and curves**: `crates/tools/anim-edit`, `AnimDoc`, `anim.key`, gizmo keying, the Curves tab, `anim.new`, `anim.duplicate`, `anim.check` | M | AN1 | a key set by the gizmo and by `anim.key` make the same document; a drag is one undo step; a rotation survives the angle view unchanged |
+| AN4 | **Write back**: the `animation` builder, replace and add in a `jmad`, the refusals, the live flush | M | AN2, AN3, X2, PK2 | an invented graph with one animation replaced differs only in that record and stream; an added one is reachable by its action; an inheriting graph is refused by name |
+| AN5 | **Retarget and glTF**: `anim.retarget`, `anim.import`, the node table | M | AN3 | a clip retargeted to a skeleton with one renamed and one longer bone keeps the end position within a bound; unmatched nodes are listed |
+| AN6 | **Animation in the game**: the game's `world.object.animate` (**E first**), `pair.preview {what: "animation"}` | S | AN4 | on the fake game the preview sends spawn, animate, wait and capture in order |
+| A2, A3, A4 | **Mouth curves** (rich-editors) | S, S, M | A1; M1 for A3 | as there |
+| SN1 | **The Sound workspace**: the audition as a document, permutations with loudness, the mouth track row | S | SH1 | an invented sound opens as a tab; each permutation row carries `sound.measure`'s numbers |
+| SN2 | **Import and encode**: `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |
+| SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
+| SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |
+| SN5 | **Sound in the game**: the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |
+| SH5 | **Old tools removed**: the tool tabs, floating windows, the script text editor; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the workspaces | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from workspaces; no `ToolKind` match is left in `ui.rs` |
+
+SH1, PK1, AN2 and M1 need nothing and start together. PK2 and SH2 follow
+PK1 and SH1. The other editors' slices keep their own pages' order and
+need only SH1 to dock as documents.
+
+## Evidence
+
+- Every "today" row is read from the file it names (**Code**).
+- The converter's `jmad` writer emits codecs 1 and 3 and the retail
+  decoder reads its output (**Test**, `crates/tools/h1-assets/src/models/tests.rs`;
+  [models.md](../halo1/models.md)).
+- Converted Halo 1 maps and Firefight kits are already map packages the
+  game loads by id (**Code**, `crates/apps/cli/src/h1_import.rs`,
+  `crates/tools/firefight-kit/src/lib.rs`).
+- That one rewrite over a pinned map gives the game what the four
+  separate rewrites give it is **S**: PK4, PK5 and PK12 compare the
+  bytes per kit.
+- Which groups a `client` item may change without moving the sim hash is
+  **S** (a lockstep run).
+- Events and root movement in a `jmad`, the guest entry that starts an
+  animation on an object, the one that plays a sound tag, and the one
+  that spawns an effect are **E first**.
+
+## Not verified
+
+- That a map built by `PackageRewrite` with every first-party package
+  loads and plays as today's chain's does.
+- That an animation written by the editor plays in the game, and that a
+  live `jmad` edit shows without a reload.
+- That an imported ADPCM sound plays for every sound class.
+- The time `PackageRewrite` adds to a first map read, and the cache's
+  size.
+- That a join which downloads a package finishes inside the lobby's
+  timeouts.
+
+## Related
+
+- [tag-workspace.md](tag-workspace.md): the tree, layers, edit files and the build this stands on
+- [live-editors.md](live-editors.md), [rich-editors.md](rich-editors.md), [game-view.md](game-view.md), [playtest.md](playtest.md), [content-stage.md](content-stage.md): the editors and views that dock into the workspaces
+- [editor.md](editor.md), [agent-api.md](agent-api.md): the window and the API as built
+- [maps.md](../game/maps.md): map packages, `MapId`, Live's store and credit
+- [animation.md](../formats/animation.md), [sounds.md](../halo1/sounds.md): the formats the two new editors write
