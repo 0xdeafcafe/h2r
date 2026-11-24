@@ -117,7 +117,9 @@ pub fn in_game(thing: &Thing, game: Option<i32>) -> bool {
                     .any(|&slot| game_types::slot_matches(slot, Some(code)))
         }
         ThingKind::Goal => match field(thing, "type") {
-            Some(Value::Int(ty)) => forge_doc::games::flag_games(*ty).is_none_or(|games| games.has(game)),
+            Some(Value::Int(ty)) => {
+                forge_doc::games::flag_games(*ty).is_none_or(|games| games.has(game))
+            }
             _ => true,
         },
         ThingKind::StartingPoint | ThingKind::Teleporter | ThingKind::Object => true,
@@ -268,6 +270,16 @@ pub enum Command {
     },
     Undo,
     Redo,
+    /// Place the next ground marker of this label at a frame
+    /// ([`crate::Session::place_marker_next`]).
+    Marker {
+        label: forge_doc::GroundLabel,
+        frame: Frame,
+    },
+    /// **Build AI ground**: build it now.
+    BuildGround,
+    /// **Test waves**: build the ground if it is not current.
+    TestWaves,
     Palette,
     Properties,
     Menu,

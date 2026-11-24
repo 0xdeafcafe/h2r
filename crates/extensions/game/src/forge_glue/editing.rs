@@ -57,6 +57,9 @@ enum CoordinateTarget {
 
 /// How far under a carried thing the readout looks for the structure.
 const GROUND_REACH: f32 = 100.;
+/// How far in front of the monitor a ground marker is placed, in world
+/// units.
+const MARKER_REACH: f32 = 3.;
 
 pub(super) struct Editor {
     pub session: Arc<Session>,
@@ -657,7 +660,7 @@ impl Editor {
         use Command::*;
         match cmd {
             Palette => {
-                let sheet = sheet::objects(&self.items(), self.selected)
+                let sheet = sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items())
                     .ok_or("This map has nothing to place.")?;
                 screens::open(sheet)?;
             }
@@ -811,6 +814,17 @@ impl Editor {
         self.command(tick, cmd)
     }
 
+    /// The ground labels the AI and objectives page offers, each with how
+    /// many are placed.
+    fn ai_items(&self) -> Vec<sheet::AiItem> {
+        let counts = self.session.ground_counts();
+        forge::GroundLabel::ALL
+            .into_iter()
+            .zip(counts)
+            .map(|(label, placed)| sheet::AiItem { label, placed })
+            .collect()
+    }
+
     /// The palette as the object menu lists it: each object's group, name,
     /// how many are placed and how many more fit.
     fn items(&self) -> Vec<sheet::Item> {
@@ -851,6 +865,16 @@ impl Editor {
                 self.selected = i;
                 self.tool.select(i);
             }
+            Choice::Marker(label) => {
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                let frame = forge::Frame {
+                    position: eye.point(MARKER_REACH),
+                    rotation: [eye.yaw, 0., 0.],
+                };
+                return self.command(tick, Command::Marker { label, frame });
+            }
+            Choice::BuildGround => return self.command(tick, Command::BuildGround),
+            Choice::TestWaves => return self.command(tick, Command::TestWaves),
             Choice::Tool(t) => self.tool.set_links(t == ToolKind::Links),
             Choice::Set(Prop::RotationSnap, i) => {
                 let step = *ANGLE_STEPS.get(i).ok_or("No such rotation snap.")?;
@@ -1041,6 +1065,9 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Unlink { link } => s.unlink(w, tick, link),
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),
+        Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),
+        BuildGround => super::ground::build(s),
+        TestWaves => super::ground::test_waves(s),
         _ => Err("A screen's command is not an edit.".into()),
     }
 }

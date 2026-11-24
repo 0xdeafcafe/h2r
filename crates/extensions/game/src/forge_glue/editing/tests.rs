@@ -58,8 +58,9 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(1, Command::Palette).unwrap();
     assert_eq!(screens::take_request(), Some(Kind::Objects));
     let objects = screens::screen(Kind::Objects).sheet();
-    assert_eq!(objects.rows.len(), 1, "one group, Crates");
+    assert_eq!(objects.rows.len(), 2, "one group, Crates, and the AI page");
     assert_eq!(objects.rows[0].label, "Crates");
+    assert_eq!(objects.rows[1].label, "AI and objectives");
     // The picker's choice: the shelf.
     e.choose(2, Choice::Select(0)).unwrap();
     assert_eq!(e.tool.placing, Some(0));

@@ -150,7 +150,7 @@ impl Session {
     /// last build and so the state as they were.
     pub fn build_ground(
         &mut self,
-        builder: &mut impl GroundBuilder,
+        builder: &mut (impl GroundBuilder + ?Sized),
     ) -> Result<&GroundReport, String> {
         let before = self.ground.recipe;
         if before.is_none() {
@@ -174,7 +174,10 @@ impl Session {
 
     /// Build the ground unless it is current: **Test waves**. Answers
     /// whether it built.
-    pub fn ensure_ground(&mut self, builder: &mut impl GroundBuilder) -> Result<bool, String> {
+    pub fn ensure_ground(
+        &mut self,
+        builder: &mut (impl GroundBuilder + ?Sized),
+    ) -> Result<bool, String> {
         if self.ground_state() == GroundState::Current {
             return Ok(false);
         }
@@ -189,7 +192,7 @@ impl Session {
         &mut self,
         data_dir: &Path,
         name: &str,
-        builder: &mut impl GroundBuilder,
+        builder: &mut (impl GroundBuilder + ?Sized),
     ) -> Result<(), String> {
         self.build_if_stale(builder)?;
         self.save(data_dir, name)
@@ -200,13 +203,16 @@ impl Session {
         &mut self,
         data_dir: &Path,
         base: &str,
-        builder: &mut impl GroundBuilder,
+        builder: &mut (impl GroundBuilder + ?Sized),
     ) -> Result<String, String> {
         self.build_if_stale(builder)?;
         self.save_new(data_dir, base)
     }
 
-    fn build_if_stale(&mut self, builder: &mut impl GroundBuilder) -> Result<(), String> {
+    fn build_if_stale(
+        &mut self,
+        builder: &mut (impl GroundBuilder + ?Sized),
+    ) -> Result<(), String> {
         if self.ground_state() == GroundState::Stale {
             self.build_ground(builder)
                 .map_err(|e| format!("The AI ground did not build, so nothing was saved. {e}"))?;
@@ -285,6 +291,31 @@ impl Session {
         });
         self.edit(world, tick, ops, None)?;
         Ok(id)
+    }
+
+    /// Place the next marker of `label` where the monitor aims: a base or a
+    /// siege line takes the team the placed ones leave short (red, then
+    /// blue, as the build wants one base for each), and a siege line the
+    /// phase its pair of sides is in.
+    pub fn place_marker_next(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        label: GroundLabel,
+        frame: Frame,
+    ) -> Result<OpId, String> {
+        let i = GroundLabel::ALL
+            .iter()
+            .position(|l| *l == label)
+            .unwrap_or(0);
+        let placed = self.ground_counts()[i];
+        let team = if label.has_team() {
+            (placed % 2) as u8
+        } else {
+            0
+        };
+        let phase = label.has_phase().then(|| (placed / 2) as i32);
+        self.place_marker(world, tick, label, frame, team, phase)
     }
 
     /// The ground markers the document adds, with their labels.

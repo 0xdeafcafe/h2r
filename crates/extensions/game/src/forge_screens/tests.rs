@@ -501,3 +501,68 @@ fn every_forge_option_has_its_help() {
         }
     }
 }
+
+fn ai_items(placed: usize) -> Vec<sheet::AiItem> {
+    forge::GroundLabel::ALL
+        .into_iter()
+        .map(|label| sheet::AiItem { label, placed })
+        .collect()
+}
+
+#[test]
+fn the_ai_and_objectives_page_follows_the_groups_and_places_markers() {
+    let items = pages::sample_items();
+    let ai = ai_items(0);
+    let s = sheet::objects_with_ai(&items, 1, &ai).unwrap();
+    let labels: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["Scenery", "Crates", "Machines", sheet::AI_PAGE],
+        "after the map's groups"
+    );
+    assert_eq!(s.focus, 0, "the last chosen object keeps the focus");
+    let Act::Pick(p) = &s.rows[3].act else {
+        panic!("the page opens the picker")
+    };
+    assert!(p.closes, "choosing a label closes both");
+    assert_eq!(p.values.len(), forge::GroundLabel::ALL.len());
+    assert_eq!(p.values[0], "Wave drop");
+    assert_eq!(p.details[0], "ff_drop. None placed");
+    assert_eq!(p.choices[0], Choice::Marker(forge::GroundLabel::Drop));
+    assert_eq!(p.choices[5], Choice::Marker(forge::GroundLabel::Line));
+    // The page is the same one with the counts the session has.
+    let s = sheet::objects_with_ai(&items, 1, &ai_items(3)).unwrap();
+    let Act::Pick(p) = &s.rows[3].act else {
+        panic!("the page opens the picker")
+    };
+    assert_eq!(p.details[1], "ff_base. 3 placed");
+}
+
+#[test]
+fn the_page_is_alone_on_a_map_with_nothing_to_place_and_absent_with_no_labels() {
+    let s = sheet::objects_with_ai(&[], 0, &ai_items(0)).unwrap();
+    assert_eq!(s.rows.len(), 1);
+    assert_eq!(s.rows[0].label, sheet::AI_PAGE);
+    assert!(sheet::objects_with_ai(&[], 0, &[]).is_none());
+    let items = pages::sample_items();
+    assert_eq!(
+        sheet::objects_with_ai(&items, 1, &[]).unwrap().rows.len(),
+        sheet::objects(&items, 1).unwrap().rows.len()
+    );
+    // It fits the object menu's screen.
+    let screen = ForgeScreen::new(Kind::Objects);
+    assert!(
+        screen
+            .show(sheet::objects_with_ai(&items, 1, &ai_items(0)).unwrap())
+            .is_ok()
+    );
+}
+
+#[test]
+fn the_forge_options_build_the_ground_and_test_waves() {
+    let s = sheet::options();
+    let rows: Vec<(&str, &Act)> = s.rows.iter().map(|r| (r.label.as_str(), &r.act)).collect();
+    assert!(rows.contains(&("Build AI ground", &Act::Choose(Choice::BuildGround))));
+    assert!(rows.contains(&("Test waves", &Act::Choose(Choice::TestWaves))));
+    assert!(ForgeScreen::new(Kind::Options).show(s).is_ok());
+}

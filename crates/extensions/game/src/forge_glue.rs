@@ -3,6 +3,7 @@
 //! any map file still being read by the background worker.
 mod editing;
 pub mod gizmo;
+pub mod ground;
 mod link;
 pub mod marker;
 pub mod net;
