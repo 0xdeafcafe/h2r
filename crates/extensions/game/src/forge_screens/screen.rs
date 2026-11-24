@@ -193,10 +193,16 @@ impl ForgeScreen {
     }
 
     /// The legend: A acts on every screen but the Controls page, which
-    /// only lists.
+    /// only lists, and a sheet of facts alone (the Map variants page of a
+    /// map with none).
     pub fn prompts(&self) -> Vec<Prompt> {
+        let facts_only = {
+            let rows = self.sheet().rows;
+            !rows.is_empty() && rows.iter().all(|r| matches!(r.act, Act::Info))
+        };
         match self.kind {
             Kind::Controls => vec![Prompt::new(&[Glyph::B], "Back")],
+            _ if facts_only => vec![Prompt::new(&[Glyph::B], "Back")],
             _ => vec![
                 Prompt::new(&[Glyph::A], "Select"),
                 Prompt::new(&[Glyph::B], "Back"),
@@ -558,6 +564,10 @@ impl Describe for ForgeScreen {
             .collect();
         s.focus = sheet.focus.min(s.rows.len().saturating_sub(1));
         s.prompts = self.prompts();
+        // A dialog's legend follows its focused row: a fact takes no A.
+        if look != Look::List && matches!(sheet.rows.get(sheet.focus).map(|r| &r.act), Some(Act::Info)) {
+            s.prompts = vec![Prompt::new(&[Glyph::B], "Back")];
+        }
         s.inputs = self.inputs();
         s.footer = true;
         match look {

@@ -17,7 +17,7 @@
 //!
 //! A waypoint marks an object: the navpoint is over it and its text is the
 //! distance from the user's unit, in metres (a world unit is 3.048 metres,
-//! 10 feet: docs/game/film-format.md, "304.8 cm"). The place is a zone's
+//! 10 feet: docs/game/film-format.md, "Tag 3 presentation records"). The place is a zone's
 //! middle (a labelled flag's area), else the unit of the player carrying the
 //! objective (a carried flag, bomb or ball), else the object's own origin
 //! (a dropped one): [`place`].
@@ -63,8 +63,9 @@ const SLOT_WORDS: [(&str, &str); 5] = [
     ("ter", objective::territories::NAME),
 ];
 
-/// Metres in a world unit: 304.8 cm, 10 feet (docs/game/film-format.md, the
-/// guest's world unit; `superbounce_mode::METRES_PER_UNIT` is the same).
+/// Metres in a world unit: 304.8 cm, 10 feet
+/// (docs/game/film-format.md, "Tag 3 presentation records"; the guest's
+/// world unit; `superbounce_mode::METRES_PER_UNIT` is the same).
 const METRES_PER_UNIT: f32 = 3.048;
 
 /// The kit's handle of each objective HUD, registered once.
