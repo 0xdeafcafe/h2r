@@ -164,6 +164,9 @@ pub fn trace_objects<G: GuestRead>(
     q: &ObjectQuery,
     mut visit: impl FnMut(&mut G, PartRay) -> Result<Outcome, Bail>,
 ) -> Result<Option<ObjectHit>, Bail> {
+    if q.object == NONE {
+        return Err(Bail::Data);
+    }
     let mut best = None;
     let mut fraction = q.fraction;
     let mut pending = Vec::new();
