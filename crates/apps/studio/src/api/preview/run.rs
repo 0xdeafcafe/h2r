@@ -57,6 +57,9 @@ pub struct Plan {
     pub capture: Capture,
     /// Where the capture is copied.
     pub out: Option<PathBuf>,
+    /// What Studio measured itself, put in the report as `editor` (a
+    /// sound's `sound.measure`).
+    pub editor: Option<Value>,
 }
 
 /// Starts `plan` on its own thread; the report arrives on the receiver.
@@ -84,6 +87,9 @@ pub fn run(plan: &Plan, steps: &Arc<Mutex<Vec<String>>>) -> Value {
         out: Map::new(),
         warnings: Vec::new(),
     };
+    if let Some(editor) = &plan.editor {
+        g.out.insert("editor".into(), editor.clone());
+    }
     let outcome = g.connect(&plan.endpoint).and_then(|()| g.task(plan));
     let mut report = Value::Object(std::mem::take(&mut g.out));
     match outcome {
@@ -357,6 +363,9 @@ impl Game {
     fn audio(&mut self, seconds: f64, every: Duration, call: Option<&(String, Value)>) -> Step {
         self.need(agent_proto::method::AUDIO_VOICES, "the mixer's voices")?;
         if let Some((method, params)) = call {
+            if method == agent_proto::sim::method::AUDIO_PLAY {
+                self.need(method, "starts the sound")?;
+            }
             let answer = self.call(method, params.clone())?;
             self.out.insert("applied".into(), answer);
         }

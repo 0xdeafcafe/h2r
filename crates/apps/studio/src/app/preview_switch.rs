@@ -105,8 +105,12 @@ pub fn plan_for_tag(group: FourCC, name: &str) -> Result<GamePreview, String> {
             what: "hud",
             target: None,
         },
-        b"snd!" | b"lsnd" | b"ugh!" => {
-            return Err("a sound is heard with pair.audio, not pair.preview".into());
+        b"snd!" => GamePreview {
+            what: "sound",
+            target: Some(name.to_owned()),
+        },
+        b"lsnd" | b"ugh!" => {
+            return Err("audio.play starts snd! tags: preview a snd! of it".into());
         }
         b"proj" | b"hlmt" | b"mode" | b"coll" | b"phmo" => {
             return Err(format!(

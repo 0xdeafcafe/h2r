@@ -63,13 +63,13 @@ enum State {
     Done(Value),
 }
 
-const RESULT_SHAPE: &str = r#"{"id":"integer","what":"weapon|object|ui|hud|audio","target":"string|null","state":"sending|running|done|failed","why?":"string","elapsed_ms":"integer","steps":"[string]","edits":"{pending,sent,left}","applied?":"object","reads?":"object","capture?":"{path,method,tick,present,width,height,mean_luma,dark_share,black}|null","audio?":"object","warnings?":"[string]"}"#;
+const RESULT_SHAPE: &str = r#"{"id":"integer","what":"weapon|object|ui|hud|sound|audio","target":"string|null","state":"sending|running|done|failed","why?":"string","elapsed_ms":"integer","steps":"[string]","edits":"{pending,sent,left}","applied?":"object","reads?":"object","capture?":"{path,method,tick,present,width,height,mean_luma,dark_share,black}|null","audio?":"object","editor?":"object","warnings?":"[string]"}"#;
 
 const METHODS: &[MethodDef] = &[
     def(
         m::PAIR_PREVIEW,
-        "Put content into the paired game and read it back: give the player a weapon, spawn an object in front of them, check the menu screen shown, or show the HUD; then wait, read the game state that matters and capture the frame. Pending edits are sent first. Answers with a job id at once; pair.result has the outcome",
-        r#"{"what":"weapon|object|ui|hud","target?":"string","player?":"integer","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
+        "Put content into the paired game and read it back: give the player a weapon, spawn an object in front of them, check the menu screen shown, show the HUD, or play a sound at the player (audio.play) and sample the mixer; then wait, read the game state that matters and capture the frame. Pending edits are sent first. Answers with a job id at once; pair.result has the outcome",
+        r#"{"what":"weapon|object|ui|hud|sound","target?":"string","player?":"integer","seconds?":"number","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
         r#"{"id":"integer","state":"sending|running"}"#,
         r#"{"what":"weapon","target":"objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}"#,
     ),
@@ -132,6 +132,20 @@ fn paired(app: &App) -> Result<(Endpoint, bool), RpcError> {
         .ok_or_else(|| err(code::REFUSED, "the pairing has no socket"))?;
     let endpoint = Endpoint::parse(socket).map_err(|e| err(code::REFUSED, e))?;
     Ok((endpoint, s["paused"] == true))
+}
+
+/// Studio's own measure of the `snd!` tag a sound preview plays
+/// (`sound.measure`): its levels and verdict, or why there are none.
+fn editor_measure(app: &mut App, sound: &str) -> Value {
+    let tag = if sound.contains(':') || sound.starts_with("0x") {
+        sound.to_owned()
+    } else {
+        format!("snd!:{sound}")
+    };
+    match super::sound_measure::measure(app, &P(&json!({"tag": tag}))) {
+        Ok(v) => v,
+        Err(e) => json!({"why": e.message}),
+    }
 }
 
 /// Rows of Pending the game has not taken yet and will (a conflict, a
@@ -201,6 +215,7 @@ impl Preview {
                 )
             })
         };
+        let mut editor = None;
         let (task, what, settle) = match what {
             "weapon" => (
                 Task::Weapon {
@@ -228,10 +243,30 @@ impl Preview {
             }
             "ui" => (Task::Ui { screen: target.clone() }, "ui", 0),
             "hud" => (Task::Hud { state: target.clone() }, "hud", 30),
+            "sound" => {
+                let sound = need_target("sound")?;
+                let seconds = f64::from(p.opt_f32("seconds")?.unwrap_or(2.0));
+                if !(0.1..=30.0).contains(&seconds) {
+                    return Err(err(code::INVALID_PARAMS, "seconds is 0.1 to 30"));
+                }
+                editor = Some(editor_measure(app, &sound));
+                (
+                    Task::Audio {
+                        seconds,
+                        every: Duration::from_millis(100),
+                        call: Some((
+                            agent_proto::sim::method::AUDIO_PLAY.to_owned(),
+                            json!({"sound": sound, "player": format!("player.{player}")}),
+                        )),
+                    },
+                    "sound",
+                    0,
+                )
+            }
             _ => {
                 return Err(err(
                     code::INVALID_PARAMS,
-                    "what is weapon, object, ui or hud",
+                    "what is weapon, object, ui, hud or sound",
                 ));
             }
         };
@@ -244,6 +279,8 @@ impl Preview {
             Some("screen") => Capture::Screen,
             Some(_) => return Err(err(code::INVALID_PARAMS, "view is render or screen")),
         };
+        // A sound has no picture.
+        let capture = if what == "sound" { Capture::None } else { capture };
         let out = p.opt_str("out")?.map(PathBuf::from);
         let send = match p.opt_str("edits")? {
             None | Some("send") => true,
@@ -264,6 +301,7 @@ impl Preview {
             ticks,
             capture,
             out,
+            editor,
         };
         self.start(app, what, target, plan, send)
     }
@@ -305,6 +343,7 @@ impl Preview {
             ticks: 0,
             capture: Capture::None,
             out: None,
+            editor: None,
         };
         self.start(app, "audio", None, plan, false)
     }

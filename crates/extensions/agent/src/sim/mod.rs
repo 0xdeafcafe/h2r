@@ -223,6 +223,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::SESSION, Access::Read, Sim::session_method);
     add(method::GIVE, Access::Act, Sim::give);
     add(method::SPAWN, Access::Act, Sim::spawn);
+    add(method::AUDIO_PLAY, Access::Act, Sim::audio_play);
     add(method::OBJECTS, Access::Read, Sim::objects_method);
     add(method::EVENTS, Access::Read, Sim::events_method);
     add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
@@ -658,6 +659,44 @@ impl Sim {
                         "held": held.as_deref() == Some(object.as_str()),
                         "session": session,
                     }))
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `audio.play`: queue the game's own sound start for a sound tag at
+    /// a player's unit. Presentation only, so a co-op session may ask.
+    fn audio_play(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::PlayParams = params(v)?;
+        let index = self.target(p.player.as_deref().unwrap_or("player.0"))?;
+        let q = self.calls()?;
+        let tag = self.find_tag(&p.sound, &["snd!"])?;
+        if tag.group != "snd!" {
+            return Err(invalid(format!(
+                "{}: a {} tag, not a sound (snd!)",
+                p.sound, tag.group
+            )));
+        }
+        let unit = ctx.with_guest(|m| state::unit_handle(m, index))?;
+        let ticket = calls::submit(
+            &q,
+            Call::Sound {
+                unit,
+                sound: tag.datum,
+            },
+        )
+        .map_err(unavailable)?;
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_ctx: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|made| {
+                    json!({
+                        "player": format!("player.{index}"),
+                        "sound": tag.json(),
+                        "instance": made["instance"],
+                    })
                 }))
             }),
         );

@@ -92,6 +92,7 @@ connection to hold `session.claim`.
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `audio.meter` | read | [`audio.meter`](#audiometer) |
+| `audio.play` | act | [`audio.play`](#audioplay) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
@@ -3004,6 +3005,34 @@ h2 agent audio.meter '{"play": "pogo/spring"}'
   `UNAVAILABLE`. So is a clip still a Git LFS pointer, or one over
   5 seconds. Bad params and unknown clips are `INVALID_PARAMS`. Audio
   time is logical, so a paused game does not answer until it runs.
+
+### `audio.play`
+
+Starts a sound tag at a player's unit, so a sound can be heard and read
+back (`audio.voices`, `audio.meter`) without the game having a reason to
+play it. A game method of the sim provider
+(`crates/extensions/agent/src/sim/mod.rs`, `Sim::audio_play`; types in
+`crates/extensions/agent-proto/src/sim/mod.rs`).
+
+```sh
+h2 agent audio.play '{"sound": "sound\\pogo\\spring"}'
+```
+
+| Params | Result |
+|---|---|
+| `{sound, player?}`: a `snd!` tag by datum or name (as `edit.tags` lists them); `player.<n>` or `sim.<n>`, default `player.0` | `{player, sound: {tag, group, name}, instance}` |
+
+- **The call.** The game's own `sound_start_at_marker`
+  (`SOUND_START_AT_MARKER`, `0x1891d0`) with the unit's head marker, the
+  call a dialogue line starts with, made at the start of the next tick
+  like `sim.give` ([`sim`](#sim-simulated-players-and-direct-state)).
+  Presentation only: nothing is filed, sent or recorded, so a co-op
+  session may ask. `instance` is the sound instance the game made.
+- **Errors.** A tag that is not a `snd!` or is not found is
+  `INVALID_PARAMS`; a player with no unit is `GONE`; a sound the game
+  starts no instance for (a tag with no permutation, or a full sound
+  table) is `UNAVAILABLE` with the game's reason. Audio time is logical,
+  so a paused game answers when it runs.
 
 ## HaloScript state
 

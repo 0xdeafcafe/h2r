@@ -896,9 +896,9 @@ in a package; the dataset and the weights stay under the data root and
 does while a call makes the sound. **In game** on a sound document runs
 `pair.preview {what: "sound", target}`: the package builds, the edit
 reaches the game, the sound plays at the player and `pair.audio`'s
-readings come back with the editor's own measure beside them. Playing a
-sound tag by name from the host needs a game method (`audio.play`), and
-its guest entry is **E first**.
+readings come back with the editor's own measure beside them. The
+game's `audio.play` starts a sound tag at a player's unit through the
+engine's own sound start ([agent-api.md](../runtime/agent-api.md#audioplay)).
 
 | Method | Does |
 |---|---|
@@ -991,7 +991,7 @@ Rows are in build order.
 | SN2 | **Import and encode** (built): `import.sound`, the `sound` builder, resample, ADPCM, the gestalt merge moved to `workspace::import` | M | PK2 | an invented WAV builds to a `snd!` that `app/audition.rs` decodes to the same samples within the codec's error; the gestalt of an invented map gains its rows and keeps the others |
 | SN3 | **Waveform edits**: `crates/tools/sound-edit`, the edit list, `sound.edit`, `sound.render`, permutations as files | M | SN1, SN2 | each op on an invented wave gives the expected samples; the source file's bytes never change; reorder and undo give the earlier render |
 | SN4 | **Voices into packages**: `voice.commit` and cloned lines to the edit target | S | PK7 | a committed line is a `sound` item; a dataset or weights path is refused |
-| SN5 | **Sound in the game**: the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |
+| SN5 | **Sound in the game** (built: the game's `audio.play`, `pair.preview {what: "sound"}`): the game's `audio.play` (**E first**), `pair.preview {what: "sound"}` | S | SN2, SH4 | on the fake game the preview plays, samples `audio.voices` and returns both measures |
 | SH5 | **Old tools removed**: the tool tabs and floating windows; the script editor as the `.rules` document; [editor.md](editor.md) and [editor-guide.md](editor-guide.md) describe the tree and the editors | M | SH2, PK7, SN1 | `headless.rs`' screenshots list regenerates from documents; no `ToolKind` match is left in `ui.rs` |
 
 SH1, W3, M1, PK2, GT0 and GT1 need nothing unbuilt and run together; SH2 follows SH1, PK1 and W3; PK3 follows PK2, and PK11,

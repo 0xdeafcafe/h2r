@@ -259,7 +259,7 @@ fn class_param(p: &P) -> Result<Option<u8>, agent_proto::RpcError> {
     }
 }
 
-fn measure(app: &mut App, p: &P) -> Reply {
+pub(super) fn measure(app: &mut App, p: &P) -> Reply {
     let given = ["tag", "clip", "path"].iter().filter(|k| p.has(k)).count();
     if given != 1 {
         return Err(err(

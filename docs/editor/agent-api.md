@@ -1139,7 +1139,8 @@ with `why`:
 | a `vehi`, `bipd`, `scen` or `eqip` tag | `{what: "object", target: "<group>:<tag name>"}` |
 | a `wgit` or `wgtz` tag, or the screen in the UI Screens tool | `{what: "ui", target: <screen name>}` |
 | a `nhdt` tag, or the HUD tool's document | `{what: "hud"}` |
-| any other tag, the map, a variant or a playlist file | null, with why (a sound is heard with `pair.audio`) |
+| a `snd!` tag | `{what: "sound", target: <tag name>}` |
+| any other tag (`lsnd` and `ugh!` too), the map, a variant or a playlist file | null, with why |
 
 The **Preview** menu holds the three targets and **Preview in game**
 (Cmd/Ctrl+Enter). The click is `Action::PreviewInGame`: it runs
@@ -1171,6 +1172,15 @@ are kept.
 | `object` | an object tag's name or datum (required; `vehi:<name>` names the group) | `world.object` for the player, `sim.spawn` at `pos`, else `distance` (default 3) world units in front of the player and facing them, `session.wait`, `world.query` near it, `render.scene`, the capture |
 | `ui` | the screen expected (optional) | `ui.audit`, `ui.stack` and `ui.screen` where listed, the capture |
 | `hud` | a `<name>.state` method to read with it (optional: `superbounce`, `pogo`) | `cheat.list`, `cheat.set hide_hud false` when it was on, `session.wait`, the state, `render.scene`, the capture, then `hide_hud` back on |
+| `sound` | a `snd!` tag's name or datum (required) | `audio.play` to `player`, `audio.voices` every 100 ms for `seconds` (0.1 to 30, default 2), `audio.loops` |
+
+A `sound` preview has no picture. Beside the game's readings (`applied`,
+the answer of `audio.play`, and `audio`, as `pair.audio` gives it) the
+result has `editor`: Studio's own `sound.measure` of the tag (levels and
+verdict against the open map's sounds), or `{why}` when the tag is not in
+the map the Tags tool shows. A game that does not list `audio.play` fails
+the job. The sound starts at the player's unit through the game's own sound
+start ([`audio.play`](../runtime/agent-api.md#audioplay)).
 
 The other params are `ticks` to let run before the reads (0 to 600;
 default 30, and 0 for `ui`), `view` for the picture, `out` to copy the

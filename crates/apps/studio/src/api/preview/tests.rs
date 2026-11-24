@@ -81,6 +81,11 @@ struct Game {
 
 impl Game {
     fn start(tag: &str) -> Game {
+        Self::start_with(tag, true)
+    }
+
+    /// The invented game; `audio_play` lists the sound-start method.
+    fn start_with(tag: &str, audio_play: bool) -> Game {
         let dir = std::env::temp_dir().join(format!("h2e-preview-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -149,6 +154,16 @@ impl Game {
         host("audio.loops", Access::Read, |_, _, _| {
             Ok(json!({"loops": [{"tag_name": "sound\\pogo\\spring", "tag_datum": "0xe7770001", "segment": "loop"}]}))
         });
+        if audio_play {
+            host("audio.play", Access::Act, |_, p, _| {
+                assert_eq!(p["player"], "player.0");
+                Ok(json!({
+                    "player": "player.0",
+                    "sound": {"tag": "0xe4000040", "group": "snd!", "name": p["sound"]},
+                    "instance": "00cc0001",
+                }))
+            });
+        }
         host("pogo.test", Access::Act, |_, p, _| Ok(json!({"player": 0, "trick": p["trick"], "name": "Backflip"})));
         host("ui.audit", Access::Read, |_, _, _| {
             Ok(json!({"screen": {"id": 1, "name": "main_menu"}, "active": {"id": 191, "name": "settings"}, "issues": []}))
@@ -475,10 +490,12 @@ mod switch {
         let p = tag(b"nhdt", "ui\\hud\\a").unwrap();
         assert_eq!((p.what, p.target.as_deref()), ("hud", None));
         assert_eq!(p.params(), json!({"what": "hud"}));
-        for g in [b"snd!", b"proj", b"hlmt", b"mode", b"bitm", b"itmc"] {
+        let p = tag(b"snd!", "sound\\pogo\\spring").unwrap();
+        assert_eq!((p.what, p.target.as_deref()), ("sound", Some("sound\\pogo\\spring")));
+        for g in [b"lsnd", b"ugh!", b"proj", b"hlmt", b"mode", b"bitm", b"itmc"] {
             assert!(tag(g, "x").is_err(), "{g:?}");
         }
-        assert!(tag(b"snd!", "x").unwrap_err().contains("pair.audio"));
+        assert!(tag(b"lsnd", "x").unwrap_err().contains("snd!"));
     }
 
     #[test]
@@ -557,6 +574,60 @@ mod switch {
         let r = finish(&mut api, &mut app, id);
         assert_eq!(r["what"], "object");
         assert_eq!(game.calls("sim.spawn").len(), 1);
+    }
+
+    #[test]
+    fn a_sound_preview_plays_samples_the_mixer_and_returns_both_measures() {
+        let game = Game::start("sound");
+        let t = Temp::new("pv-sound");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+        let sound = "sound\\pogo\\spring";
+        let started = api
+            .call(&mut app, m::PAIR_PREVIEW, json!({"what": "sound", "target": sound, "seconds": 0.3}))
+            .unwrap();
+        assert_eq!(started["state"], "running");
+        let r = finish(&mut api, &mut app, started["id"].as_u64().unwrap());
+        assert_eq!((r["what"].as_str(), r["state"].as_str()), (Some("sound"), Some("done")), "{r}");
+        // The game was asked to play it at the player, then its voices were sampled.
+        assert_eq!(game.calls("audio.play"), [json!({"sound": sound, "player": "player.0"})]);
+        let steps: Vec<&str> = r["steps"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+        assert_eq!(&steps[..2], ["session.methods", "audio.play"]);
+        assert!(steps[2].starts_with("audio.voices x"), "{steps:?}");
+        // The game's measure: the mixer's voices.
+        assert_eq!(r["applied"]["instance"], "00cc0001");
+        assert!(r["audio"]["samples"].as_u64().unwrap() >= 2, "{r}");
+        assert_eq!(r["audio"]["voices"], 2);
+        assert_eq!(r["audio"]["loudest"][0]["id"], 7);
+        // The editor's own: sound.measure's answer, or why the map has none
+        // (the invented map holds no such sound).
+        assert!(r["editor"].is_object(), "{r}");
+        assert!(r["editor"]["why"].is_string() || r["editor"]["levels"].is_object(), "{r}");
+        // No picture of a sound.
+        assert!(r["capture"].is_null(), "{r}");
+
+        for (p, want) in [
+            (json!({"what": "sound"}), code::INVALID_PARAMS),
+            (json!({"what": "sound", "target": sound, "seconds": 0}), code::INVALID_PARAMS),
+        ] {
+            assert_eq!(refused(api.call(&mut app, m::PAIR_PREVIEW, p.clone())), want, "{p}");
+        }
+    }
+
+    #[test]
+    fn a_sound_preview_needs_the_games_audio_play() {
+        let game = Game::start_with("sound-missing", false);
+        let t = Temp::new("pv-sound-missing");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+        let id = api
+            .call(&mut app, m::PAIR_PREVIEW, json!({"what": "sound", "target": "x"}))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["state"], "failed");
+        assert!(r["why"].as_str().unwrap().contains("does not list audio.play"), "{r}");
     }
 
     #[test]

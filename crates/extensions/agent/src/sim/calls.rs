@@ -104,6 +104,11 @@ pub mod addr {
     /// object's `+0x1a` (`0x000b7c87`); `placement_data_new` leaves -1.
     pub const PLACEMENT_INDEX: u32 = 0x10;
     pub const OBJECT_NEW: u32 = 0x000b_7b40;
+    /// `sound_start_at_marker`: EAX the marker, ESI the object, one stack
+    /// argument pointing to (permutation hint, sound, scale, flags).
+    pub const SOUND_START_AT_MARKER: u32 = engine::points::SOUND_START_AT_MARKER.base;
+    /// The head marker's name id.
+    pub const HEAD_MARKER: u32 = 0x0400_0095;
     pub const OBJECT_DELETE: u32 = 0x000b_8540;
     pub const UNIT_ADD_WEAPON: u32 = 0x000c_d0c0;
     pub const PLAYER_PLACE_NEAR: u32 = engine::points::PLAYER_PLACE_NEAR.base;
@@ -276,6 +281,9 @@ pub enum Call {
         to: [f32; 3],
         shield: Option<f32>,
     },
+    /// Start the `snd!` tag `sound` at `unit`'s head marker
+    /// (`audio.play`).
+    Sound { unit: u32, sound: u32 },
     /// Make an object from `tag` at `pos`.
     Spawn {
         tag: u32,
@@ -1350,6 +1358,29 @@ async fn run_call(
             }
             out.insert("unit".into(), json!(hex(unit)));
             Ok(Ok(Value::Object(out)))
+        }
+        Call::Sound { unit, sound } => {
+            if cx.read(|m| body_of(m, unit)).is_none() {
+                return Ok(Err(unavailable("the unit is gone (it died?)")));
+            }
+            // One stack argument points to the four parameter words just
+            // above it, as the dialogue line's start passes them.
+            let parameters = cx.entry().esp.wrapping_sub(16);
+            let instance = cx
+                .call(
+                    GuestCall::new(addr::SOUND_START_AT_MARKER)
+                        .esi(unit)
+                        .eax(addr::HEAD_MARKER)
+                        .args([parameters, u32::MAX, sound, 1.0f32.to_bits(), 0]),
+                )
+                .await?
+                .eax;
+            if instance == u32::MAX {
+                return Ok(Err(unavailable(format!(
+                    "the game started no sound from tag {sound:#010x} (sound_start_at_marker, 0x1891d0, answered none: a tag with no permutation, or a full sound table)"
+                ))));
+            }
+            Ok(Ok(json!({ "instance": hex(instance), "unit": hex(unit) })))
         }
         Call::Give { unit, weapon, mode } => {
             if cx.read(|m| body_of(m, unit)).is_none() {

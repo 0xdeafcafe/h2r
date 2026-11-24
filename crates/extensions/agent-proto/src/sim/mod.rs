@@ -57,6 +57,10 @@ pub mod method {
     /// functions ([`super::SpawnParams`]): host only, never in a co-op
     /// session.
     pub const SPAWN: &str = "sim.spawn";
+    /// Play a sound tag at a player's unit through the game's own sound
+    /// start ([`super::PlayParams`]): presentation only, nothing is
+    /// filed or sent.
+    pub const AUDIO_PLAY: &str = "audio.play";
     /// Every live object through the simulation's typed views
     /// ([`super::objects`]).
     pub const OBJECTS: &str = "sim.objects";
@@ -100,6 +104,7 @@ pub mod method {
         SESSION,
         GIVE,
         SPAWN,
+        AUDIO_PLAY,
         OBJECTS,
         EVENTS,
         PLAYER_MARK,
@@ -516,6 +521,21 @@ pub struct GiveParams {
     /// unit's weapons go and it holds the new one (mode 2).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub keep: bool,
+}
+
+/// `audio.play`: a sound tag started at a player's unit by the game's own
+/// sound start (`SOUND_START_AT_MARKER`, the unit's head marker), as it
+/// starts a dialogue line.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayParams {
+    /// The `snd!` tag: a datum (`0xe1230045`) or a name, as `edit.tags`
+    /// lists them.
+    pub sound: String,
+    /// `player.<index>`, or a simulated player's `sim.<n>`. Default
+    /// `player.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<String>,
 }
 
 /// `sim.spawn`: an object made from its tag at a position.
