@@ -27,7 +27,7 @@ macro_rules! body {
                 concat!("ANIM_MANAGER_", stringify!($entry)),
                 $entry,
                 points::Sig::Opaque,
-                "docs/engine/unit-pose.md",
+                "docs/engine/animation-manager.md",
             ),
             entry: $entry,
             end: $end,
@@ -162,6 +162,37 @@ pub fn drive(
 mod tests {
     use super::*;
     use runtime::guest::Permissions;
+
+    #[test]
+    fn declined_caller_return_preserves_the_committed_graph_result() {
+        let (entry, graph, preload, resume) = (0x1c6440, 0x1daea0, 0x1dd9d0, 0x1c6466);
+        let mut g = Guest::new();
+        for pc in [entry, graph, preload] {
+            let body = lookup(pc).unwrap();
+            g.map_zeroed(pc, body.end - pc, Permissions::RX).unwrap();
+        }
+        let channel = 0x10000;
+        let tags = channel + 0x100;
+        let graph_data = channel + 0x200;
+        let clips = channel + 0x300;
+        g.map_zeroed(channel, 0x1000, Permissions::RW).unwrap();
+        g.map_zeroed(points::TAG_ENTRIES.base, 4, Permissions::RW).unwrap();
+        g.map_zeroed(sim_native::graph::ENABLED, 1, Permissions::READ).unwrap();
+        g.set_u32(points::TAG_ENTRIES.base, tags).unwrap();
+        g.set_u32(tags + 8, graph_data).unwrap();
+        g.set_u32(graph_data + 0x30, clips).unwrap();
+        g.set_u32(channel + 4, 0x0001ffff).unwrap();
+        // The children have writable frames below SP. Only the final RET
+        // reads at SP, where the caller has no mapped return address.
+        let sp = channel + 0x1000;
+        let mut c = CpuAbi { ecx: channel, esp: sp, ..Default::default() };
+        let transfer = drive(&mut c, &mut g, entry, |_| true).unwrap();
+        assert_eq!(transfer, Some(TransferAbi::ret(resume)));
+        assert_eq!((c.eax, c.esp), (clips + 108, sp));
+        let committed = c;
+        assert_eq!(run(&mut c, &mut g, resume).unwrap(), None);
+        assert_eq!(c, committed);
+    }
 
     #[test]
     fn child_refusal_keeps_the_parent_call_frame() {

@@ -6,7 +6,7 @@ only ([skeleton-walk.md](skeleton-walk.md)); `1dd1c0` is not. The phase 1c bodie
 [markers](markers.md), the [first-person palette](palette.md), the
 [unit pose](unit-pose.md), unit aim (`c7840`) and the
 [first-person filters](first-person-filters.md) (`166d75`, including
-`11eed0`). Run parity and the cumulative timing gate remain open.
+`11eed0`). Slice 1d implements the [channel manager and graph lookups](animation-manager.md). Run parity and the cumulative timing gate remain open.
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
@@ -497,9 +497,9 @@ The callers have already resolved the resource: each wrapper receives the
 12-byte view built by `1ddb40` (data pointer, sizes pointer `&element[+0x3c]`,
 node count, frame-info type, frame count). So the boundary makes **no
 resource-cache calls** and nothing inside it calls guest code. The bodies are
-plain `fn`s. `1c6f60`, `1dd9d0` (resolve and preload), `1236f0` and `1237e0`
-(cache request and get) and `1dd630` (with its RNG draw at `1dd6e1`) all stay
-guest.
+plain `fn`s. Slice 1d owns `1c6f60` and the preload at `1dd9d0`. Cache
+request and get (`1236f0`, `1237e0`) and `1dd630` (with its RNG draw at
+`1dd6e1`) stay guest.
 
 **Step 0 (research, about half a day, static reading with `h2 disasm`):**
 
@@ -619,7 +619,7 @@ palette step through `engine::sim_anim::palette` and
 `sim_anim::palette` ([palette.md](palette.md)).
 The [unit pose](unit-pose.md) (`sim_native::unit::run`, `112070`) plans
 the base and aim channels, angle projections and overlay tail one guest
-call at a time. The manager and graph functions remain callouts for 1d.
+call at a time. The [channel manager](animation-manager.md) receives those calls through the dispatcher.
 
 The same checked segment plan runs `sim_anim::unit_aim` (`c7840`,
 nine return sites) and `sim_anim::first_person_filters` (`166d75`, 40).
