@@ -962,7 +962,7 @@ fn editing_a_stored_sequence_moves_the_tag_and_undo_restores_it() {
     );
     let first = save_as(&mut api, &mut app, &t, "first.map");
     let mut api = Api::new();
-    let mut app = app(&t);
+    let mut app = super::app(&t);
     let path = t.path("first.map");
     call(
         &mut api,

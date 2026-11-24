@@ -307,7 +307,7 @@ struct FO { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
                     usage,
                     mapped_at_creation: true,
                 });
-                buffer.slice(..).get_mapped_range_mut().copy_from_slice(bytes);
+                buffer.slice(..).get_mapped_range_mut().expect("mapped at creation").copy_from_slice(bytes);
                 buffer.unmap();
                 buffer
             };

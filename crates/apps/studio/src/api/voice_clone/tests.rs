@@ -27,7 +27,7 @@ impl Drop for Temp {
     }
 }
 
-fn app(t: &Temp) -> App {
+fn test_app(t: &Temp) -> App {
     let mut app = App::new();
     app.set_data_root(t.0.join("data"));
     app
@@ -63,7 +63,7 @@ fn wait(api: &mut Api, app: &mut App, id: u64) -> Value {
 #[test]
 fn the_characters_are_listed_with_their_tags_and_the_speakers_found() {
     let t = Temp::new("characters");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     test_setup(&mut app, false, false);
     let r = call(&mut api, &mut app, m::VOICE_CHARACTERS, json!({}));
@@ -111,7 +111,7 @@ fn the_characters_are_listed_with_their_tags_and_the_speakers_found() {
 #[test]
 fn a_dataset_is_built_transcribed_and_reported() {
     let t = Temp::new("build");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     let fake = test_setup(&mut app, false, false);
     let r = call(
@@ -185,7 +185,7 @@ fn a_dataset_is_built_transcribed_and_reported() {
 #[test]
 fn a_build_is_checked_before_anything_is_read() {
     let t = Temp::new("build-bad");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     test_setup(&mut app, false, false);
     let e = fails(api.call(
@@ -223,7 +223,7 @@ fn a_build_is_checked_before_anything_is_read() {
 #[test]
 fn a_line_is_said_by_the_clone_at_the_characters_loudness() {
     let t = Temp::new("say");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     let fake = test_setup(&mut app, true, true);
     let r = call(
@@ -292,7 +292,7 @@ fn a_line_is_said_by_the_clone_at_the_characters_loudness() {
 #[test]
 fn a_clone_line_with_a_clip_id_can_be_committed() {
     let t = Temp::new("say-clip");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     test_setup(&mut app, true, true);
     let r = call(
@@ -319,7 +319,7 @@ fn a_clone_line_with_a_clip_id_can_be_committed() {
 #[test]
 fn saying_before_the_model_is_installed_starts_the_install() {
     let t = Temp::new("say-install");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     let fake = test_setup(&mut app, false, true);
     let e = fails(api.call(
@@ -346,7 +346,7 @@ fn saying_before_the_model_is_installed_starts_the_install() {
 #[test]
 fn a_character_with_no_dataset_or_text_is_refused() {
     let t = Temp::new("say-nodata");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     test_setup(&mut app, true, false);
     let e = fails(api.call(
@@ -385,7 +385,7 @@ fn a_character_with_no_dataset_or_text_is_refused() {
 #[test]
 fn a_fine_tune_runs_as_a_job_and_the_clone_uses_it() {
     let t = Temp::new("train");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     let fake = test_setup(&mut app, true, true);
 
@@ -478,7 +478,7 @@ fn a_fine_tune_runs_as_a_job_and_the_clone_uses_it() {
 #[test]
 fn a_failing_model_is_reported_and_the_job_list_says_why() {
     let t = Temp::new("say-fail");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     test_setup(&mut app, true, true);
     let mut fake = crate::voice::fake::FakeLauncher::ready();

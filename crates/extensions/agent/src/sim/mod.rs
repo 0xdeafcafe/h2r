@@ -727,7 +727,7 @@ impl Sim {
                 let out = ticket.outcome()?;
                 Some(out.map(|mut made| {
                     made["object"] = json!(id.to_string());
-                    made["session"] = session;
+                    made["session"] = session.clone();
                     made
                 }))
             }),

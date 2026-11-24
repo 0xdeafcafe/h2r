@@ -120,13 +120,13 @@ fn a_pick_builds_once_and_the_next_reuses_the_receipt() {
     let worker = pick(&dir.0, "fixture", Some(7), &file, &maps).expect("a build starts");
     worker.join().unwrap();
     let id = crate::lobby_start::map_variant().expect("the lobby holds the id");
-    let (made, package) = package().expect("built");
+    let (made, built) = package().expect("built");
     assert_eq!(made, id);
-    assert!(package.starts_with("maps/forge-"));
+    assert!(built.starts_with("maps/forge-"));
     assert_eq!(hold(), None);
     // The same pick again, and after a map change and back, build nothing.
     assert!(pick(&dir.0, "fixture", Some(7), &file, &maps).is_none());
-    assert_eq!(package(), Some((id, package.clone())));
+    assert_eq!(package(), Some((id, built.clone())));
     sync(Some(8));
     assert!(pick(&dir.0, "fixture", Some(7), &file, &maps).is_none());
     assert_eq!(builds.load(Ordering::SeqCst), 1);

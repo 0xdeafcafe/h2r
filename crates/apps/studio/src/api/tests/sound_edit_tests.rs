@@ -8,7 +8,7 @@ use super::*;
 const SRC: &str = "sounds/ramp.wav";
 
 fn ramp_wav(frames: i16) -> Vec<u8> {
-    sound_edit::Wave {
+    ::sound_edit::Wave {
         channels: 1,
         rate: 8000,
         pcm: (0..frames).collect(),
@@ -47,7 +47,7 @@ fn render_to(t: &Temp, api: &mut Api, app: &mut App, name: &str, extra: Value) -
         p[k] = v.clone();
     }
     call(api, app, m::SOUND_RENDER, p);
-    sound_edit::Wave::from_wav(&std::fs::read(t.path(name)).unwrap()).unwrap().pcm
+    ::sound_edit::Wave::from_wav(&std::fs::read(t.path(name)).unwrap()).unwrap().pcm
 }
 
 fn source_bytes(t: &Temp) -> Vec<u8> {

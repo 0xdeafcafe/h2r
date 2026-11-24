@@ -376,6 +376,12 @@ enum WireEvent {
         assist: Option<u8>,
         class: String,
     },
+    Damage {
+        object: u32,
+        #[serde(default)]
+        by: Option<u8>,
+        amount: i32,
+    },
 }
 
 impl From<WireEvent> for Input {
@@ -412,6 +418,7 @@ impl From<WireEvent> for Input {
             WireEvent::ActorAssist { killer, assist, class } => {
                 Input::ActorAssist { killer, assist, class }
             }
+            WireEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
         }
     }
 }
@@ -448,6 +455,7 @@ impl From<&Input> for WireEvent {
                 assist,
                 class,
             },
+            Input::Damage { object, by, amount } => WireEvent::Damage { object, by, amount },
         }
     }
 }

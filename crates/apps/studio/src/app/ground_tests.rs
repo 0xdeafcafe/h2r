@@ -89,7 +89,7 @@ fn a_label_placed_in_the_window_and_by_scenario_add_make_the_same_document() {
     assert_eq!(labels_of(a).unwrap(), labels_of(b).unwrap());
     assert_eq!(labels_of(a).unwrap().lines.len(), 1);
     // A label that is none of the six, and a team that is no team.
-    let bad = |params| {
+    let mut bad = |params| {
         api.call(&mut agent, m::SCENARIO_ADD, params)
             .unwrap_err()
             .code

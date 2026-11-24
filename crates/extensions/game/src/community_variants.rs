@@ -83,8 +83,9 @@ pub const OPTION_SIZE: u32 = 0xc;
 pub const DATA_BASE: u32 = 0xa0fd_0000;
 const DATA_SIZE: u32 = 0x4000;
 const ENTRIES_AT: u32 = DATA_BASE + 0x2000;
-const MAX_ENTRIES: u32 = (DATA_SIZE - 0x2000) / ENTRY_SIZE;
-const _: () = assert!(MAX_ENTRIES > 64);
+const MAX_SLOTS: u32 = (DATA_SIZE - 0x2000) / ENTRY_SIZE;
+const _: () = assert!(MAX_SLOTS > 64);
+const _: () = assert!(MAX_ENTRIES as u32 <= MAX_SLOTS);
 
 /// The icon after every community name, where retail names carry U+E008.
 pub const ICON: char = '\u{e006}';

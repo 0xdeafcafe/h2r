@@ -554,15 +554,21 @@ fn run_configured(
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
     // The pogo stick is the `pogo` package (content/pogo), on while the
     // `pogo` feature is.
-    let content_packages = {
+    // The set alone here (no kit inputs yet): the maps it names. The mount
+    // below reads it again with the kits' inputs.
+    let map_packages = {
         let switches = features.switches();
-        packages::at_boot(&opts.data_root, &|name| switches.feature(name, true))
+        packages::at_boot(
+            &opts.data_root,
+            &|name| switches.feature(name, true),
+            workspace::KitInputs::default(),
+        )
     };
     // The maps those packages build (`map` and `map-patch` items) are written
     // as map packages under <data>/maps before the content library reads
     // that folder: a map built for the same inputs is left alone
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
-    packages::prepare_maps(&opts.data_root, &opts.disc, &content_packages.set.loaded());
+    packages::prepare_maps(&opts.data_root, &opts.disc, &map_packages.set.loaded());
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.

@@ -223,6 +223,7 @@ pub fn poses(l: &Layout) -> Vec<(&'static str, Pose)> {
         along,
         half,
         strength,
+        to: None,
     };
     let mut out = vec![(BOX, pose(l.seam, l.along, [l.half_along, BOX_ACROSS]))];
     if let Some(p) = l.impact {

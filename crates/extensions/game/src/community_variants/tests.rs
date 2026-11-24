@@ -617,7 +617,7 @@ fn a_failed_read_leaves_the_tag_alone() {
     assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(OLD));
     assert_eq!(m.u32(GOOF + GOOF_BUILTINS), Some(6));
     // A list that would not fit our page is refused the same way.
-    m.set_u32(GOOF + GOOF_BUILTINS, MAX_ENTRIES);
+    m.set_u32(GOOF + GOOF_BUILTINS, MAX_SLOTS);
     assert_eq!(
         extend_builtins(&mut m, GOOF, &[entry(0)], DATA_BASE, ENTRIES_AT),
         None

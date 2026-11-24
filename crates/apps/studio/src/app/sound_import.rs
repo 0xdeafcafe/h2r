@@ -48,22 +48,6 @@ pub(super) fn package_dir(data_root: &Path, package: &str) -> Result<std::path::
         })
 }
 
-/// The directory of the local package `package`; a package that is not
-/// listed is `Params`, one that is built in is refused.
-pub(super) fn package_dir(data_root: &Path, package: &str) -> Result<std::path::PathBuf, CopyRefusal> {
-    use CopyRefusal::{Params, Refused};
-    let set = read_set(data_root);
-    set.listed
-        .iter()
-        .find(|l| l.id == package)
-        .ok_or_else(|| Params(format!("no package {package:?}")))
-        .and_then(|l| match &l.dir {
-            Some(d) => Ok(std::path::PathBuf::from(d)),
-            None => Err(Refused(format!(
-                "package {package:?} is built in: import into a package under <data>/packages/"
-            ))),
-        })
-}
 
 /// Add the WAV at `file` to the local package `package` as a `sound` item
 /// that writes the `snd!` `tag`, in `class` (a name or number; the

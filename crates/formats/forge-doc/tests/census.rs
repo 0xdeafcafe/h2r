@@ -99,6 +99,7 @@ fn a_map_file_and_the_game_rows_of_it_give_one_census() {
         flags: vec![FlagRow { kind: 2, team: 1 }],
         starts: vec![1, 1],
         tags: BTreeMap::from([("objects/test/blaster".to_string(), ObjectType::Weapon)]),
+        sounds: None,
     };
     let from_game = Census::of_game(&rows, Some(&doc)).unwrap();
     assert_eq!(from_file, from_game);

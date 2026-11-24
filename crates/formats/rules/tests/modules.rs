@@ -13,7 +13,7 @@ const MAIN: &str = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill
 const ONE: &str =
     "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { score(k, bonus()) }\n";
 
-fn files(list: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+fn files(list: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> + use<> {
     let list = list.to_vec();
     move |n| list.iter().find(|(a, _)| *a == n).map(|(_, b)| b.to_string())
 }

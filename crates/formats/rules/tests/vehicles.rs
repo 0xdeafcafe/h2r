@@ -277,7 +277,7 @@ fn seats_fill_driver_first_and_a_full_vehicle_refuses() {
     seat(&mut g, 1);
     assert_eq!(g.vehicles[&SHIP].driver, Some(2));
     assert_eq!(g.vehicles[&SHIP].riders, [0]);
-    assert_eq!(g.refused, [("seat", "the vehicle has no free seat")]);
+    assert_eq!(g.refused, [("seat", "the vehicle has no free seat".to_string())]);
     assert_eq!(read(&mut g, id::VEHICLE_RIDERS, SHIP), 2);
     assert_eq!(read(&mut g, id::VEHICLE_DRIVER, SHIP), 2);
     // Boarding what you are in changes nothing.
@@ -295,7 +295,7 @@ fn seats_fill_driver_first_and_a_full_vehicle_refuses() {
     g.apply(&rules::Input::Death(3));
     assert_eq!(read(&mut g, id::VEHICLE_DRIVER, SHIP), -1);
     seat(&mut g, 3);
-    assert_eq!(g.refused.last(), Some(&("seat", "the player is not alive")));
+    assert_eq!(g.refused.last(), Some(&("seat", "the player is not alive".to_string())));
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn a_squad_takes_the_free_seats_and_no_more() {
     place(&mut g, 2, 1);
     assert_eq!(
         g.refused,
-        [("place_squad_in", "the vehicle has no free seat")]
+        [("place_squad_in", "the vehicle has no free seat".to_string())]
     );
     act(&mut g, id::UNLOAD, vec![Arg::Object(Some(SHIP))]);
     assert_eq!(g.unloaded, [(SHIP, 0, 3), (SHIP, 1, 1)]);
@@ -333,7 +333,7 @@ fn a_squad_takes_the_free_seats_and_no_more() {
     place(&mut g, 0, 0);
     assert_eq!(
         g.refused.last(),
-        Some(&("place_squad_in", "a squad is at least 1 actor"))
+        Some(&("place_squad_in", "a squad is at least 1 actor".to_string()))
     );
 }
 
@@ -379,7 +379,7 @@ fn a_vehicle_entry_on_anything_else_is_a_refused_call() {
     );
     assert_eq!(
         g.refused.last(),
-        Some(&("fly", "a point of the path is not placed"))
+        Some(&("fly", "a point of the path is not placed".to_string()))
     );
     act(
         &mut g,
@@ -392,7 +392,7 @@ fn a_vehicle_entry_on_anything_else_is_a_refused_call() {
     );
     assert_eq!(
         g.refused.last(),
-        Some(&("fly", "a flight takes at least 1 tick"))
+        Some(&("fly", "a flight takes at least 1 tick".to_string()))
     );
 }
 

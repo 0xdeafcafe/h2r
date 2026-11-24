@@ -517,7 +517,7 @@ impl Play {
     }
 
     /// The object definitions the Pending tab's `next_spawn` rows change.
-    pub(in crate::play) fn can_respawn_definitions(&self, app: &App) -> bool {
+    pub(crate) fn can_respawn_definitions(&self, app: &App) -> bool {
         self.live_edits
             && self.has_method(method::OBJECT_RESPAWN)
             && !super::definitions::definitions(&app.tags, &app.pairing.pending).is_empty()

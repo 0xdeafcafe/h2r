@@ -569,7 +569,8 @@ fn advance(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
 /// leave the opposite interval's bit mask in a different register.
 fn check_event(c: &mut CpuAbi, g: &mut Bus<'_>, record: u32, frame_in_edx: bool) -> Checked<()> {
     let current = g.u32(at(c.esi, 0x1c))?;
-    let relation = simd::ucomiss(&mut c.mxcsr, low32(c, 0), current).map_err(|_| bad(c.eip))?;
+    let lhs = low32(c, 0);
+    let relation = simd::ucomiss(&mut c.mxcsr, lhs, current).map_err(|_| bad(c.eip))?;
     let frame = g.u16(at(record, 2))? as i16 as u32;
     if frame_in_edx {
         c.edx = frame;

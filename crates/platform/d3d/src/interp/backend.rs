@@ -2020,7 +2020,7 @@ where
     fn commit_carried_stage(
         &mut self, stage: crate::SceneStage<Self::Surface>, copies: Vec<crate::ExternalRecording>,
     ) {
-        self.unpinned = true;
+        self.external_work = true;
         self.inner.commit_carried_stage(stage, copies);
     }
 

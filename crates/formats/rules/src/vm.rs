@@ -1893,9 +1893,10 @@ impl<'a> Run<'a> {
                     start: self.ext.tick,
                     duration: ticks.max(1) as u32,
                 };
+                let full = self.ext.movers.len() >= MAX_MOVERS;
                 match self.ext.movers.iter_mut().find(|m| m.object == object) {
                     Some(m) => *m = mover,
-                    None if self.ext.movers.len() >= MAX_MOVERS => return Err(ErrorKind::Movers),
+                    None if full => return Err(ErrorKind::Movers),
                     None => self.ext.movers.push(mover),
                 }
             }
