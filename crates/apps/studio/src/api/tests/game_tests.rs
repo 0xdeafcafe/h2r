@@ -101,7 +101,7 @@ fn snapshot_writes_the_frame_as_a_png() {
     let r = call(&mut api, &mut app, m::GAME_SNAPSHOT, json!({"out": out}));
     assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(4), Some(2)));
     assert_eq!(r["tick"], 7);
-    let decoder = png::Decoder::new(std::fs::File::open(&out).unwrap());
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&out).unwrap()));
     let mut reader = decoder.read_info().unwrap();
     let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
     let info = reader.next_frame(&mut pixels).unwrap();
