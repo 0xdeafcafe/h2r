@@ -1,7 +1,7 @@
 //! A light's external recordings, reserved together at one drained queue boundary.
 
 use super::*;
-use crate::{ExternalPass, ExternalPlan, ExternalRecording, GuestError, TargetCopy};
+use crate::{ExternalPass, ExternalPlan, ExternalRecording, GuestError, SceneStage};
 
 /// Guest surface headers and viewport of a graph node. A colour-only pass
 /// uses the backend's scratch depth. These addresses do not rebind the device.
@@ -20,7 +20,8 @@ pub struct ExternalStep {
 }
 
 struct Recorded<S> {
-    binding: ExternalBinding<S>,
+    stage: SceneStage<S>,
+    colors: Vec<(u32, S)>,
     depth: u32,
     copies: Vec<ExternalRecording>,
 }
@@ -52,6 +53,7 @@ impl<B: Backend> Device<B> {
         steps: Vec<ExternalStep>,
     ) -> Result<Option<PreparedSequence<'_, B>>, D3dError> {
         if !self.created
+            || !self.backend.can_commit_carried()
             || self.fault.is_some()
             || self.active_callback.is_some()
             || self.undelivered.is_some()
@@ -68,6 +70,9 @@ impl<B: Backend> Device<B> {
             mut pass,
         } in steps
         {
+            if !self.backend.accepts_scene_pass(&*pass) {
+                return Ok(None);
+            }
             let binding = match self.bind_external_at(mem, targets, &plan, &mut *pass, None) {
                 Ok(binding) => binding,
                 Err(why) => {
@@ -75,30 +80,34 @@ impl<B: Backend> Device<B> {
                     return Ok(None);
                 }
             };
-            let prepared = self.backend.prepare_external(
-                binding.surfaces.clone(),
-                binding.request,
-                [None; 4],
-                &plan,
-                TargetCopy::Reference,
-                Arc::new(std::sync::Mutex::new(pass)),
-            );
+            let stage = SceneStage {
+                surfaces: binding.surfaces,
+                request: binding.request,
+                plan,
+                pass: Arc::new(std::sync::Mutex::new(pass)),
+            };
+            let prepared = self.backend.prepare_carried_stage(&stage);
             let Ok(Some(copies)) = prepared else {
                 self.refuse_external(ExternalRefusal::Backend);
                 return Ok(None);
             };
-            if !complete_recordings(&plan, &copies) {
+            if !complete_recordings(&stage.plan, &copies) {
                 self.refuse_external(ExternalRefusal::Backend);
                 return Ok(None);
             }
             recorded.push(Recorded {
-                binding,
-                depth: targets.depth,
+                stage,
+                colors: binding.colors,
+                depth: if binding.depth_write {
+                    targets.depth
+                } else {
+                    0
+                },
                 copies,
             });
         }
         for stage in &recorded {
-            for &(_, color) in &stage.binding.colors {
+            for &(_, color) in &stage.colors {
                 self.materialize_display_copy(color)?;
             }
         }
@@ -192,7 +201,8 @@ impl<B: Backend> PreparedSequence<'_, B> {
         // MakeRequestedSpace has effects outside the setter transaction.
         let room = (u32::from(view_layers) + 2) * 13 * 4;
         let threshold = mem.read_u32(dev + field::THRESHOLD)?;
-        if view_layers > 2
+        if !d.backend.can_commit_carried()
+            || view_layers > 2
             || put != d.consumed
             || put.checked_add(room).is_none_or(|end| end > threshold)
             || mem.read_u32(d.cfg.layout.p_device)? != dev
@@ -264,14 +274,12 @@ impl<B: Backend> PreparedSequence<'_, B> {
         }
         d.constants_generation += 1;
         for step in self.steps {
-            for copy in step.copies {
-                d.backend.commit_external(copy);
-            }
-            for (header, surface) in step.binding.colors {
+            d.backend.commit_carried_stage(step.stage, step.copies);
+            for (header, surface) in step.colors {
                 d.present_cameras.color_written(surface);
                 d.mark_color_written(header);
             }
-            if step.binding.depth_write {
+            if step.depth != 0 {
                 d.mark_depth_header_written(step.depth);
             }
             d.stats.external_passes += 1;

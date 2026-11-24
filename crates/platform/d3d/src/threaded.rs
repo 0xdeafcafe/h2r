@@ -1606,6 +1606,48 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         })
     }
 
+    fn can_commit_carried(&self) -> bool {
+        self.queues_scene_stages()
+    }
+
+    fn prepare_carried_stage(
+        &mut self, stage: &crate::SceneStage<u32>,
+    ) -> Result<Option<Vec<ExternalRecording>>, String> {
+        if !self.can_commit_carried() { return Ok(None); }
+        if self.frame_owner.is_none() {
+            return self.prepare_external(stage.surfaces.clone(), stage.request, [None; 4],
+                &stage.plan, TargetCopy::Reference, Arc::clone(&stage.pass));
+        }
+
+        // These lights compile draws from owned geometry and static textures.
+        // Pinning attachments records handles and commands, without consuming
+        // the results of earlier draws. A general worker query would flush the
+        // held commands and disqualify the very frame the light belongs to.
+        if stage.plan.stage != timeline::native::Stage::Lights
+            || !stage.surfaces.sampled.is_empty() || !stage.surfaces.slots.is_empty()
+            || !stage.pass.lock().map_err(|_| "native pass poisoned")?.replays_scene()
+        {
+            return Ok(None);
+        }
+        let surfaces = stage.surfaces.clone();
+        let plan = stage.plan.clone();
+        let request = stage.request;
+        let pass = Arc::clone(&stage.pass);
+        count_external_wait(plan.stage);
+        self.call_job(Cmd::Independent, move |worker| {
+            if !worker.inner.runs_scene_stages() { return Ok(None); }
+            let Some(surfaces) = surfaces.try_map(|s| worker.surfaces.get(s).copied()) else {
+                return Ok(None);
+            };
+            worker.inner.prepare_carried_stage(&crate::SceneStage { surfaces, request, plan, pass })
+        })
+    }
+
+    fn commit_carried_stage(&mut self, stage: crate::SceneStage<u32>, copies: Vec<ExternalRecording>) {
+        self.pinned_external_run = None;
+        self.push(Cmd::Render(owner::RenderOp::SealedStage { stage: Box::new(stage), copies }));
+    }
+
     fn queue_external_draw(
         &mut self, candidate: crate::backend::QueuedExternalDraw<u32>,
         textures: [Option<&Self::Texture>; 4],
