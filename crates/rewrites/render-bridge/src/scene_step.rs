@@ -398,8 +398,12 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
 /// invocation before its typed groups can replace any handlers.
 pub(crate) fn current_light_matches(light: &SceneLight, steps: &[LightStep]) -> bool {
     with_step(|step| {
-        let Some((scene, view)) = step.builder.open() else { return false };
-        let Some(at) = view.lights.clone().last() else { return false };
+        let Some((scene, view)) = step.builder.open() else {
+            return false;
+        };
+        let Some(at) = view.lights.clone().next_back() else {
+            return false;
+        };
         let current = &scene.lights[at as usize];
         step.light_open
             && current.guest_selected
@@ -415,13 +419,14 @@ pub(crate) fn current_light_matches(light: &SceneLight, steps: &[LightStep]) -> 
 
 /// Append groups only after the host has reserved the entire invocation.
 /// The builder assigns this view's indices and remaps every object's pose.
-pub(crate) fn typed_light_groups(groups: &[crate::native_lights::SceneGroup]) {
+pub(crate) fn typed_light_groups(groups: Vec<crate::native_lights::SceneGroup>) {
     with_step(|step| {
-        if !step.light_open { return; }
+        if !step.light_open {
+            return;
+        }
         for group in groups {
-            let entries: Vec<_> = group.entries.iter().cloned()
-                .zip(group.rows.iter().cloned()).collect();
-            if step.builder.push_light_group(group.group.clone(), &entries).is_err() {
+            let entries: Vec<_> = group.entries.into_iter().zip(group.rows).collect();
+            if step.builder.push_light_group(group.group, &entries).is_err() {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
                 return;
             }

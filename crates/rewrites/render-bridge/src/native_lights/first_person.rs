@@ -210,7 +210,7 @@ fn try_passes(
             host.clear_admission();
         }
         if crate::scene_step::first_person_light(mem, slot.scene_light, slot.steps.as_slice()) {
-            crate::scene_step::typed_light_groups(&slot.groups);
+            crate::scene_step::typed_light_groups(slot.groups);
         }
     }
     SceneList::TypedFirstPerson.count(SceneListResult::Native);

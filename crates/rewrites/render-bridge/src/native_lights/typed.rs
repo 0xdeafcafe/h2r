@@ -209,7 +209,7 @@ pub(super) fn dynamic(
         super::frame::refused(stage, Refusal::Unsupported);
         return Ok(None);
     }
-    crate::scene_step::typed_light_groups(&pass.groups);
+    crate::scene_step::typed_light_groups(pass.groups);
     CANDIDATE.take();
     stage.count(SceneListResult::Native);
     Ok(Some((
