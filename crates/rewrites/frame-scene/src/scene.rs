@@ -133,7 +133,8 @@ pub struct View {
     /// respawns and the distance backstop).
     pub cut: bool,
     pub camera: Camera,
-    pub display_visibility: Option<DisplayVisibility>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_visibility: Option<std::sync::Arc<DisplayVisibility>>,
     /// Into [`FrameScene::clusters`].
     pub clusters: Range<u32>,
     /// Into [`FrameScene::instances`], in the guest's order.

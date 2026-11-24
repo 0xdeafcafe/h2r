@@ -287,7 +287,7 @@ impl SceneBuilder {
 
     pub fn set_display_visibility(&mut self, visibility: crate::DisplayVisibility) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
-        scene.views[open].display_visibility = Some(visibility);
+        scene.views[open].display_visibility = Some(visibility.into());
         Ok(())
     }
 
