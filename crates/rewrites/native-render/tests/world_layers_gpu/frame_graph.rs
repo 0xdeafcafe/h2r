@@ -217,6 +217,112 @@ fn typed_and_carried_draws_in_adjacent_slots_share_one_pass() {
     );
 }
 
+/// Commit at the sink, then draw the sealed stream through the display
+/// and capture entry points. The light's explicit target is not the
+/// guest's bound target: the guest draw after it must still use the latter.
+#[test]
+fn a_committed_light_stage_replays_once_without_rebinding_the_next_guest_draw() {
+    use d3d::{Backend, SceneSink};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else { return };
+    let mut gpu = GfxBackend::new(ctx);
+    let ReplayOp::Stage(triangle_stage) = typed_triangle(&mut gpu, 2.0, [0., 1., 0., 1.]) else {
+        unreachable!()
+    };
+    let frame = Arc::new(Mutex::new(None));
+    let retained = Arc::clone(&frame);
+    let armed = Arc::new(AtomicBool::new(true));
+    let reference = Arc::clone(&armed);
+    let mut sink = SceneSink::new(gpu, || {
+        Some(SlotAt {
+            slot: Slot::AfterLights,
+            view: 0,
+        })
+    })
+    .with_replay(move |f| *retained.lock().unwrap() = Some(f))
+    .with_guest_reference_request(move || reference.load(Ordering::Relaxed));
+    let color = sink.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let other = sink.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = sink.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    for surface in [color, other] {
+        sink.clear(surface, Some(depth), Clear::all([0., 0., 0., 1.]))
+            .unwrap();
+    }
+    let guest = |rgba| {
+        let mut draw = triangle(2., rgba, 1, false);
+        draw.state.render.depth_func = gfx::state::CompareFunc::Always;
+        draw
+    };
+    sink.draw(other, Some(depth), &guest([1., 0., 0., 1.]), [None; 4])
+        .unwrap();
+    let stage = SceneStage {
+        surfaces: ExternalSurfaces {
+            color,
+            depth,
+            sampled: vec![],
+            slots: vec![],
+            slot_sizes: vec![],
+        },
+        plan: ExternalPlan {
+            stage: timeline::native::Stage::Lights,
+            ..triangle_stage.plan
+        },
+        pass: triangle_stage.pass,
+        request: triangle_stage.request,
+    };
+    assert!(
+        !sink.can_commit_carried(),
+        "an armed reference retains the guest"
+    );
+    assert!(sink.prepare_carried_stage(&stage).unwrap().is_none());
+    armed.store(false, Ordering::Relaxed);
+    // A refused later step or tail drops this first reservation.
+    drop(sink.prepare_carried_stage(&stage).unwrap().unwrap());
+    let recordings = sink.prepare_carried_stage(&stage).unwrap().unwrap();
+    sink.commit_carried_stage(stage, recordings);
+    sink.draw(other, Some(depth), &guest([0., 0., 1., 1.]), [None; 4])
+        .unwrap();
+    sink.present(color, 0).unwrap();
+
+    let frame = frame.lock().unwrap().take().unwrap();
+    assert!(frame.refusals.is_empty());
+    assert!(!frame.guest_reference_complete());
+    let pos = frame
+        .ops
+        .iter()
+        .position(|(_, op)| matches!(op, ReplayOp::Stage(_)))
+        .unwrap();
+    assert_eq!(
+        frame
+            .ops
+            .iter()
+            .filter(|(_, op)| matches!(op, ReplayOp::Stage(_)))
+            .count(),
+        1
+    );
+    assert!(matches!(frame.ops[pos - 1].1, ReplayOp::Draw { .. }));
+    assert!(
+        matches!(frame.ops[pos + 1].1, ReplayOp::Draw { .. }),
+        "the later guest draw inherited its binding"
+    );
+    let scene = sealed();
+    let gpu = sink.inner_mut();
+    let shown = draw_display(gpu, &scene, &frame, 1, Lighting::Retail, 0, None, None).unwrap();
+    assert_eq!(shown.draws, 3);
+    let display = gpu.last_presented().unwrap();
+    let pixels = gpu.read_color(display).unwrap().0;
+    let at = ((4 * SIZE + 4) * 4) as usize;
+    assert_eq!(&pixels[at..at + 4], &[0, 255, 0, 255]);
+    for scale in [1, 4] {
+        let capture = draw_private(gpu, &scene, &frame, scale, Lighting::Retail).unwrap();
+        assert_eq!(capture.report.draws, 3);
+        assert_eq!(rgba(&capture, 4 * scale, 4 * scale), [0, 255, 0, 255]);
+    }
+    assert_eq!(gpu.last_presented(), Some(display));
+    assert_eq!(gpu.read_color(display).unwrap().0, pixels);
+}
+
 #[test]
 fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
