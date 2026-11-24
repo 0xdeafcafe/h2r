@@ -18,7 +18,8 @@ through it: the renderer crates, `assets`, the editors, the converters,
   definitions, the schema and the group registry.
 - `src/decode.rs`, `src/wire.rs`, `src/edit.rs`, `src/rebuild.rs`: decode,
   wire types, in-place edit and map rebuild.
-- `src/repo.rs`: the tag repository.
+- `src/repo.rs`, `src/repo/`: the tag repository, its skeletons and extent
+  tables, extraction on compile, the normal forms and the asset catalogue.
 - One module per domain: `object`, `collision`, `anim`, `lighting`,
   `material`, `effects`, `localization`, `geometry`, `rgba_bitmap`.
 

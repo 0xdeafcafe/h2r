@@ -139,7 +139,11 @@ into `<data>/tags/` (`tags::repo::TagRepo`,
 the tags name themselves (`objects\weapons\...`, `sound\...`,
 `scenarios\...`), not a list of maps. A tag that many maps hold is one
 row; where maps hold different versions the row opens to the tree's
-variants, each naming its maps. Tags our packages add are in the same
+variants, each naming its maps. While the store's catalogue is current
+the versions are assets by hash, so two files that differ only in what
+ties them to their map are one
+([asset-store.md](../engine/asset-store.md), "The catalogue"). Tags our
+packages add are in the same
 tree at their own paths, marked `+`. A map is not a container here: it
 is its scenario tag, and opening that is opening the map.
 
@@ -177,8 +181,9 @@ which calls `App::asset_copy`, the call `asset.copy` makes: a new tag
 
 Thumbnails, **Open as fields**, **Show edits**, **Where used**, folders
 in the tree and dragging a source file onto a package are not built: the
-rows carry the data (`asset.thumb`) and the menu gains the entries as
-their slices land.
+rows carry the data (`asset.thumb`; `used`, the keys that reference a
+tag, for **Where used**) and the menu gains the entries as their slices
+land.
 
 A loose `.map` (a community mod) opened from **File > Open** is stored
 as an import layer (W9) and its tags join the tree under its name.

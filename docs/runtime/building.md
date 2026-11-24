@@ -177,7 +177,11 @@ stderr, then the disc's files that are not maps copied to `<data>/disc/`
 once per image (`crates/apps/cli/src/store_prepare.rs`). `h2 play`, `h2 run`
 and `h2 serve` run the same step before they boot, beside the packages'
 convert items, and never fail the boot: a problem is a line on stderr. With
-nothing stale the step costs a stat of each map file. The slim host build
+nothing stale the step costs a stat of each map file. The same step keeps
+the store's asset catalogue (`<data>/tags/assets.idx`) current: rebuilt
+after every extraction, written when missing or stale, with a line for
+what it wrote; `h2 tags catalogue` rebuilds it by hand and prints the
+variants by group. The slim host build
 (`--profile host`) does not extract. The design is
 [asset-store.md](../engine/asset-store.md), "Extraction on compile".
 

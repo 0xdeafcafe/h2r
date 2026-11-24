@@ -161,7 +161,7 @@ are under [Reviews](#reviews).
 - [sound.md](formats/sound.md): sound tags (`snd!`, `ugh!`) and `h2 sound`
 - [structure-bsp.md](formats/structure-bsp.md): render model and structure BSP geometry, lightmaps, and the viewer
 - [ui.md](formats/ui.md): user-interface tags (`wgit`, `wgtz`, `wigl`, `skin`)
-- Notes: [2026-11-24-facial-sequences.md](formats/notes/2026-11-24-facial-sequences.md) (the engine read of a sound's facial sequence)
+- Notes: [2026-11-24-facial-sequences.md](formats/notes/2026-11-24-facial-sequences.md) (the engine read of a sound's facial sequence), [asset-variants.md](formats/notes/asset-variants.md) (a store's variants by group as files and as assets)
 
 ## Engine (`engine/`)
 
@@ -183,7 +183,7 @@ are under [Reviews](#reviews).
 - [shadow-exec.md](engine/shadow-exec.md): shadow execution: native ports checked against the lifted original on the states the game reaches (`shadow.*`, `scripts/shadow-gate.sh`), and the shared `lifted` crate
 - [havok-runtime.md](engine/havok-runtime.md): how the retail game keeps its Havok world in guest memory: world, islands, bodies, shapes, contacts, agents
 - [collision-queries.md](engine/collision-queries.md): the native collision world behind `impl.sim.native.collision`: entries, contract and bail reasons
-- [asset-store.md](engine/asset-store.md): the asset store (not built): every disc tag extracted once into a shared, deduplicated store; levels assembled from it as images and extents; mods as packages of patches and new assets; `LevelId`
+- [asset-store.md](engine/asset-store.md): the asset store (slices AS1 to AS5 built, not run on the disc): every disc tag extracted once into a shared, deduplicated store; levels assembled from it as images and extents; assets by hash; mods as packages of patches and new assets; `LevelId`
 - [sim-rewrite.md](engine/sim-rewrite.md): plan for rewriting the simulation as Rust subsystems (not built), with the phase specs [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) (phase 2), [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) (phase 3) and [sim-rewrite-havok.md](engine/sim-rewrite-havok.md) (phase 4)
 - Notes: [2026-11-21-engine-vtables.md](engine/notes/2026-11-21-engine-vtables.md) (the retail game engines' vtables and the slots that make rules), [2026-11-22-script-scoring-and-roles.md](engine/notes/2026-11-22-script-scoring-and-roles.md) (the carriers' scoring sites, Juggernaut's role and Oddball's ball return, for script games), [2026-11-23-round-start-and-player-quit.md](engine/notes/2026-11-23-round-start-and-player-quit.md) (the round reset and the player-left notice that deliver `on round_start` and `on quit`), [feature-engine.md](engine/notes/feature-engine.md) (feature engine and engine contracts evidence)
 
