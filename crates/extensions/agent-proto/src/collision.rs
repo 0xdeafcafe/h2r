@@ -93,6 +93,8 @@ pub struct Stats {
     #[serde(default)]
     pub context: VectorParity,
     #[serde(default)]
+    pub instance: VectorParity,
+    #[serde(default)]
     pub flood: VectorParity,
     #[serde(default)]
     pub visit: VectorParity,

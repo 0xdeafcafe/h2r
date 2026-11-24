@@ -155,6 +155,7 @@ pub struct VectorParity {
 pub struct Stats {
     pub vector: VectorParity,
     pub context: VectorParity,
+    pub instance: VectorParity,
     pub query: VectorParity,
     pub visit: VectorParity,
     pub flood: VectorParity,
@@ -228,6 +229,7 @@ struct Counters {
     ray: RayCounters,
     vector: Mutex<VectorParity>,
     context: Mutex<VectorParity>,
+    instance: Mutex<VectorParity>,
     query: Mutex<VectorParity>,
     visit: Mutex<VectorParity>,
     flood: Mutex<VectorParity>,
@@ -700,6 +702,10 @@ impl CollisionWorld {
         Self::record_parity(&self.counters.context, result);
     }
 
+    pub fn record_instance(&self, result: Result<Option<String>, Bail>) {
+        Self::record_parity(&self.counters.instance, result);
+    }
+
     pub fn record_query(&self, result: Result<Option<String>, Bail>) {
         Self::record_parity(&self.counters.query, result);
     }
@@ -777,6 +783,7 @@ impl CollisionWorld {
             ray,
             vector: c.vector.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             context: c.context.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            instance: c.instance.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             query: c.query.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             visit: c.visit.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             flood: c.flood.lock().unwrap_or_else(|e| e.into_inner()).clone(),

@@ -1,16 +1,13 @@
 # Simulation rewrite, phase 2: the collision world
 
-The phase 2 design uses a Rust-owned collision world behind the native
-collision switch. A, B and F have native adapters. C–E, G and H record
-their entry controls and run lifted. C and D compare the native vector test with
-the lifted hit byte and result record. D also compares the outer walk’s context. The offline differential checks G
-and H’s native adapters. The vector entries keep the lifted scratch state. The [entry contracts](collision-queries.md)
-describe the implemented arithmetic, stack and register comparisons.
-J's object-reference sphere pretest runs through a Rust kernel at its
-guest call site.
-Remaining slices are specified below. Bar E requires the guest-visible
-bits to match the lifted path, and contract D requires the same bits on
-arm64 and x86-64. [Umbrella plan](sim-rewrite.md)
+The collision world answers A, B and F, J’s sphere pretest and
+state-exact exits in C, D, E, G and H. Other vector and spatial paths run
+their kernels alongside the lifted result. The instance and model rays
+feed the whole-query planner, which also supplies `collision.trace`.
+Entry I compares the general Havok ray against the guest VM and callback
+stream. Full promotion requires matching register, memory and callback
+effects on the verification ladder. [Entry contracts](collision-queries.md) ·
+[Umbrella plan](sim-rewrite.md)
 
 Sources: the Waterworks profile in [sim-budget.md](../perf/sim-budget.md)
 (84,358 main-thread samples; counts below were recomputed from its
@@ -51,11 +48,9 @@ Three ideas carry the design:
    reduces at decode time to a compare of the query's full-precision corner
    against a precomputed threshold. Rescale, key-offset and jump opcodes
    disappear from the decoded tree (section 4.3).
-3. **Queries are independent.** A query reads the world and writes only its
-   own result, plus epoch counters and mark arrays that no other query reads
-   back. So any set of queries can be computed in lanes or on workers and
-   then scattered in call order, and guest memory ends up as the serial code
-   would leave it (section 6).
+3. **Ordered marks.** Batches carry each query’s epoch changes and mark
+   stores into the next query. This preserves deduplication even when a
+   generation wraps or a mapped alias reaches a mark (section 6).
 
 ## 2. Measured cost being removed
 
@@ -646,8 +641,11 @@ append the handle, stop when the output is full.
 9. Under `0x20000000` with a hit: the nudge along the plane and the leaf
    re-location (`0x169e71..0x16a026`, which calls A and B).
 
-Entry J is one Rust call once `0x00169510` is native (S7). Until then the
-smaller entries (B, C, E) carry most of the win and J stays lifted.
+The planner in `engine::sim_collision::query` implements these steps.
+Entry J runs it at entry and compares the lifted result at return.
+`collision.trace` runs the same code against live inputs without
+scattering the result or marks. J’s guest-visible register and stack
+contract gates authority.
 
 ### 5.5 Guest readers that must keep being fed
 
@@ -697,46 +695,25 @@ would store, not merely a final state that dedupes the same way.
 
 ### 6.3 Batched queries
 
-Queries do not read each other's writes. A trace or a visit reads static
-collision data, live object and breakable state, and its own arguments. It
-writes its result, and it bumps epochs and stores marks that only dedupe
-*within* that query. So for queries `q0..qn` issued with no guest write to
-their inputs in between:
+The Rust batch APIs plan answers in input order. A later query may read
+an earlier query’s generation or mark, including at wraparound.
+`engine::sim_collision::query::trace_batch` overlays staged mark writes
+by physical address so an alias sees the same bytes as a serial trace.
+An overlap with static decode sources declines. Each result carries the
+ordered cluster, instance and object mark lists.
 
-```rust
-impl CollisionWorld {
-    pub fn trace_batch(&self, g: &impl GuestRead, qs: &[Trace], out: &mut [TraceOut]) -> Result<(), Bail>;
-    pub fn visit_batch(&self, g: &impl GuestRead, qs: &[Visit], out: &mut [VisitOut]) -> Result<(), Bail>;
-    pub fn box_batch(&self, tree: TreeId, boxes: &[Aabb], keys: &mut KeyLists) -> Result<(), Bail>;
-}
-```
-
-compute every result first, then the adapter scatters in index order: for
-query `i`, bump the epochs it would bump, store its marks with that epoch,
-write its outputs. Guest memory is then what `n` serial calls leave.
-`TraceOut` therefore carries the ordered list of mark writes (cluster,
-instance, object slots), not only the hit.
-
-This holds for J and H, which bump their epochs before they read a mark.
-The flood (G) on its own runs under its caller's epoch and does read marks
-an earlier flood in the same epoch stored, so it is batched only as part of
-H.
-
-Phase 2 itself has only synchronous single callers, so the batch API is
-used inside one entry (the reference lists above). Its real users come with
-the callers: the camera's three traces in `171830` and the decal's six in
-`17e670` when their inputs are shown not to depend on each other's results,
-projectile updates in phase 3, and the broadphase in phase 4. Phase 2
-delivers and tests the API so those phases do not redesign it.
+`sim_collision::batch::visit_batch` threads the visit marks and epochs
+through the object lists. Standalone G uses its caller’s flood epoch.
+`box_batch` runs independent boxes in packets of up to eight and preserves
+the serial key order, depth limit and per-query failures. Batch planning
+makes no guest writes. A declined batch returns no partial results.
 
 ### 6.4 Threads
 
-Kernels are `Sync` over `&CollisionWorld` and a gathered snapshot of the
-dynamic inputs (breakable masks, reference lists). `trace_batch` may split a
-batch over `sim_core::Jobs` in fixed chunks by index; workers read no guest
-memory. Results are independent of the worker count by construction, and a
-test runs 1, 2 and 8 workers. Hosts stay at one worker. No phase 2 entry
-uses workers, because no phase 2 batch is large enough.
+The live inputs and mark dependencies keep trace and visit batches
+serial. Box packets share a tree walk on the calling thread. Phase 2 has
+synchronous guest callers. Later object and physics callers can supply a
+batch once they have gathered independent inputs.
 
 ## 7. Lifetime and invalidation
 
@@ -787,12 +764,14 @@ the Havok slot initialisers (`0x246c60`, vtables and reference counts), the
 MOPP reference count at code `+0x24` (`0x3009b0`), and the temporary shape
 `0x244980` builds on its stack. Eliding the temporary reference requires a nonzero original count and
 isolation from other reads and writes. On a decrement to zero,
-`0x3009c0` calls the guest allocator. E executes the lifted path.
+`0x3009c0` calls the guest allocator. A populated E executes this path in the guest. Its predictor in J
+models terminal marks, placement filtering and BSP hits.
 
-Later (S10): `store.rs` writes each decoded map to the user cache directory
-keyed by `(map digest, format version)` and mmaps it, so a per-match host
-pays decode once per machine. The lazy path stays as the fallback and as the
-check.
+The runtime collision world can reuse immutable decoded columns from the
+user cache. The content key covers source bytes and format inputs.
+Guest addresses, watch generations and the breakable state stay local.
+The lazy decoder handles small, unsupported or unavailable cache entries.
+See `sim-collision/src/store.rs` and the [entry contracts](collision-queries.md).
 
 ## 8. Verification
 
@@ -891,8 +870,8 @@ on the coordinator's integration pass.
 | S2 | BSP segment and matcher | `bsp/segment`, `bsp/ring`; entries C and D; R pinned in `layout.rs` | 824 | unit, differential C and D with the `bsp::segment` port as third arm, disc sweep segments |
 | S3 | MOPP decode, ray walker, instance trace | `mopp/decode`, `mopp/ray`, `structure` instances, `instance`; entry E | ≥ 437 visible; most of the 1,644 family | unit, differential E, disc sweep rays and inverses |
 | S4 | MOPP box | `mopp/boxq` single and packet; entry F; bail-rate report | 509 (`2ff8b0`, `300150`) | unit against `boxvm`, differential F, disc sweep boxes |
-| S5 | Cluster flood and object visit | `flood`, `objects`; entries G and H; `120850` and `23a160` in the kernel | 1,012 | unit, differential G and H with the two ports as third arms; adapters built, not installed |
-| S6 | General MOPP ray | `mopp::ray` (`RayWalk` over the bytecode); entry I's parity arm, the guest's answer kept; `collision.stats` `ray` | none until I answers natively | unit, recursive transcription, differential I with invented callees, a deliberate mismatch |
+| S5 | Cluster flood and object visit | `flood`, `objects`; entries G and H; `120850` and `23a160` in the kernel | 1,012 | unit, differential G and H with the two ports as third arms; native exits and lifted-return comparisons |
+| S6 | General MOPP ray | `mopp::ray` (`RayWalk` over the bytecode); entry I's parity arm, VM and callback comparison, isolated collector differential; `collision.stats` `ray` | none until I answers natively | unit, recursive transcription, differential I with invented callees, a deliberate mismatch |
 | S7 | Whole query | Rust object-reference sphere pretest; port `169510`, `1eff40` and helpers (object models through node matrices); entry J as one call; `collision.trace`; batch API with the reference-list lanes | 1,025 | unit, differential J, run parity |
 | S8 | Layout tuning | DFS re-layout with a guest-index map, two-level point treelets, only where a profile pair shows a gain | — | cold/warm and re-layout on/off give equal bits |
 | S9 | Census entries | `1ddea0`, `16a8e0`, the structure child shapes `1ef950`/`1edd00` (with the Havok lane), by campaign census | 318 + campaign | as S2 |
@@ -900,11 +879,10 @@ on the coordinator's integration pass.
 
 Order: S0, then S1 and S3's decoder in parallel, S2, S3, S4 and S5 in
 parallel, S6, S7. S2 before S3 because the instance trace calls the segment
-kernel. After S5 the per-function switches `native_point_to_leaf`,
-`native_geometry_test`, `native_bsp_segment`, `native_mopp_box`,
-`native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal` are
-deleted; `native_collision_query` goes with S7. Their bodies stay as
-differential oracles.
+kernel. A single collision switch selects these entries. The point,
+sphere, BSP segment, whole query, general ray, visit and portal
+register ports remain available to the differential harness.
+The separate integer MOPP interpreter belongs to the Havok world step.
 
 Lane ownership: new `crates/rewrites/sim-collision`, `crates/rewrites/engine/src/sim_collision`,
 `crates/rewrites/engine/tests/sim_collision_differential.rs`,
@@ -955,7 +933,7 @@ theater or film.
    BSPs and MOPP programs decoded once per map into flat, mmap-ready arrays.
 2. Measured share: 6,058 of 84,358 Waterworks samples (7.18%, 1.01 ms/tick),
    target ≥ 0.8 ms/tick removed.
-3. Ten entries are taken over (`14a280`, `11bed0`, `1de630`, `1de6d0`,
+3. Ten entries have native query kernels (`14a280`, `11bed0`, `1de630`, `1de6d0`,
    `244980`, `300150`, `14a5b0`, `bb050`, `301800`, `1697c0`), each as one
    Rust call with no guest calls except the general MOPP ray.
 4. Kernels compute first and commit after; anything inexact returns `Bail`
@@ -966,8 +944,8 @@ theater or film.
    the float ray keeps the retail sequence on a decoded tree.
 7. SIMD goes where order does not matter (ring edges, sphere pretests, box
    packets); every ordered decision is replayed in retail order.
-8. Queries are independent, so batches and workers are exact with an ordered
-   scatter of marks and epochs; the API ships now for phases 3 and 4.
+8. Trace and visit batches forward pending mark and epoch writes in call
+   order. Independent boxes share a packet walk.
 9. No derived caches: static data per map, everything else read live, so
    revert and snapshots need nothing.
 10. Slices S0 to S7 are lane-sized and ordered; the contracts, float core and

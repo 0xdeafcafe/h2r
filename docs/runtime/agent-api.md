@@ -5538,16 +5538,14 @@ small against `checked`.
 
 ## `collision`: the native collision world
 
-The collision switch enables counters for native entries A, B and F,
-before-call observers for the lifted vector and instance traces C–E, the
-cluster flood G and the object visit H, and the parity arm of the lifted
-general MOPP ray I. The game
-method reads process counters at a tick boundary. The entry addresses and
-bail reasons are in [collision-queries.md](../engine/collision-queries.md).
+The collision switch counts admitted native answers, declined queries,
+floating-point environments and comparisons with lifted returns. The
+game exposes these counters at a tick boundary. See the
+[entry addresses and admission rules](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), and `ray` (I’s parity arm, below). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), `instance`, `flood`, `visit`, `query` (E, G, H and J’s return comparisons), and `ray` (I’s walk and callbacks). |
 | `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
 | `collision.sources` | read | No parameters. Checks the source fingerprints of each resident native BSP and MOPP against guest RAM. |
 | `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries from the collision world at that tick boundary. |
@@ -5571,11 +5569,10 @@ count of `native` answers, and `bails` by reason. Two frequency maps count
 the control words at entry, including calls that fall back at the first
 environment check. Keys are lowercase hexadecimal strings with leading
 zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
-a call count. Each map counts its own register independently. For
-`vector_test`, `vector_context`, `instance_trace`, `cluster_flood`,
-`object_visit` and `mopp_ray`, only the frequency maps accumulate; `cluster_flood` also
-counts the flood's recursive entries. An image without an observed entry
-leaves its row empty. The `object_sphere` row counts native answers at the
+a call count. Each map counts its own register independently. `cluster_flood` includes recursive entries in
+its environment census. The `mopp_ray` and `query` rows count the
+environment while their comparison records report the lifted outcomes.
+An image without an observed entry leaves its row empty. The `object_sphere` row counts native answers at the
 whole query's object-reference pretest. `array_bytes` counts the decoded
 BSP allocations, the packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
 of them; `decodes` and `decode_failures` include MOPP programs, a failure
@@ -5592,6 +5589,12 @@ first differing byte offset in the result record, with expected and guest values
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
 
+`instance`, `flood`, `visit` and `query` use the same comparison counters.
+An admitted native exit counts under `entries[].native`. A comparison
+counts only after the guest returns. A declined prediction is
+`unverified`. For J the comparison covers AL, flags, the result including
+padding, and the active mark tables and generations.
+
 `ray` counts the MOPP ray queries the native walk followed while the
 guest answered them: `matched` (every interpreter call, and every key
 where the instanced collection shows it, equal), `mismatched` with
@@ -5599,7 +5602,8 @@ where the instanced collection shows it, equal), `mismatched` with
 and both sides), `unverified` by bail reason (the walk could not follow
 the query exactly, or its environment is one it does not model), and
 `fraction_moved` (no key was visible and a terminal lowered the fraction).
-Parity is `mismatched` zero over a match.
+Read `matched`, `mismatched` and `unverified` together to distinguish
+a covered query from one the walker could not follow.
 
 ```sh
 h2 agent collision.stats
