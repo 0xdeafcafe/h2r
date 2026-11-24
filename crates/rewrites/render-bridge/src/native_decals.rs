@@ -13,6 +13,7 @@
 //! `render.stats`. The stderr line prints on the first examined draw and
 //! then at most every 10 seconds.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,7 +52,7 @@ thread_local! {
 
 static EXAMINED: AtomicU64 = AtomicU64::new(0);
 static ADMITTED: AtomicU64 = AtomicU64::new(0);
-static REFUSALS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
+static REFUSALS: Mutex<BTreeMap<Cow<'static, str>, u64>> = Mutex::new(BTreeMap::new());
 
 /// The tally line prints on the stage's first examined draw and then at
 /// most every 10 seconds, however fast the counters move.
@@ -59,7 +60,7 @@ static LAST_LOG: Mutex<Option<Instant>> = Mutex::new(None);
 const LOG_EVERY: Duration = Duration::from_secs(10);
 
 /// `(examined draws, admitted)` and the running refusal tally.
-pub fn counts() -> ((u64, u64), BTreeMap<&'static str, u64>) {
+pub fn counts() -> ((u64, u64), BTreeMap<Cow<'static, str>, u64>) {
     (
         (
             EXAMINED.load(Ordering::Relaxed),
@@ -85,8 +86,8 @@ fn log_throttled() {
 
 /// The stage metric a refusal reason counts under, alongside the walk
 /// counters in `render.stats`.
-fn refused_metric(why: &'static str) -> Metric {
-    match why {
+fn refused_metric(why: &str) -> Metric {
+    match why.split_once(':').map_or(why, |(reason, _)| reason) {
         "geometry" | "vertex streams" | "vertex declaration" | "vertex bytes" => {
             Metric::RefusedInputs
         }
@@ -109,11 +110,13 @@ pub fn note_admitted() {
 }
 
 /// Adds an admission or recording failure to the same tally.
-pub fn note_refusal(why: &'static str) {
+pub fn note_refusal(why: impl Into<Cow<'static, str>>) {
+    let why = why.into();
+    let metric = refused_metric(&why);
     let mut refusals = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
     *refusals.entry(why).or_default() += 1;
     drop(refusals);
-    Stage::Decals.count(refused_metric(why), 1);
+    Stage::Decals.count(metric, 1);
 }
 
 /// The callback emitting on this thread, if any.
@@ -217,7 +220,7 @@ mod tests {
     fn refusal_reasons_map_to_stage_metrics() {
         assert!(matches!(refused_metric("geometry"), Metric::RefusedInputs));
         assert!(matches!(refused_metric("vertex streams"), Metric::RefusedInputs));
-        assert!(matches!(refused_metric("vertex declaration"), Metric::RefusedInputs));
+        assert!(matches!(refused_metric("vertex declaration: synthetic layout"), Metric::RefusedInputs));
         assert!(matches!(refused_metric("vertex bytes"), Metric::RefusedInputs));
         assert!(matches!(refused_metric("texture kind"), Metric::RefusedResources));
         assert!(matches!(refused_metric("texture is the target"), Metric::RefusedResources));

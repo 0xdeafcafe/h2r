@@ -209,6 +209,7 @@ struct Compiled {
 
 /// A GPU program plus the resolved draw's immutable geometry.
 pub struct DecalGpu {
+    packed_location: u32,
     mode: Mode,
     render: RenderState,
     integer_depth: bool,
@@ -304,16 +305,38 @@ fn pixel_options(mode: Mode, shader: &ShaderSnapshot) -> PixelOptions {
     }
 }
 
+// D3D derives this mask from the resolved declaration. Position is v0.
+fn packed_location(provided: u16) -> Result<u32, &'static str> {
+    match provided {
+        0b0011 => Ok(1),
+        0b1001 => Ok(3),
+        _ => Err("vertex inputs"),
+    }
+}
+
+fn vertex_attributes(packed: u32) -> [wgpu::VertexAttribute; 2] {
+    [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 12,
+            shader_location: packed,
+        },
+    ]
+}
+
 /// Validates the complete shader translation without creating GPU objects,
 /// so admission refuses before it reserves anything.
 pub fn check_program(mode: Mode, shader: &ShaderSnapshot) -> Result<(), &'static str> {
     check_state(mode, &shader.render, &shader.stages, &shader.extras)?;
     check_combiner_state(&shader.combiner)?;
     let program = vsh::Program::parse(&shader.microcode).map_err(|_| "vertex program")?;
-    let supplied = (1 << 0) | (1 << 3);
-    if shader.provided_inputs & !supplied != 0
-        || program.inputs_read() & !shader.provided_inputs & !((1 << 10) | (1 << 11)) != 0
-    {
+    packed_location(shader.provided_inputs)?;
+    if program.inputs_read() & !shader.provided_inputs & !((1 << 10) | (1 << 11)) != 0 {
         return Err("vertex inputs");
     }
     let vs = vsh::translate(
@@ -511,6 +534,7 @@ impl DecalGpu {
             usage: wgpu::BufferUsages::INDEX,
         });
         Ok(Self {
+            packed_location: packed_location(prepared.shader.provided_inputs)?,
             mode: prepared.mode,
             render: prepared.shader.render,
             integer_depth: prepared.shader.integer_depth,
@@ -534,18 +558,7 @@ impl DecalGpu {
     ) -> &wgpu::RenderPipeline {
         let c = &self.compiled;
         self.pipelines.entry((color, depth)).or_insert_with(|| {
-            let attributes = [
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 12,
-                    shader_location: 3,
-                },
-            ];
+            let attributes = vertex_attributes(self.packed_location);
             let mut ds = c.depth.clone();
             ds.format = depth;
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -911,7 +924,8 @@ impl DecalCache {
         let pipeline = match self.pipelines.get(&described) {
             Some(found) => found.clone(),
             None => {
-                let made = decal_pipeline(device, &program, &described).ok_or("pipeline")?;
+                let packed = packed_location(shader.provided_inputs)?;
+                let made = decal_pipeline(device, &program, &described, packed).ok_or("pipeline")?;
                 self.created.pipelines += 1;
                 self.pipelines.insert(described.clone(), made.clone());
                 made
@@ -1108,19 +1122,9 @@ fn decal_pipeline(
     device: &wgpu::Device,
     program: &CachedProgram,
     key: &PipelineKey,
+    packed: u32,
 ) -> Option<CachedPipeline> {
-    let attributes = [
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 0,
-            shader_location: 0,
-        },
-        wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x3,
-            offset: 12,
-            shader_location: 3,
-        },
-    ];
+    let attributes = vertex_attributes(packed);
     let pipeline = gfx::program::validated_resource(device, || {
         gfx::churn::create_render_pipeline(
             device,

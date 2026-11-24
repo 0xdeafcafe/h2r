@@ -28,9 +28,10 @@ fn decal(x: f32, rgb: [f32; 3], textured: bool) -> Prepared {
         final_inputs_efg: ((psh::bits::REG_V0 | psh::bits::CHAN_ALPHA) as u32) << 8,
         ..Default::default()
     };
+    let packed_register = if textured { 3 } else { 1 };
     let mut insts = vec![
         Inst::mac(vsh::MacOp::Mov, Some(O::v(0)), None, None).to_out(false, vsh::OutReg::Pos, 15),
-        Inst::mac(vsh::MacOp::Mov, Some(O::v(3)), None, None).to_out(false, vsh::OutReg::D0, 15),
+        Inst::mac(vsh::MacOp::Mov, Some(O::v(packed_register)), None, None).to_out(false, vsh::OutReg::D0, 15),
     ];
     let mut vertex = VertexUniforms {
         surface: [SIZE as f32; 2],
@@ -57,7 +58,7 @@ fn decal(x: f32, rgb: [f32; 3], textured: bool) -> Prepared {
             extras: [StageExtras::default(); 4],
             combiner,
             microcode: program(&insts),
-            provided_inputs: (1 << 0) | (1 << 3),
+            provided_inputs: 1 | (1 << packed_register),
             vertex,
             integer_depth: true,
             tex_scale: None,
