@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/formats/tags:tags",
         "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
         "//third-party/rust:serde_yaml_ng",
     ],
 )
@@ -58,6 +59,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
         "//third-party/rust:serde_yaml_ng",
     ],
 )
