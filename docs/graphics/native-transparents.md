@@ -36,13 +36,22 @@ After the opaque layers and late passes, `render_scene_passes` calls `SCENE_TRAN
   and 18..28 the instanced-geometry placement (`0x7ff` for a cluster;
   "What a world pass reads").
 
-Other handlers in the list (effects, particles, contrails, decals) keep their D3D draws here; [native-particles.md](native-particles.md) covers the effect leaves.
+Effects, particles and contrails use their own draw boundaries in [native-particles.md](native-particles.md).
 
 ### Admission and order
 
 The standard handler runs its layer-15 material builds, bindings and restores. The sorted ordinal must resolve to its live entry, and the emitter and handler frames must identify that entry's draw. The full-part branch supplies its range in registers. The three subrange call sites supply the topology, index count and pointer on the stack after state setup.
 
 Each triangle list or strip goes through the existing indexed pass with the resolved shaders, fog, blend and depth state and the current attachments. The resolved packet supplies the live inputs even when the item’s object lighting owner is unavailable. A triangle list keeps trailing indices in its snapshot and rasterizes complete triangles. Admission preserves the order of the individual ranges and intervening handlers. A refused range runs its original indexed call, which can still use the immutable vertex binding adapter.
+
+Camouflage and hologram use the same indexed path for ranges that reach
+the guest emitter. The two nested return sites identify the emitter and
+layer dispatcher, and the live layer must match the layer argument. The
+handler's return address identifies its regular layer replays or the
+specific draw of layer 18, 19 or 21. Layer begin, material state, texture
+snapshots and target changes execute in their original order. Items
+already admitted by `frame-scene.layers` never reach this path.
+
 
 ### Vertex bindings
 

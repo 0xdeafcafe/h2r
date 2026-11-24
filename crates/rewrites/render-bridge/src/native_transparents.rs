@@ -84,6 +84,18 @@ thread_local! {
     static WALK_DATA: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
+fn sorted_layer_call(layer: u32, caller: u32) -> bool {
+    use native_render::world_layers::sorted_site;
+
+    // Special layers have distinct target setup and known return sites.
+    // The ordinary layers run inside the same two handlers on their own lists.
+    sorted_site(layer, caller).is_some()
+        || ((points::scene_effects::EFFECT_LAYERED_A.base..0x0004_20a0).contains(&caller)
+            && matches!(layer, 1 | 2 | 3 | 7 | 8 | 15 | 16 | 20))
+        || ((points::scene_effects::EFFECT_LAYERED_B.base..0x0004_2760).contains(&caller)
+            && matches!(layer, 1 | 2 | 3 | 7 | 8 | 15 | 16))
+}
+
 fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let word = |offset| mem.read_u32(esp.checked_add(offset)?);
     if word(0x18)? != GEOMETRY_EMITTER_CALLER {
@@ -103,12 +115,16 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
         LAYER_DRAW_CALLER => {
             use native_render::world_layers::{Site, layer_site};
             let caller = word(LAYER_DRAW_FRAME)?;
-            // The layer's sorted dispatcher has already applied the pass and
-            // chosen this range. Claim only the scene's own late-layer calls.
-            if scene_extract::late::scene_layer_call(layer, caller)
-                && mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
-                && word(0xf094) == Some(0x0004_45b7)
-            {
+            // The emitter is inside the layer dispatcher, after the guest
+            // applied the material and selected this exact index range.
+            let live_layer = mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
+                && word(0xf094) == Some(0x0004_45b7);
+            if live_layer && sorted_layer_call(layer, caller) {
+                // Any items already claimed by frame-scene.layers never
+                // reach the emitter. This is the remaining sorted geometry.
+                return Some(Stage::Transparents);
+            }
+            if live_layer && scene_extract::late::scene_layer_call(layer, caller) {
                 return Some(if layer == 16 { Stage::Fog } else { Stage::Water });
             }
             let first_person_layer = layer_site(layer, caller) == Site::FirstPerson;
@@ -529,6 +545,42 @@ mod walk_tests {
         assert_eq!(walk_stage(&ReadMemory(&mem), frame), None);
         WALK_DATA.set(None);
         SCOPE.set(Scope::default());
+    }
+
+    #[test]
+    fn layered_ranges_need_the_matching_handler_and_live_layer_frame() {
+        let mut mem = FlatMemory::new(0x0040_0000, 0x0021_0000);
+        let stack = 0x005e_0000;
+        for (addr, value) in [
+            (stack + 0x18, GEOMETRY_EMITTER_CALLER),
+            (stack + 0x68, LAYER_DRAW_CALLER),
+            (stack + 0xf094, 0x0004_45b7),
+        ] {
+            mem.set_u32(addr, value).unwrap();
+        }
+        for (layer, caller, expected) in [
+            (18, 0x0004_2015, Some(Stage::Transparents)),
+            (19, 0x0004_205f, Some(Stage::Transparents)),
+            (21, 0x0004_2721, Some(Stage::Transparents)),
+            (19, 0x0004_2015, None),
+            (21, 0x0004_205f, None),
+            (3, 0x0004_1d00, Some(Stage::Transparents)),
+            (15, 0x0004_2500, Some(Stage::Transparents)),
+            (20, 0x0004_2500, None),
+            (3, 0x0004_20a0, None),
+            (3, 0x0004_2760, None),
+        ] {
+            mem.set_u32(stack + 0x78, layer).unwrap();
+            mem.set_u32(stack + LAYER_DRAW_FRAME, caller).unwrap();
+            mem.set_u32(native_render::skip::CURRENT_LAYER, layer).unwrap();
+            assert_eq!(walk_stage(&ReadMemory(&mem), stack), expected);
+        }
+        mem.set_u32(stack + 0x78, 18).unwrap();
+        mem.set_u32(stack + LAYER_DRAW_FRAME, 0x0004_2015).unwrap();
+        assert_eq!(walk_stage(&ReadMemory(&mem), stack), None);
+        mem.set_u32(native_render::skip::CURRENT_LAYER, 18).unwrap();
+        mem.set_u32(stack + 0xf094, 0).unwrap();
+        assert_eq!(walk_stage(&ReadMemory(&mem), stack), None);
     }
 
     #[test]
