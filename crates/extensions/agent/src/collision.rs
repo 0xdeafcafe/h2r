@@ -120,10 +120,12 @@ mod tests {
                 "cluster_flood",
                 "object_visit",
                 "mopp_box",
-                "mopp_ray"
+                "mopp_ray",
+                "object_sphere"
             ]
         );
         assert_eq!(w.entries[8].addr, "00301800");
+        assert_eq!(w.entries[9].addr, "0011e5e0");
         assert_eq!(w.entries[0].addr, "0014a280");
         assert_eq!(w.entries[0].native, 7);
         assert_eq!(w.entries[1].bails["alias"], 2);
