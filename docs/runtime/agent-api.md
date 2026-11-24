@@ -2719,6 +2719,15 @@ Every watched process (`h2 play`, `run`, `serve`, `h2 lab host` and
   to the file, so a kill loses at most a torn final line, which readers
   skip. Segments rotate hourly or at 8 MiB, seven per process. An orderly
   exit appends a `{"closed_cleanly":true}` footer.
+- **Reports.** A soft-limit, sustained-growth or hard-limit trigger
+  writes `mem-<pid>-<nanos>-<serial>.json` beside the recorder (written
+  to a `.partial` file, then renamed, before the OS diagnostics run). The
+  hard limit's report is written before the process exits with code 86.
+  Under `h2 play --follow --fresh-data` and `--watch --fresh-data`, whose
+  data dir (`<cache>/data/current`) is emptied at every launch, the
+  child's report directory is `<cache>/data/mem` unless
+  `H2_MEM_REPORT_DIR` is set, so a game the watchdog stopped leaves its
+  evidence for `h2 mem postmortem <file>` (`crates/apps/cli/src/follow.rs`).
 - **Recovery.** A starting recorder checks the directory for streams
   whose owner lock is free. A stream without the footer, or whose last
   row is over the soft limit, moves to `reports/mem-<pid>-<nanos>/` and

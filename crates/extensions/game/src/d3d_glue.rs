@@ -1836,7 +1836,8 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         let mut d = dev.lock().unwrap();
         // Device events by kind and reason, most frequent first.
         let mut ev: std::collections::BTreeMap<String, u64> = Default::default();
-        for e in d.take_events() {
+        let (events, dropped) = d.take_events_counted();
+        for e in events {
             let k = match e {
                 d3d::Event::DrawSkipped { entry, reason } => {
                     format!("draw skipped in {entry}: {reason}")
@@ -1853,6 +1854,7 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
             .iter()
             .take(40)
             .map(|(k, n)| format!("\n  event {n:>8}  {k}"))
+            .chain((dropped > 0).then(|| format!("\n  event {dropped:>8}  more, past the device's kept limit")))
             .collect();
         let extra = extra
             .as_ref()

@@ -1304,6 +1304,9 @@ impl<E: Send + 'static> Launcher for ChildLauncher<E> {
             let _ = fs::remove_dir_all(&d);
             fs::create_dir_all(&d)?;
             cmd.arg("--data").arg(d);
+            if let Some(mem) = fresh_data_report_dir(root, std::env::var_os("H2_MEM_REPORT_DIR")) {
+                cmd.env("H2_MEM_REPORT_DIR", mem);
+            }
         } else if let Some(d) = &self.data {
             cmd.arg("--data").arg(d);
         }
@@ -1348,6 +1351,14 @@ impl<E: Send + 'static> Launcher for ChildLauncher<E> {
             let _ = w.join();
         }
     }
+}
+
+/// Where a `--fresh-data` child keeps its memory watchdog reports and
+/// flight recordings: beside the data dir every launch empties, so the
+/// evidence of a game the watchdog stopped outlives the relaunch. `None`
+/// when the caller chose a directory (`H2_MEM_REPORT_DIR`).
+fn fresh_data_report_dir(root: &Path, chosen: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    chosen.is_none_or(|d| d.is_empty()).then(|| root.join("mem"))
 }
 
 /// Writes the status file atomically (write, then rename).
@@ -1530,6 +1541,16 @@ pub fn run(args: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_data_reports_live_outside_the_emptied_data_dir() {
+        let root = Path::new("/c/data");
+        let mem = fresh_data_report_dir(root, None).unwrap();
+        assert_eq!(mem, root.join("mem"));
+        assert!(!mem.starts_with(root.join("current")));
+        assert_eq!(fresh_data_report_dir(root, Some("".into())), Some(root.join("mem")));
+        assert_eq!(fresh_data_report_dir(root, Some("/mine".into())), None);
+    }
 
     fn commit(h: &str) -> Commit {
         Commit {
