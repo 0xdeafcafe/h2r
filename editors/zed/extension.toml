@@ -19,7 +19,7 @@ repository = "https://github.com/0xdeafcafe/h2r"
 # REV PLACEHOLDER: the commit of this repository that holds the generated
 # grammar (editors/tree-sitter-rules/src/parser.c). Replace it with that
 # commit's full SHA after `tree-sitter generate` is committed.
-rev = "547850c47d4eb4c44eb98e197207c928de28f112"
+rev = "c156f730e33aaf3b6d0ad4f85ccf3aaa849e1fd8"
 path = "editors/tree-sitter-rules"
 # Local development: point at your checkout instead, at a committed rev
 # (Zed clones the repository, so uncommitted changes are not seen):
