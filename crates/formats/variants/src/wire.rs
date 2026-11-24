@@ -52,11 +52,7 @@ impl Bits {
     /// is left when that is less, and 0 or less past the end.
     fn fit(&self, count: u32) -> i32 {
         let left = (self.size.wrapping_shl(3) as i32).wrapping_sub(self.pos as i32);
-        if left <= count as i32 {
-            left
-        } else {
-            count as i32
-        }
+        left.min(count as i32)
     }
 
     fn word(&self, i: i32) -> u32 {
