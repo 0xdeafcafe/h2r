@@ -1,0 +1,17 @@
+# The base score and time HUD (docs/game/game-types-without-carriers.md, "The display"):
+# two lines at the frame's top right: the score under the type's
+# `points` label, and the clock. Elements in draw order.
+name: base
+elements:
+  - id: base.score
+    kind: text
+    font: hud
+    justify: end
+    longest: "Kills 100 of 100"
+    at: {anchor: top-right, full: [-30, 24]}
+  - id: base.time
+    kind: text
+    font: hud
+    justify: end
+    longest: "Time left 99:59"
+    at: {anchor: top-right, full: [-30, 45]}

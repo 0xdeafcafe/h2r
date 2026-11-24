@@ -742,3 +742,25 @@ fn a_round_starts_with_the_declared_types_line_even_with_no_handler() {
         }
     }
 }
+
+/// The scoreboard's label is the header's `points`: the type's own with no
+/// `points` line, the script's with one, told at every round start.
+#[test]
+fn a_round_start_tells_the_scoreboard_what_a_point_is() {
+    use rules::types::TABLE;
+    for row in TABLE {
+        let src = format!("rules \"Test variant\" 1\ntype {}\nuses slayer\n", row.name);
+        let mut vm = Vm::new(compile(&src).unwrap(), 0, 1).unwrap();
+        let mut game = FakeGame::with_players(2);
+        assert_eq!(game.scoreboard_label, None);
+        vm.fire(&mut game, Input::Init);
+        assert_eq!(game.scoreboard_label, None, "{}: init is no round", row.name);
+        vm.fire(&mut game, Input::RoundStart);
+        assert_eq!(game.scoreboard_label.as_deref(), Some(row.points), "{}", row.name);
+    }
+    let src = "rules \"Test variant\" 1\ntype ctf\nuses ctf\npoints \"Flags\"\n";
+    let mut vm = Vm::new(compile(src).unwrap(), 0, 1).unwrap();
+    let mut game = FakeGame::with_players(2);
+    vm.fire(&mut game, Input::RoundStart);
+    assert_eq!(game.scoreboard_label.as_deref(), Some("Flags"));
+}

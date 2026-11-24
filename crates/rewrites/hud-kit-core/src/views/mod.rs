@@ -5,6 +5,7 @@ use crate::model::Describe;
 
 pub mod firefight;
 pub mod forge_readout;
+pub mod objective;
 pub mod pill_block;
 pub mod superbounce;
 pub mod superbounce_all;
@@ -19,6 +20,12 @@ pub fn all() -> Vec<Box<dyn Describe>> {
         Box::new(superbounce_readout::Readout),
         Box::new(forge_readout::Readout),
         Box::new(firefight::Firefight),
+        Box::new(objective::Base),
+        Box::new(objective::Ctf),
+        Box::new(objective::Assault),
+        Box::new(objective::Oddball),
+        Box::new(objective::Koth),
+        Box::new(objective::Territories),
     ]
 }
 

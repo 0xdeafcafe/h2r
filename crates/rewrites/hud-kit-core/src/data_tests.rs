@@ -6,22 +6,24 @@ use crate::expected;
 use crate::model::{Anchor, Art, Hud, Kind, Origin, PillPart, Place};
 use crate::views;
 
-fn rust_hud(name: &str) -> Hud {
-    match name {
+fn rust_hud(name: &str) -> Option<Hud> {
+    Some(match name {
         "superbounce" => expected::superbounce::hud(),
         "superbounce-readout" => expected::superbounce_readout::hud(),
         "pill-block" => expected::pill_block::hud(),
         "forge-readout" => expected::forge_readout::hud(),
         "firefight" => expected::firefight::hud(),
+        // The display HUDs are YAML first (`views::objective`'s tests).
+        "base" | "ctf" | "assault" | "oddball" | "koth" | "territories" => return None,
         other => panic!("no expected HUD {other}"),
-    }
+    })
 }
 
 #[test]
 fn each_yaml_is_the_hud_its_rust_was() {
     for (name, yaml) in BUILTIN {
         let got = parse(yaml).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let want = rust_hud(name);
+        let Some(want) = rust_hud(name) else { continue };
         assert_eq!(got.name, want.name, "{name}");
         assert_eq!(got.elements.len(), want.elements.len(), "{name}: how many elements");
         for (g, w) in got.elements.iter().zip(&want.elements) {

@@ -1,0 +1,25 @@
+# The Capture the Flag HUD (docs/game/game-types-without-carriers.md, "The display"):
+# rows of text from the frame's bottom left, as the superbounce readout's,
+# a navpoint over the objective and the timed banner. Elements in draw order.
+name: ctf
+elements:
+  - id: ctf.own
+    kind: text
+    font: hud
+    justify: start
+    longest: "Your flag: Carried by you"
+    at: {anchor: bottom-left, full: [101, -47]}
+  - id: ctf.enemy
+    kind: text
+    font: hud
+    justify: start
+    longest: "Enemy flag: Carried by you"
+    at: {anchor: bottom-left, full: [101, -26]}
+  - id: ctf.mark
+    kind: navpoint
+    longest: "999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: ctf.banner
+    kind: banner
+    longest: "FLAG CAPTURED"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}

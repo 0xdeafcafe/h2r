@@ -71,6 +71,9 @@ pub struct Placed {
 pub trait Game {
     /// The variant's type announces a round, including one with no handler.
     fn start_line(&mut self, _ty: crate::types::Type) {}
+    /// What a point is called on the scoreboard and in the post-game: the
+    /// header's `points`, told at each round start.
+    fn points_label(&mut self, _label: &str) {}
     /// Roster slots of the players present. Order does not matter.
     fn players(&self) -> Vec<u8>;
     /// Indices of the teams in play. Order does not matter.
@@ -905,8 +908,11 @@ impl Vm {
     /// Starts a round of the variant's declared type. A settings-only
     /// variant can use a different type's built-in for its handlers.
     pub fn round_start_as(&mut self, game: &mut dyn Game, ty: crate::types::Type) -> Fired {
-        if self.ext.stopped.is_none() && ty.row().start != crate::types::StartLine::None {
-            game.start_line(ty);
+        if self.ext.stopped.is_none() {
+            game.points_label(&self.ir.header.points);
+            if ty.row().start != crate::types::StartLine::None {
+                game.start_line(ty);
+            }
         }
         self.fire_handler(game, Input::RoundStart)
     }
