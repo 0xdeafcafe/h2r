@@ -429,6 +429,8 @@ pub mod method {
     pub const HUD_SAVE_AS: &str = "hud.save_as";
     pub const MODEL_LIST: &str = "model.list";
     pub const MODEL_READ: &str = "model.read";
+    pub const MODEL_PHYSICS_SHAPES: &str = "model.physics.shapes";
+    pub const MODEL_PHYSICS_SET: &str = "model.physics.set";
     pub const MODEL_COLLISION_FROM_RENDER: &str = "model.collision_from_render";
     pub const MODEL_RENDER: &str = "model.render";
     pub const MODEL_CHECK: &str = "model.check";

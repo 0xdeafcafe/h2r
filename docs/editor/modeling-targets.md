@@ -302,12 +302,15 @@ only (above). Rewriting bucket streams is deferred.
   convex polygons. The session opens a BSP as `coll_bsp:<tag>:<n>`
   (`geometry-edit/src/coll_target.rs`); modeling.md, "The collision
   compiler", has its write.
-- **`phmo`.** Spheres, pills and boxes are edited as primitives, in
-  place: radius, half extents, end points, the transform
-  (`tags::collision::PhysicsModel`). A polyhedron's vertices move while
-  it stays convex; its planes and box are recomputed, its counts kept.
-  Mass, centre of mass and inertia are kept and the check says they are
-  stale. New shapes, rigid bodies and constraints are out of scope.
+- **`phmo`.** The Modeling panel and `model.physics.set` edit the local
+  physics model's spheres, pills, boxes and polyhedra. A primitive edit
+  patches the selected radius, half extents, capsule endpoint or
+  transform. A hull vertex edit patches its transposed slot and refits
+  the affected planes and AABB. The face layout and all block counts
+  stay fixed. A shape referenced by a MOPP requires a rebuild. The
+  editor reports that rigid-body bounds and mass properties may be
+  stale and preserves those fields. The tag document holds the patches
+  as one map undo step.
 
 ## Evidence
 

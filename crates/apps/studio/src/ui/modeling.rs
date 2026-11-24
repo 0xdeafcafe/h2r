@@ -1,9 +1,8 @@
 //! The Modeling section of the map inspector (docs/editor/modeling.md):
 //! pick a cluster or instanced definition, open it in edit mode, select
 //! and move its vertices with undo, and add a collision box to its
-//! structure's level collision. Every button is an `Action::Model`, the
-//! same command `geometry.*` and `mesh.*` run, but Undo and Redo, which
-//! take the map document's stack like every editor (`Action::UndoDoc`).
+//! structure's level collision. The controls share Modeling and tag
+//! commands with the agent API. Undo and Redo use the map document.
 
 use dear_imgui_rs::{TreeNodeFlags, Ui};
 use geometry_edit::{Target, TargetInfo, TargetKind};
@@ -15,12 +14,15 @@ use crate::app::Doc;
 use crate::app::modeling::ModelAction;
 use crate::theme;
 
+mod physics;
+
 /// What the section keeps between frames.
 pub struct ModelingPanel {
     /// The open map's targets (`World rev`, list), read when the section
     /// first opens on a map.
     targets: Option<(u64, Vec<TargetInfo>)>,
     picked: usize,
+    physics: physics::Panel,
     collision_source: Option<Target>,
     delta: [f32; 3],
     /// The collision box's corners, world units.
@@ -41,6 +43,7 @@ impl Default for ModelingPanel {
         ModelingPanel {
             targets: None,
             picked: 0,
+            physics: physics::Panel::default(),
             collision_source: None,
             delta: [0.0; 3],
             box_lo: [0.0; 3],
@@ -62,6 +65,7 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
     if !ui.collapsing_header("Modeling##modeling", TreeNodeFlags::NONE) {
         return;
     }
+    st.physics.draw(ui, app, actions);
     let rev = app.session.world_rev();
     if st.targets.as_ref().is_none_or(|(r, _)| *r != rev) {
         let list = app.modeling_targets(None).unwrap_or_default();

@@ -7,6 +7,8 @@ use geometry_edit::mesh_edit::MeshOp;
 use geometry_edit::{GeometrySession, Preview, Target, TargetInfo};
 use scenario_edit::geometry::RawFiles;
 use scenario_edit::{BspPatch, GeometryChanges, GeometryGrown, RawPatch};
+use tags::collision::shape_edit::{self, ShapeEdit};
+use tags::collision::{PHMO, PhysicsModel, ShapeType};
 
 /// Why a save with geometry edits is refused while the session switch is
 /// off.
@@ -76,6 +78,50 @@ pub enum ModelAction {
 }
 
 impl App {
+    fn physics_payload(&self, tag: map::TagId) -> Result<(u32, Vec<u8>), String> {
+        let entry = self
+            .tags
+            .tag(tag)
+            .filter(|t| t.group == PHMO)
+            .ok_or("select a physics model (phmo) tag in the open map")?;
+        let bytes = self
+            .tags
+            .read(tag, entry.address, entry.size)
+            .filter(|b| !b.is_empty())
+            .ok_or("physics model has no local payload")?;
+        Ok((entry.address, bytes))
+    }
+
+    pub(crate) fn physics_model(&self, tag: map::TagId) -> Result<PhysicsModel, String> {
+        let (base, bytes) = self.physics_payload(tag)?;
+        PhysicsModel::decode(&bytes, base).map_err(|e| e.to_string())
+    }
+
+    pub(super) fn edit_physics_shape(
+        &mut self,
+        tag: map::TagId,
+        kind: ShapeType,
+        index: usize,
+        edit: &ShapeEdit,
+    ) -> Result<(), String> {
+        let (base, bytes) = self.physics_payload(tag)?;
+        let words = shape_edit::plan(&bytes, base, kind, index, edit).map_err(|e| e.to_string())?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let writes = words
+            .into_iter()
+            .map(|(offset, word)| {
+                base.checked_add(offset as u32)
+                    .map(|at| (at, word))
+                    .ok_or("physics shape address overflows")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.tags.write_words(tag, format!("edit physics {kind:?} {index}"), writes)?;
+        self.info("Physics shape updated. Rigid-body bounds and mass properties may be stale.");
+        Ok(())
+    }
+
     /// Drop the geometry session when another map (or none) opens.
     pub(crate) fn sync_modeling(&mut self) {
         let rev = Some(self.session.world_rev());

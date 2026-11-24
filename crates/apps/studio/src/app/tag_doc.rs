@@ -158,6 +158,13 @@ pub enum TagAction {
     /// Show a tag's fields.
     Select(TagId),
     Write(TagWrite),
+    /// Edit a physics primitive or hull as one fixed-size tag edit.
+    SetPhysicsShape {
+        tag: TagId,
+        kind: tags::collision::ShapeType,
+        index: usize,
+        edit: tags::collision::shape_edit::ShapeEdit,
+    },
     /// Change the elements of the block whose `(count, address)` pair is
     /// at `pair`, with `layout` its element.
     Block {
@@ -910,6 +917,31 @@ impl TagDoc {
         }
         self.forget_redo_against_last();
         self.sealed = w.merge.is_none();
+        Ok(())
+    }
+
+    /// Apply disjoint, fixed-size words as a single tag edit.
+    pub(crate) fn write_words(
+        &mut self,
+        tag: TagId,
+        label: String,
+        words: Vec<(u32, [u8; 4])>,
+    ) -> Result<(), String> {
+        if words.is_empty() {
+            return Ok(());
+        }
+        let mut step = Step { label, ..Step::default() };
+        for (address, word) in words {
+            let region = self.check(tag, address, 4)?;
+            let before = self.read_in(region, address, 4).expect("checked");
+            step.writes.push(((region, address), before, word.to_vec()));
+        }
+        for (at, _, after) in &step.writes {
+            self.put(*at, after);
+        }
+        self.changed_tag_step(tag, &step);
+        self.push_step(tag, step);
+        self.seal();
         Ok(())
     }
 

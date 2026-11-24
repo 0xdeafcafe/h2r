@@ -389,6 +389,11 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, level_collision_map()).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
+        m::MODEL_PHYSICS_SHAPES | m::MODEL_PHYSICS_SET => {
+            let map = t.path("physics.map");
+            std::fs::write(&map, fixture::fixture_with_object_collision()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map}));
+        }
         m::MODEL_COLLISION_FROM_RENDER => {
             let map = t.path("render-and-collision.map");
             std::fs::write(&map, fixture::fixture_with_render_and_collision()).unwrap();
@@ -4384,6 +4389,45 @@ fn a_coll_bsp_opens_as_a_mesh_and_a_compile_that_cannot_hold_is_named() {
     assert_eq!(check["targets"][0]["class"], "grown_blocks");
     assert!(check["targets"][0]["refused"].is_string(), "{check}");
     assert!(check["save_refusal"].is_string(), "{check}");
+}
+
+#[test]
+fn physics_shape_edit_undoes_and_saves_with_the_map() {
+    let t = Temp::new("physics-shape-edit");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    setup(&mut api, &mut app, &t, m::MODEL_PHYSICS_SHAPES);
+    let query = json!({"tag": "phmo"});
+    let before = call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone());
+    let set_radius = |value| json!({
+        "tag": "phmo", "kind": "sphere", "index": 0, "field": "radius", "value": value
+    });
+    let bad = api.call(&mut app, m::MODEL_PHYSICS_SET, set_radius(-1.0)).unwrap_err();
+    assert_eq!(bad.code, code::REFUSED);
+    assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone()), before);
+    assert!(!app.session.is_dirty());
+
+    let result = call(&mut api, &mut app, m::MODEL_PHYSICS_SET, set_radius(1.25));
+    assert!(result["warning"].is_string());
+    let edited = call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone());
+    assert_eq!(edited["spheres"][0]["radius"], 1.25);
+    let repeat = call(&mut api, &mut app, m::MODEL_PHYSICS_SET, set_radius(1.25));
+    assert!(repeat["warning"].is_null());
+    assert_eq!(call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone()), before);
+    assert_eq!(call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query), edited);
+
+    let out = t.path("physics-edited.map");
+    call(&mut api, &mut app, m::DOC_SAVE_AS, json!({"doc": "map", "path": out}));
+    let mut map = map::Map::open(out).unwrap();
+    let tag = fixture::id(7);
+    let model = ::tags::collision::PhysicsModel::read(&mut map, tag).unwrap();
+    assert_eq!(model.spheres[0].radius, 1.25);
+    let mut original = map::Map::open(t.path("physics.map")).unwrap();
+    let mut expected = original.read_tag_bytes(tag).unwrap();
+    expected[0x13c..0x140].copy_from_slice(&1.25f32.to_le_bytes());
+    assert_eq!(map.read_tag_bytes(tag).unwrap(), expected);
 }
 
 #[test]
