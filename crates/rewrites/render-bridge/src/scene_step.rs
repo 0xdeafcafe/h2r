@@ -1071,6 +1071,17 @@ pub fn with_open<R>(f: impl FnOnce(Option<(&FrameScene, &View)>) -> R) -> R {
     with_step(|step| f(step.builder.open()))
 }
 
+pub(crate) fn display_transparents(build: impl FnOnce(&[u16]) -> Option<frame_scene::transparent::DisplayTransparentQueue>) {
+    with_step(|step| {
+        let Some(view) = step.builder.view() else { return };
+        if view.key.kind != ViewKind::Game { return; }
+        let Some(visibility) = view.display_visibility.as_ref() else { return };
+        if visibility.clusters.is_empty() { return; }
+        let Some(queue) = build(&visibility.clusters) else { return };
+        let _ = step.builder.set_display_transparents(queue);
+    });
+}
+
 /// Runs `f` on the overlay of the scene being written (`FrameScene::overlay`,
 /// docs/graphics/retire-d3d.md): `None` with no scene open. The step is
 /// held for the call: `f` must not come back here.

@@ -210,6 +210,7 @@ impl SceneBuilder {
             world: WorldState::default(),
             remainder: 0,
             display_visibility: None,
+            display_transparents: None,
             aux_depth: None,
             lights: l..l,
             layers: p..p,
@@ -282,6 +283,12 @@ impl SceneBuilder {
     pub fn set_cluster_gather(&mut self, gather: crate::scene::ClusterGather) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
         scene.cluster_gathers[open] = Some(gather);
+        Ok(())
+    }
+
+    pub fn set_display_transparents(&mut self, queue: crate::transparent::DisplayTransparentQueue) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        scene.views[open].display_transparents = Some(queue.into());
         Ok(())
     }
 

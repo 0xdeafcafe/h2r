@@ -4,6 +4,7 @@
 //! becomes visible.
 mod geometry;
 mod portal_merge;
+mod portal_regions;
 mod lights;
 mod objects;
 mod object_lod;
@@ -15,7 +16,7 @@ mod regions;
 mod sphere_regions;
 mod transparents;
 mod window;
-pub(crate) use transparents::bsp as transparent_bsp;
+pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -143,6 +144,8 @@ impl Feature for ScaledSceneLists {
         regions::install(b);
         sphere_regions::install(b);
         portal_merge::install(b);
+        portal_regions::install(b);
+        transparents::install_display(b);
         install(
             b,
             Seam::Function(&points::TRANSPARENT_EFFECT_ENTRY, 8),

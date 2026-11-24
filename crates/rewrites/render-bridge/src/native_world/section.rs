@@ -260,6 +260,71 @@ impl SectionParts {
     }
 }
 
+/// Layer-15 parts of a cluster reached by the display portal flood. No
+/// guest render record or visible-subpart mask exists for this owner.
+pub(crate) fn display_cluster_transparents(m: &dyn GuestMemory, id: u16, cw: u16)
+    -> Option<Vec<frame_scene::transparent::DisplayTransparentPart>> {
+    use frame_scene::transparent::DisplayTransparentPart;
+    let bsp = m.u32(super::ACTIVE_BSP).ok()?;
+    if bsp == 0 || u32::from(id) >= m.u32(bsp.checked_add(0x9c)?).ok()? || id >= 512 { return None; }
+    let base = m.u32(bsp.checked_add(0xa0)?).ok()?;
+    let section = base.checked_add(u32::from(id)*0xb0)?;
+    if m.u16(section.checked_add(0x24)?).ok()? == 0 { return Some(Vec::new()); }
+    if m.u8(section.checked_add(0x46)?).ok()? == 0 { return None; }
+    let geometry = m.u32(section.checked_add(0x50)?).ok()?;
+    if geometry == 0 { return None; }
+    let parts = m.u32(geometry).ok()?;
+    if parts > 256 { return None; }
+    let part_base = m.u32(geometry.checked_add(4)?).ok()?;
+    let mat_count = m.u32(bsp.checked_add(0xa4)?).ok()?;
+    let mat_base = m.u32(bsp.checked_add(0xa8)?).ok()?;
+    let planes = m.u32(PART_PLANES).ok()?;
+    let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+    let pixels = engine::render_loop::world_walk::cluster_pixel_size(m, section, cw)?;
+    let scale = m.f32(SCREEN_SCALE).ok()?;
+    let alpha = m.f32(ALPHA_SCALE).ok()?;
+    let mut found = Vec::new();
+    let mut materials = HashMap::new();
+    for part in 0..parts {
+        let at = part_base.checked_add(part*PART_SIZE as u32)?;
+        let kind = m.u16(at).ok()?;
+        if matches!(kind, 0 | 5) { continue; }
+        let material = u32::from(m.u16(at.checked_add(4)?).ok()?);
+        if material >= mat_count || material > i16::MAX as u32 { return None; }
+        let mat = mat_base.checked_add(material*32)?;
+        if !material_visible(m, mat, 0x7ff)? { continue; }
+        let shader = m.u32(mat.checked_add(12)?).ok()?;
+        if shader == u32::MAX { continue; }
+        let size = m.f32(at.checked_add(0x2c)?).ok()?;
+        let size = if size > 0. { size } else { m.f32(engine::light_constants::constant::ONE).ok()? };
+        let plan = match materials.entry(shader) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => e.insert(LodPlan::read(m, table, shader)?),
+        };
+        let (lod, layers, base_layers) = plan.select(m, ((f32::from(pixels)*size)*scale)*alpha)?;
+        if layers & (1<<15) == 0 || layers & 0xa == 0 && base_layers & (1<<21) != 0 { continue; }
+        let bounds = Bounds::read(m, bsp, planes, Owner::Cluster(u32::from(id)), part as u8, at)?;
+        let tag = m.u32(table.checked_add((shader & 0xffff)*16+8)?).ok()?;
+        let flags = m.u8(tag.checked_add(0x16)?).ok()?;
+        let first_subpart = m.u16(at.checked_add(10)?).ok()?;
+        let subpart_count = m.u16(at.checked_add(12)?).ok()?;
+        let total = m.u16(section.checked_add(0x24)?).ok()?;
+        if subpart_count == 0 { continue; }
+        if first_subpart.checked_add(subpart_count)? > total { return None; }
+        let [class, depth] = crate::native_scene_lists::display_sort_key(m, bounds.position, flags)?;
+        found.push(DisplayTransparentPart {
+            cluster: id, part: part as u8, lod, shader, position: bounds.position,
+            class: class as i32, depth: f32::from_bits(depth),
+            plane: bounds.plane.map(|[x,y,z,d]| ([x,y,z],d)),
+            first_index: m.u16(at.checked_add(6)?).ok()?,
+            index_count: m.u16(at.checked_add(8)?).ok()?,
+            triangle_list: m.u16(at.checked_add(2)?).ok()? & 8 != 0,
+            first_subpart, subpart_count,
+        });
+    }
+    Some(found)
+}
+
 #[cfg(test)]
 fn append(m: &mut dyn GuestMemory, sp: u32, index: u32) -> Option<u32> {
     append_cached(m, sp, index, &mut SectionCache::default(), 0).map(|(count, _)| count)

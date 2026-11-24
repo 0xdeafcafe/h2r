@@ -1,5 +1,7 @@
 use scene_extract::layer_sort::sort;
 pub(crate) mod bsp;
+mod display;
+pub(super) use display::install as install_display;
 
 use super::*;
 
@@ -67,14 +69,7 @@ impl Entry {
         position: [f32; 3],
         radius: Option<f32>,
     ) -> Result<()> {
-        let camera = m.vec3(ENTRY_CAMERA)?;
-        let [x, y, z] = std::array::from_fn(|i| position[i] - camera[i]);
-        let [fx, fy, fz] = m.vec3(ENTRY_FORWARD)?;
-        let depth = 0.0 - ((z * fz + y * fy) + x * fx);
-        let depth = radius.map_or(depth, |radius| depth - radius);
-        if !depth.is_finite() {
-            return Err(Refusal::Unsupported);
-        }
+        let depth = entry_depth(m, position, radius)?;
         self.word(0, class);
         self.word(4, depth.to_bits());
         self.word(8, 0);
@@ -85,7 +80,7 @@ impl Entry {
     }
 
     fn geometry(&mut self, m: &dyn GuestMemory, position: [f32; 3], radius: f32, flags: u8, shader: u32, argument: u32) -> Result<()> {
-        let class = [3, 1, 2, 0][usize::from(flags & 3)];
+        let class = geometry_class(flags);
         self.sort_key(m, class, position, Some(radius))?;
         self.word(0x20, points::TRANSPARENT_GEOMETRY.base);
         self.word(0x24, shader);
@@ -98,6 +93,24 @@ impl Entry {
         out.word(LIST_END, self.count + 1);
     }
 }
+
+fn entry_depth(m: &dyn GuestMemory, position: [f32; 3], radius: Option<f32>) -> Result<f32> {
+    let camera = m.vec3(ENTRY_CAMERA)?;
+    let [x, y, z] = std::array::from_fn(|i| position[i] - camera[i]);
+    let [fx, fy, fz] = m.vec3(ENTRY_FORWARD)?;
+    let depth = 0.0 - ((z * fz + y * fy) + x * fx);
+    let depth = radius.map_or(depth, |radius| depth - radius);
+    if !depth.is_finite() {
+        return Err(Refusal::Unsupported);
+    }
+    Ok(depth)
+}
+
+pub(crate) fn display_sort_key(m: &dyn GuestMemory, position: [f32; 3], flags: u8) -> Option<[u32; 2]> {
+    Some([geometry_class(flags), entry_depth(m, position, Some(0.)).ok()?.to_bits()])
+}
+
+fn geometry_class(flags: u8) -> u32 { [3, 1, 2, 0][usize::from(flags & 3)] }
 
 fn full(m: &dyn GuestMemory, eax: u32) -> Result<Output> {
     let mut out = Output {

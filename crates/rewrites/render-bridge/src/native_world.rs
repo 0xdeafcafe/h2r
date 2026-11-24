@@ -67,6 +67,7 @@ mod opaque_interleave_tests;
 mod scene_build;
 mod scene_walk;
 mod section;
+pub(crate) use section::display_cluster_transparents;
 
 fn claimed_entries(layer: u32) -> bool {
     match layer {
