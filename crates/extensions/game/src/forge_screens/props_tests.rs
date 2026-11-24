@@ -153,11 +153,63 @@ fn every_row_of_the_shipped_doc_binds() {
         (
             BlockKind::NetgameEquipment,
             ThingKind::ItemSpawner,
-            &[("respawn time", 0)][..],
+            &[
+                ("respawn time", 0),
+                ("game type 1", 2),
+                ("game type 2", 2),
+                ("game type 3", 2),
+                ("game type 4", 2),
+            ][..],
         ),
     ] {
         let t = thing(block, kind, fields);
         let wanted = d.props.values().filter(|p| is_for(p, kind)).count();
         assert_eq!(rows(&d, &t, 0.0).len(), wanted, "{kind:?}");
     }
+}
+
+#[test]
+fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog() {
+    use crate::forge_screens::games::{self, Tick};
+    use forge_doc::games::GameSet;
+    let slots = |v: i64| {
+        [
+            ("respawn time", 30),
+            ("game type 1", v),
+            ("game type 2", v),
+            ("game type 3", v),
+            ("game type 4", v),
+        ]
+    };
+    let spawner = thing(
+        BlockKind::NetgameEquipment,
+        ThingKind::ItemSpawner,
+        &slots(2),
+    );
+    assert_eq!(
+        labels(&spawner),
+        ["Coordinates...", "Heading", "Respawn time", "Game types..."]
+    );
+    let rows = rows(&doc(), &spawner, 0.0);
+    let Act::Dialog(dialog) = &rows[3].act else {
+        panic!("the row opens the dialog")
+    };
+    // The dialog shows the set the slots name: Slayer alone.
+    assert_eq!(dialog.kind, Kind::Games);
+    assert_eq!(games::set_of(dialog), GameSet::of(&[2]));
+    let mut dialog = (**dialog).clone();
+    games::tick(&mut dialog, Tick::Engine(3));
+    assert_eq!(games::set_of(&dialog), GameSet::of(&[2, 3]));
+    // A slot value the table does not know is shown as it is: no row.
+    let odd = thing(
+        BlockKind::NetgameEquipment,
+        ThingKind::ItemSpawner,
+        &slots(99),
+    );
+    assert_eq!(labels(&odd), ["Coordinates...", "Heading", "Respawn time"]);
+    // Only a spawner has the row.
+    assert!(
+        !labels(&thing(BlockKind::Scenery, ThingKind::Object, &[]))
+            .contains(&"Game types...".to_string())
+    );
 }

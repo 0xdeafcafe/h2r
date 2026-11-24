@@ -14,6 +14,7 @@ use crate::{
 };
 
 mod area;
+mod budget;
 mod ground;
 mod shared;
 
@@ -286,6 +287,11 @@ impl Session {
             .palette
             .get(item_index)
             .ok_or("Choose a tag from the map palette.")?;
+        if let Some(budget) = self.budget_for(item.block)
+            && budget.left == 0
+        {
+            return Err(budget.full());
+        }
         let fields = vec![
             FieldWrite {
                 field: "palette index".into(),

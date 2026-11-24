@@ -318,3 +318,38 @@ fn a_carried_things_hold_line_has_its_snap_axes_and_pickup() {
         format!("{} 0.50 m  Snap off  World axes", ARROW_DOWN)
     );
 }
+
+#[test]
+fn the_budget_shows_from_a_tenth_left_and_names_the_binding_limit() {
+    let spawners = |left| forge::Budget {
+        left,
+        limit: 100,
+        binds: forge::Binds::Block(BlockKind::NetgameEquipment),
+    };
+    assert_eq!(budget_of(&spawners(11)), None);
+    let low = budget_of(&spawners(10)).unwrap();
+    assert_eq!(
+        (low.left, low.singular.as_str(), low.plural.as_str()),
+        (10, "item spawner", "item spawners")
+    );
+    let session = forge::Budget {
+        left: 0,
+        limit: 4,
+        binds: forge::Binds::Session,
+    };
+    assert_eq!(budget_of(&session).unwrap().plural, "objects");
+    // The guide row says it while an added thing is held.
+    let mut scene = Scene {
+        monitor: true,
+        target: Some(aim([0.0; 3])),
+        hold: Some(hold([0.0; 3], 0.5, None, false, None)),
+        budget: budget_of(&spawners(3)),
+        ..Scene::default()
+    };
+    let (values, _) = frame(&scene);
+    assert_eq!(values.get(fr::GUIDE).unwrap().text.as_str(), "3 item spawners left");
+    // A refusal's sentence comes first.
+    scene.refusal = Some("Item spawners are full (100).".into());
+    let (values, _) = frame(&scene);
+    assert_eq!(values.get(fr::GUIDE).unwrap().text.as_str(), "Item spawners are full (100).");
+}

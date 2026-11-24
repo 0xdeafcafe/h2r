@@ -267,7 +267,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 /// The screens `h2 ui preview` knows, by name: ours, then the design
 /// system's specimens (`design.<component>`) and the layout gallery
 /// (`layout.<name>`, [`crate::ui_kit::components::specimens::PAGES`]).
-pub const NAMES: [&str; 74] = [
+pub const NAMES: [&str; 75] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -279,6 +279,7 @@ pub const NAMES: [&str; 74] = [
     "forge.question",
     "forge.options",
     "forge.controls",
+    "forge.games",
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -382,7 +383,7 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         "forge.hud" | "forge.palette" | "forge.menu" => super::forge::live(name),
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
-        | "forge.question" | "forge.options" | "forge.controls" => {
+        | "forge.question" | "forge.options" | "forge.controls" | "forge.games" => {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
@@ -1081,7 +1082,7 @@ mod tests {
                 | FORGE_MAP_PICKER
                 | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
-                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question",
+                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question" | "forge.games",
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")

@@ -58,3 +58,9 @@ props:
     on: [spawner]
     prop: "respawn time"
     open: keyboard
+  prop.7:
+    text: "Game types..."
+    help: "Which game types the item appears in."
+    on: [spawner]
+    prop: games
+    open: forge.games

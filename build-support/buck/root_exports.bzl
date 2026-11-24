@@ -97,6 +97,7 @@ def root_exports():
             "content/ui/screens/firefight.yaml",
             "content/ui/screens/forge.controls.yaml",
             "content/ui/screens/forge.hud.yaml",
+            "content/ui/screens/forge.games.yaml",
             "content/ui/screens/forge.link.yaml",
             "content/ui/screens/forge.menu.yaml",
             "content/ui/screens/forge.objects.yaml",

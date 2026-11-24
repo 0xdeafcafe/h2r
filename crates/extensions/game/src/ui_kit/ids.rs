@@ -88,6 +88,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("browser chrome", 0x20ff_c380, 0x10),
     Family::new("forge coordinates", 0x20ff_c390, 0x20),
     Family::new("variant-quick", 0x20ff_c3c0, 0x40),
+    Family::new("forge games", 0x20ff_c400, 0x20),
     Family::new("co-op texts", 0x20ff_d000, 128),
     Family::new("mod texts", 0x20ff_d100, 0x100),
     Family::new("theater", 0x20ff_d200, 0x100),

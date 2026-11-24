@@ -20,9 +20,10 @@
 //!
 //! The readout is presentation: it reads the session and never writes it.
 //! A fact the session does not give yet is absent: a hold needs the
-//! ground's height (no ray is kept for it yet), a refusal's sentence and the
-//! budget by kind wait for S6, and no kind has a ring (its radius is not
-//! traced). The zone is the aimed hill corner's hill ([`zone_of`]).
+//! ground's height (no ray is kept for it yet), and no kind has a ring (its
+//! radius is not traced). The budget is [`forge::Session::budget_for`]'s,
+//! shown by [`budget_of`] when a tenth or less is left, and a refusal is
+//! the editor's, for [`REFUSAL_TICKS`]. The zone is the aimed hill corner's hill ([`zone_of`]).
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -305,6 +306,20 @@ pub fn aimed(
         },
         at,
     }
+}
+
+/// How long a refusal's sentence stays on the guide row: four seconds at
+/// thirty ticks a second.
+pub const REFUSAL_TICKS: u32 = 120;
+
+/// The guide row's budget for a thing of a block whose budget is `b`: the
+/// binding limit by name when a tenth or less of it is left, else none.
+pub fn budget_of(b: &forge::Budget) -> Option<Budget> {
+    (b.left as f32 <= b.limit as f32 * fr::BUDGET_LOW).then(|| Budget {
+        left: b.left,
+        singular: b.singular().to_owned(),
+        plural: b.plural().to_owned(),
+    })
 }
 
 /// The readout's hold line for a thing carried at `at`, `height` over the

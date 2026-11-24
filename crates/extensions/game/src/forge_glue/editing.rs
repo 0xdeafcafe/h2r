@@ -38,6 +38,8 @@ enum After {
     Shared(Vec<forge::net::Stamped>),
     Load(String),
     Proposal(mpsc::Sender<Result<Entry, String>>),
+    /// An edit that leaves the tool's state as it is.
+    Edited,
 }
 
 struct Pending {
@@ -95,6 +97,9 @@ pub(super) struct Editor {
     notice: Option<(String, u32)>,
     /// The right trigger is held: a held thing is being turned.
     rotating: bool,
+    /// The sentence of the last refused edit and its tick: the readout's
+    /// guide row says it for [`crate::forge_readout::REFUSAL_TICKS`].
+    refusal: Option<(String, u32)>,
     /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
     /// The delete or removal the question is about.
@@ -150,6 +155,7 @@ impl Editor {
             area: None,
             notice: None,
             rotating: false,
+            refusal: None,
             link_dialog: None,
             delete_asked: None,
             overwrite_asked: None,
@@ -181,6 +187,13 @@ impl Editor {
     /// `forge.status.monitors`.
     pub fn pose(&self) -> Option<([f32; 3], f32, f32)> {
         self.tool.camera.map(|c| (c.position, c.yaw, c.pitch))
+    }
+
+    /// An edit was refused: the sentence is the notice and the readout's
+    /// guide row.
+    fn refuse(&mut self, reason: String, tick: u32) {
+        self.refusal = Some((reason.clone(), tick));
+        self.notice = Some((reason, tick));
     }
 
     /// Says `text` in the HUD strip for a while, as a file notice is.
@@ -230,6 +243,15 @@ impl Editor {
                     game,
                 )
             });
+        // An added thing is what a hold spends the budget on; moving an own
+        // entry costs nothing.
+        let budget = self
+            .tool
+            .held_thing
+            .and_then(|id| self.session.thing(id))
+            .filter(|thing| !thing.own)
+            .and_then(|thing| self.session.budget_for(thing.block))
+            .and_then(|b| crate::forge_readout::budget_of(&b));
         let zone = self
             .tool
             .held_thing
@@ -260,6 +282,8 @@ impl Editor {
             hold,
             zone,
             target,
+            refusal: self.refusal.as_ref().map(|(text, _)| text.clone()),
+            budget,
             things: things
                 .iter()
                 .filter_map(|t| readout::placed(t, game))
@@ -663,6 +687,7 @@ impl Editor {
                         }
                     }
                     After::Area => self.area = None,
+                    After::Edited => {}
                     After::Load(name) => {
                         self.area = None;
                         self.notice = Some((format!("Loaded {name}."), tick));
@@ -686,7 +711,7 @@ impl Editor {
                 if let After::Proposal(reply) = after {
                     let _ = reply.send(Err(reason.clone()));
                 }
-                self.notice = Some((reason, tick));
+                self.refuse(reason, tick);
             }
         }
     }
@@ -719,13 +744,18 @@ impl Editor {
         {
             self.notice = None;
         }
+        if self.refusal.as_ref().is_some_and(|(_, at)| {
+            tick.saturating_sub(*at) > crate::forge_readout::REFUSAL_TICKS
+        }) {
+            self.refusal = None;
+        }
         self.poll_file(tick);
         self.poll(tick);
         self.net_tick(tick);
         if !self.busy() {
             for choice in screens::take_choices() {
                 if let Err(error) = self.choose(tick, choice) {
-                    self.notice = Some((error, tick));
+                    self.refuse(error, tick);
                 }
             }
         }
@@ -754,7 +784,7 @@ impl Editor {
 
     fn take_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) {
         if let Err(error) = self.drive_input(tick, input, bsp) {
-            self.say(error, tick);
+            self.refuse(error, tick);
         }
     }
 
@@ -1272,6 +1302,14 @@ impl Editor {
                         after: After::Load(name),
                     }))
                 });
+            }
+            Choice::Games(set) => {
+                let id = self
+                    .tool
+                    .held_thing
+                    .or(self.tool.aimed_thing)
+                    .ok_or("Aim at an item entry.")?;
+                return self.stage(After::Edited, move |s, w| s.set_games(w, tick, id, set));
             }
             Choice::Notice(text) => self.notice = Some((text, tick)),
         }

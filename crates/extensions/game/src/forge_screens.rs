@@ -23,6 +23,7 @@
 //!   and the keys to the game's UI.
 
 pub mod game_menu;
+pub mod games;
 pub mod pages;
 pub mod props;
 pub mod screen;
@@ -257,7 +258,12 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
         Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
         Kind::Options => sheet::options(),
         Kind::Controls => sheet::controls(),
-        Kind::Objects | Kind::Properties | Kind::Coordinates | Kind::Link | Kind::Question => {
+        Kind::Objects
+        | Kind::Properties
+        | Kind::Coordinates
+        | Kind::Link
+        | Kind::Question
+        | Kind::Games => {
             return Err(format!(
                 "{} shows the session's objects; the session opens it",
                 kind.screen()

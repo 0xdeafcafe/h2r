@@ -89,6 +89,13 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32) -> Option<SheetRow> {
                 .describe(help),
             )
         }
+        ("forge.games", "games") => {
+            let set = forge::props::games(thing)?;
+            Some(
+                SheetRow::new(&p.text, Act::Dialog(Box::new(super::games::sheet(set))))
+                    .describe(help),
+            )
+        }
         (screen, _) => {
             let kind = Kind::of_screen(screen)?;
             Some(SheetRow::new(&p.text, Act::Open(kind)).describe(help))
