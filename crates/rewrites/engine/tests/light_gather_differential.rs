@@ -1,6 +1,6 @@
 //! `engine::render::light_gather` against the original, lifted and run on
 //! the IR interpreter from the same seeded 64 MB state
-//! (docs/graphics/native-light-gather.md, slices L1 to L7).
+//! (docs/graphics/native-light-gather.md, slices L1 to L8).
 //!
 //! **The leaves (L1).** Each root runs lifted with its whole tree (no
 //! stub) to its return; the port runs on a copy and its writes are
@@ -38,6 +38,8 @@
 //! **Object shadows (L7).** See [`object_shadow_list_matches_the_lifted_original`]
 //! [`object_shadow_rows_match_the_lifted_original`] and
 //! [`object_shadow_caster_matches_the_lifted_original`].
+//!
+//! **Sphere projection (L8).** See [`screen_bounds_match_the_lifted_original`].
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
 //! skips without it. Nothing is copied from it: thresholds and constants
@@ -3811,5 +3813,103 @@ fn object_shadow_caster_refuses_before_writing() {
             assert_eq!(object_shadows::caster::plan(&ram, esp, fpu).err(), Some(why), "seed {seed}, {case}");
             assert!(m.bytes == ram.0.bytes, "seed {seed}, {case}: refusal modified memory");
         }
+    }
+}
+
+/// Includes the CRT inverse sine and both x87 tangent calculations in the
+/// lifted tree. EDI points to seeded words so the offscreen early return
+/// must leave the caller's entire output intact.
+#[test]
+fn screen_bounds_match_the_lifted_original() {
+    use engine::function_eval::constant::NO_REPORT;
+    use engine::light_constants::{BoundsQuery, SCREEN_BOUNDS, screen_bounds};
+
+    let found = with_image(|image, mut lifted| {
+        let centre = SCRATCH;
+        let view = centre + 0x40;
+        let out = view + 0x40;
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for n in 0..72 {
+                let mut original = image.clone();
+                let mut c = cpu(&mut rng);
+                let shape = if n < 48 { n % 8 } else { 7 };
+                let mode = n / 8 % 6;
+                let (coords, radius): ([f32; 3], f32) = match shape {
+                    0 => ([0.0, 0.0, 4.0], 1.0),    // behind the view
+                    1 => ([0.0; 3], 4.0),           // eye inside the sphere
+                    2 => ([6.0, -6.0, 0.25], 1.0), // angular clamps
+                    3 => ([0.0, 0.0, -1.0], -1.0),  // asin(-1)
+                    4 => ([-0.0, 1.0, -5.0], -0.0),
+                    5 => ([f32::NAN, 0.0, -5.0], 0.75),
+                    // The SSE depth square underflows before the x87 sqrt.
+                    6 => ([0.0, 0.0, -f32::MIN_POSITIVE], -f32::MIN_POSITIVE),
+                    _ => (
+                        [rng.float(-4.0, 4.0), rng.float(-4.0, 4.0), rng.float(-9.0, -1.0)],
+                        rng.float(0.1, 2.0),
+                    ),
+                };
+                // Exercise both the domain-error refusal and the CRT mode
+                // that suppresses reporting and returns the indefinite.
+                let reporting = mode % 2 == 0;
+                put(&mut original, NO_REPORT, u32::from(!reporting));
+                for (i, v) in coords.into_iter().enumerate() {
+                    putf(&mut original, centre + 4 * i as u32, v);
+                }
+                let random_view = shape == 7;
+                let scale = if random_view { rng.float(0.25, 2.5) } else { 1.0 };
+                putf(&mut original, view + 4, scale);
+                for i in 0..12 {
+                    let v = if random_view {
+                        rng.float(-1.0, 1.0)
+                    } else if [0, 4, 8].contains(&i) {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    putf(&mut original, view + 8 + i * 4, v);
+                }
+                for i in 0..6 {
+                    put(&mut original, out + i * 4, rng.u32());
+                }
+                let fpu = Fpu {
+                    mxcsr: if shape == 6 {
+                        0x1f80
+                    } else {
+                        [0x1f80, 0x3f80, 0x5f80, 0x7f80, 0x9f80, 0x1f80][mode]
+                    },
+                    x87_control: [0x027f, 0x037f, 0x007f][mode % 3],
+                };
+                let query = BoundsQuery { centre, view, word: radius.to_bits() };
+                let mut port = Ram(original.clone());
+                let result = screen_bounds(&port, query, fpu);
+                if reporting && matches!(shape, 5 | 6) {
+                    assert_eq!(result, Err(engine::light_constants::Error::Data));
+                    continue;
+                }
+                let label = format!("screen bounds seed {seed} case {n}");
+                let bounds = result.unwrap_or_else(|e| panic!("{label}: {e:?}"));
+                if let Some(words) = bounds {
+                    for (i, v) in words.into_iter().enumerate() {
+                        put(&mut port.0, out + 4 * i as u32, v);
+                    }
+                }
+                c.gpr[0] = centre;
+                c.gpr[1] = view;
+                c.gpr[7] = out;
+                c.mxcsr = fpu.mxcsr;
+                c.x87.control = fpu.x87_control;
+                let esp = c.gpr[4];
+                lifted
+                    .call(&mut c, &mut original, SCREEN_BOUNDS, esp, &[query.word])
+                    .unwrap_or_else(|e| panic!("{label}: {e}"));
+                assert_eq!(c.gpr[0] as u8, u8::from(bounds.is_some()), "{label}: AL");
+                assert_eq!(c.gpr[4], esp, "{label}: ret 4");
+                compare(&label, &original, &port.0, esp);
+            }
+        }
+    });
+    if !found {
+        eprintln!("SKIPPED screen_bounds_match_the_lifted_original: no XBE (set H2_XBE)");
     }
 }
