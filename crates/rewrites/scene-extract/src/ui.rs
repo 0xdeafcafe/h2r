@@ -1001,6 +1001,7 @@ mod tests {
                 blur: OverlayBlur {
                     tap: 0.5,
                     spreads: vec![1.0, 0.875],
+                    pick: 0.25,
                 },
             }),
             widgets: vec![title, meter, list, picture, panel],

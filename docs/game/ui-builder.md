@@ -433,14 +433,20 @@ dimmed 85%: the lobby's PREGAME LOBBY strip above the frame shows at
 `0x235756` then blurs the screen with the Kawase blur `0x211a0`
 (`engine::glow::blur`): `3.75 * fraction` steps (`[0x0045de14]`), so at
 rest four draws with fractions 1, 1, 1 and 0.75. The first draw's scale
-is 1.0 and each next one's is 1.25 times it; a draw's spread is its
-fraction times its scale (1, 1.25, 1.5625, 1.465). Each draw makes every
-pixel the mean of four bilinear taps, tap `k` moved by the spread times
-0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for `k & 2`, else times
--0.5 (`[0x0045dbc4]`), with the sampler clamped at the edges
-(`native_render::glow::quad`). `Disc::backdrop` draws both at rest
-(fraction 1): the fill from `SharedGlobals::overlay_color`, then
-`preview::backdrop::blur` on the 640 by 480 canvas.
+is 1.0 and, the call's growth being 1, each next one's is the last
+times the spread factor `[0x0045dc0c]`; a draw's spread is its fraction
+times its scale. Each draw blends four bilinear taps, tap `k` moved by
+the spread times 0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for
+`k & 2`, else times -0.5 (`[0x0045dbc4]`), with the sampler clamped at
+the edges (`native_render::glow::quad`). The call's strength
+(`[0x0045dc20]`) selects the combiner that blends them in pairs leaning
+to the brighter tap; the alpha is their mean
+([native-post-hud.md](../graphics/native-post-hud.md#the-blur-under-a-dialog)).
+`Disc::backdrop` draws both at rest (fraction 1): the fill from
+`SharedGlobals::overlay_color`, then `preview::backdrop::blur` on the
+640 by 480 canvas. The preview's blur grows each scale by 1.25 and
+takes the plain mean of the taps, so it differs from the game's: its
+steps spread less and it does not lean to the brighter tap.
 
 The openers:
 

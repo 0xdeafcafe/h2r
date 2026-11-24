@@ -565,6 +565,64 @@ The typed `UiDraw::Fade`, `Rect` and `Bitmap` of `scene_extract::ui` are
 not filled from these draws: a fade's combiner is not one of the
 overlay's fixed ones.
 
+##### The blur under a dialog
+
+Under a dialog the window stack's render fills the screen with the
+backdrop colour and calls `0x00235756` (`points::UI_MODAL_BLUR`, from
+`0x00235128`) with the screen's transition fraction in XMM0 (Code,
+`h2 disasm`). It multiplies the fraction by `[0x0045de14]` and calls the
+Kawase blur `0x000211a0` with EAX 0 and the words: those steps, scale
+1.0, growth 1.0, dest 1, other -1, last 0, combine 1, 0, the strength
+`[0x0045dc20]` and `y` 0.0. That call returns to `0x00235794`; the
+wrapper then returns with a bare RET.
+
+So the blur reads target 0 and ping-pongs between targets 1 and 0
+(`engine::glow::blur`): each step's spread is its fraction times the
+scale, and each scale is the last times `1 - growth + growth *
+[0x0045dc0c]`, the whole spread factor since the growth is 1. An odd
+count of draws ends in target 1, which `0x000351a0` copies back to 0
+with one more quad of `0x00034a90` (one tap, the texture's colour).
+Each draw is a full-target quad of four bilinear taps, tap `k` moved by
+the spread times `[0x0045dbbc]` for `k & 1` in x and `k & 2` in y, else
+`[0x0045dbc4]`, its negative (`native_render::glow::quad`).
+
+The strength selects `0x00020f30`'s eight-stage combiner
+(`engine::glow::blur_combiner`). Its colour is not the taps' mean: stage
+0 makes `clamp(4 * (t0 - t1))`, stage 1 the weight `(d * c + 1) / 2`
+with `c` the strength packed to a byte in each stage's first constant,
+stage 2 `w * t0 + (1 - w) * t1`; stages 3 to 5 the same for `t2` and
+`t3`, stages 6 and 7 and the final combiner the same for the two
+results. Each pair leans to its brighter tap: its weight moves from a
+half by up to half of `c`. The alpha is the mean of the four. A strength of 0 gives
+the three-stage plain mean.
+
+`render_bridge::native_hud::modal_blur` observes the blur's entry when
+its return is `0x00235794`, reads the ten words and computes the draws and
+the combiner as the guest will (`read`). The overlay's `Blur` item carries
+the steps' spreads, the tap and the combiner's constant over 255
+(`OverlayBlur::pick`, 0 for the plain form). The host arms the device
+(`Host::modal_blur`, `game::modal_blur_glue`): the game's code runs
+whole, so its target binds, texture stage writes, combiner block and
+dirty bits are its own. The device holds back its quads, the copy's
+included (`Device::swallow`: slot 0 the target bound at the call, the
+UI's, slot 1 target 1). At the
+wrapper's return (`Host::finish_modal_blur`) the quads are checked
+(unblended, every channel written, each sampling the target the plan
+names, whole; targets 0 and 1 the same size). The overlay's blur is then
+drawn into target 0 by `OverlayGpu` in their place: the copy, the steps
+in scratch targets, the result written back into every channel. The
+item joins `FrameScene::overlay`. A quad off the plan, a check that
+fails or a pass that does not record gives the game's quads back in
+order (`overlay_modal_blur_replayed`).
+
+`render.stats` counts the blurs drawn (`overlay_modal_blurs`), those
+given back, those the host did not arm (`overlay_modal_blur_refused_pass`:
+the UI scope's order did not hold) and those not read, by reason:
+`overlay_modal_blur_refused_arguments` (a word not the one the wrapper
+pushes), `_steps` (past `engine::glow::MAX_BLUR_STEPS`), `_combiner` (the
+`y` form or another stage count) and `_targets` (a draw outside targets 0
+and 1).
+
 ### Post admission
 
 Each call either commits

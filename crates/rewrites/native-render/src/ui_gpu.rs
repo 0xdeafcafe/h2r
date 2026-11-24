@@ -276,9 +276,14 @@ fn fs_texture_grey(i: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// The overlay's blur step (`frame_scene::OverlayBlur`): every pixel the
-/// mean of four bilinear taps at the corners of a square, the offset a
-/// fraction of the target. One full-screen triangle.
+/// The overlay's blur step (`frame_scene::OverlayBlur`): every pixel a
+/// blend of four bilinear taps at the corners of a square, the offset a
+/// fraction of the target (`offset.xy`), the combiner's constant in
+/// `offset.z`. The colour is blended in pairs as the guest's combiner
+/// (`engine::glow::blur_combiner`) does, each stage's output clamped to
+/// -1..1: `clamp(4 * (a - b))`, its weight `(d * pick + 1) / 2`, then
+/// `w * a + (1 - w) * b`; the alpha is the mean. A `pick` of 0 is the
+/// plain mean. One full-screen triangle.
 const OVERLAY_BLUR_WGSL: &str = r#"
 struct Blur {
     offset: vec4<f32>,
@@ -300,14 +305,24 @@ fn vs_full(@builtin(vertex_index) i: u32) -> Out {
     return out;
 }
 
+fn pick(a: vec3<f32>, b: vec3<f32>, c: f32) -> vec3<f32> {
+    let d = clamp(4.0 * (a - b), vec3<f32>(-1.0), vec3<f32>(1.0));
+    let w = clamp((d * c + 1.0) * 0.5, vec3<f32>(0.0), vec3<f32>(1.0));
+    return clamp(w * a + (1.0 - w) * b, vec3<f32>(-1.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fs_blur(i: Out) -> @location(0) vec4<f32> {
     let d = blur.offset.xy;
-    let sum = textureSample(source, taps, i.uv + vec2<f32>(-d.x, -d.y))
-        + textureSample(source, taps, i.uv + vec2<f32>(d.x, -d.y))
-        + textureSample(source, taps, i.uv + vec2<f32>(-d.x, d.y))
-        + textureSample(source, taps, i.uv + vec2<f32>(d.x, d.y));
-    return sum * 0.25;
+    let c = blur.offset.z;
+    let t0 = textureSample(source, taps, i.uv + vec2<f32>(-d.x, -d.y));
+    let t1 = textureSample(source, taps, i.uv + vec2<f32>(d.x, -d.y));
+    let t2 = textureSample(source, taps, i.uv + vec2<f32>(-d.x, d.y));
+    let t3 = textureSample(source, taps, i.uv + vec2<f32>(d.x, d.y));
+    let p0 = pick(t0.rgb, t1.rgb, c);
+    let p1 = pick(t2.rgb, t3.rgb, c);
+    let alpha = ((t0.a + t1.a) * 0.5 + (t2.a + t3.a) * 0.5) * 0.5;
+    return vec4<f32>(pick(clamp(p0, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(p1, vec3<f32>(0.0), vec3<f32>(1.0)), c), alpha);
 }
 "#;
 
@@ -619,7 +634,7 @@ impl OverlayGpu {
             for offset in &blur.offsets {
                 let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("native overlay blur step"),
-                    contents: bytemuck::cast_slice(&[offset[0], offset[1], 0.0f32, 0.0f32]),
+                    contents: bytemuck::cast_slice(&[offset[0], offset[1], blur.pick, 0.0f32]),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -801,8 +816,9 @@ impl OverlayGpu {
             None => (None, Vec::new()),
         };
         // A blur's result goes back through the texture combiner as one
-        // quad over the whole target: its four corners and six indices
-        // follow the plan's.
+        // quad over the whole target, every channel written as the guest's
+        // blur quads write them: its four corners and six indices follow
+        // the plan's.
         let mut plan_vertices = plan.vertices.clone();
         let mut plan_indices = plan.indices.clone();
         let whole = plan_indices.len() as u32..plan_indices.len() as u32 + 6;
@@ -822,7 +838,7 @@ impl OverlayGpu {
         plan_indices.extend(crate::overlay::QUAD_INDICES.map(|i| base + i));
         let write_back = (!blurs.is_empty()).then(|| {
             let key = OverlayPipelineKey {
-                color_write: frame_scene::OverlayItem::RGB_WRITE,
+                color_write: frame_scene::OverlayItem::RGB_WRITE | (1 << 24),
                 combiner: frame_scene::Combiner::Texture,
                 blend: frame_scene::OverlayBlend::Off,
                 format,
@@ -1332,7 +1348,7 @@ mod tests {
         overlay.push_fill(all, [0.0, 0.0, 2.0, 4.0], [1.0; 4], OverlayBlend::Off).unwrap();
         overlay.push_fill(all, [2.0, 0.0, 4.0, 4.0], [0.0, 0.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
         let right = ClipRect { x: 2, y: 0, width: 2, height: 4 };
-        overlay.push_blur(right, OverlayBlur { tap: 0.5, spreads: vec![1.0] }).unwrap();
+        overlay.push_blur(right, OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();
         overlay.push_fill(all, [3.0, 0.0, 4.0, 4.0], [0.0, 1.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
         let plan = crate::overlay::OverlayPlan::new(&overlay, [4, 4], &crate::overlay::NoGlyphs);
         assert_eq!((plan.batches.len(), plan.blurs.len()), (2, 1));
@@ -1365,6 +1381,47 @@ mod tests {
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &NoTextures).unwrap();
         assert_eq!((stats.batches, stats.refused_blur), (2, 1));
         assert_eq!((encoded.draws, encoded.passes), (2, 1));
+
+        // The same blur with the combiner leaning all the way: each pair
+        // takes its brighter tap (0.5 over 0), so the pixel keeps half
+        // white where the mean gave a quarter.
+        let mut leaning = overlay.clone();
+        leaning.blurs[0].pick = 1.0;
+        let plan = crate::overlay::OverlayPlan::new(&leaning, [4, 4], &crate::overlay::NoGlyphs);
+        let texture = target(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+        let view = texture.create_view(&Default::default());
+        let (encoded, _) = gpu.prepare(&ctx.device, &view, &plan, &NoTextures).unwrap();
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        (encoded.commands)(&mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        let pixels = gfx::readback::read_texture(&ctx, &texture, wgpu::TextureAspect::All, 4, (4, 4));
+        for y in 0..4 {
+            let i = 4 * (y * 4 + 2);
+            let leant = [pixels[i], pixels[i + 1], pixels[i + 2]];
+            assert!(leant.iter().all(|c| c.abs_diff(128) <= 1), "row {y}: leaning blur {leant:?}");
+        }
+    }
+
+    /// The step's combiner on the CPU, as the WGSL computes it: a pick of
+    /// 0 is the mean of the four taps; a positive one leans each pair to
+    /// its brighter tap, by at most half of the pair's spread.
+    #[test]
+    fn the_blur_combiner_leans_to_the_brighter_tap_by_its_constant() {
+        fn pick(a: f32, b: f32, c: f32) -> f32 {
+            let d = (4.0 * (a - b)).clamp(-1.0, 1.0);
+            let w = ((d * c + 1.0) * 0.5).clamp(0.0, 1.0);
+            (w * a + (1.0 - w) * b).clamp(-1.0, 1.0)
+        }
+        let step = |t: [f32; 4], c: f32| pick(pick(t[0], t[1], c).clamp(0.0, 1.0), pick(t[2], t[3], c).clamp(0.0, 1.0), c);
+        let taps = [0.5, 0.0, 0.25, 0.25];
+        assert!((step(taps, 0.0) - 0.25).abs() < 1e-6, "the plain mean");
+        // 64 over 255, the guest's 0.25 packed: the first pair leans by 64/255 of half its spread.
+        let c = 64.0 / 255.0;
+        let first = 0.5 * (0.5 + 0.5 * c) + 0.0 * (0.5 - 0.5 * c);
+        assert!((pick(0.5, 0.0, c) - first).abs() < 1e-6);
+        assert!(step(taps, c) > 0.25 && step(taps, c) < step(taps, 1.0));
+        assert_eq!(pick(0.3, 0.3, 1.0), 0.3, "equal taps are unchanged");
+        assert!(OVERLAY_BLUR_WGSL.contains("fn pick("));
     }
 
     #[test]

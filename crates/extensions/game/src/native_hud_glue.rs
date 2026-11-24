@@ -444,6 +444,15 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::hud_overlay::place_menu(&self.device, mem, part)
     }
 
+    fn modal_blur(&self, mem: &mut dyn GuestMemory, call: &render_bridge::native_hud::modal_blur::ModalBlur) -> bool {
+        // The UI scope's order must hold for a pass placed in it.
+        self.permits_draw() && crate::modal_blur_glue::arm(&self.device, mem, call)
+    }
+
+    fn finish_modal_blur(&self, mem: &mut dyn GuestMemory, esp: u32) -> bool {
+        crate::modal_blur_glue::finish(&self.device, mem, esp)
+    }
+
     fn enter_ui(&self, mem: &mut dyn GuestMemory, kind: UiScope, stack: u32, eligible: bool) {
         let Ok(mut device) = self.device.lock() else {
             Ui::Order.count();
