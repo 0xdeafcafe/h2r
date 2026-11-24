@@ -567,6 +567,55 @@ fn chosen_lights(
     crate::native_lights::chosen::beyond_guest(scene.lights_of(view), cap, slots)
 }
 
+/// Retail's first-person pass (`0x000404b0`) begins: the game view's
+/// first-person lights it did not record
+/// ([`crate::native_lights::chosen::first_person::choose`]), chosen under
+/// the view's share of the cap as [`chosen_lights`] chooses it, the eye
+/// the first-person view's camera, with that view's object parts so far
+/// ([`crate::native_lights::chosen::first_person::parts`]). `None` when
+/// the slots do not read or the scene holds no game or first-person view
+/// of the guest's current view.
+pub fn first_person_chosen(
+    mem: &dyn GuestMemory,
+) -> Option<crate::native_lights::chosen::first_person::FirstPersonPass> {
+    use crate::native_lights::chosen::first_person::{self, FirstPersonPass};
+    let recorded = engine::render::light_gather::first_person::recorded(mem).ok()?;
+    let view = Ro(mem).read_u32(VIEW_INDEX).unwrap_or(0) as u8;
+    let game_key = ViewKey {
+        kind: ViewKind::Game,
+        player: 0,
+        view,
+    };
+    let fp_key = ViewKey {
+        kind: ViewKind::FirstPerson,
+        ..game_key
+    };
+    with_step(|step| {
+        let scene = step.builder.scene()?;
+        let game = scene.views.iter().rev().find(|v| v.key == game_key)?;
+        let fp = scene.views.iter().rev().find(|v| v.key == fp_key)?;
+        let keys: Vec<ViewKey> = scene
+            .views
+            .iter()
+            .map(|v| v.key)
+            .chain(step.builder.previous_views().iter().copied())
+            .collect();
+        let cap = native_render::light_choice::share_of(&keys, game_key);
+        let set = first_person::choose(scene.lights_of(game), cap, &recorded, fp.camera.position);
+        let items = scene.layers_of(fp).iter().flat_map(|pass| {
+            scene.items_of(pass).iter().map(move |item| {
+                let rows = scene
+                    .rows
+                    .get(item.rows.start as usize..item.rows.end as usize)
+                    .unwrap_or(&[]);
+                (item, rows)
+            })
+        });
+        let (parts, left) = first_person::parts(items);
+        Some(FirstPersonPass { set, parts, left })
+    })
+}
+
 /// A light's passes begin: until [`light`] puts it in the view, its
 /// groups have no light to join.
 pub fn light_entry() {
@@ -1089,6 +1138,30 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         (
             "scene_e3_lights_shadowed",
             crate::native_lights::chosen::shadowed(),
+        ),
+        (
+            "scene_e3_first_person_lights_drawn",
+            crate::native_lights::chosen::first_person::drawn(),
+        ),
+        (
+            "scene_e3_first_person_lights_kept",
+            crate::native_lights::chosen::first_person::kept(),
+        ),
+        (
+            "scene_e3_first_person_lights_unread",
+            crate::native_lights::chosen::first_person::unread(),
+        ),
+        (
+            "scene_e3_first_person_lights_far",
+            crate::native_lights::chosen::first_person::far(),
+        ),
+        (
+            "scene_e3_first_person_parts",
+            crate::native_lights::chosen::first_person::parts_offered(),
+        ),
+        (
+            "scene_e3_first_person_parts_left",
+            crate::native_lights::chosen::first_person::parts_left(),
         ),
         (
             "scene_first_person_light_layers_alone",

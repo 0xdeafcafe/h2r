@@ -962,6 +962,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.chosen_lights(mem, draw)
     }
 
+    fn draw_first_person(
+        &self,
+        mem: &mut dyn GuestMemory,
+        draw: render_bridge::native_lights::chosen::first_person::FirstPersonDraw<'_>,
+    ) -> usize {
+        self.first_person_lights(mem, draw)
+    }
+
     fn draw_typed(
         &self,
         mem: &mut dyn GuestMemory,

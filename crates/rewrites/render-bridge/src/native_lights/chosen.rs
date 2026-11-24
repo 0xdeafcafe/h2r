@@ -24,8 +24,11 @@
 //!
 //! A light is left undrawn, and counted unread, when its candidate holds
 //! no constants or its gel is drawn by a shader into target 13 (that
-//! producer is the guest's passes', which did not run for it). No
-//! first-person part is lit.
+//! producer is the guest's passes', which did not run for it). The
+//! first-person parts are lit by [`first_person`], when retail's
+//! first-person pass begins.
+
+pub mod first_person;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

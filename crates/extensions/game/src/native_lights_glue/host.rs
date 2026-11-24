@@ -20,7 +20,11 @@
 //! implementations, and its pass names the light
 //! (`d3d::ExternalPass::cone_shadow`): the frame graph writes the cone's
 //! shadow term into the destination alpha just before it, as retail's
-//! layer 11 would.
+//! layer 11 would. The chosen first-person lights retail's pass did not
+//! record draw over the first-person view's object parts
+//! ([`first_person`]).
+mod first_person;
+
 use super::*;
 use render_bridge::native_lights::chosen::{ChosenDraw, ChosenLight};
 use render_bridge::native_lights::host::{HostDraw, HostLight};
@@ -135,6 +139,27 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         self.sphere_lights(mem, &lights, draw.view_target, Issue::E3Stage)
     }
 
+    /// Drains the device to an external boundary at `view_target`, and
+    /// the world the passes draw over.
+    fn begin_lights(
+        &self,
+        device: &mut d3d::Device<B>,
+        mem: &mut dyn GuestMemory,
+        view_target: [u32; 8],
+    ) -> Result<Arc<Ready>, Keep> {
+        let began = device.begin_external_boundary(&mut DeviceMemory(mem));
+        let refusal = match began {
+            Ok(true) if device.bound_target() == view_target => None,
+            Ok(true) => Some("light view target changed"),
+            Ok(false) => Some("light has an outstanding push callback"),
+            Err(_) => Some("could not drain light state"),
+        };
+        match (refusal, self.ready(&*mem)) {
+            (Some(why), _) => Err(Keep::Unsupported(why)),
+            (None, ready) => ready,
+        }
+    }
+
     fn sphere_lights(
         &self,
         mem: &mut dyn GuestMemory,
@@ -149,18 +174,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 return 0;
             }
         };
-        let began = device.begin_external_boundary(&mut DeviceMemory(mem));
-        let refusal = match began {
-            Ok(true) if device.bound_target() == view_target => None,
-            Ok(true) => Some("light view target changed"),
-            Ok(false) => Some("light has an outstanding push callback"),
-            Err(_) => Some("could not drain light state"),
-        };
-        let ready = match (refusal, self.ready(&*mem)) {
-            (Some(why), _) => Err(Keep::Unsupported(why)),
-            (None, ready) => ready,
-        };
-        let ready = match ready {
+        let ready = match self.begin_lights(&mut device, mem, view_target) {
             Ok(r) => r,
             Err(why) => {
                 self.count_host(Err(why));
@@ -237,47 +251,73 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             false,
             Some(WHOLE),
         )?;
-        let plan = d3d::ExternalPlan {
-            stage: timeline::native::Stage::Lights,
-            view: mem
-                .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
-                .unwrap_or(u32::MAX),
-            ranges: prepared.draws.iter().map(|draw| draw.ranges.len()).sum(),
-            slots: Vec::new(),
-        };
-        let retained = match issue {
-            Issue::Now => None,
-            Issue::E3Stage => Some(RetainedLight::of(ready, &prepared)?),
-        };
+        if issue == Issue::E3Stage {
+            return self.e3_stage(d, mem, ready, prepared, light.cone);
+        }
+        let plan = lights_plan(&*mem, &prepared);
         let pass = RunPass {
-            retained,
+            retained: None,
             light: prepared,
             view: None,
             clip: None,
             gel_slot: None,
             fallback: None,
             colour_only: false,
-            lighting_only: (issue == Issue::E3Stage).then_some(d3d::Lighting::E3),
-            cone_shadow: light.cone.filter(|_| issue == Issue::E3Stage),
+            lighting_only: None,
+            cone_shadow: None,
         };
-        if issue == Issue::E3Stage {
-            // Queued for the render thread; the frame graph records it in
-            // an E3 frame. No guest item is skipped for it, so a stage the
-            // render thread does not take only leaves the light undrawn.
-            return match d.reserve_scene_stage(&mut DeviceMemory(mem), plan, Box::new(pass)) {
-                Ok(Some(reservation)) => {
-                    reservation.commit();
-                    Ok(())
-                }
-                Ok(None) => Err(Keep::Unsupported("the render thread takes no scene stage")),
-                Err(_) => Err(Keep::Unsupported("device error reserving the chosen light")),
-            };
-        }
         d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
             .map_err(|_| Keep::Unsupported("device error preparing the host light pass"))?
             .ok_or(Keep::Unsupported("the host light pass is not ready"))?
             .commit();
         Ok(())
+    }
+
+    /// Queues `prepared` as a scene stage of E3 alone, its materials, gel
+    /// and geometry retained, reading the cone shadow of `cone` when the
+    /// renderer shadows the light. The frame graph records it in an E3
+    /// frame. No guest item is skipped for it, so a stage the render
+    /// thread does not take only leaves the light undrawn.
+    fn e3_stage(
+        &self,
+        d: &mut d3d::Device<B>,
+        mem: &mut dyn GuestMemory,
+        ready: &Arc<Ready>,
+        prepared: PreparedLight,
+        cone: Option<u32>,
+    ) -> Result<(), Keep> {
+        let plan = lights_plan(&*mem, &prepared);
+        let pass = RunPass {
+            retained: Some(RetainedLight::of(ready, &prepared)?),
+            light: prepared,
+            view: None,
+            clip: None,
+            gel_slot: None,
+            fallback: None,
+            colour_only: false,
+            lighting_only: Some(d3d::Lighting::E3),
+            cone_shadow: cone,
+        };
+        match d.reserve_scene_stage(&mut DeviceMemory(mem), plan, Box::new(pass)) {
+            Ok(Some(reservation)) => {
+                reservation.commit();
+                Ok(())
+            }
+            Ok(None) => Err(Keep::Unsupported("the render thread takes no scene stage")),
+            Err(_) => Err(Keep::Unsupported("device error reserving the chosen light")),
+        }
+    }
+}
+
+/// The external plan of a light pass in the view's light stage.
+fn lights_plan(mem: &dyn GuestMemory, prepared: &PreparedLight) -> d3d::ExternalPlan {
+    d3d::ExternalPlan {
+        stage: timeline::native::Stage::Lights,
+        view: mem
+            .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
+            .unwrap_or(u32::MAX),
+        ranges: prepared.draws.iter().map(|draw| draw.ranges.len()).sum(),
+        slots: Vec::new(),
     }
 }
 

@@ -195,6 +195,18 @@ pub trait Host: Send + Sync {
     fn draw_chosen(&self, _mem: &mut dyn GuestMemory, _draw: chosen::ChosenDraw<'_>) -> usize {
         0
     }
+    /// Draw E3's chosen first-person lights that retail's first-person
+    /// pass did not record ([`chosen::first_person`]): each light's layers
+    /// 12 and 13 over the first-person view's object parts, posed by
+    /// their node rows, queued as a scene stage of E3 alone. Returns the
+    /// lights queued; a light it keeps draws nothing.
+    fn draw_first_person(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _draw: chosen::first_person::FirstPersonDraw<'_>,
+    ) -> usize {
+        0
+    }
     /// Draw a caster group from the scene, or return the refusal category
     /// the shadow stage counts. No draw is issued on refusal.
     fn draw_shadow_alone(
