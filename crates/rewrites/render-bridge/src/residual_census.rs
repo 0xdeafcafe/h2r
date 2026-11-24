@@ -1395,7 +1395,7 @@ mod tests {
                     r.name,
                     "object_shadow"
                         | "object_shadows"
-                    "water_teardown"
+                    | "water_teardown"
                         | "sky"
                         | "scene_clear"
                         | "target_select"
