@@ -1972,7 +1972,10 @@ h2 agent render.parity '{"arm": true}'
   `scene_dropped_shadow_layers`, `scene_shadow_filters_native` (object
   filters replaced by native quads) and
   `scene_shadow_filter_refused_<cause>` (`program`, `state`, `target`,
-  `callback`, `device`) ([native-shadow-layers.md](../graphics/native-shadow-layers.md)),
+  `callback`, `device`), `scene_shadow_chains_private` (object masks
+  drawn into a private chain) and `scene_shadow_chains_spilled` (of
+  those, chains copied back to target 10 for the guest's filter)
+  ([native-shadow-layers.md](../graphics/native-shadow-layers.md)),
   `scene_fog_views`, `scene_fog_gate_held`, `scene_fog_drawn`,
   `scene_fog_parts` and the same four for `scene_water_` (late layers
   written, of those whose gate held, those the native stage took, and

@@ -60,6 +60,11 @@ impl Gpu {
         &mut self.filter
     }
 
+    /// The shadow stage's device, for passes that record on their own.
+    pub fn context(&self) -> GfxContext {
+        self.ctx.clone()
+    }
+
     fn flush_uploads(&mut self) {
         self.renderer.flush_uploads(&self.ctx.queue);
         self.shaders.flush_uploads(&self.ctx);

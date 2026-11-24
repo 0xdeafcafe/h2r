@@ -1071,6 +1071,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .chain(crate::native_decorators::counters())
     .chain(crate::native_shadows::alone_counters())
     .chain(crate::native_shadows::filter_counters())
+    .chain(crate::native_shadows::chain_counters())
     .chain(
         LIGHT_ENTRY_REMAINDER_NAMES.into_iter().zip(
             LIGHT_ENTRY_REMAINDER

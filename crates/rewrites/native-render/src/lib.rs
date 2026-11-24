@@ -105,6 +105,8 @@ pub mod screen_gpu;
 #[cfg(feature = "gpu")]
 pub mod screen_look;
 #[cfg(feature = "gpu")]
+pub mod shadow_chain;
+#[cfg(feature = "gpu")]
 pub mod shadow_filter_gpu;
 #[cfg(feature = "gpu")]
 pub mod shadow_gpu;

@@ -59,6 +59,9 @@ pub trait Host: Send + Sync {
     fn finish_filter(&self, _mem: &mut dyn GuestMemory, _esp: u32) -> Result<(), &'static str> {
         Ok(())
     }
+    /// The filter was refused before the host saw it: its guest quads run.
+    /// A private chain hands its casters back to target 10 first.
+    fn filter_kept(&self, _mem: &mut dyn GuestMemory) {}
     /// Draw a whole layer-10 group from the scene before its handlers.
     /// Refusal issues nothing and names the counter's category.
     fn draw_alone(
@@ -168,8 +171,48 @@ pub fn alone_counters() -> Vec<(&'static str, u64)> {
         };
         (name, count.load(std::sync::atomic::Ordering::Relaxed))
     }))
-    .chain(std::iter::once(("scene_dropped_shadow_layers", 0)))
+    .chain(std::iter::once((
+        "scene_dropped_shadow_layers",
+        DROPPED.load(std::sync::atomic::Ordering::Relaxed),
+    )))
     .collect()
+}
+
+static CHAINS_PRIVATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CHAINS_SPILLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An object chain whose casters went into the stage's private pair
+/// (native-shadow-layers.md, "A private chain").
+pub fn chain_private() {
+    CHAINS_PRIVATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A private chain whose filter stayed with the guest: its mask was copied
+/// back into target 10 before the guest's quads.
+pub fn chain_spilled() {
+    CHAINS_SPILLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A committed shadow pass that failed while recording on the render side.
+/// Its generation draws no shadow. The caller logs the cause once.
+pub fn dropped_layer() {
+    DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `render.scene` counters for private chains.
+pub fn chain_counters() -> Vec<(&'static str, u64)> {
+    use std::sync::atomic::Ordering;
+    vec![
+        (
+            "scene_shadow_chains_private",
+            CHAINS_PRIVATE.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_shadow_chains_spilled",
+            CHAINS_SPILLED.load(Ordering::Relaxed),
+        ),
+    ]
 }
 
 const FILTER_REFUSALS: [&str; 5] = ["program", "state", "target", "callback", "device"];
@@ -201,6 +244,9 @@ fn filter_entry(mem: &dyn GuestMemory, blur_esp: u32) -> Option<u32> {
 pub fn filter(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16) -> bool {
     let Some(filter) = crate::scene_step::shadow_filter(mem, mxcsr, x87_control) else {
         filter_refused("program");
+        if let Some(host) = host() {
+            host.filter_kept(mem);
+        }
         return false;
     };
     let result = HOST
@@ -540,8 +586,12 @@ mod tests {
         }
     }
 
+    /// The host is one global: tests that set it take turns.
+    static HOST_TURN: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_whole_caster_group_commits_and_a_refusal_keeps_its_handlers_and_counts() {
+        let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
         let mut mem = engine::FlatMemory::new(0, 0x1000);
         let group = group();
         set_host(Arc::new(Stub(Ok(()))));
@@ -563,5 +613,49 @@ mod tests {
         );
         clear_host();
         assert!(!draw_alone(&mut mem, 10, &group));
+    }
+
+    fn counter(rows: &[(&'static str, u64)], name: &str) -> u64 {
+        rows.iter()
+            .find(|(n, _)| *n == name)
+            .map_or(u64::MAX, |r| r.1)
+    }
+
+    #[test]
+    fn chain_and_drop_counters_are_rows_of_the_scene() {
+        let private = counter(&chain_counters(), "scene_shadow_chains_private");
+        let spilled = counter(&chain_counters(), "scene_shadow_chains_spilled");
+        let dropped = counter(&alone_counters(), "scene_dropped_shadow_layers");
+        chain_private();
+        chain_private();
+        chain_spilled();
+        dropped_layer();
+        // Other tests may count too: the rows rise by at least ours.
+        assert!(counter(&chain_counters(), "scene_shadow_chains_private") >= private + 2);
+        assert!(counter(&chain_counters(), "scene_shadow_chains_spilled") > spilled);
+        assert!(counter(&alone_counters(), "scene_dropped_shadow_layers") > dropped);
+    }
+
+    struct Kept(std::sync::atomic::AtomicU32);
+    impl Host for Kept {
+        fn parent(&self, _: Option<Site>, _: Option<[u32; 2]>) {}
+        fn entry(&self, _: &mut dyn GuestMemory, _: Option<Entry>) {}
+        fn begin(&self, _: &mut dyn GuestMemory, _: Layer) {}
+        fn end(&self, _: &mut dyn GuestMemory, _: Site, _: u32) {}
+        fn filter_kept(&self, _: &mut dyn GuestMemory) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn a_filter_refused_before_the_host_tells_it_so_a_private_chain_can_spill() {
+        let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        // No open frame step: the scene has no filter, so `program` refuses.
+        let mut mem = engine::FlatMemory::new(0, 0x1000);
+        let host = Arc::new(Kept(std::sync::atomic::AtomicU32::new(0)));
+        set_host(host.clone());
+        assert!(!filter(&mut mem, 0x800, 0x1f80, 0x027f));
+        assert_eq!(host.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+        clear_host();
     }
 }
