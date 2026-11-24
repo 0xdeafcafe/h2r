@@ -491,7 +491,7 @@ impl Editor {
                 if base == 0 || size == 0 {
                     return Err(Error::invalid(format!("owner: BSP {index} has no region in this map")));
                 }
-                return Ok(Located { owner, file: ResourceFile::Local, base, size, info: None });
+                return Ok(Located { owner, file: ResourceFile::Local, base, size, info: None, handle: None });
             }
         };
         let e = index::by_datum(g, idx, tag).map_err(Error::invalid)?;

@@ -2,6 +2,7 @@
 //! the campaign picker, gameplay hooks and the glue to the platform crates.
 //!
 //! `boot` is the composition root above this crate and re-exports it.
+#![recursion_limit = "256"]
 
 // Build and load: `crate::fallback`, `crate::tier`, `stamp_path` and the
 // rest are `recomp`'s.

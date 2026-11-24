@@ -123,12 +123,12 @@ fn a_generation_is_given_the_play_form_and_the_maps_counts_and_kept() {
     assert!(s.nav_report().is_none());
     s.place(&mut world, 1, 0, at(2.)).unwrap();
 
-    let mut gen = Gen::default();
-    let made = s.generate_nav(&mut gen).unwrap().clone();
+    let mut generator = Gen::default();
+    let made = s.generate_nav(&mut generator).unwrap().clone();
     assert_eq!(made, report());
     assert_eq!(s.nav_state(), NavState::Current);
     assert_eq!(s.nav_report(), Some(&report()));
-    let (play, base) = &gen.seen[0];
+    let (play, base) = &generator.seen[0];
     assert_eq!(*play, forge_doc::play_form(s.document()));
     assert_eq!(*base, counts());
     assert_eq!(NavState::Current.name(), "current");
@@ -138,15 +138,15 @@ fn a_generation_is_given_the_play_form_and_the_maps_counts_and_kept() {
 fn an_edit_after_a_generation_makes_it_stale_and_generating_again_makes_it_current() {
     let mut s = session();
     let mut world = Counting::default();
-    let mut gen = Gen::default();
-    s.generate_nav(&mut gen).unwrap();
+    let mut generator = Gen::default();
+    s.generate_nav(&mut generator).unwrap();
     s.place(&mut world, 1, 0, at(2.)).unwrap();
     assert_eq!(s.nav_state(), NavState::Stale);
     // The report stays until the next generation: the overlay shows it.
     assert!(s.nav_report().is_some());
-    s.generate_nav(&mut gen).unwrap();
+    s.generate_nav(&mut generator).unwrap();
     assert_eq!(s.nav_state(), NavState::Current);
-    assert_eq!(gen.seen.len(), 2);
+    assert_eq!(generator.seen.len(), 2);
     // Undo returns to the document the first generation saw, but only the
     // last generation is kept, so the nav is stale again.
     s.undo(&mut world, 2).unwrap();
@@ -157,12 +157,12 @@ fn an_edit_after_a_generation_makes_it_stale_and_generating_again_makes_it_curre
 fn a_failed_generation_keeps_the_last_one() {
     let mut s = session();
     let mut world = Counting::default();
-    let mut gen = Gen::default();
-    s.generate_nav(&mut gen).unwrap();
+    let mut generator = Gen::default();
+    s.generate_nav(&mut generator).unwrap();
     s.place(&mut world, 1, 0, at(2.)).unwrap();
-    gen.refuse = true;
+    generator.refuse = true;
     assert_eq!(
-        s.generate_nav(&mut gen).unwrap_err(),
+        s.generate_nav(&mut generator).unwrap_err(),
         "The map does not build."
     );
     assert_eq!(s.nav_state(), NavState::Stale);
