@@ -168,6 +168,7 @@ are under [Reviews](#reviews).
 - [skeleton-walk.md](engine/skeleton-walk.md): `bd090`'s skeleton walk (node records to node matrices) as one Rust call, `sim_anim::build_matrices`, behind `impl.sim.native.anim.skeleton`
 - [markers.md](engine/markers.md): `b8d30`'s marker lookup (the group scan `1d8f00` and the transform fill `1d8f50`) as one Rust call, `sim_anim::model_markers`, behind `impl.sim.native.anim`
 - [palette.md](engine/palette.md): the first-person bone palette of `16760c` (the identity fill and the model-node overlay) as one Rust call, `sim_anim::palette`, behind `impl.sim.native.anim`
+- [unit-pose.md](engine/unit-pose.md): the unit pose entry, aim channels, angle projection, overlay callouts and return-site fallback
 - [first-person-filters.md](engine/first-person-filters.md): the first-person filter step `11eed0` as one Rust call inside the `166d75` port, `sim_anim::filter`, behind `impl.sim.native.anim`
 - [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
 - [sim-review.md](engine/sim-review.md): typed simulation state and the experimental leaf compiler contract

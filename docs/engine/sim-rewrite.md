@@ -7,9 +7,9 @@ marker lookup — `b8d30` with the scan `1d8f00` and the fill `1d8f50` —
 is built, with tests only ([markers.md](markers.md)), and so is 1c's
 first-person palette — `16760c`'s identity fill and model-node overlay
 ([palette.md](palette.md)) — and the first-person filter step `11eed0`
-inside the `166d75` port ([first-person-filters.md](first-person-filters.md));
-the unit pose `112070`, the unit aim update `c7840` and the rest of the
-`166d75` port are not. The plan replaces the verdict in
+inside the `166d75` port ([first-person-filters.md](first-person-filters.md)).
+The [unit pose](unit-pose.md) implements `112070` through its final return.
+Phase 1c still needs the unit aim update `c7840` and the rest of `166d75`. The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on
 2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
@@ -623,12 +623,12 @@ filter port (`sim_physics::first_person::filters`, `166d75`) runs each of
 its five calls to the filter step `11eed0` through
 `engine::sim_anim::filter`, which does the call's work in Rust and
 carries on at the return site ([first-person-filters.md](first-person-filters.md)).
-1c's remaining parts are the unit pose `112070` — whose port
-(`sim_native::unit::pose`) covers only the layer selection up to the
-basis call `b9fc0`, leaving the aim channels (`1123db..1124a2`), the aim
-angles (`1124e6..112769`) and the overlay tail to the lifted code — the
-unit aim update `c7840` (the port `sim_physics::unit_aim`), and the rest
-of the `166d75` port. The unit animation state `111650` is not 1c's: it
+The [unit pose](unit-pose.md) (`sim_native::unit::run`, `112070`) plans
+the base and aim channels, angle projections and overlay tail one guest
+call at a time. The manager and graph functions remain callouts for 1d.
+1c's remaining bodies are the unit aim update `c7840`
+(`sim_physics::unit_aim`) and the rest of the first-person filter port
+`166d75`. The unit animation state `111650`
 is a body of the object update (slice 6c, [object-update.md](object-update.md)). 1d's step 0 is the write set of `1c66a0`, `1c6560` and
 `1cd590` (channel state in object data) and the readers of the graph
 resolve results.

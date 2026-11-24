@@ -588,7 +588,10 @@ pub fn build_matrices(k: &Constants, locals: &[Record], parents: &[i16], keep: &
 pub fn unit_pose(state: &UnitPoseIn, clips: &ClipStore, out: &mut [LocalNode]) -> UnitPoseEffects; // 1c
 ```
 
-`UnitPoseEffects` lists the guest effects `112070` has besides its output
+The [unit pose body](unit-pose.md) services an object pose request at
+`112070` through its real guest calls. The pure interface above describes
+the integration once the animation manager and graph resolution move
+into phase 1d. In that interface, `UnitPoseEffects` lists the guest effects besides the output
 (resource requests through `1dd9d0` and `1236f0`, any RNG draw through
 `1dd630`), so the caller issues them in retail order on the game thread.
 `bd090` is the register-level port `sim_physics/node_matrices.rs`, adopted

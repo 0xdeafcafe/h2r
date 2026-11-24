@@ -2,7 +2,7 @@
 
 Status: Partly built. The filter step runs as one Rust call wherever the
 first-person filter port calls it; the port `166d75` around it stays a
-register-level port, and its retirement is the rest of phase 1c.
+register-level port. Its retirement and the unit aim update remain in phase 1c.
 Code: `crates/rewrites/engine/src/sim_anim/filter.rs` (`step`, `run`).
 Tests: `crates/rewrites/engine/src/sim_anim/filter/tests.rs`,
 `crates/rewrites/engine/tests/sim_physics_differential.rs`
