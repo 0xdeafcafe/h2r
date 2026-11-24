@@ -18,6 +18,16 @@ impl VisibilitySets {
         objects.dedup();
         Self { clusters, objects }
     }
+
+    /// Keep IDs added by the wider projection. A retail discrepancy alone
+    /// never adds a draw, and the guest can submit its lists in any order.
+    pub fn retain_display_additions(&mut self, baseline: &Self, guest: &frame_scene::scene::ClusterGather) {
+        self.clusters.retain(|id| {
+            baseline.clusters.binary_search(id).is_err()
+                && !guest.visible.contains(id) && !guest.structure.contains(id)
+        });
+        self.objects.retain(|id| baseline.objects.binary_search(id).is_err() && !guest.objects.contains(id));
+    }
 }
 
 /// The first difference, clusters before objects, each ascending.
@@ -114,6 +124,18 @@ pub fn compare(rust: &VisibilitySets, guest: &VisibilitySets) -> Parity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_display_omits_ids_present_in_either_retail_gather() {
+        let baseline = VisibilitySets::new(vec![2], vec![12]);
+        let guest = frame_scene::scene::ClusterGather {
+            visible: vec![3, 1], structure: vec![5], mode: 0, objects: vec![13, 11],
+            source: frame_scene::VisibilitySource::Guest,
+        };
+        let mut wide = VisibilitySets::new(vec![1, 2, 3, 4, 5], vec![11, 12, 13, 14]);
+        wide.retain_display_additions(&baseline, &guest);
+        assert_eq!(wide, VisibilitySets::new(vec![4], vec![14]));
+    }
 
     #[test]
     fn equal_sets_hold_whatever_order_they_were_listed_in() {
