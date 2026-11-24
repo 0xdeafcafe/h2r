@@ -563,6 +563,52 @@ mod tests {
     }
 
     #[test]
+    fn water_and_fog_reach_the_presented_edge_for_a_cluster_outside_retail() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let mut gpu = scene(&ctx, false, 0.);
+        let (_, program) = pass(Stage::Empty);
+        let set = crate::fog_gpu::FogSet::new(
+            &ctx.device, &ctx.queue, gpu.world(), parts(gpu.world()), [(0, vec![program])].into(),
+            &mut |_| None, &mut |_| None,
+        );
+        gpu.set_fog(set);
+        let selected = [(Owner::Cluster(0), 0)];
+        let fog = fogs();
+        for water in [false, true] {
+            for factor in [1.0, 0.75] {
+                let mut camera = view();
+                // The test shader writes guest window pixels. At 4:3 its
+                // quad spans -2.5..-0.5. Widen around the same viewport centre.
+                let centre = SIZE as f32 / 2.;
+                camera.constants[0] = [0., -0.5 * factor, 0., centre + (-1.5 - centre) * factor];
+                let (color, _) = render(&ctx, |enc, arena, t| {
+                    let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
+                    let viewport = player_viewport(false);
+                    let depth = t.depth.unwrap();
+                    let n = if water {
+                        gpu.prepare_water(&mut uploads, &camera, &fog);
+                        gpu.encode_water(&ctx.device, enc, t.color, F::Rgba8Unorm, depth, F::Depth32Float,
+                            t.size, viewport, d3d::TargetCopy::Display, &selected, &[])
+                    } else {
+                        gpu.prepare_fog(&mut uploads, &camera, &fog);
+                        gpu.encode_fog(&ctx.device, enc, t.color, F::Rgba8Unorm, depth, F::Depth32Float,
+                            t.size, viewport, &selected)
+                    };
+                    assert_eq!(n, 1);
+                });
+                let mut covered = false;
+                for (i, pixel) in color.chunks_exact(4).enumerate() {
+                    if pixel != [0; 4] {
+                        assert!(i % (SIZE as usize) < (SIZE / 8) as usize, "outside the added left strip");
+                        covered = true;
+                    }
+                }
+                assert_eq!(covered, factor < 1., "water={water}, factor={factor}");
+            }
+        }
+    }
+
+    #[test]
     fn a_missing_rigid_pass_or_model_rows_leaves_only_the_placement_on_guest() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
         for (has_rows, has_program) in [(false, true), (true, false), (true, true)] {
