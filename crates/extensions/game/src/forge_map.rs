@@ -147,10 +147,8 @@ pub(crate) struct Opened {
     pub names: BTreeMap<u32, TagKey>,
 }
 
-/// Resolve the recorded source once, then release the foreground VFS before
-/// hashing or decoding. Bound the snapshot and hash the storage padding too,
-/// as the F2 materialiser does. Refuse sparse and layered sources whose bytes
-/// could not be reproduced by a peer opening the named base on its disc.
+/// Read the selected slot's logical bytes, including package layers and
+/// storage padding. Hash and decode the snapshot outside the foreground VFS lock.
 pub(crate) fn open(vfs: &Arc<Mutex<vfs::Vfs>>, loaded: &Loaded) -> Result<Opened, String> {
     open_checked(vfs, loaded).map_err(|e| e.to_string())
 }

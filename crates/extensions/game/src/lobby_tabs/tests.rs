@@ -147,7 +147,7 @@ fn a_tab_that_is_off_has_a_reason() {
 
 #[test]
 fn a_feature_that_is_off_removes_its_tab() {
-    assert_eq!(Present::ALL.tabs(), Tab::ALL);
+    assert_eq!(Present::ALL.tabs(), [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::CoOp]);
     assert_eq!(
         Present::default().tabs(),
         [Tab::Multiplayer, Tab::CustomGames, Tab::CoOp],
@@ -158,10 +158,10 @@ fn a_feature_that_is_off_removes_its_tab() {
         ..Present::ALL
     };
     assert!(!no_forge.tabs().contains(&Tab::Forge));
-    assert_eq!(no_forge.tabs().len(), 4);
+    assert_eq!(no_forge.tabs().len(), 3);
     // Off in a place is refused with its reason, never removed.
     let r = row(Present::ALL, Place::SplitScreen, NONE);
-    assert_eq!(r.len(), 5);
+    assert_eq!(r.len(), 4);
     assert_eq!(r[0], (Tab::Multiplayer, Off(Reason::MatchmakingNeedsLive)));
 }
 
@@ -171,9 +171,9 @@ fn a_feature_that_is_off_removes_its_tab() {
 #[test]
 fn firefight_and_co_op_are_reached_with_no_kit_map_and_no_live() {
     let r = row(Present::ALL, Place::SplitScreen, NONE);
-    assert_eq!(r.len(), 5, "every mode present");
+    assert_eq!(r.len(), 4, "every mode present");
     let on: Vec<Tab> = r.iter().filter(|(_, a)| a.is_on()).map(|(t, _)| *t).collect();
-    assert_eq!(on, [Tab::CustomGames, Tab::Forge, Tab::Firefight, Tab::CoOp]);
+    assert_eq!(on, [Tab::CustomGames, Tab::Forge, Tab::CoOp]);
     // With a kit map or without, in every place, FIREFIGHT is on.
     for place in [Place::SplitScreen, Place::SystemLink, Place::XboxLive] {
         for facts in [NONE, ALL_FACTS] {
@@ -216,10 +216,10 @@ fn every_label_and_reason_passes_the_content_check() {
 }
 
 #[test]
-fn a_member_reads_firefight_from_the_map_and_never_forge() {
-    assert_eq!(seen_mode(true, Mode::Forge, false), Mode::Forge);
-    assert_eq!(seen_mode(false, Mode::Forge, false), Mode::Multiplayer);
-    assert_eq!(seen_mode(false, Mode::Multiplayer, true), Mode::Firefight);
+fn custom_game_variants_share_the_custom_lobby_header() {
+    assert_eq!(seen_mode(true, Mode::Forge), Mode::Forge);
+    assert_eq!(seen_mode(false, Mode::Forge), Mode::Multiplayer);
+    assert_eq!(seen_mode(false, Mode::Firefight), Mode::Multiplayer);
 }
 
 #[test]

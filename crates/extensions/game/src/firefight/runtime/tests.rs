@@ -643,6 +643,18 @@ fn the_pages_choices_start_the_match() {
     assert_eq!(director.cap, 24, "Last Stand's cap for one player");
 }
 
+#[test]
+fn the_custom_game_wave_record_starts_its_director_on_a_kit_map() {
+    crate::lobby_start::set_mode(crate::lobby_start::Mode::Multiplayer);
+    let wave = crate::community_variants::listed_named("Last Stand").unwrap();
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut guest, _) = guest(true, 1);
+    guest.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, wave.record.bytes());
+    it.lock().start(&mut guest, false);
+    assert_eq!(it.lock().state().director.expect("Last Stand starts").cap, 24);
+}
+
 /// With nothing chosen the match is the settings' defaults: Holdout.
 #[test]
 fn a_run_with_no_page_plays_the_defaults() {

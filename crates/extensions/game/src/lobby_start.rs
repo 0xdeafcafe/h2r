@@ -24,7 +24,9 @@ use std::sync::Mutex;
 
 use agent::sim::calls;
 
-use crate::map_select::{Catalogue, Category, Map};
+use crate::map_select::{Catalogue, Map};
+#[cfg(test)]
+use crate::map_select::Category;
 
 /// A kit package's name in the catalogue: `firefight-kit`'s package name
 /// for its regular mode (`Firefight – <map>`, with an en dash).
@@ -66,13 +68,21 @@ impl KitMaps {
     /// For the lobby on map `map` (its list id), with `catalogue` the map
     /// list.
     pub fn of(catalogue: Option<&Catalogue>, map: Option<u32>) -> KitMaps {
-        let Some(c) = catalogue else {
-            return KitMaps::default();
-        };
-        KitMaps {
-            lobby: map.is_some_and(|id| c.all().any(|m| m.id == id && is_kit_map(m))),
-            installed: c.all().any(is_kit_map),
+        Self::for_wave(catalogue, map, None)
+    }
+
+    pub fn for_wave(catalogue: Option<&Catalogue>, map: Option<u32>, wave: Option<[u8; 8]>) -> Self {
+        let mut result = Self::default();
+        if let Some(catalogue) = catalogue {
+            for item in catalogue.all().filter(|m| wave.map_or_else(|| is_kit_map(m), |p| supports_wave(m, p))) {
+                result.installed = true;
+                if Some(item.id) == map {
+                    result.lobby = true;
+                    break;
+                }
+            }
         }
+        result
     }
 
     /// For the lobby as it stands: the map list read so far

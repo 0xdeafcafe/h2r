@@ -544,10 +544,11 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
         Mode::Multiplayer => None,
         Mode::Forge => refusal(state.mode, remote_members(m), KitMaps::default()),
         Mode::Firefight => {
-            let catalogue = crate::map_select::current()
-                .map(|c| c.for_variant(mode, variant.as_ref()));
+            let catalogue = crate::map_select::current();
             let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
-            refusal(mode, Some(0), KitMaps::of(catalogue.as_deref(), id))
+            let wave = variant.as_ref().map(|v| v.ext().script)
+                .filter(|s| s.mode == variants::ext::Mode::Firefight).map(|s| s.prefix);
+            refusal(mode, Some(0), KitMaps::for_wave(catalogue.as_deref(), id, wave))
         }
     }
 }

@@ -130,7 +130,6 @@ pub struct Reading {
     pub leader: bool,
     pub retail: RetailMode,
     /// The lobby's map carries the Firefight kit.
-    pub kit_map: bool,
     /// The lobby's playlist is a Clanker one (`None` with no playlist
     /// held).
     pub clanker: Option<bool>,
@@ -139,7 +138,7 @@ pub struct Reading {
 
 /// The modes for `reading`, with `mode` the lobby's mode of ours.
 pub fn shown(reading: &Reading, present: Present, mode: Mode) -> Shown {
-    let mode = seen_mode(reading.leader, mode, reading.kit_map);
+    let mode = seen_mode(reading.leader, mode);
     let selected = Tab::of(reading.retail, mode);
     Shown {
         place: reading.place,
@@ -259,7 +258,6 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
     let session_type = m.u32(lobby::SESSION_TYPE).ok()?;
     let campaign = crate::coop_probe::read_session(&ReadGm(m)).is_some_and(|s| s.is_campaign());
     let retail = retail_mode(networking, session_type, squad_mode(m), campaign);
-    let kit_map = crate::lobby_start::KitMaps::now(m).lobby;
     let clanker = (retail == RetailMode::Matchmaking)
         .then(|| held_hopper(m))
         .flatten()
@@ -273,7 +271,6 @@ pub fn read(m: &dyn GuestMemory) -> Option<Reading> {
         place,
         leader,
         retail,
-        kit_map,
         clanker,
         facts: Facts {
             // The playlists are asked for by a switch to MULTIPLAYER

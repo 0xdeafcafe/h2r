@@ -657,10 +657,11 @@ fn a_package_installed_while_the_game_runs_is_listed_without_a_restart() {
             disc_slot(0x14, "ascension", "Ascension"),
         ])
     });
-    // At boot nothing is installed: the retail list, the disc unread.
+    // A disc-only install still has a catalogue for Change Map and Forge.
     let sel = Selection::new(sources.read(0).unwrap());
     assert!(!sel.active());
-    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(sel.catalogue().maps(Category::Halo2).len(), 2);
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     let g0 = sel.generation();
 
     let content_root = sources.content_root();
@@ -767,4 +768,23 @@ fn the_picker_checks_the_selected_disc_or_package_file() {
     assert_eq!(disc.slot_path(), crate::map_slots::slot_file(r"d:\maps\arena.map"));
     assert_eq!(offer.slot_path(), crate::map_slots::slot_file(&offer.path));
     assert_ne!(disc.slot_path(), offer.slot_path());
+}
+
+#[test]
+fn changing_the_game_variant_filters_the_same_map_list_used_for_forge() {
+    use crate::community_variants::listed_named;
+    use crate::lobby_start::Mode;
+    let catalogue = Arc::new(Catalogue::new([
+        map(1, "Lockout", 1, r"d:\maps\lockout"),
+        map(2, "Firefight – Lockout", 2, &new_map_path(2, "lockout")),
+        map(3, "Firefight – Beaver Creek", 3, &new_map_path(3, "beavercreek")),
+        map(4, "Community Midship", 4, &new_map_path(4, "midship")),
+    ]));
+    let holdout = &listed_named("Holdout").unwrap().record;
+    let basin = &listed_named("Basin").unwrap().record;
+    let offered = |record| catalogue.for_variant(Mode::Multiplayer, Some(record))
+        .all().map(|m| m.id).collect::<Vec<_>>();
+    assert_eq!(offered(holdout), [3, 2]);
+    assert_eq!(offered(basin), [3]);
+    assert!(Arc::ptr_eq(&catalogue.for_variant(Mode::Forge, Some(basin)), &catalogue));
 }
