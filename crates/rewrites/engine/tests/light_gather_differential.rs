@@ -3916,3 +3916,53 @@ fn screen_bounds_match_the_lifted_original() {
         eprintln!("SKIPPED screen_bounds_match_the_lifted_original: no XBE (set H2_XBE)");
     }
 }
+
+#[test]
+fn empty_additional_casters_match_the_lifted_original() {
+    use engine::render::light_gather::passes::{additional, call};
+
+    let found = with_image(|image, mut lifted| {
+        let handles = VIS_LISTS + 0x100;
+        let flags = VIS_LISTS + 0x200;
+        for seed in seeds() {
+            let mut rng = Rng(seed);
+            for count in [-1, 0, 1, 6, 16] {
+                let mut m = image.clone();
+                let mut c = cpu(&mut rng);
+                let sp = c.gpr[4];
+                let cursor = rng.u32();
+                put(&mut m, 0x004b_a134, count as u32);
+                put(&mut m, 0x004c_19ac, cursor);
+                put(&mut m, 0x004c_0b80, LIGHT_VIS);
+                put(&mut m, LIGHT_VIS + 0x14, VIS_LISTS);
+                put(&mut m, VIS_LISTS, 8);
+                put16(&mut m, VIS_LISTS + 4, 4);
+                put(&mut m, VIS_LISTS + 8, flags);
+                put(&mut m, VIS_LISTS + 0xc, handles);
+                let matching = rng.u32();
+                for i in 0..8 {
+                    // Two live copies of the matching handle. Only its
+                    // second row and the slots after the count are marked.
+                    let handle = if i < 2 { matching } else { matching ^ i };
+                    put(&mut m, handles + 4 * i, handle);
+                    let bits = rng.u32() as u16 & !0x1000;
+                    put16(&mut m, flags + 2 * i, bits | if i == 1 || i >= 4 { 0x1000 } else { 0 });
+                }
+                for i in 0..count.max(0) as u32 {
+                    let handle = if i % 3 == 0 { matching } else { matching ^ (4 + i) };
+                    put(&mut m, 0x004b_a074 + 12 * i, handle);
+                }
+                let mut port = Ram(m.clone());
+                let plan = additional::empty(&port).unwrap();
+                plan.write(&mut port).unwrap();
+                lifted.call(&mut c, &mut m, call::ADDITIONAL_CASTERS, sp, &[]).unwrap();
+                assert_eq!(c.gpr[0], plan.eax(), "seed {seed}, count {count}");
+                assert_eq!(c.gpr[4], sp);
+                compare(&format!("empty additional casters seed {seed} count {count}"), &m, &port.0, sp);
+            }
+        }
+    });
+    if !found {
+        eprintln!("SKIPPED empty_additional_casters_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
