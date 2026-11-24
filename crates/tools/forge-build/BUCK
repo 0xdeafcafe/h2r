@@ -93,6 +93,28 @@ workspace_test(
 )
 
 workspace_test(
+    name = "games",
+    crate = "games",
+    crate_root = "crates/tools/forge-build/tests/games.rs",
+    description = "Deterministic local Forge map materialisation over the user's Halo 2 maps",
+    features = [],
+    manifest = "crates/tools/forge-build",
+    package = "forge-build",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/formats/forge-doc:forge-doc",
+        "//crates/formats/map:map",
+        "//crates/formats/tags:tags",
+        "//crates/tools/firefight-kit:firefight-kit",
+        "//crates/tools/scenario-edit:scenario-edit",
+        "//third-party/rust:thiserror",
+        ":forge-build",
+    ],
+)
+
+workspace_test(
     name = "ground",
     crate = "ground",
     crate_root = "crates/tools/forge-build/tests/ground.rs",
