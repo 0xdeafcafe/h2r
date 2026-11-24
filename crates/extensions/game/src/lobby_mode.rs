@@ -106,6 +106,7 @@ const GATE_SLOT: u32 = PANEL_SLOTS + MAX_PANEL_LINES as u32 + 1;
 /// The status line's text while the lobby's map variant builds or is
 /// refused ([`variant_text_id`]).
 const VARIANT_SLOT: u32 = GATE_SLOT + 1;
+const THEATER_HELP_SLOT: u32 = VARIANT_SLOT + 1;
 
 pub const MAP_VARIANT_LABEL: &str = "Map Variant...";
 /// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
@@ -956,6 +957,17 @@ impl hooks::Feature for LobbyMode {
 
 /// Adds the rows and registers their help lines.
 pub fn install(registry: &mut hooks::Registry, feature: LobbyMode) -> anyhow::Result<()> {
+    if feature.theater.is_some() {
+        crate::game_setup_help::register(
+            THEATER_ACTION,
+            crate::game_setup_help::image::QUICK_OPTIONS,
+            Arc::new(|m| {
+                let id = TEXTS.set(THEATER_HELP_SLOT, "Watch a film of a recent or saved game.");
+                TEXTS.write(m).ok()?;
+                Some(id)
+            }),
+        );
+    }
     crate::game_setup_help::register(
         MAP_VARIANT_ACTION,
         crate::game_setup_help::image::QUICK_OPTIONS,

@@ -398,6 +398,12 @@ fn a_long_game_with_fragmented_calls_is_listed_saved_and_replayed() {
     let saved = library.get(&row.id).unwrap();
     assert!(saved.saved);
     let cut = saved.path;
+    let mut track = film::blam::TrackReader::open_with_film(&cut).unwrap();
+    assert_eq!(track.descriptor.match_start_tick, Some(10));
+    for tick in 1..=2100 {
+        assert_eq!(track.step().unwrap().unwrap().tick, tick);
+    }
+    assert!(track.step().unwrap().is_none());
     let replay = Session::open(
         None,
         Some(crate::theater::Replay {

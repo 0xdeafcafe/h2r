@@ -277,8 +277,6 @@ pub struct Session {
     bots: Mutex<bot_tape::BotTape>,
     upload: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
     require_upload: bool,
-    recording_account: std::sync::OnceLock<Option<live_hle::films::sync::Sync>>,
-    film_sync: std::sync::OnceLock<Box<dyn Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync>>,
 }
 
 /// Cuts the game in play and discards the tape when it drops
@@ -305,9 +303,6 @@ impl Drop for Seal {
     }
 }
 impl Session {
-    pub fn sync_library(&self, sync: impl Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync + 'static) {
-        let _ = self.film_sync.set(Box::new(sync));
-    }
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -534,8 +529,6 @@ impl Session {
         Ok(Some(Arc::new(Self {
             warm: Mutex::new(warm),
             version: header.version,
-            film_sync: Default::default(),
-            recording_account: Default::default(),
             video_menu: Default::default(),
             capture: Default::default(),
             media: Default::default(),
@@ -705,7 +698,6 @@ impl Session {
                 }
                 if rec.meta.descriptor().match_start_tick == Some(tick) {
                     rec.game_started_ms = Some(autorecord::now_ms());
-                    let _ = self.recording_account.set(self.film_sync.get().and_then(|account| account()));
                 }
             } else {
                 Session::check_replay_tick(&mut s, guest, hash);
@@ -970,13 +962,6 @@ impl Session {
             return Ok(());
         }
         let matched = rec.match_over;
-        // Default recordings stay in the local library; only films the
-        // player asked for go to the account's archive.
-        let account_upload = !s.header.player_features
-            && !rec.meta.archived_on_live
-            && !rec.unified.live_session
-            && rec.meta.descriptor().mode != film::blam::Mode::Matchmaking
-            && s.header.game_id.is_none();
         let mut summary = rec.meta.summary(s.tick);
         rec.unified.summary_medals(&mut summary.players);
         if !summary.level.is_empty() {
@@ -1037,13 +1022,6 @@ impl Session {
         rec.frame = Default::default();
         s.complete = true;
         drop(s);
-        if matched
-            && account_upload
-            && let Some(sync) = self.recording_account.get().and_then(Option::as_ref)
-            && let Err(error) = sync.enqueue(&header.meta.id, &path)
-        {
-            eprintln!("film library: {error}");
-        }
         if matched && let Some(target) = upload {
             // Create before spawning so a stopped uploader leaves its sealed
             // output recoverable when the supervisor cleans the lease.

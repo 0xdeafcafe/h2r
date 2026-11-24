@@ -33,7 +33,6 @@ pub(super) struct Capture {
     clock: Option<u64>,
     final_clock: Option<u64>,
     ended: bool,
-    pub(super) live_session: bool,
 }
 
 impl Capture {
@@ -54,7 +53,6 @@ impl Capture {
         self.clock = None;
         self.final_clock = None;
         self.ended = false;
-        self.live_session = false;
     }
 
     fn count_drops(&mut self, source: &'static str, n: u64) {
@@ -259,7 +257,6 @@ impl FilmObserver for Observer {
             };
             for record in &mut records {
                 if let events::Event::GameStarted(start) = &mut record.event {
-                    rec.unified.live_session |= start.game.session_id.is_some();
                     if let Some(id) = game_id {
                         start.game_id = id.to_owned();
                     }

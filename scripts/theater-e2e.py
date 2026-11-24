@@ -8,7 +8,7 @@ import time
 
 
 def agent(method, **params):
-    command = ["h2", "agent", "--timeout", "125", method, json.dumps(params)]
+    command = ["h2", "agent", "--timeout", "185", method, json.dumps(params)]
     return json.loads(subprocess.check_output(command, text=True))
 
 
@@ -55,8 +55,8 @@ def run():
     if not agent("theater.status")["default_recording"]:
         raise RuntimeError("The selected session needs default film recording")
     choose(r"^Start Game$")
-    agent("session.wait", until={"phase": "gameplay", "map_ticks": 1550}, timeout_ms=120000)
-    agent("input.pad", steps=[{"buttons": ["start"], "reads": 2}])
+    agent("session.wait", until={"phase": "gameplay", "map_ticks": 2100}, timeout_ms=180000)
+    agent("input.pad", steps=[{"buttons": ["start"], "ms": 100, "reads": 2}])
     choose(r"^End Game$")
     # Retail asks the leader to confirm on a separate surface.
     choose(r"^(Yes|End Game)$")
@@ -74,7 +74,7 @@ def run():
     labels = [r.get("text") for p in (audit["active"] or {}).get("panes", [])
               for l in p["lists"] for r in l["rows"]]
     if not any((s or "").lower() in ("game setup", "theater") for s in labels):
-        agent("input.pad", steps=[{"buttons": ["b"], "reads": 2}])
+        agent("input.pad", steps=[{"buttons": ["b"], "ms": 100, "reads": 2}])
     choose(r"^Game Setup$")
     choose(r"^Theater$")
     # The newest matching map is the first result in Recent.
@@ -82,11 +82,14 @@ def run():
     choose(re.escape(sys.argv[1] if len(sys.argv) > 1 else name))
     choose(r"^Watch$")
 
-    def playing():
+    def player_state():
         try:
-            state = agent("theater.state")
+            return agent("theater.state")
         except subprocess.CalledProcessError:
-            return False  # child socket is starting
+            return {}  # the child socket is opening or closing
+
+    def playing():
+        state = player_state()
         return state if state.get("id") == film["id"] and not state["seeking"] else False
 
     wait("Watch to start the selected film", playing)
@@ -98,7 +101,7 @@ def run():
     agent("theater.seek", tick=held)
     wait("scrub back to the held tick", lambda: (s := playing()) and s["tick"] == held and s["paused"])
     agent("theater.exit")
-    wait("return to the library", lambda: agent("theater.state").get("active") is False)
+    wait("return to the library", lambda: player_state().get("active") is False)
     choose(r"^Save$")
     wait("Saved pin in the original game", lambda: any(
         row["id"] == film["id"] and row["saved"] for row in agent("theater.list")

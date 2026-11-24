@@ -110,8 +110,9 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   `theater.status` reports the same while it runs: the tape, whether a
   game is on it, the films cut, the last discard reason, the notes and any
   failure ([agent API](../runtime/agent-api.md#theater-transport)).
-- **Local only.** Default films stay in the local library. Only films the
-  player names are queued for the signed-in account's archive.
+- **Local recordings.** Both automatic and explicitly named machine recordings
+  stay on the player’s computer. The account archive accepts shareable split
+  input films. A dedicated host uploads its match through its lease.
 - **The tape records games.** Machine keyframes, D3D barriers and the
   local keyframe cache belong to games: outside one (main menu, lobby,
   pregame, Theater, settings) no capture is attempted and no capture mark

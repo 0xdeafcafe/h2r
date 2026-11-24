@@ -638,6 +638,8 @@ mod tests {
                 .unwrap()
                 .contains(&json!(api::COMPAT))
         );
+        assert_eq!(call(api::EXIT, json!({}))["error"]["code"], code::UNAVAILABLE);
+        assert_eq!(call(api::STATE, json!({}))["result"]["active"], false);
         let films = call(api::LIST, json!({}));
         let rows = films["result"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
