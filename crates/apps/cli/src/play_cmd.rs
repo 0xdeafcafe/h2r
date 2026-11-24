@@ -919,6 +919,11 @@ pub(crate) fn run_with_theater(
             if let Some(menu) = &debug_menu {
                 input.set_gate(Box::new(menu.gate()));
             }
+            // Editor mode: Start goes to the tool, so the in-game pause menu
+            // never opens (docs/editor/game-view.md).
+            if editor.is_some() {
+                input.add_gate(Box::new(self::editor::NoStart));
+            }
         }
         host.theater = theater;
         host.debug_menu = debug_menu;

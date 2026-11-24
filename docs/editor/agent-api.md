@@ -1040,7 +1040,11 @@ Notes on some:
   no game link yet, with no map open, or while the link is connecting or a
   playtest runs. `game.stop` asks the same for the end of that game
   (`REFUSED` when the editor started none). `game.mode {mode}` is `own` or
-  `attached`; `own` is `REFUSED` while there is no own game.
+  `attached`; `own` is `REFUSED` while there is no own game. The window
+  follows it with the mirror and the picture: `own` pairs the game this
+  editor started, `attached` pairs the game last paired that it did not
+  start (one link, so the other is left). F5 and the Play button go
+  through the same start as `game.start`, and set the panel to `own`.
 - **Live mirror.** The paired editor reads the game's `objects`,
   `players` and `camera` stream. `mirror.status.stream.refused.camera`
   says why a game has no camera layer. `mirror.status` reports the stream state, layers,

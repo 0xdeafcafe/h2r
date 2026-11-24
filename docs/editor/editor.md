@@ -909,16 +909,17 @@ a foreign game. F5 leaves the Edit switch as set. A foreign game asks before rec
 maps. The other choice in the map prompt opens the game's map here.
 `play::playtest::decide` supplies the bar, Game menu and socket API.
 
-`game.start` ([agent-api.md](agent-api.md)) starts the same game with
-`--editor` added: no window of its own, shown in the Game panel
-([game-view.md](game-view.md), "Own mode"). F5 still opens the window.
+`game.start` ([agent-api.md](agent-api.md)) and a launching F5 are the same
+start (`Play::start_own`): the game runs with `--editor`, no window of its
+own, and is shown in the Game panel ([game-view.md](game-view.md), "Own
+mode").
 
 **Stop** (Shift+F5) closes the game the editor started. With no game,
-Play launches the copy in its own window:
+Play launches the copy in editor mode, with no window of its own:
 
 ```
 H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-play-<pid>/maps \
-  h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)'
+  h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)' --editor
 ```
 
 - `h2` is the path in Game > Advanced, else `$H2_BIN`, else the `h2` beside the
