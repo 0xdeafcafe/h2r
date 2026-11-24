@@ -122,7 +122,7 @@ connection to hold `session.claim`.
 | `editor.marks` | read | [Paired editor](#editor-a-paired-editor) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
-| `anim.graph_walk` | read | [`anim`](#anim-the-animation-graph-walk) |
+| `anim.graph_walk`, `anim.manager` | read | [`anim`](#anim-the-animation-graph-walk) |
 | `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
@@ -5514,6 +5514,7 @@ The game method reads process counters at a tick boundary. Code:
 | Method | Access | Params and result |
 |---|---|---|
 | `anim.graph_walk` | read | No parameters. Returns `switch`, `addr` (`001dd1c0`), `arm` and `body`. |
+| `anim.manager` | read | No parameters. Returns `switch` and `entries`, keyed by the eight-digit guest address of each observed manager or graph function. |
 
 `arm` has `checked`, `matched` and `mismatched` calls, `dropped` plans
 (calls that entered and never returned), `declined` by reason (`float`,
@@ -5533,6 +5534,20 @@ h2 agent anim.graph_walk
 
 Parity is `mismatched` 0 over the run ladder's matches, with `declined`
 small against `checked`.
+
+`anim.manager` counts segments starting at a function entry or resuming
+after a call. For each observed function, `matched` and `differed` count
+completed comparisons. `declined` counts segments the Rust arm could
+not predict. `interrupted` counts predictions for which the guest exited
+before a comparison boundary. The first difference for each function is
+retained in `first`, with the starting selector (`pc`), differing field
+(`what`), and both values (`plan` and `guest`). An entry with `first` set
+to `null` has no recorded difference. Compare counts before and after
+the scenario to establish coverage. See [animation-manager.md](../engine/animation-manager.md).
+
+```sh
+h2 agent anim.manager
+```
 
 ## `collision`: the native collision world
 
