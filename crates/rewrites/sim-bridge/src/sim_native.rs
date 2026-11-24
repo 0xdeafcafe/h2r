@@ -9,24 +9,22 @@ use std::sync::Arc;
 mod manager_fusion;
 
 pub struct SimNative {
-    ray_dispatch: bool,
     exported_anim: Vec<AnimBody>,
 }
 
 impl SimNative {
     pub fn new(runtime: &runtime::Runtime) -> Self {
         runtime.read_dispatch(|d| Self {
-            ray_dispatch: d.has_resume(sim::mopp_query::RAY_DISPATCH),
             exported_anim: ANIM_BODIES.iter().copied().filter(|body| {
                 d.has_generated(body.point.base) && body.sites.iter().all(|&pc| d.has_resume(pc))
             }).collect(),
         })
     }
 
-    /// An image with the ray dispatch and all animation resume selectors.
+    /// An image with all animation resume selectors.
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
-        Self { ray_dispatch: true, exported_anim: ANIM_BODIES.to_vec() }
+        Self { exported_anim: ANIM_BODIES.to_vec() }
     }
 }
 
@@ -49,16 +47,6 @@ pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
         sim::pose_matrix,
     ),
     (
-        &points::COLLISION_POINT_TO_LEAF,
-        "sim.native_point_to_leaf",
-        sim::point_to_leaf,
-    ),
-    (
-        &points::COLLISION_GEOMETRY_TEST,
-        "sim.native_geometry_test",
-        sim::geometry_test,
-    ),
-    (
         &points::SIM_UNIT_POSE,
         "sim.native_unit_pose",
         sim::unit::pose,
@@ -74,24 +62,9 @@ pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
         sim::marker::transforms,
     ),
     (
-        &points::COLLISION_BSP_SEGMENT,
-        "sim.native_bsp_segment",
-        sim::bsp::segment,
-    ),
-    (
-        &points::SIM_COLLISION_QUERY,
-        "sim.native_collision_query",
-        sim::collision::query,
-    ),
-    (
         &points::SIM_MOPP_BOX,
         "sim.native_mopp_box",
         sim::mopp_query::box_query,
-    ),
-    (
-        &points::SIM_MOPP_RAY,
-        "sim.native_mopp_ray",
-        sim::mopp_query::ray_query,
     ),
 ];
 
@@ -114,30 +87,15 @@ impl Feature for SimNative {
         engine::sim_anim::markers::set_enabled(anim);
         engine::sim_anim::palette::set_enabled(anim);
         engine::sim_anim::filter::set_enabled(anim);
-        let query_on = b
-            .switches()
-            .implementation("sim.native_collision_query", false);
         let collision = collision_on(b.switches());
         for &(point, name, body) in ENTRIES {
-            // The subsystem switch owns its entries; their per-function
-            // ports stay as test oracles.
-            if collision
-                && (COLLISION_ENTRIES.iter().any(|(p, _, _)| p.base == point.base)
-                    || point.base == points::COLLISION_BSP_SEGMENT.base)
-            {
-                continue;
-            }
             if owns_anim(b.switches(), point.base) {
                 continue;
             }
             if crate::sim_objects::owns(b.switches(), point.base) {
                 continue;
             }
-            let completes_query = query_on && point.base == points::COLLISION_BSP_SEGMENT.base;
-            // Long programs yield at the float VM dispatch loop. Some
-            // generated images omit loop selectors.
-            let installed = b.switches().implementation(name, false)
-                && (point.base != points::SIM_MOPP_RAY.base || self.ray_dispatch);
+            let installed = b.switches().implementation(name, false);
             crate::shadow::register(name, crate::shadow::SIM_NATIVE, point, installed);
             if installed {
                 b.raw()
@@ -149,15 +107,7 @@ impl Feature for SimNative {
                                 cpu,
                                 &mut mem,
                                 addr,
-                                &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
-                                    let transfer = body(cpu, mem)?;
-                                    if completes_query {
-                                        return sim::collision::complete_segment(
-                                            cpu, mem, transfer,
-                                        );
-                                    }
-                                    Ok(transfer)
-                                },
+                                &mut |cpu, mem| body(cpu, mem),
                             );
                         }
                         original(cpu, ctx, addr)
@@ -785,20 +735,6 @@ mod tests {
                 + RAY_PARITY.len()
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
-
-        // The subsystem owns the shared points when both switches are on.
-        let switches = Switches::defaults()
-            .with(&key, true)
-            .with("impl.sim.native_point_to_leaf", true)
-            .with("impl.sim.native_bsp_segment", true)
-            .with("impl.sim.native_geometry_test", true);
-        let mut registry = Registry::new(switches);
-        registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        assert_eq!(plan.chains[&points::COLLISION_POINT_TO_LEAF.base].implement.as_ref().unwrap().label, COLLISION);
-        assert!(plan.chains[&points::COLLISION_BSP_SEGMENT.base].implement.is_none());
-        let geometry = &plan.chains[&points::COLLISION_GEOMETRY_TEST.base];
-        assert_eq!(geometry.implement.as_ref().unwrap().label, COLLISION);
 
         // Off by default.
         let mut registry = Registry::new(Switches::defaults());

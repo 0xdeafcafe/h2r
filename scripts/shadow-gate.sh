@@ -42,23 +42,16 @@ sim_native=(
   sim.native_transform_compose
   sim.native_pose_matrix
   sim.native_rotation_codec
-  sim.native_point_to_leaf
-  sim.native_geometry_test
   sim.native_unit_pose
   sim.native_animation_stream
   sim.native_graph_resolve
   sim.native_marker_transforms
-  sim.native_bsp_segment
-  sim.native_collision_query
   sim.native_mopp_box
-  sim.native_mopp_ray
 )
 sim_physics=(
   sim.native_havok_solver
   sim.native_havok_support_vertices
   sim.native_havok_weld
-  sim.native_spatial_visit
-  sim.native_spatial_portal
   sim.native_unit_aim
   sim.native_first_person_pose
   sim.native_first_person_filters
