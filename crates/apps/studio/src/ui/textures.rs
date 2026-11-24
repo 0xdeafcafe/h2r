@@ -17,6 +17,7 @@ use dear_imgui_rs::{Key, MouseButton, TextureId, TreeNodeFlags, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 use map::TagId;
 use tags::PixelFormat;
+use tags::bitmap_grow::SpriteView;
 
 use crate::app::image_gen::ImageAction;
 use crate::app::textures::{BitmapAction, PaintTool};
@@ -50,6 +51,20 @@ pub struct TexturesUi {
     hsv: [f32; 3],
     /// The Resize fields and the image they were filled from.
     resize: Option<((TagId, usize), [i32; 2], PixelFormat)>,
+    /// The sequence fields being typed (label, first image, count) and the
+    /// sequence they belong to, committed when the field is left.
+    seq_edit: Option<((TagId, usize), String, [i32; 2])>,
+    /// The sprite fields being typed, committed when a field is left.
+    sprite_edit: Option<((TagId, usize, usize), SpriteFields)>,
+}
+
+/// A sprite's fields as typed.
+#[derive(Clone, Copy)]
+struct SpriteFields {
+    image: i32,
+    /// Left, right, top, bottom.
+    bounds: [f32; 4],
+    registration: [f32; 2],
 }
 
 impl Default for TexturesUi {
@@ -62,6 +77,8 @@ impl Default for TexturesUi {
             levels: [0.0, 1.0, 1.0],
             hsv: [0.0, 1.0, 1.0],
             resize: None,
+            seq_edit: None,
+            sprite_edit: None,
         }
     }
 }
@@ -373,6 +390,26 @@ pub fn canvas(
         )
         .thickness(1.0)
         .build();
+    }
+    // The sprites cut from this image, outlined over it.
+    if let Some(open) = app.textures.open.get(&tag) {
+        let mut i = 0;
+        while let Some(seq) = open.sequence(i) {
+            for rec in &seq.sprites {
+                let v = SpriteView::read(rec);
+                if i32::from(v.image) == layer.image as i32 {
+                    let (fw, fh) = (w as f32, hgt as f32);
+                    dl.add_rect(
+                        at([v.left * fw, v.top * fh]),
+                        at([v.right * fw, v.bottom * fh]),
+                        theme::SCREEN_WIDGET,
+                    )
+                    .thickness(1.0)
+                    .build();
+                }
+            }
+            i += 1;
+        }
     }
     if hovered && matches!(tool, PaintTool::Brush | PaintTool::Eraser) {
         let r = app.textures.brush.size * 0.5 * zoom;
@@ -769,15 +806,7 @@ fn image_shape(
             ui.text_disabled("None: the bitmap's images are picked by index.");
         }
         for s in &sequences {
-            let label = if s.label.is_empty() { "(no label)" } else { &s.label };
-            let last = i32::from(s.first) + i32::from(s.count) - 1;
-            ui.text(format!(
-                "{}  {label}: images {} to {last}{}{}",
-                s.index,
-                s.first,
-                if s.sprites > 0 { format!(", {} sprites", s.sprites) } else { String::new() },
-                if s.added { " (added)" } else { "" },
-            ));
+            sequence_rows(ui, app, st, tag, s, images, movable.is_some(), actions);
         }
         let d = ui.begin_disabled_with_cond(movable.is_some() || image >= images);
         if ui.button(format!("{} Add a sequence for image {image}##tex-add-seq", icon::PLUS)) {
@@ -864,4 +893,140 @@ pub fn file_menu(ui: &Ui, app: &App, dialogs: bool, actions: &mut Vec<Action>) {
             }));
         }
     }
+}
+
+/// One sequence: its label, first image and count, and its sprites, each
+/// field committed (one undo step) when it is left.
+#[allow(clippy::too_many_arguments)]
+fn sequence_rows(
+    ui: &Ui,
+    app: &App,
+    st: &mut TexturesUi,
+    tag: TagId,
+    s: &crate::app::textures::SequenceInfo,
+    images: usize,
+    locked: bool,
+    actions: &mut Vec<Action>,
+) {
+    let label = if s.label.is_empty() { "(no label)" } else { &s.label };
+    let last = i32::from(s.first) + i32::from(s.count) - 1;
+    let title = format!(
+        "{}  {label}: images {} to {last}, {} sprites{}##tex-seq-{}",
+        s.index,
+        s.first,
+        s.sprites,
+        if s.added { " (added)" } else { "" },
+        s.index,
+    );
+    let Some(_node) = ui.tree_node_config(&title).push() else {
+        return;
+    };
+    let d = ui.begin_disabled_with_cond(locked);
+    let key = (tag, s.index);
+    if st.seq_edit.as_ref().is_none_or(|(k, ..)| *k != key) {
+        st.seq_edit = Some((key, s.label.clone(), [i32::from(s.first), i32::from(s.count)]));
+    }
+    let (_, text, range) = st.seq_edit.as_mut().expect("just set");
+    let mut done = false;
+    ui.set_next_item_width(160.0);
+    ui.input_text(format!("Label##tex-seq-label-{}", s.index), text)
+        .build();
+    done |= ui.is_item_deactivated_after_edit();
+    ui.set_next_item_width(70.0);
+    ui.input_int(format!("First##tex-seq-first-{}", s.index), &mut range[0]);
+    done |= ui.is_item_deactivated_after_edit();
+    ui.same_line();
+    ui.set_next_item_width(70.0);
+    ui.input_int(format!("Count##tex-seq-count-{}", s.index), &mut range[1]);
+    done |= ui.is_item_deactivated_after_edit();
+    if done {
+        let (_, text, range) = st.seq_edit.take().expect("set above");
+        actions.push(Action::Bitmap(BitmapAction::SetSequence {
+            tag,
+            sequence: s.index,
+            label: Some(text),
+            first: usize::try_from(range[0]).ok(),
+            count: u16::try_from(range[1]).ok(),
+        }));
+    }
+    let open = &app.textures.open[&tag];
+    let mut remove = None;
+    for k in 0..s.sprites {
+        let Some(v) = open.sprite(s.index, k) else {
+            break;
+        };
+        let key = (tag, s.index, k);
+        let mut f = match st.sprite_edit {
+            Some((kk, f)) if kk == key => f,
+            _ => SpriteFields {
+                image: i32::from(v.image),
+                bounds: [v.left, v.right, v.top, v.bottom],
+                registration: v.registration,
+            },
+        };
+        let (mut changed, mut done) = (false, false);
+        ui.text(format!("Sprite {k}"));
+        ui.same_line();
+        ui.set_next_item_width(60.0);
+        changed |= ui.input_int(format!("Image##tex-sp-image-{}-{k}", s.index), &mut f.image);
+        done |= ui.is_item_deactivated_after_edit();
+        for (n, name) in ["Left", "Right", "Top", "Bottom"].into_iter().enumerate() {
+            ui.set_next_item_width(70.0);
+            changed |= ui.input_float(
+                format!("{name}##tex-sp-b{n}-{}-{k}", s.index),
+                &mut f.bounds[n],
+            );
+            done |= ui.is_item_deactivated_after_edit();
+            if n % 2 == 0 {
+                ui.same_line();
+            }
+        }
+        for (n, name) in ["Reg x", "Reg y"].into_iter().enumerate() {
+            ui.set_next_item_width(70.0);
+            changed |= ui.input_float(
+                format!("{name}##tex-sp-r{n}-{}-{k}", s.index),
+                &mut f.registration[n],
+            );
+            done |= ui.is_item_deactivated_after_edit();
+            ui.same_line();
+        }
+        if ui.small_button(format!("{} Remove##tex-sp-rm-{}-{k}", icon::TRASH, s.index)) {
+            remove = Some(k);
+        }
+        if done {
+            st.sprite_edit = None;
+            actions.push(Action::Bitmap(BitmapAction::SetSprite {
+                tag,
+                sequence: s.index,
+                sprite: Some(k),
+                image: usize::try_from(f.image).ok(),
+                bounds: Some(f.bounds),
+                registration: Some(f.registration),
+            }));
+        } else if changed {
+            st.sprite_edit = Some((key, f));
+        }
+    }
+    if let Some(sprite) = remove {
+        st.sprite_edit = None;
+        actions.push(Action::Bitmap(BitmapAction::RemoveSprite {
+            tag,
+            sequence: s.index,
+            sprite,
+        }));
+    }
+    if ui.button(format!("{} Add a sprite##tex-sp-add-{}", icon::PLUS, s.index)) {
+        actions.push(Action::Bitmap(BitmapAction::SetSprite {
+            tag,
+            sequence: s.index,
+            sprite: None,
+            image: None,
+            bounds: None,
+            registration: None,
+        }));
+    }
+    ui.set_item_tooltip(
+        "A copy of the last sprite, or over all of the first image. Bounds are fractions of the image; the sprite shows outlined on the canvas.",
+    );
+    d.end();
 }

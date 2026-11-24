@@ -10,6 +10,8 @@
 //! (`assets::write`) into the file. `bitmap.reshape` and
 //! `bitmap.image.resize` ask for a new size or format, `bitmap.image.add`
 //! and `bitmap.sequence.add` grow the bitmap (the save then moves the tag),
+//! `bitmap.sequence.set` and `bitmap.sprite.*` edit its sequences and
+//! sprites (the sprite editor, which also moves the tag),
 //! `bitmap.spans` shows the stored bytes an edit changes.
 
 use std::path::PathBuf;
@@ -141,6 +143,41 @@ const METHODS: &[MethodDef] = &[
         r#"{"bitmap":"floor","first":0,"label":"floor"}"#,
     ),
     def(
+        m::BITMAP_SEQUENCE_SET,
+        "Change a sequence (the tag's own or one added): its `label` (31 bytes at most), `first` image and image `count`; a field left out stays. Its sprites are not touched. Answers the bitmap's sequences. One undo step (none when nothing changes); the save moves the tag as bitmap.image.add does. Refused when the tag cannot be laid out again (`bitmap.read`'s `movable`)",
+        r#"{"bitmap":"string","sequence":"integer","label?":"string","first?":"integer","count?":"integer"}"#,
+        r#"{"bitmap":"string","sequence":"integer","sequences":"[{sequence,label,first,count,sprites,added}]"}"#,
+        r#"{"bitmap":"floor","sequence":0,"label":"icons 2"}"#,
+    ),
+    def(
+        m::BITMAP_SPRITES,
+        "The sprites of the bitmap's sequences (or of `sequence`): each one's image, its bounds on that image as fractions (`left`, `right`, `top`, `bottom`) and its registration point. Opens the bitmap; nothing is written",
+        r#"{"bitmap":"string","sequence?":"integer"}"#,
+        r#"{"bitmap":"string","sequences":"[{sequence,label,sprites:[{sprite,image,left,right,top,bottom,registration:[x,y]}]}]"}"#,
+        r#"{"bitmap":"floor"}"#,
+    ),
+    def(
+        m::BITMAP_SPRITE_ADD,
+        "Append a sprite to `sequence`: a copy of its last sprite, or over all of the sequence's first image when it has none, then `image`, `bounds` ([left, right, top, bottom], fractions of the image, left <= right and top <= bottom) and `registration` ([x, y]) as given. Answers the new sprite's index and the sequence's sprites. One undo step; the save moves the tag",
+        r#"{"bitmap":"string","sequence":"integer","image?":"integer","bounds?":"[left,right,top,bottom]","registration?":"[x,y]"}"#,
+        r#"{"bitmap":"string","sequence":"integer","sprite":"integer","sprites":"[{sprite,image,left,right,top,bottom,registration}]"}"#,
+        r#"{"bitmap":"floor","sequence":0,"bounds":[0,0.5,0,0.5]}"#,
+    ),
+    def(
+        m::BITMAP_SPRITE_SET,
+        "Change sprite `sprite` of `sequence`: its `image`, `bounds` and/or `registration`, as bitmap.sprite.add takes them; a field left out stays. A bounds pair that is inverted or a number that is not finite is refused and nothing changes. One undo step (none when nothing changes); the save moves the tag",
+        r#"{"bitmap":"string","sequence":"integer","sprite":"integer","image?":"integer","bounds?":"[left,right,top,bottom]","registration?":"[x,y]"}"#,
+        r#"{"bitmap":"string","sequence":"integer","sprite":"integer","sprites":"[{sprite,image,left,right,top,bottom,registration}]"}"#,
+        r#"{"bitmap":"floor","sequence":0,"sprite":0,"registration":[0.5,0.5]}"#,
+    ),
+    def(
+        m::BITMAP_SPRITE_REMOVE,
+        "Remove sprite `sprite` from `sequence`; the sprites after it move down one. One undo step; the save moves the tag",
+        r#"{"bitmap":"string","sequence":"integer","sprite":"integer"}"#,
+        r#"{"bitmap":"string","sequence":"integer","sprites":"[{sprite,image,left,right,top,bottom,registration}]"}"#,
+        r#"{"bitmap":"floor","sequence":0,"sprite":0}"#,
+    ),
+    def(
         m::BITMAP_PIXELS,
         "The pixels of `rect` (clipped to the layer; at most 65,536) as hex RGBA, row by row: for tests and checks",
         r#"{"bitmap":"string","image?":"integer","face?":"integer","slice?":"integer","rect":"{x,y,w,h}"}"#,
@@ -266,6 +303,47 @@ fn num(v: &Value, k: &str) -> Result<f32, RpcError> {
         .filter(|f| f.is_finite())
         .map(|f| f as f32)
         .ok_or_else(|| bad(format!("{k}: expected a number, not {v}")))
+}
+
+fn sprite_json(k: usize, v: tags::bitmap_grow::SpriteView) -> Value {
+    json!({
+        "sprite": k,
+        "image": v.image,
+        "left": v.left,
+        "right": v.right,
+        "top": v.top,
+        "bottom": v.bottom,
+        "registration": v.registration,
+    })
+}
+
+/// The sprites of sequence `sequence`, as `bitmap.sprites` lists them.
+fn sprites_json(app: &App, tag: TagId, sequence: usize) -> Value {
+    let Some(open) = app.textures.open.get(&tag) else {
+        return Value::Null;
+    };
+    let n = open.sequence(sequence).map_or(0, |s| s.sprites.len());
+    Value::Array(
+        (0..n)
+            .filter_map(|k| open.sprite(sequence, k).map(|v| sprite_json(k, v)))
+            .collect(),
+    )
+}
+
+/// A fixed-length array of numbers.
+fn nums<const N: usize>(p: &P, k: &str) -> Result<Option<[f32; N]>, RpcError> {
+    let Some(v) = p.get(k) else {
+        return Ok(None);
+    };
+    let a = v
+        .as_array()
+        .filter(|a| a.len() == N)
+        .ok_or_else(|| bad(format!("{k}: expected {N} numbers")))?;
+    let mut out = [0.0; N];
+    for (o, x) in out.iter_mut().zip(a) {
+        *o = num(x, k)?;
+    }
+    Ok(Some(out))
 }
 
 fn opt_num(obj: &Value, k: &str) -> Result<Option<f32>, RpcError> {
@@ -596,6 +674,97 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "bitmap": super::scenario::tag_id(tag),
                 "sequence": n - 1,
                 "sequences": sequences_json(app, tag),
+            }))
+        }
+        m::BITMAP_SEQUENCE_SET => {
+            let tag = bitmap(app, p)?;
+            let sequence = p.usize("sequence")?;
+            let label = p.opt_str("label")?.map(str::to_owned);
+            let first = p.opt_usize("first")?;
+            let count = p
+                .opt_u64("count")?
+                .map(|c| u16::try_from(c).map_err(|_| bad("count: too large")))
+                .transpose()?;
+            run(
+                app,
+                BitmapAction::SetSequence {
+                    tag,
+                    sequence,
+                    label,
+                    first,
+                    count,
+                },
+            )?;
+            Ok(json!({
+                "bitmap": super::scenario::tag_id(tag),
+                "sequence": sequence,
+                "sequences": sequences_json(app, tag),
+            }))
+        }
+        m::BITMAP_SPRITES => {
+            let tag = bitmap(app, p)?;
+            app.ensure_bitmap(tag).map_err(bad)?;
+            let only = p.opt_usize("sequence")?;
+            let n = app.textures.open[&tag].sequences().len();
+            if let Some(i) = only.filter(|i| *i >= n) {
+                return Err(bad(format!("sequence {i}: the bitmap has {n}")));
+            }
+            let list: Vec<Value> = (0..n)
+                .filter(|i| only.is_none_or(|o| o == *i))
+                .map(|i| {
+                    let label = app.textures.open[&tag]
+                        .sequence(i)
+                        .map(|s| s.label())
+                        .unwrap_or_default();
+                    json!({"sequence": i, "label": label, "sprites": sprites_json(app, tag, i)})
+                })
+                .collect();
+            Ok(json!({"bitmap": super::scenario::tag_id(tag), "sequences": list}))
+        }
+        m::BITMAP_SPRITE_ADD | m::BITMAP_SPRITE_SET => {
+            let tag = bitmap(app, p)?;
+            let sequence = p.usize("sequence")?;
+            let sprite = if method == m::BITMAP_SPRITE_SET {
+                Some(p.usize("sprite")?)
+            } else {
+                None
+            };
+            run(
+                app,
+                BitmapAction::SetSprite {
+                    tag,
+                    sequence,
+                    sprite,
+                    image: p.opt_usize("image")?,
+                    bounds: nums::<4>(p, "bounds")?,
+                    registration: nums::<2>(p, "registration")?,
+                },
+            )?;
+            let sprites = sprites_json(app, tag, sequence);
+            let sprite = sprite.unwrap_or_else(|| sprites.as_array().map_or(0, |a| a.len()) - 1);
+            Ok(json!({
+                "bitmap": super::scenario::tag_id(tag),
+                "sequence": sequence,
+                "sprite": sprite,
+                "sprites": sprites,
+            }))
+        }
+        m::BITMAP_SPRITE_REMOVE => {
+            let tag = bitmap(app, p)?;
+            let sequence = p.usize("sequence")?;
+            let sprite = p.usize("sprite")?;
+            run(
+                app,
+                BitmapAction::RemoveSprite {
+                    tag,
+                    sequence,
+                    sprite,
+                },
+            )?;
+            Ok(json!({
+                "bitmap": super::scenario::tag_id(tag),
+                "sequence": sequence,
+                "sprites": sprites_json(app, tag, sequence),
             }))
         }
         m::BITMAP_EXPORT => {

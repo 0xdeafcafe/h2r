@@ -310,7 +310,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::BITMAP_SPANS
         | m::BITMAP_IMAGE_ADD
         | m::BITMAP_IMAGE_RESIZE
-        | m::BITMAP_SEQUENCE_ADD => {
+        | m::BITMAP_SEQUENCE_ADD
+        | m::BITMAP_SEQUENCE_SET
+        | m::BITMAP_SPRITES
+        | m::BITMAP_SPRITE_ADD
+        | m::BITMAP_SPRITE_SET
+        | m::BITMAP_SPRITE_REMOVE => {
             // The invented textured map: its floor bitmap is 4 by 4,
             // one `A8R8G8B8` colour.
             let map = t.path("textured.map");
@@ -320,6 +325,19 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 let png = bitmap_edit::encode_png(2, 2, &[10, 20, 30, 255].repeat(4)).unwrap();
                 std::fs::create_dir_all(t.path("out")).unwrap();
                 std::fs::write(t.path("out/in.png"), png).unwrap();
+            }
+            if matches!(
+                name,
+                m::BITMAP_SEQUENCE_SET
+                    | m::BITMAP_SPRITES
+                    | m::BITMAP_SPRITE_ADD
+                    | m::BITMAP_SPRITE_SET
+                    | m::BITMAP_SPRITE_REMOVE
+            ) {
+                c(m::BITMAP_SEQUENCE_ADD, json!({"bitmap": "floor", "first": 0, "label": "icons"}));
+            }
+            if matches!(name, m::BITMAP_SPRITE_SET | m::BITMAP_SPRITE_REMOVE) {
+                c(m::BITMAP_SPRITE_ADD, json!({"bitmap": "floor", "sequence": 0}));
             }
         }
         m::IMAGE_GENERATE | m::IMAGE_RESULT | m::IMAGE_APPLY | m::IMAGE_ACCEPT | m::IMAGE_DISCARD => {

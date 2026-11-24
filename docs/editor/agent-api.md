@@ -1977,7 +1977,18 @@ the window and the API stay one path.
   `bitmap.sequence.add {bitmap, first, count?, label?}` appends a
   sequence entry over `count` images from `first`, labelled `label`,
   shaped like the bitmap's first sequence;
-  each of these is one undo step;
+  `bitmap.sequence.set {bitmap, sequence, label?, first?, count?}`
+  changes a sequence (its own or an added one), keeping its sprites;
+  `bitmap.sprites {bitmap, sequence?}` lists each sequence's sprites
+  (`image`, `left`, `right`, `top`, `bottom` as fractions of the image,
+  `registration` `[x, y]`); `bitmap.sprite.add {bitmap, sequence, image?,
+  bounds?, registration?}` appends one (a copy of the last, or over all of
+  the first image), `bitmap.sprite.set {bitmap, sequence, sprite, ...}`
+  changes one and `bitmap.sprite.remove {bitmap, sequence, sprite}` drops
+  one; an inverted or non-finite bound, an image the bitmap lacks or a
+  sprite that is not there is refused and changes nothing;
+  each of these is one undo step, and any edit to a sequence makes the
+  bitmap `grown` (a save moves the tag);
   `bitmap.spans {bitmap, image?, face?, slice?, rect?}` gives the stored
   bytes the edits change (per LOD: offset, length, hex) without writing
   anything: the spans a save patches in place and a live push sends. Edits
@@ -1995,8 +2006,8 @@ the window and the API stay one path.
   end the file) is `REFUSED` with the reason. `doc.diff` lists the edited
   layers by tile and the pending reshapes; `doc.list` says the doc is
   `dirty` until its edits have been saved. `doc.undo`, `doc.redo` work on
-  that doc (a reshape, an added image and an added sequence are one undo
-  step each). docs/editor/modeling.md, "Texture editing" and "Interfaces".
+  that doc (a reshape, an added image, an added sequence and a sequence or sprite
+  edit are one undo step each). docs/editor/modeling.md, "Texture editing" and "Interfaces".
 - **Models.** `api/models.rs`: `model.list`, `model.read`,
   `model.render` and `model.check`, read-only over a map of their own
   (no actions, no undo); see "Models and customisation" below.
