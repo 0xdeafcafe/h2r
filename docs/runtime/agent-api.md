@@ -2859,11 +2859,14 @@ or the game's UI state without UI watch. All are read-only except
   a return is known. The map picker stages share an ID and have
   distinct `mode` values (`folders`, `maps`, `pack`), with the open
   category or pack named in `folder`. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
-  (zero-based). `input` identifies the screen taking player one's menu
-  input. `back` gives the instance that closes and its parent where
+  (zero-based). Game-type and variant lists also expose their focused row.
+  A custom variant list identifies its group in `variant_category` and a kit
+  screen identifies its class in `class`. Both fields are null elsewhere.
+  `input` uses the same settled player-one target as `ui.audit`. `back` gives the instance that closes and its parent where
   known, with action `close`, `reopen` (recreate a parent), or `wait`
   (consume Back during a replacement). It is null when there is no menu
-  input target or when Back depends on a screen's custom handler.
+  input target or when Back depends on a screen's custom handler. The kit
+  value picker's `close` target identifies the settled screen underneath it.
   `ui.stack` is available without UI watch.
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
   read of the campaign menu from the guest screen and focus, without UI

@@ -733,12 +733,14 @@ pub fn read_flags(m: &dyn engine::memory::GuestMemory, array: u32) -> Vec<(u32, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct OpenList {
     mode: Mode,
+    from_setup: bool,
     focus: Option<Category>,
 }
 
 #[derive(Clone, Copy)]
 struct OpenedList {
     handler: u32,
+    from_setup: bool,
     mode: Mode,
     focus_id: Option<u32>,
 }
@@ -760,6 +762,7 @@ impl Flow {
     fn categories(&self, focus: Option<Category>) {
         *lock(&self.next) = Some(OpenList {
             mode: Mode::Categories,
+            from_setup: false,
             focus,
         });
     }
@@ -767,23 +770,25 @@ impl Flow {
     fn pick(&self, category: Category) {
         *lock(&self.next) = Some(OpenList {
             mode: Mode::Maps(category),
+            from_setup: true,
             focus: None,
         });
     }
 
     fn open(&self, mode: Mode) {
-        *lock(&self.next) = Some(OpenList { mode, focus: None });
+        *lock(&self.next) = Some(OpenList { mode, focus: None, from_setup: false });
     }
 
     fn opening(&self) -> Option<OpenList> {
         lock(&self.next).take()
     }
 
-    pub(crate) fn built(&self, handler: u32, mode: Mode, focus_id: Option<u32>) {
+    pub(crate) fn built(&self, handler: u32, mode: Mode, focus_id: Option<u32>, from_setup: bool) {
         let mut screens = lock(&self.screens);
         screens.retain(|list| list.handler != handler);
         screens.push(OpenedList {
             handler,
+            from_setup,
             mode,
             focus_id,
         });
@@ -798,6 +803,10 @@ impl Flow {
 
     pub(crate) fn mode_of(&self, handler: u32) -> Option<Mode> {
         self.list(handler).map(|list| list.mode)
+    }
+
+    pub(crate) fn maps_from_setup(&self, handler: u32) -> bool {
+        self.list(handler).is_some_and(|list| list.from_setup)
     }
 
     fn freed(&self, screen: u32) {
@@ -1066,7 +1075,7 @@ impl hooks::Feature for MapSelect {
                 match write_ours(&mut *mem, &catalogue, open.mode, region) {
                     Some(at) => {
                         let focus_id = open.focus.and_then(|folder| catalogue.category_id(folder));
-                        nav.maps.built(c.cpu.esi, open.mode, focus_id);
+                        nav.maps.built(c.cpu.esi, open.mode, focus_id, open.from_setup);
                         drop(mem);
                         c.cpu.eax = at;
                         c.ret(0).map(F::Return)
@@ -1203,7 +1212,7 @@ impl hooks::Feature for MapSelect {
                                     .call(GuestCall::new(CHANGE_MAP_LOADER).args([request_at]))
                                     .await;
                                 let _ = nav.maps.opening();
-                                nav.inherit_setup(screen, opened?.eax);
+                                opened?;
                                 Ok(Ret::new(0, 8))
                             })
                         })
@@ -1236,8 +1245,8 @@ impl hooks::Feature for MapSelect {
                 }
                 // A Forge or Firefight lobby's maps were opened straight
                 // from Game Setup: B goes back there.
-                (ui_back::Back::Reopen, _, Mode::Maps(c))
-                    if mode_category(crate::lobby_start::mode()) == Some(c) =>
+                (ui_back::Back::Reopen, _, Mode::Maps(_))
+                    if nav.maps.maps_from_setup(screen.wrapping_add(SCREEN_LIST)) =>
                 {
                     Ok(F::Continue)
                 }
@@ -1246,12 +1255,12 @@ impl hooks::Feature for MapSelect {
                     c.answer_async(move |cx| Box::pin(async move {
                         match mode {
                             Mode::Maps(category) => nav.maps.categories(Some(category)),
-                            Mode::Pack(_) => nav.maps.pick(Category::Mods),
+                            Mode::Pack(_) => nav.maps.open(Mode::Maps(Category::Mods)),
                             Mode::Categories => unreachable!(),
                         }
                         let opened = ui_back::reopen(&cx, request_at, source, CHANGE_MAP_LOADER).await;
                         let _ = nav.maps.opening();
-                        nav.inherit_setup(screen, opened?);
+                        opened?;
                         Ok(Ret::new(1, 4))
                     }))
                 }

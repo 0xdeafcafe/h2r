@@ -309,7 +309,7 @@ row hooks show them in this order (`custom_games::Menu::layout`):
 
 A row that is off leaves the list and the rows under it close up. Rows
 past 1 never reach the retail row text. Custom Games, Forge and
-Firefight rewrite the press record to retail row 2 and run retail's
+Firefight pass retail row 2 in a private press record and run retail's
 Custom Game press (a Live squad session, then the custom lobby), then
 ask for their mode (`lobby_tabs::request`), which the lobby switches to
 at its first panel update. The retail press remembers rows 0 to 2 for
@@ -375,7 +375,7 @@ item. If they overlap visibly, raise `custom_games::MIN_PITCH` or the
 pitch rule towards 32 (the last row then ends level with the hint block's
 top).
 
-The copies (at most `custom_games::TAG_SPACE`, 8 KB) live in our data page. The retail arrays are not
+The copies (a private screen header and at most `custom_games::TAG_SPACE`, 8 KB, of pane data) live in our data page. The retail arrays are not
 written, and the copies are reused when a map load brings the tag back.
 `0x230427` (pane = base + row, no bounds check) is how the list shows a
 row's pane when its focus moves (`0x24c50a`). The pane hook hands it each

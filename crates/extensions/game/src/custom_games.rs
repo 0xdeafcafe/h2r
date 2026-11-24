@@ -399,8 +399,7 @@ pub enum Row {
 }
 
 impl Row {
-    /// The retail row whose press this row's press runs (the press record
-    /// rewritten to it): OptiMatch for Clankermatch, retail row 2 (Custom
+    /// The retail row passed in a private press record: OptiMatch for Clankermatch, retail row 2 (Custom
     /// Game) for the mode rows. `None` for the retail rows themselves and
     /// the rest of ours.
     pub fn retail_press(self) -> Option<i16> {

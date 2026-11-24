@@ -30,22 +30,28 @@ const BACK_SOUND: u32 = 4;
 pub struct Navigation {
     pub(crate) maps: crate::map_select::Flow,
     categories: Mutex<BTreeMap<u32, CategoryReturn>>,
-    game_setup: Mutex<BTreeMap<u32, u16>>,
+    game_setup: Mutex<BTreeMap<u32, SetupReturn>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SetupReturn {
+    mask: u16,
+    action: Option<i16>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct CategoryReturn {
     mask: u16,
     focus: Option<i16>,
-    pub(crate) setup: Option<u16>,
+    pub(crate) setup: Option<SetupReturn>,
 }
 
 impl Navigation {
-    fn game_setup(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, u16>> {
+    fn game_setup(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, SetupReturn>> {
         self.game_setup.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub(crate) fn setup_parent(&self, child: u32) -> Option<u16> {
+    pub(crate) fn setup_parent(&self, child: u32) -> Option<SetupReturn> {
         self.game_setup().get(&child).copied()
     }
 
@@ -54,11 +60,11 @@ impl Navigation {
     }
 
     /// Capture a lobby replacement before retail disposes of its predecessor.
-    /// Return the focus handle from the newly constructed category list.
+    /// Resolve the saved focus against the newly constructed parent list.
     fn pushed(&self, m: &dyn engine::GuestMemory, child: u32, request: u32) -> Option<u32> {
         let mem = ReadGm(m);
-        if let Some(mask) = capture_setup(&mem, child, request) {
-            self.game_setup().insert(child, mask);
+        if let Some(setup) = capture_setup(m, child, request) {
+            self.game_setup().insert(child, setup);
             return None;
         }
         let (source, ch) = DialogChannel::of(&mem, child)?;
@@ -73,6 +79,18 @@ impl Navigation {
         let parent_id = mem.u32(parent + SCREEN_ID)?;
         let child_id = mem.u32(child + SCREEN_ID)?;
         match (parent_id, child_id, mem.u16(request)?) {
+            (SELECT_MAP_ID, SELECT_MAP_ID, 0 | 1)
+                if mem.u32(request + REQUEST_LOADER)? == points::SELECT_MAP_LOAD.base =>
+            {
+                if let Some(setup) = self.setup_parent(parent) {
+                    self.game_setup().insert(child, setup);
+                }
+                None
+            }
+            (_, GAME_SETUP_ID, 1) if mem.u32(request + REQUEST_LOADER)? == points::GAME_SETUP_LOAD.base => {
+                let action = self.setup_parent(parent)?.action?;
+                setup_handle(m, child + crate::game_setup_help::SETUP_LIST, action)
+            }
             (CATEGORY_ID, VARIANTS_ID, 0) if mem.u8(parent + SCREEN_STATE)? & 2 == 0 => {
                 let list = parent + crate::tweakers::SCREEN_LIST;
                 let focus = crate::ui_kit::lifecycle::focused_row_handle(m, ch, list)
@@ -85,8 +103,8 @@ impl Navigation {
                 if mem.u32(request + REQUEST_LOADER)? == points::LOBBY_VARIANT_LIST_LOAD.base =>
             {
                 let target = self.category_parent(parent)?;
-                if let Some(mask) = target.setup {
-                    self.game_setup().insert(child, mask);
+                if let Some(setup) = target.setup {
+                    self.game_setup().insert(child, setup);
                 }
                 crate::retail_rows::retail_handle(m, child + crate::tweakers::SCREEN_LIST, target.focus?)
             }
@@ -97,15 +115,6 @@ impl Navigation {
     fn freed(&self, screen: u32) {
         self.game_setup().remove(&screen);
         self.categories.lock().unwrap_or_else(|e| e.into_inner()).remove(&screen);
-    }
-
-    /// A map list replaces the folders on open, and folders replace it on
-    /// Back. The new instance inherits their Game Setup return.
-    pub(crate) fn inherit_setup(&self, from: u32, to: u32) {
-        let mut parents = self.game_setup();
-        if to != 0 && let Some(mask) = parents.get(&from).copied() {
-            parents.insert(to, mask);
-        }
     }
 }
 
@@ -189,11 +198,26 @@ fn is_setup_selector(id: u32, loader: u32) -> bool {
     }
 }
 
-fn capture_setup(m: &impl Gm, child: u32, request: u32) -> Option<u16> {
-    let (source, ch) = DialogChannel::of(m, child)?;
+fn setup_handle(m: &dyn engine::GuestMemory, list: u32, action: i16) -> Option<u32> {
+    use crate::h1_options_row::{SETUP_ACTION, SETUP_ROWS};
+    use engine::datum::{DatumArray, layout::HIGH_WATER};
+
+    let array = DatumArray::at(m.u32(list + SETUP_ROWS).ok()?);
+    let count = array.header_field(m, HIGH_WATER).ok()?;
+    (0..count).find_map(|index| {
+        let elem = array.get_absolute(m, index).ok()??;
+        if m.u16(elem + SETUP_ACTION).ok()? as i16 != action {
+            return None;
+        }
+        Some(array.handle_of(m, index).ok()??.0)
+    })
+}
+
+fn capture_setup(memory: &dyn engine::GuestMemory, child: u32, request: u32) -> Option<SetupReturn> {
+    let m = ReadGm(memory);
+    let (source, ch) = DialogChannel::of(&m, child)?;
     if source.window != LOBBY_DIALOG
         || m.u16(request)? != 0
-        || !is_setup_selector(m.u32(child.wrapping_add(SCREEN_ID))?, m.u32(request.wrapping_add(REQUEST_LOADER))?)
         || m.u32(ch + PENDING)? != 0
     {
         return None;
@@ -206,7 +230,16 @@ fn capture_setup(m: &impl Gm, child: u32, request: u32) -> Option<u16> {
         return None;
     }
     let mask = m.u16(parent.wrapping_add(CONTROLLER_MASK))?;
-    (mask & source.mask != 0).then_some(mask)
+    let loader = m.u32(request + REQUEST_LOADER)?;
+    let selector = is_setup_selector(m.u32(child + SCREEN_ID)?, loader)
+        || crate::list_class::owns_loader(m.u32(child)?, loader);
+    if mask & source.mask == 0 || !selector {
+        return None;
+    }
+    let list = parent + crate::game_setup_help::SETUP_LIST;
+    let action = crate::ui_kit::lifecycle::focused_row_handle(memory, ch, list)
+        .and_then(|row| crate::h1_options_row::row_action(memory, list, row));
+    Some(SetupReturn { mask, action })
 }
 
 pub struct RetailBack(pub Arc<Navigation>);
@@ -227,7 +260,7 @@ impl hooks::Feature for RetailBack {
                 mem.set_u32(request + REQUEST_FOCUS, handle)?;
             }
             Ok(hooks::Flow::Continue)
-        });
+        }).after_feature(crate::map_select::FEATURE);
         let nav = Arc::clone(&self.0);
         b.raw().observe_before(&points::UI_CHANNEL_FREE, "forget the freed screen's opener", move |o| {
             if let Some(screen) = o.arg_u32("screen") {
@@ -240,8 +273,8 @@ impl hooks::Feature for RetailBack {
                 let screen = c.cpu.ecx;
                 let (mask, loader) = if let Some(category) = nav.category_parent(screen) {
                     (category.mask, points::LOBBY_VARIANT_LIST_LOAD.base)
-                } else if let Some(mask) = nav.setup_parent(screen) {
-                    (mask, points::GAME_SETUP_LOAD.base)
+                } else if let Some(setup) = nav.setup_parent(screen) {
+                    (setup.mask, points::GAME_SETUP_LOAD.base)
                 } else {
                     return Ok(hooks::Flow::Continue);
                 };
@@ -317,16 +350,16 @@ mod tests {
             .put_u32(child + SCREEN_SLOT, slot)
             .put_u16(child + CONTROLLER_MASK, 1)
             .put_u32(request + REQUEST_LOADER, points::SELECT_MAP_LOAD.base);
-        assert_eq!(capture_setup(&ReadGm(&mem), child, request), Some(1));
+        assert_eq!(capture_setup(&mem, child, request), Some(SetupReturn { mask: 1, action: None }));
 
         mem.put_u16(child + CONTROLLER_MASK, 2);
-        assert_eq!(capture_setup(&ReadGm(&mem), child, request), None);
+        assert_eq!(capture_setup(&mem, child, request), None);
         mem.put_u16(child + CONTROLLER_MASK, 1);
         mem.put_u32(channel + PENDING, 0x13000);
-        assert_eq!(capture_setup(&ReadGm(&mem), child, request), None);
+        assert_eq!(capture_setup(&mem, child, request), None);
         mem.put_u32(channel + PENDING, 0);
         mem.put_u8(setup + SCREEN_STATE, 2);
-        assert_eq!(capture_setup(&ReadGm(&mem), child, request), None);
+        assert_eq!(capture_setup(&mem, child, request), None);
     }
 
     #[test]
@@ -354,28 +387,88 @@ mod tests {
         rows.make_valid(&mut m).unwrap();
         let handles: Vec<_> = (0..4).map(|_| rows.new_datum(&mut m).unwrap().unwrap().0).collect();
 
+        let setup_list = setup + crate::game_setup_help::SETUP_LIST;
+        let setup_item = 0x81000;
+        let setup_array = 0x82000;
+        m.put_u32(setup_item + 0x10, setup_list)
+            .put_u32(setup_list + crate::h1_options_row::SETUP_ROWS, setup_array)
+            .map(setup_array, 0x1000);
+        let setup_rows = DatumArray::at(setup_array);
+        setup_rows.initialize_contiguous(&mut m, name, 4, 4, 0, 0).unwrap();
+        setup_rows.make_valid(&mut m).unwrap();
+        let first = setup_rows.new_datum(&mut m).unwrap().unwrap();
+        let second = setup_rows.new_datum(&mut m).unwrap().unwrap();
+        let a = setup_rows.try_get(&m, first).unwrap().unwrap() + crate::h1_options_row::SETUP_ACTION;
+        let b = setup_rows.try_get(&m, second).unwrap().unwrap() + crate::h1_options_row::SETUP_ACTION;
+        let saved = Some(SetupReturn { mask: 1, action: Some(9) });
+
         for index in [3, 0, 2, 1, 3] {
-            m.put_u32(ch + ACTIVE, setup)
+            m.put_u16(a, 9).put_u16(b, 4)
+                .put_u32(setup_item + 0x70, first.0)
+                .put_u32(ch + 0x34, setup_item)
+                .put_u32(ch + ACTIVE, setup)
                 .put_u16(request, 0)
                 .put_u32(request + REQUEST_LOADER, points::LOBBY_VARIANT_LIST_LOAD.base);
             assert_eq!(nav.pushed(&m, category, request), None);
-            m.put_u32(ch + ACTIVE, category)
+            nav.freed(setup);
+            m.put_u32(ch + 0x34, item)
+                .put_u32(ch + ACTIVE, category)
                 .put_u32(item + 0x70, 0x1234_0000 | index as u32);
             assert_eq!(nav.pushed(&m, variants, request), None);
             nav.freed(category);
             m.put_u32(ch + ACTIVE, variants);
-            assert_eq!(nav.category_parent(variants).unwrap().setup, Some(1));
+            assert_eq!(nav.category_parent(variants).unwrap().setup, saved);
             assert_eq!(back(&ReadGm(&m), variants, Some(Input::Back)).0, Back::Reopen);
             m.put_u16(request, 1);
             assert_eq!(nav.pushed(&m, category, request), Some(handles[index]));
             nav.freed(variants);
             m.put_u32(ch + ACTIVE, category);
-            assert_eq!(nav.setup_parent(category), Some(1));
+            assert_eq!(nav.setup_parent(category), saved);
             assert_eq!(back(&ReadGm(&m), category, Some(Input::B)).0, Back::Reopen);
+            m.put_u32(request + REQUEST_LOADER, points::GAME_SETUP_LOAD.base)
+                .put_u16(a, 4).put_u16(b, 9);
+            assert_eq!(nav.pushed(&m, setup, request), Some(second.0), "focus follows the action");
             nav.freed(category);
             assert!(nav.setup_parent(category).is_none());
             assert!(nav.category_parent(variants).is_none());
             assert_eq!(m.u32(list + crate::retail_rows::LIST_ROWS), Ok(array));
+        }
+    }
+
+    #[test]
+    fn kit_options_replacing_setup_return_on_the_same_channel() {
+        use crate::{firefight, list_class::ListClass, variant_quick::page};
+        let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+        let quick = page::page(&Arc::new(page::Dialog::new(Arc::default())));
+        let pages = [
+            ("test-lobby-firefight", firefight::options::page(store)),
+            ("test-lobby-quick", quick),
+        ];
+        let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+        let pages = pages.map(|(name, page)| {
+            let class = ListClass::with_rows(name, name, Arc::new(page));
+            registry.add(&class).unwrap();
+            (name, class.loader())
+        });
+        let plan = registry.build(&hooks::Base).unwrap();
+        let nav = Navigation::default();
+        let mut m = engine::testing::FakeGuest::new();
+        let ch = channel(LOBBY_DIALOG, 4).unwrap();
+        let (setup, page, request) = (0x10000, 0x20000, 0x30000);
+        m.put_u32(page + SCREEN_WINDOW, LOBBY_DIALOG)
+            .put_u32(page + SCREEN_SLOT, 4).put_u16(page + CONTROLLER_MASK, 1)
+            .put_u32(setup + SCREEN_ID, GAME_SETUP_ID).put_u16(setup + CONTROLLER_MASK, 1);
+        for (name, loader) in pages.into_iter().chain(pages.into_iter().rev()) {
+            let tables = plan.allocs.iter().find(|alloc| alloc.feature == name).unwrap().addr;
+            m.put_u32(ch + ACTIVE, setup).put_u32(page, tables)
+                .put_u32(request + REQUEST_LOADER, loader);
+            nav.pushed(&m, page, request);
+            nav.freed(setup);
+            m.put_u32(ch + ACTIVE, page);
+            assert_eq!(nav.setup_parent(page), Some(SetupReturn { mask: 1, action: None }));
+            assert_eq!(back(&ReadGm(&m), page, Some(Input::B)).0, Back::Reopen);
+            nav.freed(page);
+            assert!(nav.setup_parent(page).is_none());
         }
     }
 

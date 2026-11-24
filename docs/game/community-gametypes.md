@@ -355,7 +355,7 @@ retail template's row. The script index uses Slayer as that template.
 
 The game stores a save's physical content category when it writes the
 save. For each visible row, `tweakers` enumerates the seven categories
-and loads the records to select the variants of that type. A Hide and Seek
+with the full handle-buffer capacity on each call and loads the records to select the variants of that type. A Hide and Seek
 save from Juggernaut storage consequently appears in Party Games. The
 custom lists use the existing Slayer list screens and hide Create New.
 

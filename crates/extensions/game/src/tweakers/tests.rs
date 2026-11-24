@@ -167,6 +167,7 @@ fn run_fill_in(
         let elem = DatumArray::at(ARRAY).try_get(&g, rows[0]).unwrap().unwrap();
         g.set_u32(elem + 4, u32::MAX).unwrap();
     }
+    g.put_u16(COUNT, 64);
     // [esp]: the fill's return; then player, category, count, handles, flag.
     for (i, v) in [FILL_RETURN, 0, category, COUNT, HANDLES, 1]
         .into_iter()
@@ -182,6 +183,7 @@ fn run_fill_in(
     };
     let run = entry::testing::run(&f, g, regs, |call, m| match call.target {
         t if t == points::VARIANTS_ENUMERATE.base => {
+            assert_eq!(m.u16(COUNT), Ok(64), "each category gets the full buffer");
             let asked = call.args[1];
             assert_eq!(call.args, [0, asked, COUNT, HANDLES, 1]);
             let got: &[u32] = match asked {
@@ -364,6 +366,34 @@ fn forwarding_each_category_leaves_its_datum_alone_even_if_retail_replaces_it() 
         assert_eq!(run.result, Ok(Ret::new(0, 8)));
         assert_eq!(run.guest.u16(old + ROW_WORD), Ok(0xaabc));
     }
+}
+
+#[test]
+fn a_filtered_empty_list_still_receives_back_without_stealing_another_screens_focus() {
+    use crate::ui_kit::lifecycle::{SCREEN_SLOT, SCREEN_WINDOW};
+    use crate::ui_watch::{ACTIVE, PENDING, SHARED, channel};
+    let mut m = FakeGuest::new();
+    let ch = channel(3, SHARED).unwrap();
+    let focus = ch + 0x34;
+    m.map(SCREEN, 0x5000)
+        .put_u32(SCREEN + SCREEN_WINDOW, 3)
+        .put_u32(SCREEN + SCREEN_SLOT, SHARED)
+        .put_u32(ch + ACTIVE, SCREEN);
+    rows_with(&mut m, HANDLER, &[], 4);
+    for group in Row::ALL {
+        m.put_u8(SCREEN + SCREEN_MARK, group.mark()).put_u32(focus, 0);
+        focus_empty_list(&mut m, SCREEN).unwrap();
+        assert_eq!(m.u32(focus), Ok(SCREEN));
+    }
+    for (active, pending, bound) in [(SCREEN, 0, HANDLER), (SCREEN, HANDLER, 0), (HANDLER, 0, 0)] {
+        m.put_u32(ch + ACTIVE, active).put_u32(ch + PENDING, pending).put_u32(focus, bound);
+        focus_empty_list(&mut m, SCREEN).unwrap();
+        assert_eq!(m.u32(focus), Ok(bound));
+    }
+    DatumArray::at(ARRAY).new_datum(&mut m).unwrap().unwrap();
+    m.put_u32(ch + ACTIVE, SCREEN);
+    focus_empty_list(&mut m, SCREEN).unwrap();
+    assert_eq!(m.u32(focus), Ok(0), "retail binds nonempty lists");
 }
 
 #[test]

@@ -279,3 +279,19 @@ fn the_picker_draws_inside_its_panel() {
         );
     }
 }
+
+
+#[test]
+fn cancelling_a_picker_releases_only_its_own_offer() {
+    for label in ["Pogo Stick", "Pogo style", "Map filter", "Pogo Stick"] {
+        offer(Pick::new(label, vec!["a".into(), "b".into()], 1, "",
+            Arc::new(|_| panic!("a cancelled picker ran its setter")))).unwrap();
+        freed(17);
+        assert_eq!(current().unwrap().title, title(label));
+        with_offer(|offer| offer.screen = Some(23));
+        freed(17);
+        assert_eq!(current().unwrap().current, 1);
+        freed(23);
+        assert!(current().is_none());
+    }
+}

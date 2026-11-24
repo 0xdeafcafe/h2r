@@ -401,14 +401,20 @@ async fn fill(cx: Cx, scratch: u32) -> Result<Ret, EntryError> {
     let args = [cx.arg(0)?, cx.arg(1)?, cx.arg(2)?, cx.arg(3)?, cx.arg(4)?];
     let handler = cx.entry().ebx;
     let list = cx.read(|m| screen_row(m, handler.wrapping_sub(SCREEN_LIST)));
+    // The count is capacity on entry and number written on return. A
+    // category with no saves must not give the next enumeration zero room.
+    let (count, handles) = (args[2], args[3]);
+    let capacity = cx.read(|m| m.u16(count))?.min(MAX_HANDLES as u16);
     let r = cx
         .call(GuestCall::new(points::VARIANTS_ENUMERATE.base).args(args))
         .await?;
     let Some(physical) = category_type(args[1]) else {
         return Ok(Ret::new(r.eax, 20));
     };
+    if capacity == 0 {
+        return Ok(Ret::new(r.eax, 20));
+    }
     let wanted = list.map(Row::game_type).unwrap_or(physical);
-    let (count, handles) = (args[2], args[3]);
     let mut keep = Vec::new();
     // Saves keep the category they were written with. Ask the requested
     // category first so its existing variants retain their order.
@@ -417,6 +423,7 @@ async fn fill(cx: Cx, scratch: u32) -> Result<Ret, EntryError> {
         if category != args[1] {
             let mut more = args;
             more[1] = category;
+            cx.write(|m| m.set_u16(count, capacity))?;
             cx.call(GuestCall::new(points::VARIANTS_ENUMERATE.base).args(more)).await?;
         }
         for h in cx.read(|m| read_handles(m, count, handles))? {
@@ -427,7 +434,7 @@ async fn fill(cx: Cx, scratch: u32) -> Result<Ret, EntryError> {
             let ty = if loaded { cx.read(|m| record_type(m, scratch)) } else { None };
             if ty.or_else(|| category_type(category)) == Some(wanted) {
                 keep.push(h);
-                if keep.len() == MAX_HANDLES as usize {
+                if keep.len() >= usize::from(capacity) {
                     break 'categories;
                 }
             }
@@ -454,6 +461,24 @@ async fn set_text(cx: &Cx, screen: u32, text: u32, id: u32) -> Result<(), EntryE
     Ok(())
 }
 
+/// A filtered list may contain no selectable item. The channel drops all
+/// input when its focus is null, including B. Give the active empty list's
+/// screen its generic Back handler until retail binds a row.
+fn focus_empty_list(m: &mut dyn GuestMemory, screen: u32) -> Result<(), MemFault> {
+    use crate::ui_kit::lifecycle::{SCREEN_SLOT, SCREEN_WINDOW};
+    use crate::ui_watch::{ACTIVE, PENDING, channel};
+    let Some(ch) = channel(m.u32(screen + SCREEN_WINDOW)?, m.u32(screen + SCREEN_SLOT)?) else {
+        return Ok(());
+    };
+    if m.u32(ch + ACTIVE)? == screen && m.u32(ch + PENDING)? == 0 && m.u32(ch + 0x34)? == 0 {
+        let array = rows(m, screen + SCREEN_LIST)?;
+        if array.addr != 0 && array.header_field(m, engine::datum::layout::ACTIVE_COUNT)? == 0 {
+            m.set_u32(ch + 0x34, screen)?;
+        }
+    }
+    Ok(())
+}
+
 /// A row's list's update: retail's, then the row's title and description
 /// where retail set Slayer's.
 async fn update(cx: Cx, ours: Row, screen: u32) -> Result<Ret, EntryError> {
@@ -463,6 +488,7 @@ async fn update(cx: Cx, ours: Row, screen: u32) -> Result<Ret, EntryError> {
         .await;
     UPDATING.store(0, Ordering::SeqCst);
     let eax = r?.eax;
+    cx.write(|m| focus_empty_list(m, screen))?;
     for (index, id) in [
         (LIST_DESCRIPTION_TEXT, ours.description_id()),
         (LIST_TITLE_TEXT, ours.title_id()),

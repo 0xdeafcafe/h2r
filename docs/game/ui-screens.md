@@ -36,6 +36,11 @@ String ids come from one registry, `ui_kit::ids::FAMILIES`, checked at compile t
 
 `ui_kit::lifecycle` opens a screen with `0x149f1e(player mask, loader)` and closes one with `0x14800c` (EAX the screen's slot `+0x78`, ECX its window `+0x74`), as the generic back handler closes on B. The close starts the out transition; the stack frees the screen when that ends, calling the destructor (screen slot 0) first. A screen of ours comes in within 333 ms and goes out within 200 ms (`lifecycle::cap_transition`, `animation::OPEN_TICKS` and `CLOSE_TICKS`; docs/game/ui-builder.md "Transitions").
 
+The list class discards the closing timer and its description, picture and panel
+widget references when the instance is destroyed. During a close it forwards
+a later input only along the active screen's focus path for that controller.
+A pending replacement or stale focused widget consumes the input.
+
 Anything that must run on the screen underneath (a retail press, a level start) waits for the destructor: `lifecycle::AfterClose`, which `Then::CloseThen` uses for every kit screen. Running it while the page is still closing lets the closing page's teardown undo it (the skulls page's difficulty press stored the difficulty and the teardown reset it, so Start seemed stuck).
 
 ## Back navigation
@@ -52,7 +57,9 @@ replaces the active Game Setup in the same lobby channel. B or Back
 queues Game Setup with a return request, so the window initializes the
 replacement and sends the outgoing selector its normal Back message.
 The supported selectors are **Change Map**, **Change Game Type**, the
-lobby's **Select Level**, and the lobby's **Difficulty**. The feature uses
+lobby's **Select Level** and **Difficulty**, and kit pages loaded directly from
+Game Setup, including Firefight and scripted Quick Options. A return to
+Game Setup focuses the opening action in the rebuilt list. The feature uses
 the selector's normal confirmation path for A. A variant list opened
 from Change Game Type remembers the category row and its Game Setup return.
 Back rebuilds the category list and restores focus using the new list's
@@ -61,14 +68,23 @@ flows, variant editors, controller settings, and other dialogs with
 their own commit or navigation paths use retail behavior. The game-shell
 channel uses its own reopen history.
 
+The value picker releases its offered values and setter when its screen is
+freed. An outgoing picker can finish closing after another row has offered
+a new picker without clearing the new values.
+
+An empty custom variant list gives its screen focus when its channel has no
+focused widget. B and Back reach the screen even when there is no row.
+
 The Xbox Live menu's screen-tag lookup serves a private copy of the
 screen header and panes. Other screens resolving the same tag see the
 map's original list and text blocks. Forwarded Live row presses pass a
-private retail datum handle and preserve the selected display row. Building
+private retail row index and preserve the selected display row. Building
 the Live or main menu clears pending lobby mode requests and playlist scope.
 
 The [map picker](map-select.md) also restores the folder list when Back
-dismisses a category's maps, independent of the lobby Back switch. Use
+dismisses a category's maps, independent of the lobby Back switch. A list
+opened directly from Game Setup returns there. The list records its opener
+when built, including when the same map category is reachable both ways. Use
 [`ui.stack`](../runtime/agent-api.md#ui-what-the-menus-show) to inspect
 the active screen, its Back target, and map picker focus. The lobby Back
 switch is listed in [Switches](../runtime/switches.md#settings).

@@ -438,7 +438,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
         "0x002bb384 MAP_SCREEN_FREE: observe_before [map-select:forget the freed map list] -> original",
         "0x002300ea SCREEN_BACK_EVENT: before [map-select:return from maps to their folders",
-        "0x00147f6d SCREEN_PUSH: observe_before [ui-back:remember the replaced Game Setup] -> before [map-select:restore the opened folder's focus] -> original",
+        "0x00147f6d SCREEN_PUSH: before [map-select:restore the opened folder's focus, ui-back:remember the replaced lobby selector] -> original",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
@@ -571,12 +571,13 @@ fn a_folder_return_arms_categories_even_after_the_original_is_freed() {
     let categories = f.opening().unwrap();
     assert_eq!(categories.mode, Mode::Categories);
     assert_eq!(categories.focus, None);
-    f.built(0x1614, categories.mode, None);
+    f.built(0x1614, categories.mode, None, categories.from_setup);
 
-    f.pick(Category::Halo1);
+    f.open(Mode::Maps(Category::Halo1));
     let maps = f.opening().unwrap();
     assert_eq!(maps.mode, Mode::Maps(Category::Halo1));
-    f.built(0x2614, maps.mode, None);
+    f.built(0x2614, maps.mode, None, maps.from_setup);
+    assert!(!f.maps_from_setup(0x2614));
     f.freed(0x1000);
     assert_eq!(f.mode_of(0x1614), None);
     let Some(Mode::Maps(folder)) = f.mode_of(0x2614) else {
@@ -624,7 +625,7 @@ fn snapshots_wait_while_a_select_map_of_ours_is_armed_or_up() {
     f.categories(None);
     assert!(f.snapshot_live().unwrap().contains("to be built"));
     let open = f.opening().unwrap();
-    f.built(0x1614, open.mode, None);
+    f.built(0x1614, open.mode, None, open.from_setup);
     assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
     f.freed(0x1000);
     assert_eq!(f.snapshot_live(), None, "every screen of ours freed");

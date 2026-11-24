@@ -1418,10 +1418,8 @@ pub fn install(
                 if let Some((shown, retail)) = row
                     .and_then(|row| menu_rows.shifted_retail_row(row).map(|retail| (row, retail)))
                 {
-                    let Some(handle) = crate::retail_rows::retail_handle(&*mem, cpu.ecx, retail) else {
-                        return mem.ret(cpu, 8);
-                    };
-                    mem.set_u32(theater_press, handle)?;
+                    // The main-menu press switches on the low word of its argument.
+                    mem.set_u32(theater_press, retail as u32)?;
                     mem.set_u32(cpu.esp + 8, theater_press)?;
                     drop(mem);
                     return call_then(cpu, ctx, sh, move |_, ctx| {
@@ -1515,10 +1513,9 @@ pub fn install(
                 });
                 if let Some(target) = target {
                     let mut mem = ctx.runtime().memory();
-                    let Some(handle) = crate::retail_rows::retail_handle(&*mem, cpu.ecx, target) else {
-                        return mem.ret(cpu, 8);
-                    };
-                    mem.set_u32(live_press, handle)?;
+                    // The Live callback takes the display index from its argument.
+                    // Unlike the category picker it never looks up a list in ECX.
+                    mem.set_u32(live_press, target as u32)?;
                     mem.set_u32(cpu.esp + 8, live_press)?;
                 }
                 // The playlist screen OptiMatch's press opens lists the

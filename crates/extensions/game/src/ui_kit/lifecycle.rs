@@ -19,7 +19,7 @@
 //! - **While closing**: the closing screen still holds its window, so
 //!   the dispatcher keeps giving it every press until it is freed. Past
 //!   the closing press itself ([`CLOSE_GUARD`]) it hands each press to
-//!   the screen beneath ([`while_closing`], [`beneath`]), so the lobby
+//!   the screen beneath ([`while_closing`], [`beneath_for`]), so the lobby
 //!   takes input as soon as the close starts.
 
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ use engine::memory::MemFault;
 
 /// Retail's close of a window's top screen.
 pub const SCREEN_CLOSE: u32 = 0x0014_800c;
-/// The next screen down in the same window's list.
+/// Parent of a widget on the channel focus path.
 pub const SCREEN_NEXT: u32 = 0x10;
 /// A screen's window and slot words.
 pub const SCREEN_WINDOW: u32 = 0x74;
@@ -150,7 +150,7 @@ pub const CLOSE_GUARD: std::time::Duration = crate::ui_kit::input::OPENER_GUARD;
 
 /// What a closing screen of ours does with a press `since` after it
 /// started closing: drop it inside [`CLOSE_GUARD`] (the closing press),
-/// else hand it to the screen beneath ([`beneath`]), which takes it as
+/// else hand it to the screen beneath ([`beneath_for`]), which takes it as
 /// if the closing one were already gone.
 pub fn hands_down(since: std::time::Duration) -> bool {
     since >= CLOSE_GUARD
@@ -194,57 +194,43 @@ pub fn forget_closing(screen: u32) {
     closing().retain(|(s, _)| *s != screen);
 }
 
-/// A window channel's screen list (`+0x34`, linked through
-/// [`SCREEN_NEXT`]), and a screen's controller mask (`+8`): as
-/// `crate::ui_watch` reads them for the dispatcher.
-const CHANNEL_LIST: u32 = 0x34;
-const SCREEN_MASK: u32 = 8;
-/// No real list is longer; a torn read stops here.
-const MAX_LIST: usize = 32;
-
-/// The screen a press goes to once `screen` is gone, as the dispatcher
-/// (`0x147dbe`) would pick it: the next screen down `screen`'s own
-/// channel list (a dialog of ours over another, the value picker over its
-/// page), else the first screen of the first lower window on the same
-/// slot that holds one (Game Setup on window 3 under a dialog on window
-/// 1), each with a controller in common with `screen` and not closing
-/// itself. `None` when there is nothing beneath.
-pub fn beneath(m: &dyn engine::memory::GuestMemory, screen: u32) -> Result<Option<u32>, MemFault> {
-    let (window, slot) = (m.u32(screen + SCREEN_WINDOW)?, m.u32(screen + SCREEN_SLOT)?);
-    let mask = m.u16(screen + SCREEN_MASK)?;
-    let takes = |m: &dyn engine::memory::GuestMemory, s: u32| -> Result<bool, MemFault> {
-        Ok(m.u16(s + SCREEN_MASK)? & mask != 0 && m.u8(s + SCREEN_STATE)? & STATE_OUT == 0)
-    };
-    // Down our own channel's list, past us.
-    let mut at = m.u32(screen + SCREEN_NEXT)?;
-    for _ in 0..MAX_LIST {
-        if at == 0 {
-            break;
+/// The first window which would receive the event after the closing
+/// screen goes away. The channel stores a focused widget at +0x34.
+/// Its +0x10 chain leads to the active screen (0x235246). Dispatch to
+/// the first widget accepting the controller only after verifying that
+/// root, as 0x23515d does. Pending replacements consume the press.
+fn beneath_for(
+    m: &dyn engine::GuestMemory,
+    screen: u32,
+    mask: u16,
+) -> Result<Option<u32>, MemFault> {
+    use crate::ui_watch::{ACTIVE, PENDING, channel};
+    let window = m.u32(screen + SCREEN_WINDOW)?;
+    let slot = m.u32(screen + SCREEN_SLOT)?;
+    for w in window..=5 {
+        let Some(ch) = channel(w, slot) else { continue };
+        let active = m.u32(ch + ACTIVE)?;
+        if m.u32(ch + PENDING)? != 0 {
+            return Ok(None);
         }
-        if takes(m, at)? {
-            return Ok(Some(at));
-        }
-        at = m.u32(at + SCREEN_NEXT)?;
-    }
-    for w in window.saturating_add(1)..=5 {
-        let Some(ch) = crate::ui_watch::channel(w, slot) else {
-            continue;
-        };
-        let mut at = m.u32(ch + CHANNEL_LIST)?;
-        if at == 0 {
+        if active == 0 || active == screen {
             continue;
         }
-        for _ in 0..MAX_LIST {
-            if at == 0 {
-                break;
+        if m.u8(active + SCREEN_STATE)? & (STATE_IN | STATE_OUT) != 0 {
+            return Ok(None);
+        }
+        let mut at = m.u32(ch + 0x34)?;
+        let mut receiver = None;
+        for _ in 0..32 {
+            if at == 0 { break; }
+            if receiver.is_none() && m.u16(at + 8)? & mask != 0 {
+                receiver = Some(at);
             }
-            if takes(m, at)? {
-                return Ok(Some(at));
+            if at == active {
+                return Ok(receiver);
             }
             at = m.u32(at + SCREEN_NEXT)?;
         }
-        // The first window holding a screen is the one the dispatcher
-        // asks; a lower one never sees the press.
         return Ok(None);
     }
     Ok(None)
@@ -258,6 +244,7 @@ pub fn while_closing(
     m: &dyn engine::memory::GuestMemory,
     screen: u32,
     now: std::time::Instant,
+    controller: u32,
 ) -> Result<Option<Option<u32>>, MemFault> {
     if m.u8(screen + SCREEN_STATE)? & STATE_OUT == 0 {
         return Ok(None);
@@ -267,7 +254,8 @@ pub fn while_closing(
     if !hands_down(since) {
         return Ok(Some(None));
     }
-    Ok(Some(beneath(m, screen)?))
+    let mask = 1u16.checked_shl(controller).unwrap_or(0) & m.u16(screen + 8)?;
+    Ok(Some(beneath_for(m, screen, mask)?))
 }
 
 /// Hands event `ev` to screen `to` through its own event slot (screen
@@ -438,58 +426,37 @@ mod tests {
         }
     }
 
-    /// The lobby's windows as the dispatcher reads them: a dialog of ours
-    /// on window 1 over Game Setup on window 3, the value picker over its
-    /// page on window 1.
+    /// A closing dialog over Game Setup, with focus in a controller-specific child.
     #[test]
-    fn the_screen_beneath_is_the_next_down_the_list_then_the_next_window() {
+    fn a_closing_dialog_only_forwards_to_the_next_active_widgets() {
         use std::time::{Duration, Instant};
-        const PAGE: u32 = 0x8100_0000;
-        const PICKER: u32 = 0x8101_0000;
-        const SETUP: u32 = 0x8102_0000;
+        let mut m = engine::testing::FakeGuest::new();
+        let (dialog, setup, item) = (0x8100_0000, 0x8101_0000, 0x8102_0000);
         let slot = crate::ui_watch::SHARED;
-        let w1 = crate::ui_watch::channel(1, slot).unwrap();
-        let w3 = crate::ui_watch::channel(3, slot).unwrap();
-        let mut g = engine::testing::FakeGuest::new();
-        g.map(0x0054_d000, 0x1000);
-        for s in [PAGE, PICKER, SETUP] {
-            g.map(s, 0x1000);
-            g.put_u16(s + SCREEN_MASK, 1).put_u32(s + SCREEN_SLOT, slot);
-        }
-        g.put_u32(PAGE + SCREEN_WINDOW, 1)
-            .put_u32(PICKER + SCREEN_WINDOW, 1)
-            .put_u32(SETUP + SCREEN_WINDOW, 3);
-        // Window 1: the page alone; window 3: Game Setup.
-        g.put_u32(w1 + 8, PAGE).put_u32(w1 + CHANNEL_LIST, PAGE);
-        g.put_u32(w3 + 8, SETUP).put_u32(w3 + CHANNEL_LIST, SETUP);
-        assert_eq!(beneath(&g, PAGE), Ok(Some(SETUP)), "the dialog over Game Setup");
-        // The picker over the page: its page is beneath it.
-        g.put_u32(w1 + CHANNEL_LIST, PICKER).put_u32(PICKER + SCREEN_NEXT, PAGE);
-        assert_eq!(beneath(&g, PICKER), Ok(Some(PAGE)));
-        // A screen beneath that is closing too is passed over.
-        g.put_u8(PAGE + SCREEN_STATE, STATE_OUT);
-        assert_eq!(beneath(&g, PICKER), Ok(Some(SETUP)));
-        // Another player's screen is not this press's.
-        g.put_u16(SETUP + SCREEN_MASK, 2);
-        assert_eq!(beneath(&g, PICKER), Ok(None));
-        g.put_u16(SETUP + SCREEN_MASK, 1);
-
-        // The page closing: the closing press is dropped, the next goes
-        // to Game Setup, and a screen not closing handles its own.
-        g.put_u32(w1 + CHANNEL_LIST, PAGE).put_u32(PICKER + SCREEN_NEXT, 0);
-        let t = Instant::now();
-        forget_closing(PAGE);
-        started_closing(PAGE, t);
-        assert_eq!(while_closing(&g, PAGE, t + Duration::from_millis(10)), Ok(Some(None)));
-        assert_eq!(
-            while_closing(&g, PAGE, t + Duration::from_millis(60)),
-            Ok(Some(Some(SETUP))),
-            "a press 60 ms after the close reaches Game Setup"
-        );
-        g.put_u8(PAGE + SCREEN_STATE, 0);
-        assert_eq!(while_closing(&g, PAGE, t + Duration::from_millis(60)), Ok(None));
-        forget_closing(PAGE);
-        assert_eq!(closing_since(PAGE, t), None);
+        let channel = crate::ui_watch::channel(3, slot).unwrap();
+        m.map(0x0054_d000, 0x1000)
+            .put_u32(dialog + SCREEN_WINDOW, 1)
+            .put_u32(dialog + SCREEN_SLOT, slot)
+            .put_u16(dialog + 8, 3)
+            .put_u8(dialog + SCREEN_STATE, STATE_OUT)
+            .put_u32(channel + crate::ui_watch::ACTIVE, setup)
+            .put_u32(channel + 0x34, item)
+            .put_u32(item + SCREEN_NEXT, setup)
+            .put_u16(item + 8, 2)
+            .put_u16(setup + 8, 1);
+        let start = Instant::now();
+        forget_closing(dialog);
+        started_closing(dialog, start);
+        let later = start + Duration::from_millis(60);
+        assert_eq!(while_closing(&m, dialog, start, 0), Ok(Some(None)));
+        assert_eq!(while_closing(&m, dialog, later, 0), Ok(Some(Some(setup))));
+        assert_eq!(while_closing(&m, dialog, later, 1), Ok(Some(Some(item))));
+        m.put_u32(item + SCREEN_NEXT, dialog);
+        assert_eq!(while_closing(&m, dialog, later, 1), Ok(Some(None)), "stale focus");
+        m.put_u32(item + SCREEN_NEXT, setup)
+            .put_u32(channel + crate::ui_watch::PENDING, dialog);
+        assert_eq!(while_closing(&m, dialog, later, 0), Ok(Some(None)), "pending");
+        forget_closing(dialog);
     }
 
     #[test]
