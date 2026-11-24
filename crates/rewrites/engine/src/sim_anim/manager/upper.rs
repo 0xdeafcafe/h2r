@@ -1,5 +1,6 @@
 //! Channel motion, sample masks and the three pose evaluation calls.
 use super::{Body, Bus};
+use ::sim_anim::manager_channels::{playback_rate, PlaybackRate};
 use crate::points::{self, TAG_ENTRIES};
 use crate::sim_native::Memory;
 use crate::sim_physics::{arithmetic, logic, pop, push};
@@ -107,13 +108,6 @@ fn above(c: &mut CpuAbi, a: u32, b: u32) -> bool {
     c.eflags = (c.eflags & !ARITH) | f;
     c.eflags_defined |= ARITH;
     f == 0
-}
-fn ordered_equal(c: &mut CpuAbi, a: u32, b: u32) -> bool {
-    let f = simd::ucomiss(&mut c.mxcsr, a, b).expect("masked SSE");
-    let ah = f | 2;
-    c.eax = (c.eax & !0xff00) | (ah << 8);
-    logic(c, ah & 0x44, 0x80);
-    f & 0x44 == 0x40
 }
 /// Low datum index scaled to the 16-byte tag record. SHL by four
 /// leaves overflow undefined, and the masked index can't shift out a bit.
@@ -591,16 +585,20 @@ fn base_pose(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> Transfer {
     if c.ecx & 1 != 0 {
         let rate = g.u32(at(c.ebx, 24))?;
         scalar(c, 0, rate);
-        if !ordered_equal(c, rate, g.u32(ZERO)?) {
-            let force = if ordered_equal(c, rate, g.u32(ONE)?) {
+        let (mode, comparison) = playback_rate(rate, g.u32(ZERO)?, || g.u32(ONE), &mut c.mxcsr)?;
+        let ah = comparison | 2;
+        c.eax = (c.eax & !0xff00) | (ah << 8);
+        logic(c, ah & 0x44, 0x80);
+        let force = match mode {
+            PlaybackRate::Stopped => false,
+            PlaybackRate::Unit => {
                 c.edx = g.u32(0x510c54)?;
                 g.u16(at(c.edx, 2))? != u16::from(g.u8(0x1c6ffc)?)
-            } else {
-                true
-            };
-            if force {
-                g.set_u8(at(c.esp, 4), 1)?;
             }
+            PlaybackRate::Other => true,
+        };
+        if force {
+            g.set_u8(at(c.esp, 4), 1)?;
         }
     }
     mask_and_track(c, g, true, 0x1c7004)
