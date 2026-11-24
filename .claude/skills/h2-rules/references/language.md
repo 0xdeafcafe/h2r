@@ -264,6 +264,17 @@ game answers it from its `enter` and `leave` events.
 | `set_body` | team, tag (may be `none`) | `player.disguise` | now | named (`objects/characters/masterchief/masterchief_mp` or `objects/characters/elite/elite_mp`; `none` gives the players their own) |
 | `show_area` | zone, team (may be `none`) | none | now | named (the zone's boundary drawn in play in the team's colour, neutral for `none`; at most eight at once, a ninth is a script error; the round's end clears them) |
 | `hide_area` | zone | none | now | named (takes the zone's boundary off) |
+| `hud_value`, `hud_style` | widget (an `int`: a `hud` declaration's name), int | none | now | named (the widget's value or style in the show state; the objective HUDs read them, [rules-world-api.md](../../../../docs/game/rules-world-api.md#the-huds-a-script-feeds)); needs `hud.widgets` |
+| `hud_fill` | widget, fixed | none | now | named (0 to 1, kept as a byte) |
+| `hud_text` | widget, text | none | now | named (a literal; no holes) |
+| `hud_show` | widget, bool | none | now | named |
+| `mark`, `unmark` | waypoint (an `int`: a `waypoint` declaration's name), zone; waypoint | none | now | named (a navpoint over a zone with the distance); needs `hud.waypoints` |
+| `side_of`, `slot_of` | player | int | now | named (the team's index in a game with teams, 16 and the slot in one without; the slot) |
+
+`hud name: text at koth.hill` declares a widget at a HUD kit element (kinds
+`text`, `banner`, `meter`; at most 16), `waypoint name [at koth.mark]` a
+waypoint (at most 8), and `section "Name"` splits the script for the
+outline and folding. A name is the declaration's number, a `const`.
 | `message` | player, team or `all`; text | `hud.message` | now | untraced |
 | `place_squad` | squad, Class, int, label | `ai.squads` | queued | named |
 | `place_squad_at` | squad, Class, int, int, int | `ai.squads` | queued | named |

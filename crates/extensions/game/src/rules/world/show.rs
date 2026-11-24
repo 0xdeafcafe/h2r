@@ -160,15 +160,15 @@ pub fn clear_cues() {
 /// One listed player: its roster slot and team, its name and, when it is
 /// this machine's, its local user.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Roster {
-    slot: u8,
-    team: Option<u8>,
-    name: String,
-    user: Option<u32>,
+pub(super) struct Roster {
+    pub(super) slot: u8,
+    pub(super) team: Option<u8>,
+    pub(super) name: String,
+    pub(super) user: Option<u32>,
 }
 
 /// The listed players: slot, team, name and local user reads.
-fn roster(m: &dyn GuestMemory) -> Vec<Roster> {
+pub(super) fn roster(m: &dyn GuestMemory) -> Vec<Roster> {
     use engine::view::players;
     let Ok(Some(array)) = players::array(m) else {
         return Vec::new();

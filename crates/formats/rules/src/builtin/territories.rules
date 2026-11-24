@@ -14,11 +14,20 @@
 // option, as retail's is not traced; setting 99 is not read.
 rules "Territories" 1
 type territories
+requires hud.widgets, hud.waypoints
 
 // Retail's territory count is 1 to 8 (setting 74).
 const most_territories = 8
 
 label territory: zones 1..most_territories
+
+// The HUD (docs/game/game-types-without-carriers.md, "The display"): the
+// territories held of those in play, a banner for a capture and a mark over
+// the first one nobody holds. The count is of every side's: the state
+// holds one value for every viewer.
+hud owned_row: text at ter.owned
+hud taken_row: banner at ter.banner
+waypoint open_mark at ter.mark
 
 option in_play: int 1..most_territories = 3 "Territories" "How many of the map's territories are in play"
 option contest_time: time 1s..30s = 5s "Contest time" "How long a territory is stood in, uncontested, to take it"
@@ -29,6 +38,7 @@ object var live: bool = false
 object var progress: time = 0t
 global var placed: int = 0
 global var pay: timer
+global var banner_left: int = 0
 
 // Someone of another team, or with no teams anyone else.
 fn rival(a: player, b: player) -> bool = (variant.team_play and a.team != b.team) or (not variant.team_play and a != b)
@@ -46,9 +56,15 @@ on round_start {
         }
     }
     pay = score_time
+    hud_show(taken_row, false)
 }
 
 on tick {
+    // The banner shows for two ticks; the kit times it from there.
+    if banner_left > 0 {
+        banner_left = banner_left - 1
+        if banner_left == 0 { hud_show(taken_row, false) }
+    }
     for each territory m where m.live {
         if let lead = first(players p where p.alive and inside(p, m)) {
             let rivals = count(players q where q.alive and inside(q, m) and rival(q, lead))
@@ -62,11 +78,22 @@ on tick {
                     m.owner = lead
                     m.progress = 0t
                     show_area(m, lead.team)
+                    hud_text(taken_row, "TERRITORY CAPTURED")
+                    hud_show(taken_row, true)
+                    banner_left = 2
                 }
             }
         } else {
             m.progress = 0t
         }
+    }
+    hud_value(owned_row, count(territory m where m.live and m.owner != none))
+    hud_style(owned_row, placed)
+    hud_show(owned_row, placed > 0)
+    if let open = first(territory m where m.live and m.owner == none) {
+        mark(open_mark, open)
+    } else {
+        unmark(open_mark)
     }
 }
 

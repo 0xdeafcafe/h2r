@@ -171,9 +171,14 @@ A script whose options do not fit is refused.
   The HUDs are YAML (`content/modes/huds/`, `BUILTIN` in
   `hud-kit-core/src/data.rs`); `hud-kit-core/src/views/objective.rs` holds
   each one's state, the values it makes of it and invented states for the
-  preview and the checks. The script's replicated state that feeds them is
-  built with the objective types (GT3, GT4); the runtime does not draw
-  them yet. At each round start the VM tells the game the header's `points`
+  preview and the checks. The script's show state
+  ([rules-world-api.md](rules-world-api.md#the-huds-a-script-feeds)) feeds
+  them: `koth.rules`, `territories.rules`, `oddball.rules` and `ctf.rules`
+  (CTF and Assault) declare widgets at each HUD's elements and set them,
+  and the runtime draws them for each local user after every tick
+  (`rules::world::hud`). A distributed client that runs no script has no
+  state to draw until the `Show` record is built, and the waypoint of a
+  thing that moves waits for the entity read. At each round start the VM tells the game the header's `points`
   (`Game::points_label`, `FakeGame::scoreboard_label`); the retail
   scoreboard's own label is not traced ([the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "The HUD and the scoreboard").
 - **Post-game.** The statborg's scores, under the `points` label.

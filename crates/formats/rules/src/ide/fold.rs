@@ -31,6 +31,27 @@ pub(crate) fn folding_ranges(m: &Model) -> Vec<FoldingRange> {
         }
     }
 
+    // A section: its line to the line before the next section, or to the
+    // script's last line.
+    let mut sections: Vec<u32> = m.script.sections.iter().map(|(_, p)| line(m.li.pos_offset(*p))).collect();
+    sections.sort_unstable();
+    let last = m.code.last().map_or(0, |t| line(t.e.saturating_sub(1)));
+    for (i, &start) in sections.iter().enumerate() {
+        let end = sections.get(i + 1).map_or(last, |&next| next.saturating_sub(1));
+        // The last line of a section is its last non-blank one.
+        let end = (start + 1..=end)
+            .rev()
+            .find(|&l| !m.li.line_text(l as usize).trim().is_empty())
+            .unwrap_or(start);
+        if end > start {
+            out.push(FoldingRange {
+                start_line: start,
+                end_line: end,
+                kind: Some(fold_kind::REGION),
+            });
+        }
+    }
+
     // Comments that are a whole line: region markers pair up, the rest
     // fold in runs of two or more.
     let mut regions: Vec<u32> = Vec::new();

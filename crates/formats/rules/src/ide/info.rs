@@ -1143,7 +1143,47 @@ pub(crate) fn symbols(m: &Model) -> Vec<Symbol> {
             children,
         });
     }
-    out
+    nest_sections(m, out)
+}
+
+/// The declarations after a `section "Name"` line, under a symbol of its
+/// own that runs to the next section (docs/game/rules-world-api.md,
+/// "Splitting a script"); those before the first stay at the top.
+fn nest_sections(m: &Model, symbols: Vec<Symbol>) -> Vec<Symbol> {
+    if m.script.sections.is_empty() {
+        return symbols;
+    }
+    let mut marks: Vec<Symbol> = m
+        .script
+        .sections
+        .iter()
+        .map(|(name, pos)| {
+            let off = m.li.pos_offset(*pos);
+            let range = m.li.range(off, m.li.line_end(m.li.line_of(off)));
+            Symbol {
+                name: name.clone(),
+                detail: "section".to_string(),
+                kind: symbol_kind::NAMESPACE,
+                range,
+                selection_range: range,
+                children: Vec::new(),
+            }
+        })
+        .collect();
+    marks.sort_by_key(|s| s.range.start.line);
+    let lines: Vec<u32> = marks.iter().map(|s| s.range.start.line).collect();
+    let mut top = Vec::new();
+    for sym in symbols {
+        match lines.iter().rposition(|&l| l <= sym.range.start.line) {
+            Some(i) => {
+                marks[i].range.end = sym.range.end;
+                marks[i].children.push(sym);
+            }
+            None => top.push(sym),
+        }
+    }
+    top.extend(marks);
+    top
 }
 
 /// The type words a declaration may spell (the enums aside): the

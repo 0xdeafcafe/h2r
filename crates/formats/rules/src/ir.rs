@@ -71,7 +71,70 @@ pub struct Ir {
     pub tags: Vec<TagDef>,
     pub palettes: Vec<Palette>,
     pub tables: Vec<Table>,
+    /// The HUD widgets the script declares (`hud`), at most
+    /// [`MAX_WIDGETS`]: a widget's number is its index here.
+    pub widgets: Vec<WidgetDef>,
+    /// The waypoints the script declares (`waypoint`), at most
+    /// [`MAX_WAYPOINTS`]: a waypoint's number is its index here.
+    pub waypoints: Vec<WaypointDef>,
     pub handlers: Vec<Handler>,
+}
+
+/// HUD widgets a script declares at most (the show state's widget table,
+/// `crate::show::MAX_WIDGETS`).
+pub const MAX_WIDGETS: usize = 16;
+/// Waypoints a script declares at most (`crate::show::MAX_WAYPOINTS`).
+pub const MAX_WAYPOINTS: usize = 8;
+
+/// What a widget draws as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WidgetKind {
+    /// A line of text, or a number the HUD words.
+    Text,
+    /// The timed centred line.
+    Banner,
+    /// A bar with a fill.
+    Meter,
+}
+
+impl WidgetKind {
+    pub const ALL: [WidgetKind; 3] = [WidgetKind::Text, WidgetKind::Banner, WidgetKind::Meter];
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(c: u8) -> Option<WidgetKind> {
+        Self::ALL.into_iter().find(|k| k.code() == c)
+    }
+
+    /// The word a `hud` declaration spells it with.
+    pub fn word(self) -> &'static str {
+        match self {
+            WidgetKind::Text => "text",
+            WidgetKind::Banner => "banner",
+            WidgetKind::Meter => "meter",
+        }
+    }
+}
+
+/// A `hud <name>: <kind> at <slot>` declaration: a place in a HUD of the
+/// kit, named by the element's id (`koth.hill`), that the script words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WidgetDef {
+    /// The declared name, an index into the string table.
+    pub name: u16,
+    pub kind: WidgetKind,
+    /// The slot, an index into the string table.
+    pub slot: u16,
+}
+
+/// A `waypoint <name> [at <slot>]` declaration: a mark over a thing, drawn
+/// as the navpoint element `slot` names (none: the script's own list).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaypointDef {
+    pub name: u16,
+    pub slot: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -791,6 +854,17 @@ impl Ir {
                 w.i32(v);
             }
         }
+        w.len(self.widgets.len());
+        for d in &self.widgets {
+            w.u16(d.name);
+            w.u8(d.kind.code());
+            w.u16(d.slot);
+        }
+        w.len(self.waypoints.len());
+        for d in &self.waypoints {
+            w.u16(d.name);
+            w.opt_u16(d.slot);
+        }
         w.len(self.handlers.len());
         for hd in &self.handlers {
             w.u8(hd.event.code());
@@ -1004,6 +1078,41 @@ impl Ir {
                 cells,
             });
         }
+        let n = r.len("the widget table")?;
+        if n > MAX_WIDGETS {
+            return Err(DecodeError::Invalid {
+                what: "the widget count",
+                value: n as u32,
+            });
+        }
+        let mut widgets = Vec::with_capacity(n);
+        for _ in 0..n {
+            let name = r.u16("the widget table")?;
+            let kind = r.u8("the widget table")?;
+            let kind = WidgetKind::from_code(kind).ok_or(DecodeError::Invalid {
+                what: "a widget kind",
+                value: kind as u32,
+            })?;
+            widgets.push(WidgetDef {
+                name,
+                kind,
+                slot: r.u16("the widget table")?,
+            });
+        }
+        let n = r.len("the waypoint table")?;
+        if n > MAX_WAYPOINTS {
+            return Err(DecodeError::Invalid {
+                what: "the waypoint count",
+                value: n as u32,
+            });
+        }
+        let mut waypoints = Vec::with_capacity(n);
+        for _ in 0..n {
+            waypoints.push(WaypointDef {
+                name: r.u16("the waypoint table")?,
+                slot: r.opt_u16("the waypoint table")?,
+            });
+        }
         let n = r.len("the handler table")?;
         let mut handlers = Vec::with_capacity(n.min(64));
         for _ in 0..n {
@@ -1045,6 +1154,8 @@ impl Ir {
             tags,
             palettes,
             tables,
+            widgets,
+            waypoints,
             handlers,
         })
     }
@@ -1720,6 +1831,12 @@ pub(crate) mod tests {
                 }],
                 cells: vec![3, -4],
             }],
+            widgets: vec![WidgetDef {
+                name: 0,
+                kind: WidgetKind::Text,
+                slot: 1,
+            }],
+            waypoints: vec![WaypointDef { name: 1, slot: Some(0) }],
             handlers: vec![Handler {
                 event: Event::Kill,
                 timer: None,

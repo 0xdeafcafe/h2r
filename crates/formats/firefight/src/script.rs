@@ -396,6 +396,8 @@ pub fn compile(def: &Def) -> Result<Ir, ScriptRefusal> {
         tags: Vec::new(),
         palettes: Vec::new(),
         tables,
+        widgets: Vec::new(),
+        waypoints: Vec::new(),
         handlers,
     };
     ::rules::verify(&ir)?;

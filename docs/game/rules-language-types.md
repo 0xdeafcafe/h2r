@@ -93,6 +93,9 @@ types. A test asserts each front-end signature erases to its entry's
 | `spawn_areas(t, areas, n)`, `spawn_near(t, z, n)` | `team, spawns, int`; `team, zone?, int` (`none` lifts the rule) |
 | `set_body(t, body)` | `team, tag?` (`none` gives the players their own) |
 | `show_area(z, t)`, `hide_area(z)` | `zone, team?` (`none` is neutral); `zone` |
+| `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, n)`, `hud_text(w, "…")`, `hud_show(w, on)` | `int` (a widget's number, the name of its `hud` declaration), then `int`; `fixed`; `int`; `text`; `bool` |
+| `mark(wp, z)`, `unmark(wp)` | `int` (a waypoint's number, the name of its `waypoint` declaration), then `zone`; `int` |
+| `side_of(p)`, `slot_of(p)` | `player -> int`: the player's team index in a game with teams and 16 and its roster slot in one without; the roster slot |
 | `place_squad(s, c, n, at)` | `squad, class, int, objects` |
 | `round_time_left()`, `now()`, `seconds(n)` | `-> time`; `int -> time` |
 | `on kill(victim, killer)` | `player, player?` |

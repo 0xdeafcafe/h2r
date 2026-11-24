@@ -55,6 +55,9 @@ pub fn parse_recovering(tokens: &[Token]) -> (Script, Vec<CompileError>) {
                 quick: None,
                 settings: None,
                 requires: Vec::new(),
+                huds: Vec::new(),
+                waypoints: Vec::new(),
+                sections: Vec::new(),
                 items: Vec::new(),
             }
         }
@@ -97,7 +100,7 @@ impl<'a> Parser<'a> {
         if self.is_word("carrier") && matches!(self.peek2().tok, Tok::Punct(".")) {
             return false;
         }
-        if self.header_word().is_some() {
+        if self.header_word().is_some() || self.decl_word().is_some() {
             return true;
         }
         matches!(&self.peek().tok, Tok::Ident(s) if matches!(s.as_str(),
@@ -123,6 +126,33 @@ impl<'a> Parser<'a> {
             "about" if matches!(next, Tok::Str(_)) => Some("about"),
             _ => None,
         }
+    }
+
+    /// `hud`, `waypoint` or `section` where it starts a declaration:
+    /// followed by a name (`hud`, `waypoint`) or a string (`section`). They
+    /// are not keywords, so a handler may still use them as names.
+    fn decl_word(&self) -> Option<&'static str> {
+        let Tok::Ident(s) = &self.peek().tok else {
+            return None;
+        };
+        let next = &self.peek2().tok;
+        match s.as_str() {
+            "hud" if matches!(next, Tok::Ident(_)) => Some("hud"),
+            "waypoint" if matches!(next, Tok::Ident(_)) => Some("waypoint"),
+            "section" if matches!(next, Tok::Str(_)) => Some("section"),
+            _ => None,
+        }
+    }
+
+    /// A slot: a word, then `.` and a word as often as it goes on
+    /// (`koth.hill`).
+    fn slot(&mut self) -> R<String> {
+        let mut slot = self.word()?;
+        while self.eat_punct(".") {
+            slot.push('.');
+            slot.push_str(&self.word()?);
+        }
+        Ok(slot)
     }
 
     /// Recovery from a bad declaration: on to the next line that starts
@@ -403,6 +433,9 @@ impl<'a> Parser<'a> {
             quick: None,
             settings: None,
             requires: Vec::new(),
+            huds: Vec::new(),
+            waypoints: Vec::new(),
+            sections: Vec::new(),
             items: Vec::new(),
         };
         match self.header() {
@@ -451,7 +484,39 @@ impl<'a> Parser<'a> {
     fn item(&mut self, script: &mut Script) -> R<()> {
         let pos = self.pos();
         let header = self.header_word();
-        if self.is_word("carrier") || self.is_word("list") || header == Some("scoring") {
+        if let Some(decl) = self.decl_word() {
+            self.bump();
+            match decl {
+                "hud" => {
+                    // A widget is named by its number, which a `const` of
+                    // its name holds.
+                    let name = self.name()?;
+                    self.expect_punct(":")?;
+                    let kind = self.word()?;
+                    self.expect_word("at")?;
+                    let slot = self.slot()?;
+                    let number = script.huds.len() as i64;
+                    script.items.push(Item::Const {
+                        name: name.clone(),
+                        value: Expr { kind: ExprKind::Int(number), pos },
+                        pos,
+                    });
+                    script.huds.push(HudDecl { name, kind, slot, pos });
+                }
+                "waypoint" => {
+                    let name = self.name()?;
+                    let slot = if self.eat_word("at") { Some(self.slot()?) } else { None };
+                    let number = script.waypoints.len() as i64;
+                    script.items.push(Item::Const {
+                        name: name.clone(),
+                        value: Expr { kind: ExprKind::Int(number), pos },
+                        pos,
+                    });
+                    script.waypoints.push(WaypointDecl { name, slot, pos });
+                }
+                _ => script.sections.push((self.string()?, pos)),
+            }
+        } else if self.is_word("carrier") || self.is_word("list") || header == Some("scoring") {
             // Retired lines: kept for the checker, which names the line
             // to write instead.
             let word = self.word()?;

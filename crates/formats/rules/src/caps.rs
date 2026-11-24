@@ -60,6 +60,8 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("ai.squads", "places and commands AI", false),
     cap("bots.orders", "gives bots orders", false),
     cap("hud.message", "shows messages", false),
+    cap("hud.widgets", "draws on the HUD", false),
+    cap("hud.waypoints", "marks places and things", false),
     cap(
         "hud.superbounce",
         "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
@@ -300,6 +302,15 @@ pub mod id {
     pub const SET_BODY: u16 = 76;
     pub const SHOW_AREA: u16 = 77;
     pub const HIDE_AREA: u16 = 78;
+    pub const HUD_VALUE: u16 = 79;
+    pub const HUD_FILL: u16 = 80;
+    pub const HUD_STYLE: u16 = 81;
+    pub const HUD_TEXT: u16 = 82;
+    pub const HUD_SHOW: u16 = 83;
+    pub const MARK: u16 = 84;
+    pub const UNMARK: u16 = 85;
+    pub const SIDE_OF: u16 = 86;
+    pub const SLOT_OF: u16 = 87;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -471,6 +482,25 @@ pub const ENTRIES: &[Entry] = &[
     // (`game::rules::world::walls`). A display only, so no capability.
     act(id::SHOW_AREA, "show_area", &[Object, Team], None, Now, Named),
     act(id::HIDE_AREA, "hide_area", &[Object], None, Now, Named),
+    // The script's HUD (docs/game/rules-world-api.md, "HUD"): a widget is
+    // a `hud` declaration's number (a name in the language), a waypoint a
+    // `waypoint` declaration's. The VM keeps both in the show state
+    // (`vm::RulesExt::show`), which every machine that runs the VM draws
+    // from (`game::rules::world::hud`) and a film restores.
+    act(id::HUD_VALUE, "hud_value", &[Int, Int], Some("hud.widgets"), Now, Named),
+    act(id::HUD_FILL, "hud_fill", &[Int, Fixed], Some("hud.widgets"), Now, Named),
+    act(id::HUD_STYLE, "hud_style", &[Int, Int], Some("hud.widgets"), Now, Named),
+    act(id::HUD_TEXT, "hud_text", &[Int, Text], Some("hud.widgets"), Now, Named),
+    act(id::HUD_SHOW, "hud_show", &[Int, Bool], Some("hud.widgets"), Now, Named),
+    act(id::MARK, "mark", &[Int, Object], Some("hud.waypoints"), Now, Named),
+    act(id::UNMARK, "unmark", &[Int], Some("hud.waypoints"), Now, Named),
+    // Who a HUD widget's value names (`hud_value`): a player's side, its
+    // team's index in a game with teams and 16 and its roster slot in one
+    // without; and the roster slot alone. A viewer is on the side
+    // (`show::Viewer::on_side`), and a widget naming a slot is worded with
+    // that player's name. None (-1) for no player.
+    read(id::SIDE_OF, "side_of", &[Player], Int, Named),
+    read(id::SLOT_OF, "slot_of", &[Player], Int, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

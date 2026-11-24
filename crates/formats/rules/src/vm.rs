@@ -206,6 +206,9 @@ pub enum ErrorKind {
     Body,
     /// More than [`MAX_SHOWN_AREAS`] areas shown at once (`show_area`).
     Areas,
+    /// A `hud_*`, `mark` or `unmark` call named a widget or waypoint the
+    /// script does not declare.
+    Hud,
 }
 
 impl ErrorKind {
@@ -223,6 +226,7 @@ impl ErrorKind {
             5 => ErrorKind::Zones,
             6 => ErrorKind::Body,
             7 => ErrorKind::Areas,
+            8 => ErrorKind::Hud,
             _ => return None,
         })
     }
@@ -293,6 +297,10 @@ pub struct RulesExt {
     /// the team whose colour its wall takes (`None` for neutral). Every
     /// machine, and a film, draws the same walls from them.
     pub shown: Vec<(u32, Option<u8>)>,
+    /// The script's HUD widgets and waypoints (`hud_*`, `mark`): the show
+    /// state every machine that runs the VM draws from
+    /// ([`crate::show::view`]) and a film's keyframe restores.
+    pub show: crate::show::State,
 }
 
 /// A team's spawn rule: the starting locations its players' spawns may
@@ -333,8 +341,8 @@ pub enum StateError {
 
 const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
-/// bodies; 4 the script role mask and the shown areas.
-const STATE_VERSION: u8 = 4;
+/// bodies; 4 the script role mask and the shown areas; 5 the show state.
+const STATE_VERSION: u8 = 5;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -455,6 +463,9 @@ impl RulesExt {
             w.extend_from_slice(&zone.to_le_bytes());
             w.push(team.unwrap_or(NO_TEAM));
         }
+        let show = self.show.encode();
+        w.push(show.len() as u8);
+        w.extend_from_slice(&show);
         w
     }
 
@@ -612,6 +623,9 @@ impl RulesExt {
             }
             shown.push((zone, team));
         }
+        let at = r.at;
+        let n = r.u8()? as usize;
+        let show = crate::show::State::decode(r.take(n)?).map_err(|_| StateError::Malformed(at))?;
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -632,6 +646,7 @@ impl RulesExt {
             spawns,
             bodies,
             shown,
+            show,
         })
     }
 }
@@ -790,6 +805,7 @@ impl Vm {
             spawns: [None; MAX_TEAMS],
             bodies: [None; MAX_TEAMS],
             shown: Vec::new(),
+            show: crate::show::State::default(),
         };
         Ok(Vm {
             role_traits: role_traits(&ir, options),
@@ -817,6 +833,14 @@ impl Vm {
             && ext.queue.len() <= MAX_QUEUE
             && ext.held.len() <= MAX_HELD_ZONES
             && ext.shown.len() <= MAX_SHOWN_AREAS
+            && ext.show.widgets.iter().skip(ir.widgets.len()).all(Option::is_none)
+            && ext.show.waypoints.iter().skip(ir.waypoints.len()).all(Option::is_none)
+            && ext
+                .show
+                .widgets
+                .iter()
+                .flatten()
+                .all(|w| w.text.is_none_or(|t| (t as usize) < ir.strings.len()))
             && ext.spawns.iter().all(|r| match r {
                 Some(Spawns::Areas { label, .. }) => (*label as usize) < ir.labels.len(),
                 _ => true,
@@ -1142,6 +1166,7 @@ impl Vm {
                 self.ext.spawns = [None; MAX_TEAMS];
                 self.ext.bodies = [None; MAX_TEAMS];
                 self.ext.shown.clear();
+                self.ext.show = crate::show::State::default();
             }
             _ => {}
         }
@@ -1163,6 +1188,12 @@ impl Vm {
     /// whose colour its wall takes, `None` for neutral.
     pub fn shown_areas(&self) -> &[(u32, Option<u8>)] {
         &self.ext.shown
+    }
+
+    /// The script's HUD widgets and waypoints: what every machine that
+    /// runs the VM draws ([`crate::show::view`]).
+    pub fn show(&self) -> &crate::show::State {
+        &self.ext.show
     }
 
     /// Team `team`'s body (`set_body`): what the host's spawn hook makes its
@@ -1705,6 +1736,45 @@ impl<'a> Run<'a> {
             }
             return Ok(());
         }
+        // The script's HUD: a widget or a waypoint is a declaration's
+        // number, and one the script does not declare is a script error.
+        match entry {
+            caps::id::HUD_VALUE
+            | caps::id::HUD_FILL
+            | caps::id::HUD_STYLE
+            | caps::id::HUD_TEXT
+            | caps::id::HUD_SHOW => {
+                let w = usize::try_from(raw[0])
+                    .ok()
+                    .filter(|&w| w < self.ir.widgets.len())
+                    .and_then(|w| self.ext.show.widget(w))
+                    .ok_or(ErrorKind::Hud)?;
+                let v = raw[1];
+                match entry {
+                    caps::id::HUD_VALUE => w.value = v,
+                    caps::id::HUD_FILL => w.fill = crate::show::fill_byte(v),
+                    caps::id::HUD_STYLE => w.style = v.clamp(0, i32::from(u8::MAX)) as u8,
+                    caps::id::HUD_TEXT => w.text = u16::try_from(v).ok(),
+                    _ => w.shown = v != 0,
+                }
+                return Ok(());
+            }
+            caps::id::MARK | caps::id::UNMARK => {
+                let at = usize::try_from(raw[0])
+                    .ok()
+                    .filter(|&w| w < self.ir.waypoints.len())
+                    .ok_or(ErrorKind::Hud)?;
+                self.ext.show.waypoints[at] = match raw.get(1).and_then(|&o| object_id(o)) {
+                    Some(object) if entry == caps::id::MARK => Some(crate::show::Waypoint {
+                        at: object,
+                        audience: crate::show::EVERYONE,
+                    }),
+                    _ => None,
+                };
+                return Ok(());
+            }
+            _ => {}
+        }
         // The areas shown in play lead with a zone, not a team: `show_area`
         // shows it in a team's colour (neutral for `none`) or recolours it,
         // and `hide_area` takes it off. `none` for the zone does nothing; a
@@ -1933,6 +2003,19 @@ mod tests {
             ],
             bodies: [Some(Body::Elite), Some(Body::Spartan), None, None, None, None, None, None],
             shown: vec![(0x4001_0003, Some(1)), (0x4001_0007, None)],
+            show: {
+                let mut show = crate::show::State::default();
+                show.widgets[2] = Some(crate::show::Widget {
+                    shown: true,
+                    value: -4,
+                    fill: 200,
+                    style: 3,
+                    text: Some(1),
+                    audience: 0b101,
+                });
+                show.waypoints[1] = Some(crate::show::Waypoint { at: 0x4001_0003, audience: 3 });
+                show
+            },
         }
     }
 
@@ -1941,15 +2024,20 @@ mod tests {
         let mut e = ext();
         e.held.clear();
         e.shown.clear();
-        let bytes = e.encode();
         // Two zones, 12 before 5: rewrite the tail by hand.
-        let mut bad = bytes[..bytes.len() - 1].to_vec();
+        e.show = crate::show::State::default();
+        let bytes = e.encode();
+        let show = e.show.encode();
+        // Cut the held count, the shown count and the show state.
+        let mut bad = bytes[..bytes.len() - 3 - show.len()].to_vec();
         bad.push(2);
         for zone in [12u32, 5] {
             bad.extend_from_slice(&zone.to_le_bytes());
             bad.extend_from_slice(&[0; 4 * MAX_TEAMS]);
         }
         bad.push(0);
+        bad.push(show.len() as u8);
+        bad.extend_from_slice(&show);
         assert!(RulesExt::decode(&bad).is_err());
     }
 
@@ -2163,6 +2251,18 @@ mod tests {
             spawns: [Some(Spawns::Near { zone: u32::MAX, count: u8::MAX }); MAX_TEAMS],
             bodies: [Some(Body::Elite); MAX_TEAMS],
             shown: (0..MAX_SHOWN_AREAS as u32).map(|z| (z, Some(7))).collect(),
+            show: crate::show::State {
+                widgets: [Some(crate::show::Widget {
+                    shown: true,
+                    value: i32::MIN,
+                    fill: 255,
+                    style: 255,
+                    text: Some(u16::MAX),
+                    audience: u16::MAX,
+                }); crate::show::MAX_WIDGETS],
+                waypoints: [Some(crate::show::Waypoint { at: u32::MAX, audience: u16::MAX });
+                    crate::show::MAX_WAYPOINTS],
+            },
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());
