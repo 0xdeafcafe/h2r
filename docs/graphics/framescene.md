@@ -16,10 +16,12 @@ section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
 replacements wait on. Slice 6 provides the carried census, private draws
-of sealed scenes and an opt-in display owner for eligible game views.
-Paced display still queues guest-visible writes in order. Default ownership
-depends on the scheduling, corpus, parity and timing gates
-in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Of slice 8
+of sealed scenes and a display owner for eligible game views, on by
+default for a paced display (a window with a render thread) and opt-in
+for a locked run. Paced display still queues guest-visible writes in
+order. The scheduling, corpus, parity and timing gates in
+[slice 6](#slice-6-the-renderer-owns-game-view-frames) are not yet
+measured. Of slice 8
 the pure blend (`frame-scene::blend`) and the frame owner's display-rate
 loop are built; the loop blends view cameras, and objects stay at the
 newer tick. Slices 7, 9 and 10 are planned.
@@ -54,8 +56,10 @@ game data.
   lines of glue in `boot` and `feature`.
 - 60 and 120 fps are display frames between the last two sealed scenes,
   drawn by the frame owner on the render thread (section 7, slice 8).
-  Without a paced frame owner (`frame-scene.sink` off, a headless or
-  locked run) every scene is shown once, at 30 fps.
+  Without a paced frame owner (`frame-scene.sink=off`, a headless or
+  locked run, no render thread, a frame the owner declines: exact
+  readbacks for network play, films and lockstep, or a scaled display
+  without its single copy) every scene is shown once, at 30 fps.
 
 ## 2. Decisions
 
@@ -1525,9 +1529,12 @@ D3D reference with all native stages disabled.
   original-command fallback, visibility tickets, retained snapshots and
   a following menu frame. The parity RPC test changes a private clear
   to exercise the differing-pixel result.
-- **Cutover status.** Display adoption is opt-in. Eligibility, post-load
-  residency, pixel and hash parity and the delay through Swap require
-  measurement on the corpus. An unsupported frame runs the original path
+- **Cutover status.** Display adoption is on by default for a paced
+  display, because its display-rate loop is what 60 and 120 fps draw
+  (section 7); `frame-scene.sink=off` turns it off, and a locked run
+  asks for it with `frame-scene.sink`. Eligibility, post-load
+  residency, pixel and hash parity and the delay through Swap still
+  require measurement on the corpus. An unsupported frame runs the original path
   and appears in the decline count. The default path and the guest
   resource lifetime machinery are retained through this gate.
 - **Gate.** Pixels on the gate corpus against `native=off` (which

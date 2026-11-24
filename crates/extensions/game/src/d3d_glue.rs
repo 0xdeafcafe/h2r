@@ -292,8 +292,11 @@ pub struct PrivateScenes {
 impl PrivateScenes {
     pub fn requested(switches: &hooks::Switches, profile: film::RenderHooks, locked: bool) -> Option<Self> {
         // The original census has to measure all guest-visible readbacks.
+        // A paced display owns its frames by default: its display-rate
+        // loop is what 60 and 120 fps draw. A locked run (headless,
+        // unpaced, stop-at-present) asks for it with `frame-scene.sink`.
         let record = profile == film::RenderHooks::Gpu
-            && switches.feature(render_bridge::carried_slots::ID, false)
+            && switches.feature(render_bridge::carried_slots::ID, !locked)
             && !switches.feature(render_bridge::entry_census::ID, false)
             && hooks::switches::native_render_on(switches)
             && switches.feature(render_bridge::scene_step::ID, true);
@@ -1018,7 +1021,7 @@ where
     let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
     let measure = threaded
         && profile == film::RenderHooks::Gpu
-        && switches.feature(render_bridge::carried_slots::ID, false);
+        && switches.feature(render_bridge::carried_slots::ID, true);
     let window = measure.then(|| {
         let w = d3d::scene_sink::window::PresentWindow::new(scenes.is_some());
         Arc::new(w.with_seal_probe(|| {
@@ -2178,6 +2181,9 @@ mod tests {
         let gpu = film::RenderHooks::Gpu;
         assert_eq!(policy("frame-scene.sink", gpu, true), Some(Mode::Locked));
         assert_eq!(policy("frame-scene.sink", gpu, false), Some(Mode::Paced));
+        // A paced display owns its frames by default; a locked run asks.
+        assert_eq!(policy("", gpu, false), Some(Mode::Paced));
+        assert_eq!(policy("frame-scene.sink=off", gpu, false), None);
         for spec in [
             "", "frame-scene.sink,frame-scene.census", "frame-scene.sink,impl.render.native=off",
             "frame-scene.sink,frame-scene=off",

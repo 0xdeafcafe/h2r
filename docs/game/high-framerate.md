@@ -521,8 +521,9 @@ view's camera blended between their ticks
 ([framescene.md](../graphics/framescene.md), section 7 and slice 8).
 The rate is the Frame Rate setting's (60, or 120 while display frames
 fit the render thread, `frame-scene::pace::Headroom`, else 60). It needs
-a paced frame owner (`frame-scene.sink` on a display with a render
-thread); without one every guest frame is shown once. `render.stats`'
+a paced frame owner: a display with a render thread, on unless
+`frame-scene.sink=off`. Frames the owner declines (exact readbacks for
+network play, films and lockstep) are shown once. `render.stats`'
 `display_rate` counts the frames
 ([agent-api.md](../runtime/agent-api.md), "render.stats"). There is no
 D3D-side replay or reprojection, and no switch: the setting drives it.

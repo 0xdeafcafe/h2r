@@ -1467,7 +1467,7 @@ entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.
 
 `display_rate` is present while a paced frame owner runs it: a window
-or GPU serve with `frame-scene.sink` on, the render thread on, and no
+or GPU serve with the render thread on, `frame-scene.sink` not off, and no
 locked mailbox (`H2_BOOT_STOP_AT_PRESENT`, an unpaced display or a
 headless run lock it). Its fields, counted since the loop was installed:
 
