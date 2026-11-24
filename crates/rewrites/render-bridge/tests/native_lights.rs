@@ -42,6 +42,11 @@ fn its_chains_run_on_the_render_thread() {
         text.contains("implement native-lights:native_lights_items"),
         "{text}"
     );
+    // And one light's passes' at RENDER_LIGHT_PASSES (slice L5).
+    assert!(
+        text.contains("implement native-lights:native_lights_passes"),
+        "{text}"
+    );
     for point in [
         "RENDER_LIGHT_PASSES",
         "RENDER_DYNAMIC_LIGHTS",

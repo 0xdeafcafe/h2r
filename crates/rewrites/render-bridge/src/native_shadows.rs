@@ -439,9 +439,7 @@ impl Feature for NativeShadows {
                 let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else {
                     return;
                 };
-                let Some(site) = mem
-                    .u32(o.cpu.esp)
-                    .ok()
+                let Some(site) = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret))
                 else {
                     return;
@@ -463,9 +461,7 @@ impl Feature for NativeShadows {
                     return;
                 };
                 // Both calls have a five-byte direct CALL instruction.
-                let Some(site) = mem
-                    .u32(o.cpu.esp)
-                    .ok()
+                let Some(site) = engine::render::light_gather::passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret.checked_sub(5)?))
                 else {
                     return;

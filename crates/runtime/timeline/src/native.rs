@@ -402,7 +402,7 @@ impl std::fmt::Display for WorldMaterials {
 }
 
 const SCENE_LIST_START: usize = WORLD_SECTION_BASE + WORLD_SECTION_COLUMNS.len();
-const SCENE_LISTS: [&str; 19] = [
+const SCENE_LISTS: [&str; 20] = [
     "view_objects",
     "light_objects",
     "object_order",
@@ -422,6 +422,7 @@ const SCENE_LISTS: [&str; 19] = [
     "light_records",
     "light_items",
     "light_handoff",
+    "light_passes",
 ];
 const SCENE_LIST_RESULTS: [&str; 11] = [
     "native",
@@ -471,6 +472,8 @@ pub enum SceneList {
     /// reads it at the passes' entry; `compared` and `mismatch` check the
     /// hand-off against guest memory after the lists are made.
     LightHandoff,
+    /// One light's passes (`0x00031170`) by the passes body (slice L5).
+    LightPasses,
 }
 
 #[derive(Clone, Copy)]
@@ -774,7 +777,7 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(
             columns[ui - 1].1,
-            "native_scene_lists_light_handoff_mismatch"
+            "native_scene_lists_light_passes_mismatch"
         );
         let frame = lists + SceneList::LightFrame as usize * SCENE_LIST_RESULTS.len();
         assert_eq!(columns[frame].1, "native_scene_lists_light_frame_native");

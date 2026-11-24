@@ -584,7 +584,8 @@ pub(super) fn install(b: &mut Builder) {
         .context_only();
     b.raw()
         .observe_before(&points::LIGHT_RESTORE_TARGET, "light walk result", |o| {
-            if LIGHT.get().is_some() && o.guest().u32(o.cpu.esp).ok() == Some(LIGHT_TAIL_RETURN) {
+            let ret = engine::render::light_gather::passes::caller(&*o.guest(), o.cpu.esp);
+            if LIGHT.get().is_some() && ret == Some(LIGHT_TAIL_RETURN) {
                 end_layer();
                 if let Some(result) = LIGHT.take() {
                     phase::count(result, 1);
@@ -614,7 +615,12 @@ pub(super) fn install(b: &mut Builder) {
                 let layer = c.cpu.ebx;
                 let list = c.cpu.edi;
                 // Stack from Draw::start and Entries::start, also used by the ports.
-                let Some(caller) = args(BUILDER_TO_LAYER_CALLER) else {
+                // The layer draw's return: the guest's site when the passes
+                // body made the draw.
+                let caller = esp
+                    .checked_add(BUILDER_TO_LAYER_CALLER)
+                    .and_then(|slot| engine::render::light_gather::passes::caller(&*mem, slot));
+                let Some(caller) = caller else {
                     refused(Counter::LightWalkMemory);
                     return Ok(Flow::Continue);
                 };

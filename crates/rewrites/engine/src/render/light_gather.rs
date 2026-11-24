@@ -14,6 +14,8 @@
 //!   [`crate::render_loop::world_walk`] in the light's kind.
 //! - [`items`]: a light's two item lists and the first-person table
 //!   (`0x00040e90` in the light's kind, `0x00044ac0`).
+//! - [`passes`]: one light's passes (`0x00031170`), which calls the guest
+//!   for its lists, constants, projection and each layer's draws.
 //!
 //! The leaves are functions of guest memory and typed arguments. They
 //! write nothing: each returns the guest's writes as [`Writes`], in the
@@ -25,6 +27,7 @@ pub mod geometry;
 mod guest;
 pub mod history;
 pub mod items;
+pub mod passes;
 pub mod visible;
 pub mod volume;
 
