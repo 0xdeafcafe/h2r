@@ -20,7 +20,8 @@ use tags::{
     structure::InstancedGeometryInstance,
 };
 
-use crate::bases::{self, Bases, Config};
+use crate::bases::{self, Bases, Config, Team};
+use crate::ground::{Labels, Marker, Problem};
 
 pub(crate) struct Navigation {
     /// Elements for the pathfinding block of each structure BSP, in scenario order.
@@ -35,6 +36,8 @@ pub(crate) struct Navigation {
     /// The starting location rows, each team designator rewritten to the
     /// index of its nearest base.
     pub starts: Vec<Vec<u8>>,
+    /// Placed labels the ground cannot honour.
+    pub problems: Vec<Problem>,
 }
 
 const MIN_ZONES: usize = 6;
@@ -54,7 +57,11 @@ const DROP_POSITIONS: usize = 4;
 const BASE_RADIUS: f32 = 8.0;
 const BASE_POSITIONS: usize = 8;
 
-pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Result<Navigation> {
+pub(crate) fn prepare<R: Read + Seek>(
+    map: &mut Map<R>,
+    config: &Config,
+    labels: &Labels,
+) -> Result<Navigation> {
     let scenario = map.scenario().context("map has no scenario")?;
     let scnr = map.read_tag_bytes(scenario.id)?;
     let start_rows = metadata_block(map, &scnr, STARTING_LOCATIONS as usize, STARTING_LOCATION)?;
@@ -73,9 +80,24 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
     .iter()
     .map(|r| bases::flag_row(r))
     .collect();
-    let found = bases::find(&rows, &flags, config.home).context(
-        "the map has no two bases: no CTF flag stand or starting location for each of teams 0 and 1, and no two distinct starting locations",
-    )?;
+    let found = if labels.bases.is_empty() {
+        bases::find(&rows, &flags, config.home).context(
+            "the map has no two bases: no CTF flag stand or starting location for each of teams 0 and 1, and no two distinct starting locations",
+        )?
+    } else {
+        let team = |t: Team| {
+            labels
+                .bases
+                .iter()
+                .find(|b| b.team == t)
+                .map(|b| b.position)
+        };
+        let (Some(red), Some(blue)) = (team(Team::Red), team(Team::Blue)) else {
+            anyhow::bail!("ff_base: place one base for each of the two teams, or none");
+        };
+        bases::from_labels(red, blue, config.home)
+            .context("the two ff_base labels are less than a unit apart")?
+    };
     let teams = bases::start_teams(&found.points, &rows);
     let rewritten = start_rows
         .into_iter()
@@ -128,6 +150,7 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
             &found.points,
             index.try_into()?,
             cluster,
+            labels,
             &mut |w| why.push(format!("BSP {index}: {w}")),
         ) && best
             .as_ref()
@@ -150,6 +173,7 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
     // Keep only the sectors the AI can use, then encode each BSP's.
     let mut bsps = Vec::with_capacity(generated.len());
     let mut trim = Trim::default();
+    let mut problems = std::mem::take(&mut arena.problems);
     for (index, (id, pf, mut data)) in generated.into_iter().enumerate() {
         bots::autonav::mark_in_map(map, &mut data)
             .map_err(anyhow::Error::msg)
@@ -165,6 +189,7 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
             pathfind::trim::keep_sectors(&pf, &keep).map_err(anyhow::Error::msg)?;
         if on_arena {
             arena.renumber(&sector_of)?;
+            problems.extend(siege_problems(labels, &data.nav, &sector_of));
         }
         trim.generated += pf.sectors.len();
         trim.kept += kept.sectors.len();
@@ -178,7 +203,39 @@ pub(crate) fn prepare<R: Read + Seek>(map: &mut Map<R>, config: &Config) -> Resu
         base_zones: arena.bases,
         bases: found,
         starts: rewritten,
+        problems,
     })
+}
+
+/// The siege labels that are not on the ground the AI keeps. The scripts
+/// read these places; the ground only has to hold them.
+fn siege_problems(labels: &Labels, nav: &NavMesh, sector_of: &[u16]) -> Vec<Problem> {
+    let on_ground = |p: V3| {
+        nav.poly_near(p)
+            .and_then(|k| sector_of.get(k as usize))
+            .is_some_and(|&k| k != pathfind::trim::NONE)
+    };
+    let mut problems = Vec::new();
+    let mut check = |label: &'static str, index: usize, position: V3| {
+        if !on_ground(position) {
+            problems.push(Problem {
+                label,
+                index,
+                position,
+                reason: "not on the AI ground",
+            });
+        }
+    };
+    for (i, &p) in labels.sites.iter().enumerate() {
+        check("siege_site", i, p);
+    }
+    for (i, &p) in labels.goals.iter().enumerate() {
+        check("siege_goal", i, p);
+    }
+    for (i, l) in labels.lines.iter().enumerate() {
+        check("siege_line", i, l.position);
+    }
+    problems
 }
 
 fn distance2(a: V3, b: V3) -> f32 {
@@ -193,6 +250,8 @@ struct Arena {
     sectors: usize,
     zones: Vec<Zone>,
     bases: Vec<Zone>,
+    /// Placed drops and covers this arena cannot honour.
+    problems: Vec<Problem>,
 }
 
 impl Arena {
@@ -348,6 +407,7 @@ fn choose_zones(
     bases: &[V3],
     bsp: i16,
     cluster: impl Fn(V3) -> Option<i16>,
+    placed: &Labels,
     why: &mut dyn FnMut(String),
 ) -> Option<Arena> {
     let (graph, edge) = walk_graph(pf, &data.nav);
@@ -432,11 +492,32 @@ fn choose_zones(
             .iter()
             .map(|&k| center(k))
             .min_by(|a, b| distance2(*a, mid).total_cmp(&distance2(*b, mid)))?;
+        let mut problems = Vec::new();
+        // Placed covers on this area: the sector each stands on.
+        let on_area = |p: V3| {
+            data.nav
+                .poly_near(p)
+                .map(|k| k as usize)
+                .filter(|&k| k < graph.len() && owner[k] == root)
+        };
+        let mut covers = Vec::new();
+        for (index, m) in placed.covers.iter().enumerate() {
+            match on_area(m.position) {
+                Some(k) => covers.push((k, m.position)),
+                None => problems.push(Problem {
+                    label: "ff_cover",
+                    index,
+                    position: m.position,
+                    reason: "not on the walkable area the bases share",
+                }),
+            }
+        }
         let sample = ZoneSamples {
             data,
             starts,
             bsp,
             cluster: &cluster,
+            covers: &covers,
         };
         let Some(base_zones) = base_polys
             .iter()
@@ -447,6 +528,37 @@ fn choose_zones(
             why("a base zone found no firing positions".into());
             continue;
         };
+        let mut selected = vec![];
+        let mut zones = vec![];
+        if !placed.drops.is_empty() {
+            // The author's drops, one zone each in label order, the zone's
+            // first position the label's own point.
+            for (index, m) in placed.drops.iter().enumerate() {
+                let reason = match on_area(m.position) {
+                    None => "not on the walkable area the bases share",
+                    Some(k) => {
+                        let toward = [
+                            m.position[0] + 2.0 * libm::cosf(m.facing),
+                            m.position[1] + 2.0 * libm::sinf(m.facing),
+                            m.position[2],
+                        ];
+                        match sample.placed_drop(k, &graph[k], zones.len(), m, toward) {
+                            Some(zone) => {
+                                zones.push(zone);
+                                continue;
+                            }
+                            None => "no room for two firing positions",
+                        }
+                    }
+                };
+                problems.push(Problem {
+                    label: "ff_drop",
+                    index,
+                    position: m.position,
+                    reason,
+                });
+            }
+        }
         let mut candidates: Vec<_> = component
             .iter()
             .copied()
@@ -460,9 +572,10 @@ fn choose_zones(
                     && bases.iter().all(|&b| distance2(c, b) >= clearance.powi(2))
             })
             .collect();
+        if !placed.drops.is_empty() {
+            candidates.clear();
+        }
         let side = |k: usize| bases::nearest(bases, center(k));
-        let mut selected = vec![];
-        let mut zones = vec![];
         while !candidates.is_empty() && zones.len() < MAX_ZONES {
             // Alternate between the bases' sides so each base gets drops,
             // and spread the drops around the outside of the component.
@@ -494,9 +607,14 @@ fn choose_zones(
                 }
             }
         }
-        if zones.len() < MIN_ZONES {
+        let wanted = if placed.drops.is_empty() {
+            MIN_ZONES
+        } else {
+            1
+        };
+        if zones.len() < wanted {
             why(format!(
-                "the bases' area has room for {} drop zones of {MIN_ZONES}",
+                "the bases' area has room for {} drop zones of {wanted}",
                 zones.len()
             ));
         } else {
@@ -506,6 +624,7 @@ fn choose_zones(
                 sectors: component.len(),
                 zones,
                 bases: base_zones,
+                problems,
             });
         }
     }
@@ -517,6 +636,8 @@ struct ZoneSamples<'a, C> {
     starts: &'a [V3],
     bsp: i16,
     cluster: &'a C,
+    /// Placed `ff_cover` labels on the area: the sector and the point.
+    covers: &'a [(usize, V3)],
 }
 
 /// How one zone is sampled.
@@ -530,6 +651,8 @@ struct Spec {
     /// A drop zone: its polygon's centre must be a firing position, and no
     /// position is near a player start. A base zone's are around the starts.
     drop: bool,
+    /// A placed drop's own point, in place of its polygon's centre.
+    anchor: Option<V3>,
 }
 
 impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
@@ -550,6 +673,32 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 radius: DROP_RADIUS,
                 positions: DROP_POSITIONS,
                 drop: true,
+                anchor: None,
+            },
+        )
+    }
+
+    /// The zone of a placed `ff_drop` at `marker`, on polygon `sector`:
+    /// its first position is the marker's point, cover faces `toward`.
+    fn placed_drop(
+        &self,
+        sector: usize,
+        neighbours: &[usize],
+        ordinal: usize,
+        marker: &Marker,
+        toward: V3,
+    ) -> Option<Zone> {
+        self.zone(
+            sector,
+            neighbours,
+            &Spec {
+                name: format!("ff_drop_{ordinal:02}"),
+                area: "drop",
+                toward,
+                radius: DROP_RADIUS,
+                positions: DROP_POSITIONS,
+                drop: true,
+                anchor: Some(marker.position),
             },
         )
     }
@@ -581,6 +730,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 radius: BASE_RADIUS,
                 positions: BASE_POSITIONS,
                 drop: false,
+                anchor: None,
             },
         )
     }
@@ -617,7 +767,7 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
             })
         };
         let mut others = vec![];
-        let centre = sample(sector, poly.center);
+        let centre = sample(sector, spec.anchor.unwrap_or(poly.center));
         if spec.drop {
             positions.push(centre?);
         } else {
@@ -644,6 +794,14 @@ impl<C: Fn(V3) -> Option<i16>> ZoneSamples<'_, C> {
                 .is_some_and(|(_, n)| n[2].abs() < 0.7)
         };
         others.sort_by_cached_key(|f| !cover(f.position));
+        // A placed cover within reach goes first: the author chose it.
+        let placed: Vec<FiringPosition> = self
+            .covers
+            .iter()
+            .filter(|(_, p)| distance2(*p, poly.center) <= spec.radius.powi(2))
+            .filter_map(|&(k, p)| sample(k, p))
+            .collect();
+        others.splice(0..0, placed);
         for p in others {
             if positions
                 .iter()

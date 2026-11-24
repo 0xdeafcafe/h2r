@@ -537,12 +537,18 @@ probe on a running host. There is no separate list of Firefight maps:
 the lobby offers every installed kit package, so building a map's kit
 offers it.
 
+The build is `firefight_kit::ground::build`, which takes the labels
+placed on the map and the recipe, and gives each label's place to the
+generator below ([game-types-without-carriers.md](game-types-without-carriers.md),
+"The build step"); with no labels it makes what this section describes.
+
 **Bases.** `firefight-kit/src/bases.rs` finds two bases from the
 scenario: the mean of each team's CTF flag stands (netgame flags at
 `scnr+0x118`, type 0, team at `+0x12`, teams 0 and 1); else the mean of
 each team's starting locations (`scnr+0x100`, team designator at
 `+0x10`); else all starts split into two clusters seeded at the pair
-farthest apart. Base 0 is the home base, base 1 the other. Each starting
+farthest apart; `ff_base` labels, when placed, are the bases instead.
+Base 0 is the home base, base 1 the other. Each starting
 location's team designator is rewritten to its nearer base (a tie goes
 home), so team 0 spawns at the home base and team 1 at the other; the
 rows are rewritten in place, or as a new block at `scnr+0x100` (costed
