@@ -1390,7 +1390,7 @@ fn program_key(
 
 fn program_key_with_fetch(
     table: &RenderStateTable,
-    caps: Capabilities,
+    caps: gfx::translate::Capabilities,
     draw: &ResolvedDraw,
     present: [bool; 4],
     input_fetch: impl FnOnce() -> [InputFetch; 16],
