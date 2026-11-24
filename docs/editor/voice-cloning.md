@@ -97,6 +97,15 @@ background jobs, one at a time (`app::voices::Voices::start`);
 `voice.dataset.status` and the Voices window show their stage, progress
 and last log lines.
 
+`f5-tts-mlx` 0.2.6 draws its noise as `mx.random.normal((channels, dur))`
+with `dur` an element of a float32 `mx.array` of durations, which current
+MLX refuses as a shape (`TypeError: normal(): incompatible function
+arguments ... Invoked with types: tuple`). The script's
+`whole_number_shapes` wraps `mx.random.normal` so every shape is made of
+Python ints; `say` and `train` call it. The sidecar's tests are
+`crates/apps/studio/sidecar/test_voice_clone.py` (a fake `mlx.core`; run
+`python3 -I` on the file).
+
 ### The models
 
 | Backend | What | Runs on | Clone | Fine-tune | Licence |
@@ -142,9 +151,13 @@ line nearest 7 s, else the longest line with text up to 12 s).
   ([agent-api.md](agent-api.md), "Voices").
 - Agent API: the batch, `voice.say_batch`, `voice.batch.status`,
   `voice.batch.run`, `voice.batch.save` (agent-api.md, "Voices").
-- The Voices window (View > Voices): the announcer's Fish Audio voice says
-  one line; a character's clone says a batch, in the flow below. The
-  dataset, the fine-tune and the model's jobs are under "Voice setup".
+- The Voices window (View > Voices; `Open: Voices` in Go to anything): the
+  announcer's Fish Audio voice says one line; a character's clone says a
+  batch, in the flow below. The dataset, the fine-tune and the model's
+  jobs are under "Voice setup". **New line in Voices** in a sound's
+  editor (`ui/sound.rs`) runs `App::voices_line_for`: one batch row whose
+  target is that sound, and the window in front on the batch
+  ([studio-flow.md](studio-flow.md), "Voices and the announcer").
 - `voice::sidecar::Launcher` and `Sidecar` are the seam the tests replace
   (`voice::fake::FakeLauncher`); `voice::dataset::LineSource` the one the
   dataset builder reads through (`voice::fake::FakeLines`).
@@ -170,6 +183,15 @@ asks the model again instead of the cache. **Keep all done lines**
 **Replace**), and puts a row with a tag into the edit target package as a
 `sound` item, as `voice.commit` does. The picker for the tag lists the
 open map's dialogue sounds; a tag names a sound, not one permutation.
+
+The window adds two rules the API does not have. A row needs an output
+name or a game line it replaces (`Batch::blocked`): until it has one, its
+**Say** and **Say all** are off and the row says why. The tag picker is
+labelled "Replaces: <tag>", or "Replaces: nothing (saved as a new clip)"
+when it has none. A row's failure is shown as a sentence
+(`voice::readable`): a known library failure says what to do, a Python
+traceback is cut to its last line, and the whole text stays in the API's
+`why` and in `sidecar.log`.
 
 ## Rules and limits
 

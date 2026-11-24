@@ -98,8 +98,8 @@ mod tests {
         assert_eq!(w.entries[1].bails["alias"], 2);
         assert_eq!(w.entries[1].bails.len(), Bail::ALL.len());
         assert_eq!((w.decodes, w.precision.double), (3, 5));
-        assert_eq!((w.mopps, w.entries[5].addr.as_str()), (2, "00300150"));
-        assert_eq!(w.entries[5].bails["grow"], 5);
+        assert_eq!((w.mopps, w.entries[5].addr.as_str()), (2, "0014a5b0"));
+        assert_eq!(w.entries[7].bails["grow"], 5);
         assert_eq!(w.entries[1].bails["budget"], 6);
         assert_eq!((w.bytes, w.array_bytes), (950, 246));
         assert_eq!((w.budget_bytes, w.ring_fallbacks, w.cluster_budget_reads), (8 << 20, 4, 19));

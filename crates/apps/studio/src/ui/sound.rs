@@ -149,6 +149,16 @@ pub fn window(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut SoundUi) {
         .size([440.0, 380.0], Condition::FirstUseEver)
         .build(|| {
             ui.text(format!("{} {name}", icon::SOUND));
+            // The way from a sound to the voice that can say a new take
+            // of it (docs/editor/studio-flow.md, "Voices and the
+            // announcer").
+            if ui.button("New line in Voices##sound-voices") {
+                app.voices_line_for(&name);
+            }
+            ui.set_item_tooltip(
+                "Open Voices with a line that replaces this sound: type what is said, pick \
+                 the voice, say it, and keep it in the edit target package",
+            );
             body(ui, app, gpu, st, id, key);
         });
 }

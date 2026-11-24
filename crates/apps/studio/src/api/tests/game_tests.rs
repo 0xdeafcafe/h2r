@@ -165,6 +165,12 @@ fn status_names_the_own_game_and_the_mode_follows_it() {
     assert_eq!(call(&mut api, &mut app, m::GAME_STATUS, Value::Null)["mode"], "own");
     call(&mut api, &mut app, m::GAME_MODE, json!({"mode": "attached"}));
     assert_eq!(app.pairing.panel, crate::play::pair::PanelMode::Attached);
+    // Each switch leaves the window a request to re-pair the mirror.
+    use crate::play::pair::{PanelMode, Request};
+    assert_eq!(
+        app.pairing.requests,
+        [Request::Follow(PanelMode::Own), Request::Follow(PanelMode::Attached)]
+    );
 }
 
 #[test]

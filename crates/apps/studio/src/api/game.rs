@@ -153,7 +153,10 @@ fn mode(app: &mut App, p: &P) -> Reply {
     if want == PanelMode::Own && app.pairing.link.as_deref().is_none_or(|l| l.own.is_none()) {
         return Err(err(code::REFUSED, "this editor has no game of its own: game.start starts one"));
     }
+    // The window re-pairs the mirror and the picture at its next frame;
+    // the panel's mode reads at once.
     app.pairing.panel = want;
+    app.pairing.requests.push(Request::Follow(want));
     Ok(json!({"mode": want.name()}))
 }
 

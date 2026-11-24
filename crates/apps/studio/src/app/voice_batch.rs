@@ -214,6 +214,22 @@ impl Batch {
         None
     }
 
+    /// Why the window will not say `r` yet, or `None`: a problem of its
+    /// own ([`Batch::problem`]), or no output name and no game line to
+    /// replace, so nothing could name or place the result. The API's
+    /// `queue` does not ask for a name; the Voices window does.
+    pub fn blocked(&self, r: &Row) -> Option<String> {
+        if let Some(p) = self.problem(r) {
+            return Some(p);
+        }
+        if r.clip.is_empty() && r.tag.is_none() {
+            return Some(
+                "give the line an output name, or pick the game line it replaces".into(),
+            );
+        }
+        None
+    }
+
     /// Queues rows: with `ids`, those (a done row is asked again); else
     /// every idle or failed row. A row with a problem fails at once with
     /// it, and so does one whose voice and output name another row has.

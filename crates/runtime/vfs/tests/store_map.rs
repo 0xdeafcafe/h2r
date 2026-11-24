@@ -334,7 +334,7 @@ fn a_layered_level_is_served_from_its_image() {
     let dir = TempDir::new();
     let base = level(1, LEN);
     store(&dir.0, "level", &base);
-    store(&dir.0, "other", &level(4, 0x1000));
+    store(&dir.0, "other", &level(4, LEN));
     // The image: the base with its header changed and a tail added; the
     // raw resource at 0x4000 is the store's file.
     let mut built = base.clone();
@@ -363,8 +363,8 @@ fn a_layered_level_is_served_from_its_image() {
         "{listed:?}"
     );
     // A level whose image could not be made: the store's bytes.
-    let mut other = vec![0u8; 0x1000];
-    assert_eq!(b.read_at("maps\\other.map", 0, &mut other).unwrap(), 0x1000);
-    assert_eq!(other, level(4, 0x1000));
+    let mut other = vec![0u8; LEN];
+    assert_eq!(b.read_at("maps\\other.map", 0, &mut other).unwrap(), LEN);
+    assert_eq!(other, level(4, LEN));
     assert_eq!(b.level_of("other"), None);
 }

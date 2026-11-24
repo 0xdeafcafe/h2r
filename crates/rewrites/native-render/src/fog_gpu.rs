@@ -327,11 +327,11 @@ fn passes_of(
                 .and_then(|i| all.get(i))
                 .ok_or(FogRefusal::Implementations { pass: n, count: all.len() })?,
         };
-        let mut sampled;
+        let sampled;
         let imp = if let Some(properties) = properties.filter(|_| !imp.animated.is_empty()) {
-            sampled = crate::layer_pass::sample_constants(imp, properties, Some(0.0), false, n)
-                .map_err(|reason| FogRefusal::Compile { pass: n, reason: format!("{}: {reason:?}", reason.name()) })?;
-            sampled.animated.clear();
+            sampled = crate::layer_pass::PassAnimation::baseline(imp, properties, false, n)
+                .map_err(|reason| FogRefusal::Compile { pass: n, reason: format!("{}: {reason:?}", reason.name()) })?
+                .0;
             &sampled
         } else {
             imp
@@ -568,7 +568,8 @@ impl LayerConstants {
         Self { vertex: imp.vertex_constants.clone(), defaults: imp.vertex_defaults.clone(), c0, c1 }
     }
 
-    fn vertex(&self, base: &VertexUniforms) -> VertexUniforms {
+    /// `base` with the sampled vertex constants and attribute defaults.
+    pub(crate) fn vertex(&self, base: &VertexUniforms) -> VertexUniforms {
         let mut vertex = base.clone();
         for r in &self.vertex {
             crate::program::put(&mut vertex.constants, r);
@@ -578,6 +579,14 @@ impl LayerConstants {
         }
         vertex
     }
+
+    /// `base` with the sampled combiner constants (C0 and C1, the final
+    /// combiner's included); fog and the view's words stay `base`'s.
+    pub(crate) fn pixel(&self, base: &psh::PixelUniforms) -> psh::PixelUniforms {
+        let mut pixel = *base;
+        (pixel.c0, pixel.c1) = (self.c0, self.c1);
+        pixel
+    }
 }
 
 /// The sampled registers over a compiled pass's uniforms, followed by the fog
@@ -585,13 +594,9 @@ impl LayerConstants {
 fn layer_uniforms<'a>(
     sample: Option<&LayerConstants>, base: &'a MaterialProgram, fog: &psh::fog::Fog, color: [f32; 4],
 ) -> (std::borrow::Cow<'a, VertexUniforms>, psh::PixelUniforms) {
-    let mut pixel = base.pixel;
-    let vertex = match sample {
-        Some(s) => {
-            (pixel.c0, pixel.c1) = (s.c0, s.c1);
-            std::borrow::Cow::Owned(s.vertex(&base.vertex))
-        }
-        None => std::borrow::Cow::Borrowed(&base.vertex),
+    let (vertex, mut pixel) = match sample {
+        Some(s) => (std::borrow::Cow::Owned(s.vertex(&base.vertex)), s.pixel(&base.pixel)),
+        None => (std::borrow::Cow::Borrowed(&base.vertex), base.pixel),
     };
     pixel.fog = fog.uniform();
     pixel.fog_color = color;

@@ -536,7 +536,7 @@ impl NativeLayers {
                 (layer, editor_plan(layer, plan))
             })
             .collect();
-        plans.insert(layers_load::LAYER_3, layers_load::plan_layer3(&layer3));
+        plans.insert(layers_load::LAYER_3, layers_load::plan_layer3(&layer3, time));
         Self {
             view,
             world,
