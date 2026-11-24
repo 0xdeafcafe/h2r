@@ -4423,7 +4423,7 @@ fn from_render_replaces_collision_as_one_replayable_and_saveable_edit() {
     let out = t.path("converted-collision.map");
     call(&mut api, &mut app, m::DOC_SAVE_AS, json!({"doc":"map", "path":out}));
     let mut map = map::Map::open(out).unwrap();
-    let collision = tags::collision::Collision::read(&mut map, fixture::id(10)).unwrap();
+    let collision = ::tags::collision::Collision::read(&mut map, fixture::id(10)).unwrap();
     assert!(collision.validate().is_empty(), "{:?}", collision.validate());
     let bsp = collision.bsps().next().unwrap();
     assert_eq!(bsp.surfaces.len(), 1);
