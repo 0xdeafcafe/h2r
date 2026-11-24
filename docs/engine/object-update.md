@@ -875,6 +875,13 @@ after it); `faa30` is entered with `xmm0` set. Callee cleanup: `fd410`,
 
 ## Slice 5 bodies
 
+`sim_objects::light::blend` interpolates the two radius endpoints (light
+record `+ec`) and the two intensity endpoints (`+c4`) in the same order.
+It returns both the sum and the weighted second endpoint, which remains
+visible in the caller’s XMM registers. The scalar SSE model handles
+inputs outside the kernel’s proved range and tracks exceptions when the
+guest precision flag is clear.
+
 Each is **C** for its control flow and accesses: read at its address
 with `h2 disasm`, and compared with the lifted original by
 `tests/sim_objects_differential.rs` (roots `c1400`, `c0c80`, `c0b00`,

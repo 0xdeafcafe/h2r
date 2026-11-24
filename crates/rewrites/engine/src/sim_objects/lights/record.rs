@@ -24,6 +24,7 @@
 //! light takes the same arithmetic, with no runtime dispatch between it
 //! and the walk `c1400`.
 
+use ::sim_objects::light::{self, LightBlend};
 use crate::light_constants::{Error, Sse};
 use crate::points;
 use crate::sim_objects::{Cx, Next, Result, unowned};
@@ -77,6 +78,19 @@ fn diff(c: &mut CpuAbi, lhs: u32, rhs: u32) -> Result<u32> {
     c.eflags = c.eflags & !ARITH | f;
     c.eflags_defined |= ARITH;
     Ok(f)
+}
+
+/// Run the ordinary blend in Rust. The SSE model covers other operand
+/// ranges and sets the guest's sticky flags when they are observable.
+fn blend(s: &mut Sse, start: u32, end: u32, weight: u32, one: u32) -> Result<LightBlend> {
+    if let Some(result) = light::blend(start, end, weight, one, s.mxcsr) {
+        return Ok(result);
+    }
+    let complement = s.sub(one, weight).map_err(fp)?;
+    let weighted_start = s.mul(complement, start).map_err(fp)?;
+    let weighted_end = s.mul(end, weight).map_err(fp)?;
+    let value = s.add(weighted_start, weighted_end).map_err(fp)?;
+    Ok(LightBlend { weighted_end, value })
 }
 
 fn call(target: u32, site: u32) -> Result<Next> {
@@ -140,22 +154,19 @@ pub(in crate::sim_objects) fn record(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
             let t = g.u32(c.ebp + 208)?;
             let mut s = Sse { mxcsr: c.mxcsr };
             let one = if animated { g.u32(ONE)? } else { low(c, 7) };
-            let inv = s.sub(one, t).map_err(fp)?;
-            let a = s.mul(inv, g.u32(def + 112)?).map_err(fp)?;
-            let b = s.mul(g.u32(def + 116)?, t).map_err(fp)?;
-            let result = s.add(a, b).map_err(fp)?;
+            let radius = blend(&mut s, g.u32(def + 112)?, g.u32(def + 116)?, t, one)?;
             scalar(c, 0, t);
             if animated {
-                scalar(c, 1, result);
-                scalar(c, 2, b);
+                scalar(c, 1, radius.value);
+                scalar(c, 2, radius.weighted_end);
                 c.ebx = c.esi;
             } else {
-                scalar(c, 1, b);
-                set_low(c, 7, result);
+                scalar(c, 1, radius.weighted_end);
+                set_low(c, 7, radius.value);
             }
             c.mxcsr = s.mxcsr;
             c.edi = c.ebp + 236;
-            g.set_u32(c.edi, result)?;
+            g.set_u32(c.edi, radius.value)?;
             adjust(c, g)
         }
         0xc0e8c | 0xc0ebf => {
@@ -366,15 +377,12 @@ fn clamp(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
     };
     g.set_u32(c.edi, radius)?;
     let t = g.u32(c.ebp + 208)?;
-    let inv = s.sub(one, t).map_err(fp)?;
     c.ecx = (c.ecx & !65535) | u32::from(g.u16(c.ebp + 2)?);
-    let a = s.mul(inv, g.u32(c.ebx + 8)?).map_err(fp)?;
-    let b = s.mul(g.u32(c.ebx + 12)?, t).map_err(fp)?;
-    let intensity = s.add(a, b).map_err(fp)?;
-    scalar(c, 0, b);
-    scalar(c, 2, intensity);
-    g.set_u32(c.ebp + 196, intensity)?;
-    let mut active = c.ecx & 1 != 0 && s.above(intensity, zero).map_err(fp)?;
+    let intensity = blend(&mut s, g.u32(c.ebx + 8)?, g.u32(c.ebx + 12)?, t, one)?;
+    scalar(c, 0, intensity.weighted_end);
+    scalar(c, 2, intensity.value);
+    g.set_u32(c.ebp + 196, intensity.value)?;
+    let mut active = c.ecx & 1 != 0 && s.above(intensity.value, zero).map_err(fp)?;
     if active {
         active = false;
         for (i, value) in rgb.into_iter().enumerate() {

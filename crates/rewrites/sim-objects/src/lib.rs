@@ -15,6 +15,7 @@ pub mod damage;
 pub mod defs;
 pub mod events;
 pub mod functions;
+pub mod light;
 pub mod view;
 pub mod wake;
 pub mod walk;
