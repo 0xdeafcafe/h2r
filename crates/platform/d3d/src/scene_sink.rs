@@ -270,8 +270,8 @@ impl<B: Backend> SceneSink<B> {
             || !attachments
             || !s.sampled.is_empty() || !s.slots.is_empty() || !s.slot_sizes.is_empty()
             || !known(&s.color) || !known(&s.depth) || !room
-            || admission.plan.stage != Stage::Flares
-            || draw.writes_depth_stencil()
+            || !matches!(admission.plan.stage, Stage::Flares | Stage::Sky)
+            || (admission.plan.stage == Stage::Flares && draw.writes_depth_stencil())
             || !(Arc::ptr_eq(&admission.packet, draw) || *admission.packet == **draw)
             || !admission.pass.lock().is_ok_and(|p| p.replays_scene())
         {

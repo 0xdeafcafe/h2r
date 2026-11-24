@@ -204,7 +204,7 @@ pub(super) fn overlay(set: &GameSet) -> Overlay {
         let id = m.package.id.clone();
         for item in &m.items {
             match item.kind {
-                ItemKind::Tag | ItemKind::Bitmap => {
+                ItemKind::Tag | ItemKind::Bitmap | ItemKind::Sound | ItemKind::Model => {
                     if let Some(key) = added_tag(item) {
                         out.added
                             .entry(key)
@@ -739,8 +739,7 @@ pub fn copy(
 }
 
 impl App {
-    /// `asset.copy`, and the browser's **Copy into package**: the one call
-    /// both make.
+    /// Write the `like:` item for **New from this...** and `asset.copy`.
     pub fn asset_copy(
         &mut self,
         id: &AssetId,
@@ -751,37 +750,19 @@ impl App {
         copy(&self.tags_root(), &set, id, package, to)
     }
 
-    /// [`super::Action::CopyAsset`].
-    pub(super) fn copy_asset(&mut self, asset: &str, package: &str) {
-        let id = match AssetId::parse(asset) {
-            Ok(id) => id,
-            Err(e) => return self.error(e),
-        };
-        match self.asset_copy(&id, package, None) {
-            Ok(v) => self.info(format!(
-                "copied {asset} into {package} as {}",
-                v["tag"].as_str().unwrap_or("a new tag")
-            )),
-            Err(CopyRefusal::Params(m) | CopyRefusal::Refused(m) | CopyRefusal::Failed(m)) => {
-                self.error(m)
-            }
-        }
-    }
-
     /// [`super::Action::OpenAsset`]: the asset a browser row, a Go to
     /// anything entry or `shell.open {asset}` names. A package item opens
     /// the editor of what it builds ([`Self::open_item`]), and a voice
     /// opens its own document (docs/editor/studio-flow.md, "One way in").
     pub(super) fn open_asset(&mut self, asset: &str, map: Option<&str>) {
+        if map.is_none() && self.open_source_asset(asset, false) {
+            return;
+        }
         let key = match AssetId::parse(asset) {
             Ok(AssetId::Tag(key)) => key,
             Ok(AssetId::Item(p, n)) => return self.open_item(asset, &p, n, map),
             Ok(AssetId::Voice(id)) => return self.open_voice(&id),
-            Ok(AssetId::Package(_)) => {
-                return self.error(format!(
-                    "{asset} opens in the package document, which is not built yet"
-                ));
-            }
+            Ok(AssetId::Package(id)) => return self.open_package_document(&id),
             Err(e) => return self.error(e),
         };
         self.open_tag(key, map)
@@ -971,3 +952,7 @@ impl App {
         }
     }
 }
+
+mod creation;
+pub use creation::CreateAsset;
+pub(crate) use creation::{SourceAsset, SourceView};

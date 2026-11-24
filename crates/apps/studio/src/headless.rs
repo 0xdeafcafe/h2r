@@ -2174,20 +2174,24 @@ mod tests {
         );
     }
 
-    /// Copy into package, from the browser's context menu, is
-    /// [`Action::CopyAsset`]: the same call as `asset.copy`, a `tag` item
-    /// that holds none of the source's bytes.
+    /// New from this uses the edit target picker and opens the copy.
     #[test]
-    fn the_browsers_copy_into_package_writes_a_like_item() {
+    fn new_from_this_resumes_after_choosing_the_edit_target() {
         let t = crate::app::map_cards_tests::Temp::new("browser-copy");
         let data = t.0.join("data");
         let pkg = browser_tree(&data);
         let mut app = App::new();
         app.set_data_root(data);
-        app.dispatch(Action::CopyAsset {
+        app.dispatch(Action::CreateAsset(crate::app::assets::CreateAsset::Copy {
             asset: "tag:weap:objects\\weapons\\rifle".into(),
-            package: "kit-test".into(),
-        });
+            to: None,
+        }));
+        assert!(app.edits.picker.is_some());
+        assert!(app.front_doc().is_none());
+        app.dispatch(Action::ChooseEditTarget(crate::app::EditChoice::Existing("kit-test".into())));
+        let doc = app.front_doc().unwrap();
+        assert!(matches!(doc, crate::app::Doc::SourceAsset(_)));
+        assert_eq!(app.doc_asset(doc).as_deref(), Some("tag:weap:objects\\weapons\\rifle_copy"));
         let like = pkg.join("tags/objects/weapons/rifle_copy.weap.yaml");
         assert_eq!(
             std::fs::read_to_string(like).unwrap(),
@@ -2197,10 +2201,10 @@ mod tests {
         assert!(manifest.contains("rifle_copy"), "{manifest}");
         // A tag the tree lacks is a refusal in the log, not a file.
         let before = app.log().len();
-        app.dispatch(Action::CopyAsset {
+        app.dispatch(Action::CreateAsset(crate::app::assets::CreateAsset::Copy {
             asset: "tag:weap:objects\\nothing".into(),
-            package: "kit-test".into(),
-        });
+            to: None,
+        }));
         assert!(app.log().len() > before);
         assert!(!pkg.join("tags/objects/nothing_copy.weap.yaml").exists());
     }

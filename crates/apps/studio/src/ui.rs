@@ -17,6 +17,7 @@ pub mod map_list;
 mod modeling;
 mod outliner;
 mod palette;
+mod package;
 mod play;
 mod playlists;
 pub mod playtest;
@@ -109,6 +110,7 @@ pub struct Studio {
     pub scripts: scripts::ScriptsUi,
     /// The browser panel's state.
     pub browser: browser::BrowserUi,
+    package: package::PackageUi,
     /// The Problems panel's state.
     pub problems: problems::ProblemsUi,
     /// The map grid's pictures.
@@ -155,6 +157,7 @@ impl Studio {
             tags: tags::TagsUi::default(),
             scripts: scripts::ScriptsUi::default(),
             browser: browser::BrowserUi::default(),
+            package: package::PackageUi::default(),
             problems: problems::ProblemsUi::default(),
             map_list: map_list::MapListUi::default(),
             sound: sound::SoundUi::new(),
@@ -251,6 +254,10 @@ impl Studio {
                 self.viewport_window(ui, app, gpu, &mut actions);
                 self.inspector_window(ui, app, gpu, &mut actions);
             }
+            Surface::Package => {
+                self.browser_window(ui, app, false, &mut actions);
+                package::window(ui, app, &self.keys.package, &mut self.package, &mut self.browser, self.dialogs, &mut actions);
+            }
             Surface::Variants => self.variant_windows(ui, app, &mut actions),
             Surface::Playlists => self.playlist_windows(ui, app, &mut actions),
             Surface::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
@@ -287,6 +294,7 @@ impl Studio {
             ui.set_window_focus(Some("###game"));
         }
         self.status_bar(ui, app);
+        self.browser.create_modal(ui, &mut actions);
         self.modals(ui, app, &mut actions);
         actions.extend(self.palette.draw(ui, app));
         dispatch_actions(app, actions);
@@ -622,7 +630,7 @@ impl Studio {
                 }
             }
             Surface::Textures => textures::file_menu(ui, app, self.dialogs, actions),
-            Surface::Scene | Surface::UiScreens | Surface::Tags | Surface::Scripts => {}
+            Surface::Scene | Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Package => {}
             Surface::Variants => {
                 if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
                     && let Some(p) = variants::import_dialog(self.dialogs)
@@ -829,6 +837,7 @@ impl Studio {
                 };
                 ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
+            st.import_buttons(ui, self.dialogs);
             browser::draw(ui, app, &mut st, actions);
         });
         self.browser = st;
@@ -996,6 +1005,12 @@ impl Studio {
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
                 doc_header::draw(ui, app, actions, &mut self.browser);
+                if let Some(doc) = app.front_doc()
+                    && app.source_asset(doc).is_some()
+                {
+                    browser::source_view(ui, app, doc);
+                    return;
+                }
                 if map_is_visible(app) {
                     toolbar::draw(ui, app, viewport, actions, &mut self.hint);
                     viewport.draw(ui, app, gpu, actions);
@@ -1216,6 +1231,7 @@ impl Studio {
                 Surface::Tags => "The map's tags".to_owned(),
                 Surface::Scripts => "The map's scripts".to_owned(),
                 Surface::Textures => "The map's bitmaps".to_owned(),
+                Surface::Package => "The package".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
@@ -1253,7 +1269,7 @@ impl Studio {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Textures => {}
+                Surface::UiScreens | Surface::Tags | Surface::Scripts | Surface::Textures | Surface::Package => {}
             }
             ui.same_line();
             if ui.button("Discard") {

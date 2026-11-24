@@ -37,6 +37,7 @@ pub(super) struct Keys {
     pub bytes: WindowKey,
     /// The game type script editor, beside the Variants tool's settings.
     pub rules: WindowKey,
+    pub package: WindowKey,
     pub variants: ToolWindows,
     pub playlists: ToolWindows,
     pub screens: ToolWindows,
@@ -51,6 +52,7 @@ fn key(id: &str, icon: &str, title: &str) -> WindowKey {
 impl Keys {
     pub fn new() -> Self {
         Self {
+            package: key("package", icon::PACKAGE, "Package"),
             browser: key("browser", icon::TREE, "Browser"),
             tags: key("tags", icon::BOX, "Tags"),
             scripts: key("scripts", icon::FILE, "Scripts"),
@@ -129,7 +131,7 @@ impl Keys {
                         [&self.viewport]
                             .into_iter()
                             .chain(tools.map(|tool| &tool.center))
-                            .chain([&self.rules]),
+                            .chain([&self.rules, &self.package]),
                     ),
                 ),
             ),
@@ -156,7 +158,7 @@ impl Keys {
                 .into_iter()
                 .chain(tools.map(|t| &t.list)),
         );
-        seed(&self.viewport, tools.map(|t| &t.center).into_iter().chain([&self.rules]));
+        seed(&self.viewport, tools.map(|t| &t.center).into_iter().chain([&self.rules, &self.package]));
         seed(&self.inspector, tools.map(|t| &t.inspector));
         seed(
             &self.log,

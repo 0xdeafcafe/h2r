@@ -255,9 +255,13 @@ mod tests {
             assert!(!b.usable());
             assert!(b.problems.iter().any(|p| p.what.contains("mode 0")), "{:?}", b.problems);
         }
-        assert_eq!(c.matchmaking.len(), 10);
-        assert!(c.matchmaking.iter().all(Choice::usable), "{:?}", c.notes);
-        assert_eq!(c.matchmaking[0].origin, Origin::Matchmaking("rumble_slayer"));
+        let matchmaking = live_proto::hopper::defaults::builtin_variants();
+        assert_eq!(c.matchmaking.len(), matchmaking.len());
+        for (choice, (key, record)) in c.matchmaking.iter().zip(matchmaking) {
+            assert_eq!(choice.origin, Origin::Matchmaking(key));
+            assert_eq!(choice.variant.bytes(), record.bytes(), "{key}");
+            assert!(choice.usable(), "{key}: {:?}", choice.problems);
+        }
         assert!(c.saved.is_empty() && c.notes.is_empty());
     }
 

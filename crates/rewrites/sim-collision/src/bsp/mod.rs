@@ -10,8 +10,8 @@
 //! - a node carries its plane inline, so a visit reads one record;
 //! - a reference carries its projection row, fixed by its plane's
 //!   dominant axis and its flip bit;
-//! - a surface carries its edge ring as `(A, B)` vertex pairs, the two
-//!   vertices the retail inside test reads for each edge, in ring order.
+//! - a surface carries its edge ring as `(A, B)` vertex pairs in ring order.
+//!   Short rings can also hold packed origins and deltas for the inside test.
 //!
 //! The guest reads none of the counts; the decoder uses them to bound
 //! every index. A record the guest would read out of range, a plane
@@ -25,6 +25,7 @@ use std::cmp::Ordering;
 use std::sync::RwLock;
 
 pub mod point;
+mod ring;
 pub mod segment;
 
 /// A child word with this bit set is a leaf (`0xffff_ffff`: none, solid).
@@ -123,6 +124,8 @@ pub struct Surface {
     /// The scalar path uses `first_edge` and validates closure at query time.
     pub ring: u32,
     pub ring_len: u32,
+    /// First packed edge group, or `NONE` if this ring uses scalar tests.
+    packed_ring: u32,
 }
 
 /// One edge of a surface ring as the inside test reads it: vertex A (the
@@ -159,7 +162,7 @@ pub struct Bsp {
     /// Optional expanded edges. The world can release them even while a
     /// query holds an Arc to the essential arrays. Only edge arithmetic
     /// runs under the read lock.
-    ring: RwLock<Option<Vec<RingEdge>>>,
+    ring: RwLock<Option<ring::Rings>>,
     /// Per projection row, the `u` and `v` axes; [`BAD`] when the image's
     /// table names something else.
     pub projection: [[u8; 2]; 6],
@@ -318,7 +321,7 @@ impl Bsp {
     /// for another query to drop its BSP.
     pub(crate) fn discard_rings(&self) -> usize {
         let old = self.ring.write().unwrap_or_else(|e| e.into_inner()).take();
-        old.map_or(0, |ring| ring.capacity() * std::mem::size_of::<RingEdge>())
+        old.map_or(0, |ring| ring.footprint())
     }
 
     /// Bytes reserved by the decoded arrays, including spare vector capacity.
@@ -336,7 +339,7 @@ impl Bsp {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
-                .map_or(0, |ring| ring.capacity() * size_of::<RingEdge>())
+                .map_or(0, ring::Rings::footprint)
     }
 
     /// Decode the BSP whose header (read at `addr`) is `header`.
@@ -483,7 +486,7 @@ impl Bsp {
         let max_edges = (ring_bytes / std::mem::size_of::<RingEdge>() as u64) as usize;
         let mut ring = (max_edges != 0 || n(block::SURFACES) == 0).then(Vec::<RingEdge>::new);
         let mut scratch = [RingEdge::default(); MAX_RING];
-        let surfaces = raw[block::SURFACES]
+        let mut surfaces: Vec<_> = raw[block::SURFACES]
             .as_chunks::<8>()
             .0
             .iter()
@@ -520,9 +523,11 @@ impl Bsp {
                     material: half(b, 6),
                     ring: start,
                     ring_len: len,
+                    packed_ring: NONE,
                 }
             })
             .collect();
+        let ring = ring.map(|edges| ring::Rings::new(edges, &mut surfaces, ring_bytes));
 
         let projection = consts.projection.map(|row| {
             if (0..3).contains(&row[0]) && (0..3).contains(&row[1]) {
@@ -552,14 +557,14 @@ impl Bsp {
     /// ring from guest memory through `with_surface_ring` during the matcher.
     pub fn surface_ring(&self, surface: &Surface) -> Result<Vec<RingEdge>, Bail> {
         let ring = self.ring.read().unwrap_or_else(|e| e.into_inner());
-        let edges = ring.as_ref().ok_or(Bail::Budget)?;
-        Ok(cached_ring(edges, surface)?.to_vec())
+        let ring = ring.as_ref().ok_or(Bail::Budget)?;
+        Ok(cached_ring(&ring.edges, surface)?.to_vec())
     }
 
     /// The edges of a numbered surface in either storage mode.
     pub fn read_surface_ring(&self, g: &impl GuestRead, index: u32) -> Result<Vec<RingEdge>, Bail> {
         let surface = self.surfaces.get(index as usize).ok_or(Bail::Data)?;
-        self.with_surface_ring(g, index, surface, |edges| Ok(edges.to_vec()))
+        self.with_surface_ring(g, index, surface, |edges, _| Ok(edges.to_vec()))
     }
 
     fn with_surface_ring<T>(
@@ -567,12 +572,12 @@ impl Bsp {
         g: &impl GuestRead,
         index: u32,
         surface: &Surface,
-        test: impl FnOnce(&[RingEdge]) -> Result<T, Bail>,
+        test: impl FnOnce(&[RingEdge], &[ring::EdgeGroup]) -> Result<T, Bail>,
     ) -> Result<T, Bail> {
         {
             let ring = self.ring.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(edges) = ring.as_ref() {
-                return test(cached_ring(edges, surface)?);
+            if let Some(ring) = ring.as_ref() {
+                return test(cached_ring(&ring.edges, surface)?, ring.groups(surface));
             }
         }
         let edge = |i: u16| {
@@ -602,7 +607,7 @@ impl Bsp {
             vertex,
             &mut scratch,
         )?;
-        test(&scratch[..len])
+        test(&scratch[..len], &[])
     }
 
     /// The `u` and `v` axes of projection row `row`.

@@ -182,6 +182,7 @@ impl App {
     /// The `pair.preview` a document's kind takes.
     pub fn game_preview(&self, doc: Doc) -> Result<GamePreview, String> {
         match doc {
+            Doc::Package => Err("use Play in the package document".into()),
             Doc::Tag(id) => {
                 let t = self.tags.tag(id).ok_or("the tag is not in the open map")?;
                 plan_for_tag(t.group, &t.name)
@@ -204,6 +205,7 @@ impl App {
             Doc::Voice => Err(
                 "a voice has no preview in the game: a line previews as the sound it replaces".into(),
             ),
+            Doc::SourceAsset(_) => Err("Build the package and open a map containing this asset".into()),
             Doc::Variant => Err("a variant starts Studio's own game".into()),
             Doc::Playlists => Err(
                 "a playlist file has no preview in the game: Playtest runs it".into(),

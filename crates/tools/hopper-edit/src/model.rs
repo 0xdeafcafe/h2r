@@ -1115,7 +1115,7 @@ mod tests {
         let out = apply(&f, &m).unwrap();
         let d = out.descriptor(i).unwrap();
         assert_eq!(check_descriptor(&d), vec![]);
-        assert_eq!(d.playlist_id, 17);
+        assert_eq!(d.playlist_id, 16, "the lowest id no other playlist has");
         assert_eq!(out.text(i).unwrap().title, "Modtacular");
         assert_eq!(out.problems(&defaults::retail_map_ids()), vec![]);
         let e = out.entry(i, 0).unwrap();

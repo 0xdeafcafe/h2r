@@ -162,7 +162,7 @@ dropped with it.
 | Method | Does |
 |---|---|
 | `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
-| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:` or `item:` id. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. Playlist fragments are refused. The call answers the `tab`, the `front` and the `log` |
+| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:`, `item:` or `package:` id. A package opens in the `package` tab. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. A local authored tag, WAV or model can open in a source tab before its tag is available in a map. Playlist fragments are refused. The call answers the `tab`, the `front` and the `log` |
 | `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
 | `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
 
@@ -1773,12 +1773,14 @@ package's bitmap item with a PNG source. A tag's own picture (a bitmap,
 a model through `model.render`, a waveform, a screen) is not drawn yet
 and answers `not-yet`.
 
-`asset.copy {asset, package, to?}` is Copy into a package: it writes
+`asset.copy {asset, package?, to?}` is **New from this...**. It writes
 `tags/<path>.<group>.yaml` holding only `like: '<group>:<path>'`, adds a
 `tag` item to the package's `package.toml` and rewrites its
 `package.lock`. The package is one under `<data>/packages/` (a baked one
 is refused); the new path is `to`, or the source's with `_copy`; a path
-the tree or the package already has is refused.
+the tree or the package already has is refused. The reply gives the
+new source tab's `item:` id as `doc`. With no `package`, the method uses
+the edit target or returns `NO_TARGET`.
 
 `asset.links {asset}` answers what the asset uses, what uses it and which
 editors open it (docs/editor/studio-flow.md, "Links"; `app/links.rs`):
@@ -1853,6 +1855,7 @@ under `<data>/packages/<id>/` with `package.toml`, its files and
 | `package.check {id?}` | `{ok, count, findings: [{kind, message, item?, file?, line?}]}`: `lock` (missing or stale), `files` (a cache map, a `.h2tag` bundle, disc files, model weights or a dataset folder), `store` (a file that is a raw resource or a tag file of the user's tag store, by SHA-256; `package.read`'s `problems` and Problems list it too), `item` (no builder, a missing or oversize source, a source its builder refuses), `set` (a requirement missing or off), `conflict` (a tag path another package adds) |
 | `package.build {id?, map?, out?}` | for each map of the open source the package has an item for (or `map`), `{map, scope, touched, took_ms, tags, added, changed, overrides, bytes, problems}`; with `out`, each built map is written to `<out>/<map>.map` |
 | `package.play {id, map}` | the build for `map`, then `game.load` on the paired game |
+| `package.export {id, out}` | `{id, out, files}`; creates a new folder outside Git with the local package manifest, generated lock and named sources; refuses an existing destination, forbidden package files and tag-store bytes |
 | `package.diff {id?, map?}` | `{id, map, assets, counts, levels, built, conflicts, problems}`: `assets` is one row per asset the package changes or adds, `{asset, item, item_asset, change, maps, forked, ...}` where `change` is `edit` (with `fields: [{path, to, from?}]`, `blocks: [{path, op}]` and `was?`), `patch` (a `tag-delta`, with `was`), `override` (a `replaces`, with its hash) or `added`; `counts` counts them and the forks; `levels` are the maps the package changes (the open source's maps by class, else the maps its items name). With `map` (of the open source) the whole set is built over it and `conflicts` is the conflict table's rows `{map, kind: refused \| override, package, why, involves, other?, tag?, path?}`; `built` is false, with the reason in `problems`, when the build did not run. A read that built keeps its rows as that level's in Problems |
 
 Each write puts the new manifest through the set before it keeps it: a
@@ -1927,7 +1930,7 @@ and `headless::tests::the_problems_panel_lists_rows_and_a_double_click_opens_the
 
 ### Sounds into a package
 
-`import.sound {file, package, tag, class?}` (`api/import.rs`,
+`import.sound {file, package?, tag, class?}` (`api/import.rs`,
 `app/sound_import.rs`) adds a WAV to a local package as a `sound` item that
 writes the `snd!` `tag`. The WAV (16-bit PCM, mono or stereo, any rate) is
 copied unchanged to `sounds/<last segment of tag>.wav`, the item is added to
@@ -1937,7 +1940,9 @@ other is written to `sounds/<name>.sound.yaml`, a `data` item beside the
 WAV. The answer is what the build will write: `rate` (22,050, 32,000 or
 44,100 Hz, the nearest not below the clip's), `frames` at that rate,
 `duration_ms` and the `bytes` of Xbox ADPCM, with `from` the clip's own
-rate, channels and frames. A package that is baked, a tag the package adds
+rate, channels and frames. The sound source tab shows the waveform and
+plays the WAV. Its `item:` id is `doc` in the reply. With no `package`,
+the method uses the edit target or returns `NO_TARGET`. A package that is baked, a tag the package adds
 already or a file that is not a 16-bit PCM WAV is refused; a class that is
 not one is `invalid params`.
 
@@ -1948,6 +1953,18 @@ h2 studio import.sound '{"file":"/tmp/boing.wav","package":"my-pack","tag":"soun
 The build is `workspace::build` (`h2 package build`); the tests
 (`api/tests/import_tests.rs`, `workspace/src/import_tests.rs`) run over
 invented tones and an invented map.
+
+### Models into a package
+
+`import.model {file, package?, tag}` adds a primitive model YAML and the
+sibling atlas PNG it names to a local package as `model` and `data`
+items. The model builder checks both files before Studio writes them.
+The destination tag is a path such as `models/invented/box`. The
+result includes the package, the `tag:hlmt:` asset id, the YAML's
+relative `source`, the model item's index and the package directory.
+The model source tab shows the mesh as a wireframe and the result
+includes its `item:` id as `doc`. With no `package`, the method uses
+the edit target or returns `NO_TARGET`.
 
 ### Sound edits
 
@@ -2483,7 +2500,9 @@ the window and the API stay one path.
   `geometry.lower_lods {target?, on?}` is **Use for lower LODs** on an
   open model section (`Action::Model(ModelAction::UseForLowerLods)`, one
   undo step; `on` defaults to true) and answers `changed`; any other
-  target is refused. `geometry.collision.add_box {structure, lo, hi, material?}` adds a
+  target is refused. `model.collision_from_render` runs Modeling's
+  **From render** action and records a replayable `replace_polygons` op.
+  `geometry.collision.add_box {structure, lo, hi, material?}` adds a
   closed box solid inside `[lo, hi]` to a structure's level collision
   (`structure` its tag id), onto the boxes added before, as
   `Action::Model(ModelAction::AddCollisionBox)`, and answers its counts
@@ -2724,6 +2743,19 @@ several tags is `INVALID_PARAMS` with the candidates.
   the node count; the render model's markers (`mode +0x58`, name and
   node); the object's change-colour count; and for a `weap` its
   `first_person` entries with their `model` and `animations` and paths.
+- `model.collision_from_render {render, target?, materials?}`: replace
+  a collision BSP with polygons made from the current mesh of a render
+  section. Open both with `geometry.open` and pass their target ids
+  (source `mode_section`, `cluster` or `instance_def`; destination
+  `coll_bsp`, defaults to the active target). Choose meshes in the same
+  coordinate space. The BSP keeps its existing node binding. Each entry
+  in `materials` is the collision material index for the render material
+  at that position. An omitted or empty array assigns every face
+  collision material 0. The call answers `{target, verts, faces}` and
+  creates one map undo step. An unopened target is `NO_DOCUMENT`.
+  Unusable geometry, missing material mappings and compiler failures are
+  `REFUSED` and leave the mesh unchanged. The edit saves with the map
+  when Allow unverified geometry writes is on.
 - `model.render {tag, view?, variant?, character?, biped?, hands?,
   size?, camera?, out?}`: the model drawn offscreen through the
   viewport's native object renderer

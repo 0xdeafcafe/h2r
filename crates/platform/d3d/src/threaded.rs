@@ -1578,7 +1578,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
-        if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Objects | timeline::native::Stage::Lights)
+        if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Objects | timeline::native::Stage::Lights | timeline::native::Stage::Sky)
             && pass.lock().map_err(|_| "native pass poisoned")?.resolved_fallback().is_some()
         {
             // This is a resolved admission the queue declined. Keep its

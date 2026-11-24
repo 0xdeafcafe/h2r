@@ -17,6 +17,8 @@ fn the_switch_off_places_nothing() {
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
     assert!(!text.contains("native_transparents"), "{text}");
+    assert!(!text.contains("native_water_composite"), "{text}");
+    assert!(!text.contains("native_late_subpart_draw"), "{text}");
     // Nothing placed, nothing held: no snapshot blocker.
     assert!(plan.snapshot_blockers().is_empty());
 }
@@ -43,6 +45,10 @@ fn the_scene_and_its_cleanup_share_the_render_thread() {
     let text = plan.text();
     for (point, label) in [
         ("TRANSPARENT_GEOMETRY", "native_transparents_entry"),
+        ("WATER_INDEX_READY", "native_water_composite"),
+        ("SUBPART_STRIP_DRAW", "native_late_subpart_draw"),
+        ("SUBPART_LIST_DRAW", "native_late_subpart_draw"),
+        ("SUBPART_LIST_LAST", "native_late_subpart_draw"),
         ("GAME_ACTIVATE", "native_transparents_generation"),
         ("SCENE_TRANSPARENTS", "native_transparents_view"),
         ("SCENE_TRANSPARENTS_END", "native_transparents_end"),

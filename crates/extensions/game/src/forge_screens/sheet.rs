@@ -438,6 +438,8 @@ pub struct SheetRow {
     /// In the value column (Properties' values, the Controls page's
     /// buttons).
     pub value: Option<String>,
+    /// Whether this row's source could not supply its value.
+    pub(super) value_unavailable: bool,
     /// The focused row's line in the description block.
     pub description: Option<String>,
     pub act: Act,
@@ -448,12 +450,19 @@ impl SheetRow {
         SheetRow {
             label: label.into(),
             value: None,
+            value_unavailable: false,
             description: None,
             act,
         }
     }
     pub(super) fn value(mut self, v: &str) -> Self {
         self.value = Some(v.into());
+        self.value_unavailable = false;
+        self
+    }
+    pub(super) fn unavailable(mut self) -> Self {
+        self.value = Some("Unavailable".into());
+        self.value_unavailable = true;
         self
     }
     pub(super) fn describe(mut self, d: &str) -> Self {

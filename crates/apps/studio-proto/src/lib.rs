@@ -105,6 +105,7 @@ pub mod method {
     pub const PACKAGE_ORDER: &str = "package.order";
     pub const PACKAGE_CHECK: &str = "package.check";
     pub const PACKAGE_BUILD: &str = "package.build";
+    pub const PACKAGE_EXPORT: &str = "package.export";
     pub const PACKAGE_PLAY: &str = "package.play";
     pub const PACKAGE_DIFF: &str = "package.diff";
     // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
@@ -181,6 +182,7 @@ pub mod method {
     pub const SOUND_PERMUTATION: &str = "sound.permutation";
     // A WAV imported into a package as a `sound` item (api/import.rs).
     pub const IMPORT_SOUND: &str = "import.sound";
+    pub const IMPORT_MODEL: &str = "import.model";
     // A PNG imported into a package as a `bitmap` item (api/import.rs).
     pub const IMPORT_BITMAP: &str = "import.bitmap";
 
@@ -427,6 +429,7 @@ pub mod method {
     pub const HUD_SAVE_AS: &str = "hud.save_as";
     pub const MODEL_LIST: &str = "model.list";
     pub const MODEL_READ: &str = "model.read";
+    pub const MODEL_COLLISION_FROM_RENDER: &str = "model.collision_from_render";
     pub const MODEL_RENDER: &str = "model.render";
     pub const MODEL_CHECK: &str = "model.check";
     pub const MODEL_COLORS: &str = "model.colors";

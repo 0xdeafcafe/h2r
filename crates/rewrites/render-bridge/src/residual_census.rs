@@ -263,6 +263,12 @@ pub const REGISTRY: &[Row] = &[
         slot: "opaque",
     },
     Row {
+        name: "sky",
+        entry: engine::points::RENDER_SKY.base,
+        status: Status::Partial,
+        slot: "after_lights",
+    },
+    Row {
         name: "scene_clear",
         entry: 0x0001_4b60,
         status: Status::Partial,
@@ -285,6 +291,12 @@ pub const REGISTRY: &[Row] = &[
         entry: 0x0003_2350,
         status: Status::D3d,
         slot: "opaque",
+    },
+    Row {
+        name: "water_teardown",
+        entry: 0x0003_c3c0,
+        status: Status::Partial,
+        slot: "after_lights",
     },
     Row {
         name: "decals",
@@ -313,13 +325,13 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "screen_effects",
         entry: 0x0001_3870,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
         name: "colour_pass",
         entry: 0x0002_14f0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
@@ -343,7 +355,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "fade",
         entry: 0x0004_0890,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "overlay",
     },
     Row {
@@ -380,11 +392,12 @@ pub const LAYER_SITES: [&str; 6] = [
 /// those items' guest draws (slice R1, docs/graphics/retire-d3d.md, "By
 /// caller"), by [`LAYER_SITES`] index: the scene's layers 1, 2, 5, 7, 8,
 /// 17 and 20 (`frame-scene.layers`) and 3 (`native_objects`,
-/// `native_world`, the decorators), the alternate view's 2, and the first person's 1, 2, 7, 8 and
-/// 20 (`frame-scene.layers`) and 3 (`native_first_person`). Each is
+/// `native_world`, the decorators), 6 (water) and 16 (fog), the alternate
+/// view's 2, and the first person's 1, 2, 7, 8 and 20 (`frame-scene.layers`)
+/// and 3 (`native_first_person`). Each is
 /// [`Status::Partial`]: what its stages refuse stays the guest's.
 pub const PARTIAL_LAYERS: [(u8, &[u8]); 3] =
-    [(0, &[1, 2, 3, 5, 7, 8, 17, 20]), (1, &[2]), (2, &[1, 2, 3, 7, 8, 20])];
+    [(0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]), (1, &[2]), (2, &[1, 2, 3, 7, 8, 20])];
 
 /// The status of the layer draw at site `at` ([`LAYER_SITES`]) of `layer`.
 pub fn layer_status(at: u8, layer: u8) -> Status {
@@ -438,6 +451,7 @@ impl Producer {
     pub fn slot(self) -> &'static str {
         match self {
             Producer::Fixed(i) => REGISTRY.get(i).map_or("", |r| r.slot),
+            Producer::Layer { at: 0, layer: 6 | 16 } => "after_lights",
             Producer::Layer { at, .. } => match LAYER_SITES.get(usize::from(at)) {
                 Some(&"light") => "after_opaque",
                 _ => "opaque",
@@ -956,6 +970,18 @@ pub fn install(b: &mut hooks::Builder) {
             "residual_census_scene_passes_end",
         ),
         (
+            &points::WATER_TEARDOWN,
+            "water_teardown",
+            "residual_census_water_teardown",
+            "residual_census_water_teardown_end",
+        ),
+        (
+            &points::RENDER_SKY,
+            "sky",
+            "residual_census_sky",
+            "residual_census_sky_end",
+        ),
+        (
             &points::SCENE_CLEAR,
             "scene_clear",
             "residual_census_scene_clear",
@@ -1344,7 +1370,10 @@ mod tests {
             );
         }
         assert_eq!(status(2, 5), "d3d", "the first person draws no layer 5");
-        assert_eq!(status(0, 16), "d3d", "the fog's late layer");
+        for layer in [6, 16] {
+            assert_eq!(status(0, layer), "partial");
+            assert_eq!(status(5, layer), "d3d", "a different caller keeps its draw");
+        }
         assert_eq!(status(1, 2), "partial", "an alternate view's layer 2");
         assert_eq!(status(1, 1), "d3d", "an alternate view's");
         assert_eq!(status(3, 12), "d3d", "the light passes'");
@@ -1352,11 +1381,29 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if matches!(r.name, "scene_clear" | "target_select" | "screen_effect" | "transparents") { Status::Partial } else { Status::D3d },
-                "{}",
+                if matches!(
+                    r.name,
+                    "water_teardown"
+                        | "sky"
+                        | "scene_clear"
+                        | "target_select"
+                        | "transparents"
+                        | "screen_effects"
+                        | "colour_pass"
+                        | "screen_effect"
+                        | "fade"
+                ) {
+                    Status::Partial
+                } else {
+                    Status::D3d
+                },
+                "unexpected fixed producer status for {}",
                 r.name
             );
         }
+        let sky = Producer::Fixed(row("sky").unwrap());
+        assert_eq!(sky.status(), Status::Partial);
+        assert_eq!(sky.slot(), "after_lights");
     }
 
     #[test]
@@ -1382,17 +1429,36 @@ mod tests {
 
     #[test]
     fn screen_effects_charge_claimed_and_guest_draws_to_the_partial_producer() {
-        let effect = Producer::Fixed(row("screen_effect").unwrap());
+        let producer = |name| Producer::Fixed(row(name).unwrap());
+        let parent = producer("screen_effects");
         let mut c = open(true, 1);
         c.frame_begin();
-        c.enter(effect);
-        c.call(&entry(DRAW, 0x1200, tally(3, 2, 1, 0)), None);
-        c.leave(|p| p == effect);
+        c.enter(parent);
+        for name in ["colour_pass", "screen_effect"] {
+            let child = producer(name);
+            c.enter(child);
+            c.call(&entry(DRAW, 0x1200, tally(3, 2, 1, 0)), None);
+            c.leave(|p| p == child);
+        }
+        c.call(&entry(DRAW, 0x1300, tally(1, 0, 1, 0)), None);
+        c.leave(|p| p == parent);
+        let fade = producer("fade");
+        c.enter(fade);
+        c.call(&entry(DRAW, 0x1400, tally(1, 1, 0, 0)), None);
+        c.leave(|p| p == fade);
         c.frame_end();
-        let report = close(c, 8);
-        let work = report.producers.unwrap()[&effect].work;
-        assert_eq!(effect.status(), Status::Partial);
-        assert_eq!((work.draws, work.claimed, work.residual), (3, 2, 1));
+        let rows = close(c, 8).producers.unwrap();
+        for (name, expected) in [
+            ("screen_effects", (1, 0, 1)),
+            ("colour_pass", (3, 2, 1)),
+            ("screen_effect", (3, 2, 1)),
+            ("fade", (1, 1, 0)),
+        ] {
+            let p = producer(name);
+            let w = rows[&p].work;
+            assert_eq!(p.status(), Status::Partial, "{name}");
+            assert_eq!((w.draws, w.claimed, w.residual), expected, "{name}");
+        }
     }
 
     #[test]

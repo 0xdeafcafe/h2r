@@ -106,6 +106,7 @@ pub enum ToolKind {
     /// The open map's bitmaps: paint, import and export PNGs
     /// (docs/editor/modeling.md, "Texture editing").
     Textures,
+    Package,
 }
 
 impl ToolKind {
@@ -129,6 +130,7 @@ impl ToolKind {
             ToolKind::Tags => "Tags",
             ToolKind::Scripts => "Scripts",
             ToolKind::Textures => "Textures",
+            ToolKind::Package => "Package",
         }
     }
 }
@@ -340,12 +342,13 @@ pub enum Action {
     /// brought forward.
     Show(Surface),
     /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
-    /// editor, or a voice (`voice:<id>`) in the voice document: on `map` (opened first when it is not the open one), else
-    /// on the open map (`app::assets`).
+    /// editor, or open a voice, package, or authored item in its document
+    /// (`app::assets`). Tag editors use the supplied map or the open map.
     OpenAsset { asset: String, map: Option<String> },
-    /// Copy a browser row's tag into a local package, as `asset.copy`
-    /// does (`app::assets`).
-    CopyAsset { asset: String, package: String },
+    /// Make and open a package item in the edit target.
+    CreateAsset(assets::CreateAsset),
+    /// Run a package document control through the package API handlers.
+    PackageCommand { method: &'static str, params: serde_json::Value },
     /// **Fork for this map**: the asset's edit lines for the open map, in
     /// the edit target (`app::mods`).
     ForkAsset { asset: String },
@@ -538,10 +541,11 @@ impl Action {
                 dirty_map()
             }
             Action::SelectHalo1Map(_) => dirty_map(),
-            Action::OpenAsset { map: Some(name), .. }
-                if app.loaded.as_deref() != Some(name.as_str())
-                    || app.opened_package.is_some()
-                    || app.browsing().is_some() =>
+            Action::OpenAsset { asset, map: Some(name) }
+                if !asset.starts_with("package:")
+                    && (app.loaded.as_deref() != Some(name.as_str())
+                        || app.opened_package.is_some()
+                        || app.browsing().is_some()) =>
             {
                 dirty_map()
             }
@@ -557,7 +561,7 @@ impl Action {
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
             // The script's text stays in the editor when its tab closes.
-            Action::CloseDoc(Doc::Rules | Doc::Voice) => None,
+            Action::CloseDoc(Doc::Rules | Doc::Voice | Doc::SourceAsset(_)) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -630,6 +634,7 @@ pub struct App {
     packages: Vec<editor_core::packages::PackageEntry>,
     /// The package entry open in the scenario tool.
     opened_package: Option<String>,
+    source_assets: Vec<Option<assets::SourceAsset>>,
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
@@ -722,6 +727,7 @@ pub struct App {
     pub announcer: announcer::Announcer,
     /// Voices: the clone's datasets, jobs and sidecar (`voices`).
     pub voices: voices::Voices,
+    pub(crate) package_document: package_doc::Document,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
     /// The Shader tab's WGSL drafts and pushed overrides (`shader_override`).
@@ -770,6 +776,7 @@ impl App {
             edits: EditState::default(),
             packages: Vec::new(),
             opened_package: None,
+            source_assets: Vec::new(),
             mappack: None,
             pack: Vec::new(),
             pack_notes: Vec::new(),
@@ -812,6 +819,7 @@ impl App {
             anim: Default::default(),
             announcer: Default::default(),
             voices: Default::default(),
+            package_document: Default::default(),
             rules: Default::default(),
             shader_overrides: Default::default(),
             tabs: Default::default(),
@@ -906,7 +914,7 @@ impl App {
             ToolKind::UiScreens => self.ui_screens.edit.ours.dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
-            ToolKind::Tags | ToolKind::Scripts => false,
+            ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => false,
             // Bitmap edits reach the map's save when it runs
             // (`push_bitmap_changes`): unsaved until then, and while the
             // map holds changes it has not written.
@@ -945,6 +953,7 @@ impl App {
             // The compiles into the map's scripts.
             ToolKind::Scripts => self.scripts.edit.as_ref().is_some_and(|d| d.depth().0 > 0),
             ToolKind::Textures => self.textures.can_undo(),
+            ToolKind::Package => false,
         }
     }
     pub fn can_redo(&self) -> bool {
@@ -963,6 +972,7 @@ impl App {
             ToolKind::Tags => self.tags.can_redo(),
             ToolKind::Scripts => self.scripts.edit.as_ref().is_some_and(|d| d.depth().1 > 0),
             ToolKind::Textures => self.textures.can_redo(),
+            ToolKind::Package => false,
         }
     }
     pub fn fly_speed(&self) -> f32 {
@@ -1013,6 +1023,7 @@ impl App {
             ToolKind::Tags => self.shown_map_name().map(str::to_owned),
             ToolKind::Scripts => self.loaded.clone(),
             ToolKind::Textures => self.loaded.clone(),
+            ToolKind::Package => self.package_document.name().map(str::to_owned),
         };
         // A browsed map is never dirty: the open map's mark is its own.
         let dirty = self.tool_dirty(self.tool)
@@ -1103,7 +1114,7 @@ impl App {
                     }
                 }
                 ToolKind::Textures => self.run(Action::Save),
-                ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
@@ -1111,7 +1122,7 @@ impl App {
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Hud => self.run(Action::HudSaveAs(path)),
                 ToolKind::Textures => self.run(Action::SaveMapAs(path)),
-                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => {}
             },
         }
         if self.tool_dirty(tool) {
@@ -1147,7 +1158,7 @@ impl App {
                 // The map no longer holds what they would have written.
                 self.push_bitmap_changes();
             }
-            ToolKind::Tags | ToolKind::Scripts => {}
+            ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => {}
         }
     }
 
@@ -1213,7 +1224,8 @@ impl App {
                 None => self.undo_redo(self.tool, false),
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
-            Action::CopyAsset { asset, package } => self.copy_asset(&asset, &package),
+            Action::CreateAsset(request) => self.create_in_target(request),
+            Action::PackageCommand { method, params } => self.package_command(method, params),
             Action::ForkAsset { asset } => self.fork_asset(&asset),
             Action::RevertAsset { asset } => self.revert_asset(&asset),
             Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),
@@ -1595,6 +1607,7 @@ impl App {
                 return;
             }
             ToolKind::Textures => self.textures_undo(undo),
+            ToolKind::Package => false,
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
@@ -1629,7 +1642,7 @@ impl App {
     fn set_tool(&mut self, tool: ToolKind) {
         self.tool = tool;
         match tool {
-            ToolKind::Scenario => {}
+            ToolKind::Scenario | ToolKind::Package => {}
             ToolKind::Variants => self.ensure_variants(),
             ToolKind::Playlists => self.refresh_playlist_sources(),
             ToolKind::UiScreens => self.sync_ui_disc(),
@@ -2049,7 +2062,7 @@ impl App {
                     ToolKind::Variants => self.ensure_variants(),
                     ToolKind::Playlists => self.refresh_playlist_sources(),
                     ToolKind::UiScreens => self.sync_ui_disc(),
-                    ToolKind::Scenario | ToolKind::Hud => {}
+                    ToolKind::Scenario | ToolKind::Hud | ToolKind::Package => {}
                     ToolKind::Tags => self.sync_tags(),
                     ToolKind::Scripts => self.sync_scripts(),
                     ToolKind::Textures => self.sync_textures(),

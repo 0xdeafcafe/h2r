@@ -580,11 +580,12 @@ impl Describe for ForgeScreen {
         let look = self.kind.look();
         let mut s = ScreenSpec::new(self.kind.screen(), &sheet.title);
         s.style = self.style();
-        s.rows = sheet
-            .rows
-            .iter()
-            .map(|r| row_spec(r, look == Look::Picker))
-            .collect();
+        for (i, row) in sheet.rows.iter().enumerate() {
+            if row.value_unavailable {
+                s.content.unavailable_values.push(format!("row.{i}.value"));
+            }
+            s.rows.push(row_spec(row, look == Look::Picker));
+        }
         s.focus = sheet.focus.min(s.rows.len().saturating_sub(1));
         // A dialog's legend follows its focused row: a fact takes no A.
         s.prompts = self.prompts_at(Some(sheet.focus));

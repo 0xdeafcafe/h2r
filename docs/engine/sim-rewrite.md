@@ -9,7 +9,11 @@ with it at every call. The phase 1c bodies cover
 [unit pose](unit-pose.md), unit aim (`c7840`) and the
 [first-person filters](first-person-filters.md) (`166d75`, including
 `11eed0`). Slice 1d implements the [channel manager and graph lookups](animation-manager.md). Run parity and the cumulative timing gate remain open.
-Phase 2 compares the BSP vector test’s hit byte and result record against the guest under the collision switch ([entries C and D](collision-queries.md)). The outer BSP walk also compares the returned context.
+Under the collision switch, phase 2 compares the BSP vector test's hit
+byte and result record against the guest ([entries C and D](collision-queries.md)).
+The outer BSP walk also compares the returned context. The native matcher
+caches edge origins and deltas for short surface rings and tests them
+four at a time ([ring layout](sim-rewrite-collision.md#44-rings-and-the-inside-test)).
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on

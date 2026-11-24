@@ -1112,3 +1112,106 @@ pub fn build(
     }
     Ok(rows)
 }
+
+/// Export the manifest and only its named files, with a lock for these bytes.
+pub(crate) fn export(data: &Path, store: &Path, id: &str, out: &Path) -> Res {
+    if !valid_slug(id) {
+        return Err(Params(format!("invalid package id {id:?}")));
+    }
+    let (loaded, dir) = loaded_local(data, id)?;
+    let mut refused = forbidden_files(&dir);
+    refused.extend(store_findings(store, &loaded).into_iter().map(|f| f.what));
+    if !refused.is_empty() {
+        return Err(Refused(refused.join("\n")));
+    }
+    let package_dir = dir.canonicalize().map_err(|e| Failed(e.to_string()))?;
+    for name in loaded.files.keys() {
+        let source = dir.join(name).canonicalize().map_err(|e| Failed(format!("{name}: {e}")))?;
+        if !source.starts_with(&package_dir)
+            || source == package_dir.join(MANIFEST_FILE)
+            || source == package_dir.join(LOCK_FILE)
+        {
+            return Err(Refused(format!("{name:?} is not an exportable package source")));
+        }
+    }
+    let failed = |e: std::io::Error| Failed(format!("{}: {e}", out.display()));
+    std::fs::create_dir(out).map_err(failed)?;
+    let write = || -> std::io::Result<()> {
+        std::fs::write(out.join(MANIFEST_FILE), loaded.package.manifest.to_toml())?;
+        std::fs::write(out.join(LOCK_FILE), loaded.package.lock.to_toml())?;
+        for (name, bytes) in &loaded.files {
+            let file = out.join(name);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(file, bytes)?;
+        }
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_dir_all(out);
+        return Err(failed(e));
+    }
+    Ok(json!({"id": id, "out": out, "files": loaded.files.len() + 2}))
+}
+
+/// The package tab and its most recent command's result.
+#[derive(Default)]
+pub(crate) struct Document {
+    pub read: Option<Value>,
+    pub result: Option<(&'static str, Result<Value, String>)>,
+    pub revision: u64,
+}
+
+impl Document {
+    pub fn id(&self) -> Option<&str> {
+        self.read.as_ref()?["id"].as_str()
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.read.as_ref()?["package"]["name"].as_str()
+    }
+}
+
+impl super::App {
+    pub(super) fn open_package_document(&mut self, id: &str) {
+        if !valid_slug(id) {
+            return self.error(format!("invalid package id {id:?}"));
+        }
+        match read_with(&self.data_root(), id, Some(&self.tags_root())) {
+            Ok(read) => {
+                self.package_document.read = Some(read);
+                self.package_document.result = None;
+                self.open_doc(super::Doc::Package);
+            }
+            Err(e) => self.error(e.to_string()),
+        }
+    }
+
+    pub(crate) fn refresh_package_document(&mut self) {
+        self.package_document.revision += 1;
+        if let Some(id) = self.package_document.id()
+            && let Ok(read) = read_with(&self.data_root(), id, Some(&self.tags_root()))
+        {
+            self.package_document.read = Some(read);
+        }
+    }
+
+    pub(super) fn package_command(&mut self, method: &'static str, params: Value) {
+        use crate::api::{P, packages};
+        use studio_proto::method as m;
+
+        let answer = packages::call(self, method, &P(&params)).and_then(|reply| {
+            if method == m::PACKAGE_NEW && let Some(id) = reply["id"].as_str() {
+                packages::call(self, m::PACKAGE_TARGET, &P(&json!({"id": id})))?;
+                self.open_package_document(id);
+            }
+            Ok(reply)
+        });
+        match &answer {
+            Ok(reply) => self.info(format!("{method} {reply}")),
+            Err(e) => self.error(e.message.clone()),
+        }
+        self.package_document.result = Some((method, answer.map_err(|e| e.message)));
+    }
+}
