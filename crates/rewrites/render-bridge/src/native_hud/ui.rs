@@ -369,13 +369,13 @@ pub(super) fn place(b: &mut Builder<'_>) {
             TEXT_FRAME.set(Some(c.cpu.ebp));
         }
         Ok(Flow::Continue)
-    }).context_only().optional();
+    }).context_only().after_feature("render-aspect").optional();
     let text_end = GROUPS.iter().find(|(ret, _)| *ret == TEXT_ANCHOR_RETURN)
         .expect("text anchor group");
     b.raw().before(&text_end.1, "native_hud_text_end", |_| {
         TEXT_FRAME.set(None);
         Ok(Flow::Continue)
-    }).context_only().optional();
+    }).context_only().after_feature("render-aspect").optional();
     b.raw().before(&SCREEN_QUAD_READY, "native_ui_screen_fan", |c| {
         Ok(screen_quad(c).map_or(Flow::Continue, Flow::Return))
     }).context_only().optional();
