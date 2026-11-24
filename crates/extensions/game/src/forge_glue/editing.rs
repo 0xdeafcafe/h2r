@@ -560,15 +560,16 @@ impl Editor {
             let mut input = controls::sample();
             input.dialog = self.ui_up;
             let walls = bsp.and_then(|i| self.walls.get(i));
-            let result = self
+            let update = self
                 .tool
                 .update_with_surface(&self.session, tick, input, |c| {
                     walls?.hit(c.position, c.point(80.)).map(|(t, _)| t * 80.)
-                })
-                .and_then(|cmd| match cmd {
-                    Some(cmd) => self.command(tick, cmd),
-                    None => Ok(()),
                 });
+            let result = update.and_then(|cmd| match cmd {
+                Some(cmd) => self.command(tick, cmd),
+                None => Ok(()),
+            });
+            let walls = bsp.and_then(|i| self.walls.get(i));
             if let Err(error) = result {
                 self.notice = Some((error, tick));
             }
@@ -1157,6 +1158,6 @@ fn forge_readout_hold(
     snap: Option<f32>,
     local: bool,
     from: Option<[f32; 3]>,
-) -> crate::forge_readout::Hold {
+) -> hud_kit_core::huds::forge_readout::Hold {
     crate::forge_readout::hold(at, height, snap, local, from)
 }
