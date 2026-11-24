@@ -34,6 +34,7 @@
 mod segments;
 pub use segments::{FIRST_PERSON_FILTER_SITES, UNIT_AIM_SITES, first_person_filters, unit_aim};
 pub mod filter;
+pub mod manager;
 pub mod markers;
 pub mod palette;
 pub mod skeleton;
