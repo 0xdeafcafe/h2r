@@ -25,7 +25,7 @@
 //! - the channels `message`, `prompt`, `training`, `banner`, `navpoint`:
 //!   `longest`, and `at` when it is not the game's place (fullscreen only);
 //! - `world-mark`: `shape` (`pipper`, `bracket`, `arrow`, `ticks`, `bar`,
-//!   `line`), `longest` (default empty), `at` as a channel's.
+//!   `line`, `segment`), `longest` (default empty), `at` as a channel's.
 //!
 //! Every element may also say `over` (the element it is drawn on),
 //! `hide_when_d` (the bits of the game's word D that hide it) and `outside`
@@ -167,6 +167,7 @@ enum ShapeName {
     Ticks,
     Bar,
     Line,
+    Segment,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -385,6 +386,7 @@ fn element(e: ElementFile) -> Result<Element, Error> {
                     ShapeName::Ticks => Shape::Ticks,
                     ShapeName::Bar => Shape::Bar,
                     ShapeName::Line => Shape::Line,
+                    ShapeName::Segment => Shape::Segment,
                 },
                 longest: longest()?,
             }

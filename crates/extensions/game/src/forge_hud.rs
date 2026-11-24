@@ -17,17 +17,22 @@
 //!   the values when they change, the notice once each. It is part of the
 //!   `forge` feature, which has no switch of its own for it.
 //!
+//! - [`Points`] are the world points of the HUD's navpoints (the held or
+//!   aimed thing, a link's ends, the other monitors) and the gizmo's axes:
+//!   [`Points::resolved`] picks the nearest monitors and measures the
+//!   distances, which the view shows as the navpoints' numbers.
+//!
 //! It is presentation: it reads the session and never writes it. The
-//! monitor's reticle is still the compositor's (`forge_glue::page`), and so
-//! are the gizmo and the markers (slices U6 and U7). The retail widgets are
-//! not hidden in a monitor yet (slice K1).
+//! monitor's reticle is still the compositor's (`forge_glue::page`). The
+//! retail widgets are not hidden in a monitor yet (slice K1).
 
 use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use forge::tool::Action;
 use hud_kit_core::model::{Values, message_fault};
-use hud_kit_core::views::forge::{self as kit, Buttons, Cue, Forge, Teach, View};
+use hud_kit_core::views::forge::{self as kit, Buttons, Cue, Forge, Marks, Teach, View};
+use hud_kit_core::world::{Pose, Vec3};
 use input::host::HostButton;
 
 use crate::forge_controls::bindings::{self, Does, Gesture, Held, Pad, Side};
@@ -42,12 +47,117 @@ pub const TEACH_MIN: u32 = 30;
 pub const USER: u32 = 0;
 
 /// What the editor publishes each tick.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Published {
     pub view: View,
     /// The session's notice and the tick it was said at: a new stamp is a
     /// new line, the same one is not sent again.
     pub notice: Option<(String, u32)>,
+    /// Where the navpoints and the gizmo are in the world.
+    pub points: Points,
+}
+
+/// Which of the monitor's drawings over the world are on: the markers (the
+/// held, aimed and linked things' navpoints), the rings (the other
+/// monitors' navpoints) and the gizmo. All are on until the player turns
+/// one off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Show {
+    pub markers: bool,
+    pub rings: bool,
+    pub gizmo: bool,
+}
+
+impl Default for Show {
+    fn default() -> Self {
+        Show {
+            markers: true,
+            rings: true,
+            gizmo: true,
+        }
+    }
+}
+
+/// A navpoint's place and its distance from the monitor in metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub at: Vec3,
+    pub metres: u32,
+}
+
+/// The points [`Points`] resolves to: what each element shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Resolved {
+    pub target: Option<Point>,
+    pub from: Option<Point>,
+    pub monitors: [Option<Point>; kit::MONITORS],
+    /// The gizmo's three segments, origin and end.
+    pub gizmo: Option<[(Vec3, Vec3); 3]>,
+}
+
+/// Where the monitor's marks are in the world, as the session has them
+/// this tick, with the drawings that are turned off ([`Show`]) left out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Points {
+    /// The monitor's eye, which the distances are from.
+    pub eye: Vec3,
+    /// The held, aimed or link's second end.
+    pub target: Option<Vec3>,
+    /// The link's first end.
+    pub from: Option<Vec3>,
+    /// Every other seat's monitor.
+    pub monitors: Vec<Vec3>,
+    /// The gizmo's axes.
+    pub axes: Option<crate::forge_glue::gizmo::Axes>,
+}
+
+/// World units to metres: a world unit is ten feet.
+const METRES_PER_UNIT: f32 = 3.048;
+
+impl Points {
+    fn point(&self, at: Vec3) -> Option<Point> {
+        let d = (0..3)
+            .map(|i| at[i] - self.eye[i])
+            .map(|d| d * d)
+            .sum::<f32>();
+        let metres = d.sqrt() * METRES_PER_UNIT;
+        (at.iter().all(|v| v.is_finite()) && metres.is_finite()).then(|| Point {
+            at,
+            // Whole metres, rounded; a navpoint shows at most 999.
+            metres: metres.round().min(999.0) as u32,
+        })
+    }
+
+    /// What each element shows: the nearest monitors first, the rest left
+    /// out; a point that is not a number is left out.
+    pub fn resolved(&self) -> Resolved {
+        let mut monitors: Vec<Point> = self
+            .monitors
+            .iter()
+            .filter_map(|m| self.point(*m))
+            .collect();
+        monitors.sort_by_key(|p| p.metres);
+        Resolved {
+            target: self.target.and_then(|a| self.point(a)),
+            from: self.from.and_then(|a| self.point(a)),
+            monitors: std::array::from_fn(|i| monitors.get(i).copied()),
+            gizmo: self
+                .axes
+                .map(|a| std::array::from_fn(|i| (a.origin, a.ends[i]))),
+        }
+    }
+}
+
+impl Resolved {
+    /// The marks the view shows.
+    pub fn marks(&self) -> Marks {
+        Marks {
+            target: self.target.map(|p| p.metres),
+            from: self.from.map(|p| p.metres),
+            monitors: self.monitors.map(|m| m.map(|p| p.metres)),
+            gizmo: self.gizmo.is_some(),
+        }
+    }
 }
 
 /// A button's glyph in the fonts (docs/input/button-icons.md). The host
@@ -167,6 +277,7 @@ pub fn frame(
     b: &Buttons,
 ) -> (Values, Option<String>) {
     let mut view = p.view.clone();
+    view.marks = p.points.resolved().marks();
     view.teach = teaching.step(
         Some(&view)
             .filter(|v| v.monitor)
@@ -190,6 +301,8 @@ pub fn frame(
 struct Live {
     handle: Handle,
     last: Option<Values>,
+    /// The points and poses last given to the kit.
+    last_marks: Option<Resolved>,
     teaching: Teaching,
     sent: Option<(String, u32)>,
 }
@@ -205,6 +318,30 @@ impl Live {
         if let Some(line) = notice {
             self.handle.notify(USER, &line);
         }
+        // The marks follow the session every tick: they move with the
+        // monitor's eye and the held thing.
+        let marks = (p.view.monitor)
+            .then(|| p.points.resolved())
+            .unwrap_or_default();
+        if self.last_marks != Some(marks) {
+            give(&self.handle, &marks);
+            self.last_marks = Some(marks);
+        }
+    }
+}
+
+/// Gives the kit the points of the navpoints and the poses of the gizmo's
+/// segments; an element with none has its point or pose taken away.
+pub fn give(handle: &Handle, marks: &Resolved) {
+    let at = |p: &Option<Point>| p.map(|p| p.at);
+    handle.navpoint_at(kit::NAV_TARGET, at(&marks.target));
+    handle.navpoint_at(kit::NAV_FROM, at(&marks.from));
+    for (id, m) in kit::NAV_MONITORS.into_iter().zip(&marks.monitors) {
+        handle.navpoint_at(id, at(m));
+    }
+    for (i, id) in kit::GIZMO.into_iter().enumerate() {
+        let pose: Option<Pose> = marks.gizmo.map(|g| kit::gizmo_pose(g[i].0, g[i].1));
+        handle.world_mark(id, pose);
     }
 }
 
@@ -220,6 +357,7 @@ pub fn hook(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
     let live = Mutex::new(Live {
         handle,
         last: None,
+        last_marks: None,
         teaching: Teaching::default(),
         sent: None,
     });

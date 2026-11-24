@@ -1,7 +1,7 @@
 # Forge monitor appearance
 
-Status: Partly built (ML1 to ML7). The look, its profile keys, its refusals, the census, the marker's projection, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the look's page (ML6: `forge.look`'s rows and locks, the `Scene3d` preview widget, the Forge menu row) exist; the film records (ML8), the lobby row (ML9) and a real body (ML10) do not.
-Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_glue/marker.rs` (the marker), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_glue/marker.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
+Status: Partly built (ML1 to ML7). The look, its profile keys, its refusals, the census, the offline agent methods, the presentation body (ML4: the host model list and a seat's draw — pure, the renderer's object pass does not consume the draws yet, so a disc model still shows as the marker), the session channel (ML7: the hello's declaration, the host's table, `look` and `pose` on the session's lanes, the refusals, the join reset, interpolation and staleness) and the look's page (ML6: `forge.look`'s rows and locks, the `Scene3d` preview widget, the Forge menu row) exist; the film records (ML8), the lobby row (ML9) and a real body (ML10) do not.
+Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_hud.rs` (`Points`, the navpoints over other monitors), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_hud_tests.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player looks like while they fly as a monitor in a Forge session:
@@ -29,9 +29,10 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 - The monitor is a `forge::camera::Camera`: a position, a yaw and a
   pitch. It is published to the input bridge and to `forge.status`
   (**Code**, `forge_controls.rs`: `publish`, `eye`).
-- The only thing drawn at a world position is the Objects tool's gizmo,
-  projected to 2D through the frame's camera and drawn by the
-  compositor (**Code**, `forge_glue/gizmo.rs`: `Axes::from_frame`).
+- The only things drawn at a world position are the HUD kit's: the
+  Objects tool's gizmo, three world segments, and the navpoints over the
+  thing held or aimed at and over other monitors (**Code**,
+  `forge_glue/gizmo.rs`: `Axes::from_frame`, `forge_hud.rs`: `Points`).
 - A session is local. No other machine exists to see a monitor, and no
   film record holds its pose.
 
@@ -80,7 +81,7 @@ There are three sources, in the order they are built.
 
 | Source | What it is | Needs | Seen by a machine without it |
 |---|---|---|---|
-| **Marker** | a ring and the player's name, projected to 2D and drawn by the compositor, as the gizmo is | nothing: no disc tag, no renderer feature | cannot happen |
+| **Marker** | the HUD kit's navpoint over the monitor, with the distance as its number | nothing: no disc tag, no renderer feature | cannot happen |
 | **Disc model** | the render model of a flying biped on a campaign map of the user's own disc, read by the host process and drawn by the native renderer at the monitor's pose | that campaign map on this machine; the native renderer | the choice is refused (below) |
 | **Real body** (F10) | the biped itself, transplanted into the map; the player's unit | F10, tag headroom, a Rebuild | the document is refused at the gate (forge-design.md, "Saving and sharing on Live") |
 
@@ -136,16 +137,13 @@ probability, the first on a tie (**Design**; the game draws by
 `0x0016dad0`, which is not reproduced, objects.md). Damage states are
 never chosen.
 
-**The marker.** `forge_glue::marker::Marker` is the ring: its centre is
-the monitor's position projected through the frame's world camera by the
-function the gizmo's axes use (`gizmo::pixel_of`), its radius is a fixed
-world radius projected the same way, and its label point sits above the
-ring. `Marker::paint` draws the ring into the HUD canvas behind the
-reticle and panels, in the primary colour read from the map's player
-colours (`pad_lightbar::palette_rgb`). The name is drawn by the
-compositor's text path at the label point. Nothing draws a marker yet:
-a monitor never draws its own, and no other seat exists until the
-session channel (ML7).
+**The marker.** Another seat's monitor, whatever its look, has a navpoint
+of the monitor HUD over it (`forge.nav.monitor.1` and `.2`: the two
+nearest), the game's arrow and marker with the distance in metres as its
+number ([forge-firefight-ui.md](forge-firefight-ui.md), "Markers in the
+world"). The game draws a navpoint in one colour, so the seat's colour is
+not on it; the colour is on the body. A monitor never has one over its own
+body, and no other seat exists until the session channel (ML7).
 
 **Pose.** The body sits at the camera's position, turned to its yaw and
 pitch, in the model's rest pose, with a slow vertical bob computed from
@@ -436,7 +434,7 @@ data.
 |---|---|---|---|---|
 | **ML1** | `forge::look`: the type, bounds, canonical bytes, `validate`, the refusal codes, the eight `Def`s and the profile read and write | S | nothing | every bound has a refusing case; canonical bytes have golden vectors; a profile round-trips through `settings::Store`; an unknown saved model is kept in the file and reported |
 | **ML2** | The census and `h2 forge looks`: species rule, source hashes, variants, colour and light capability, the cache | M | ML1 | on invented maps: one entry a key, the `choose_bipeds` tie rules, a variant with a weighted region picks by the stated rule, an entry's identity is unchanged when tag indices move |
-| **ML3** | The marker and `forge.look`, `forge.look.set`, `forge.status.monitors` offline | S | ML1 | over a fake game: set, reset and each local refusal; the marker's projection matches the gizmo's for the same frame |
+| **ML3** | The marker and `forge.look`, `forge.look.set`, `forge.status.monitors` offline | S | ML1 | over a fake game: set, reset and each local refusal; the navpoint over another seat's monitor is at its pose |
 | **ML4** | Disc models drawn: the host model list, a presentation instance at a pose, change colours, tint, the bob, hidden in the owner's view | L | ML2 | a scene built from an invented model holds one extra instance at the pose with the expected colour inputs; the owner's view has none; the sim hash of a run with and without a look is equal |
 | **ML4b** | The game's own Appearance page: when the player's look is the Forge monitor, the monitor is drawn beside the Spartan in the page's model preview | M | ML4 | in a widget view built from invented data, a monitor look adds one presentation instance beside the biped with the look's colours; any other look, or none, leaves the widget's draws as retail; the sim hash of a run with and without it is equal |
 | **ML5** | The host light | M | ML4 | a candidate with no datum is in the view's light list, last in budget order, with the palette colour; no shadow map is made for it |

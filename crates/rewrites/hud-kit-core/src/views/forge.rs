@@ -17,12 +17,18 @@
 //! - `forge.tool`: the tool's name, capitals, top right.
 //! - `forge.rebuild.pill`, `.pill.end`, `.count`: the grenade row's second
 //!   place, the edits Rebuild map has still to apply; hidden at 0.
+//! - `forge.nav.target`, `forge.nav.from`, `forge.nav.monitor.1` and `.2`:
+//!   the game's navpoints ([`Kind::Navpoint`](crate::model::Kind::Navpoint)), with the distance in metres
+//!   as their number ([`Marks`]): the held, aimed or link's second end, the
+//!   link's first end, and the nearest two other monitors.
+//! - `forge.gizmo.x`, `.y`, `.z`: world marks of [`Shape::Segment`](crate::world::Shape::Segment) in the
+//!   axis colours ([`Style::Axis`]), from the held or aimed thing's origin
+//!   along each axis; the runtime gives their poses ([`gizmo_pose`]).
 //!
-//! The reticle and the axis gizmo are not here: the monitor's reticle is
-//! the compositor's `+` until a retail weapon's reticle widget is chosen
-//! from the disc census (a text at the screen's centre is in the retail
-//! reticle's reserved rectangle), and the gizmo and markers wait for the
-//! kit's `Segment` and several navpoints (slices K4, K3, U6).
+//! The reticle is not here: the monitor's reticle is the compositor's `+`
+//! until a retail weapon's reticle widget is chosen from the disc census (a
+//! text at the screen's centre is in the retail reticle's reserved
+//! rectangle).
 //!
 //! A button is the font's glyph, read from the pad's table: [`Buttons`] is
 //! what the game fills from `forge_controls::bindings::BINDINGS`, so no
@@ -33,8 +39,10 @@
 //! from the session each tick, so `forge.status` and the HUD agree.
 
 use crate::model::{Describe, Hud, Pulse, Style, Value, Values};
+use crate::world::{AXES, Pose, Vec3};
 
 use super::firefight::{COUNT_MAX, PILL_STEP};
+use super::superbounce::distance_text;
 
 pub const NAME: &str = "forge";
 
@@ -49,9 +57,17 @@ pub const TOOL: &str = "forge.tool";
 pub const REBUILD_PILL: &str = "forge.rebuild.pill";
 pub const REBUILD_END: &str = "forge.rebuild.pill.end";
 pub const REBUILD_COUNT: &str = "forge.rebuild.count";
+pub const NAV_TARGET: &str = "forge.nav.target";
+pub const NAV_FROM: &str = "forge.nav.from";
+/// How many other monitors have a navpoint: the game's list has four slots
+/// (`hud_kit::NAV_SLOTS`), and the target and the link's first end take two.
+pub const MONITORS: usize = 2;
+pub const NAV_MONITORS: [&str; MONITORS] = ["forge.nav.monitor.1", "forge.nav.monitor.2"];
+/// The gizmo's segments, X, Y and Z.
+pub const GIZMO: [&str; AXES as usize] = ["forge.gizmo.x", "forge.gizmo.y", "forge.gizmo.z"];
 
 /// The elements' ids, in draw order.
-pub const IDS: [&str; 11] = [
+pub const IDS: [&str; 18] = [
     PROMPT,
     NOTICE,
     TEACH,
@@ -63,6 +79,13 @@ pub const IDS: [&str; 11] = [
     REBUILD_PILL,
     REBUILD_END,
     REBUILD_COUNT,
+    NAV_TARGET,
+    NAV_FROM,
+    NAV_MONITORS[0],
+    NAV_MONITORS[1],
+    GIZMO[0],
+    GIZMO[1],
+    GIZMO[2],
 ];
 
 /// The widest budget count: the objects left, four digits (the LCD font has
@@ -73,6 +96,8 @@ pub const BUDGET_COUNT_MAX: u32 = 9999;
 pub const REBUILD_LONGEST: &str = "99";
 /// The widest tool name.
 pub const TOOL_LONGEST: &str = "VOLUMES";
+/// The widest navpoint number: whole metres, three digits.
+pub const NAV_LONGEST: &str = "999";
 /// The widest notice.
 pub const NOTICE_LONGEST: &str = "Item spawners are full (100) in this map.";
 
@@ -223,17 +248,45 @@ impl Teach {
     /// The box's text: two lines at most.
     pub fn text(self, b: &Buttons) -> String {
         match self {
-            Teach::Delete => format!(
-                "{} to delete\nthe thing you are aiming at.",
-                b.delete.press()
-            ),
-            Teach::Turn => format!(
-                "{} and use the right stick\nto turn what you are holding.",
-                b.turn.press()
-            ),
+            Teach::Delete => {
+                format!(
+                    "{} to delete\nthe thing you are aiming at.",
+                    b.delete.press()
+                )
+            }
+            Teach::Turn => {
+                format!(
+                    "{} and use the right stick\nto turn what you are holding.",
+                    b.turn.press()
+                )
+            }
             Teach::Menu => format!("{} for the Forge menu.", b.menu.press()),
         }
     }
+}
+
+/// The world marks the HUD shows: which navpoints and the gizmo are up. The
+/// points and poses are the runtime's (`Handle::navpoint_at`,
+/// `Handle::world_mark`); a navpoint's number is its distance from the
+/// monitor, in whole metres.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Marks {
+    /// The held, aimed or link's second end.
+    pub target: Option<u32>,
+    /// The link's first end.
+    pub from: Option<u32>,
+    /// The nearest other monitors, nearest first.
+    pub monitors: [Option<u32>; MONITORS],
+    /// The gizmo is up.
+    pub gizmo: bool,
+}
+
+/// How long the preview's gizmo arms are, world units.
+pub const SAMPLE_ARM: f32 = 0.5;
+
+/// The pose of a gizmo segment from `origin` to `end`.
+pub fn gizmo_pose(origin: Vec3, end: Vec3) -> Pose {
+    Pose::at(origin, [0.0, 0.0]).to(end)
 }
 
 /// What the HUD shows.
@@ -255,6 +308,8 @@ pub struct View {
     pub changing: Option<String>,
     /// The hint to show now, if the state has one that was not shown yet.
     pub teach: Option<Teach>,
+    /// The navpoints and the gizmo.
+    pub marks: Marks,
 }
 
 impl Default for View {
@@ -269,6 +324,7 @@ impl Default for View {
             rebuild: 0,
             changing: None,
             teach: None,
+            marks: Marks::default(),
         }
     }
 }
@@ -370,6 +426,18 @@ pub fn values(v: &View, b: &Buttons) -> Values {
             Value::text(count_text(v.rebuild, REBUILD_COUNT_MAX)),
         );
     }
+    let nav =
+        |m: Option<u32>| m.map_or_else(Value::hidden, |m| Value::text(distance_text(m as f32)));
+    out.set(NAV_TARGET, nav(v.marks.target));
+    out.set(NAV_FROM, nav(v.marks.from));
+    for (id, m) in NAV_MONITORS.into_iter().zip(v.marks.monitors) {
+        out.set(id, nav(m));
+    }
+    for (axis, id) in GIZMO.into_iter().enumerate() {
+        if v.marks.gizmo {
+            out.set(id, Value::shown().styled(Style::Axis(axis as u8)));
+        }
+    }
     out
 }
 
@@ -392,6 +460,7 @@ pub fn views() -> Vec<(&'static str, View)> {
         rebuild: 0,
         changing: None,
         teach: None,
+        marks: Marks::default(),
     };
     let with = |f: &dyn Fn(&mut View)| {
         let mut v = base.clone();
@@ -404,15 +473,42 @@ pub fn views() -> Vec<(&'static str, View)> {
     };
     vec![
         ("idle", base.clone()),
-        ("aimed", with(&|v| named(v, Hand::Aimed))),
-        ("placing", with(&|v| named(v, Hand::Placing))),
-        ("holding", with(&|v| named(v, Hand::Holding))),
+        (
+            "aimed",
+            with(&|v| {
+                named(v, Hand::Aimed);
+                v.marks.target = Some(12);
+                v.marks.gizmo = true;
+            }),
+        ),
+        (
+            "placing",
+            with(&|v| {
+                named(v, Hand::Placing);
+                v.marks.target = Some(4);
+                v.marks.gizmo = true;
+            }),
+        ),
+        (
+            "holding",
+            with(&|v| {
+                named(v, Hand::Holding);
+                v.marks.target = Some(4);
+                v.marks.gizmo = true;
+            }),
+        ),
         (
             "turning",
             with(&|v| {
                 named(v, Hand::Holding);
                 v.changing = Some("Heading 45".into());
+                v.marks.target = Some(4);
+                v.marks.gizmo = true;
             }),
+        ),
+        (
+            "monitors",
+            with(&|v| v.marks.monitors = [Some(23), Some(87)]),
         ),
         (
             "links-idle",
@@ -426,6 +522,7 @@ pub fn views() -> Vec<(&'static str, View)> {
                 v.tool = Tool::Links;
                 named(v, Hand::Aimed);
                 v.target = "Teleporter sender 2".into();
+                v.marks.target = Some(14);
             }),
         ),
         (
@@ -433,6 +530,7 @@ pub fn views() -> Vec<(&'static str, View)> {
             with(&|v| {
                 v.tool = Tool::Links;
                 v.hand = Hand::Linking;
+                v.marks.from = Some(14);
             }),
         ),
         (
@@ -441,6 +539,9 @@ pub fn views() -> Vec<(&'static str, View)> {
                 v.tool = Tool::Links;
                 v.hand = Hand::Linking;
                 v.target = "Teleporter receiver 5".into();
+                v.marks.from = Some(14);
+                v.marks.target = Some(60);
+                v.marks.monitors = [Some(23), Some(87)];
             }),
         ),
         (
@@ -470,6 +571,12 @@ pub fn views() -> Vec<(&'static str, View)> {
                 v.used = 1;
                 v.limit = u32::MAX;
                 v.rebuild = u32::MAX;
+                v.marks = Marks {
+                    target: Some(u32::MAX),
+                    from: Some(u32::MAX),
+                    monitors: [Some(u32::MAX); MONITORS],
+                    gizmo: true,
+                };
             }),
         ),
         (
@@ -515,6 +622,27 @@ impl Describe for Forge {
             .collect()
     }
 
+    /// The gizmo's sample poses: half a unit from the origin along each
+    /// axis, in the states that show it.
+    fn world(&self, state: &str) -> Vec<(&'static str, Pose)> {
+        views()
+            .into_iter()
+            .find(|(n, _)| *n == state)
+            .filter(|(_, v)| v.marks.gizmo)
+            .map(|_| {
+                GIZMO
+                    .into_iter()
+                    .enumerate()
+                    .map(|(axis, id)| {
+                        let mut end = [0.0; 3];
+                        end[axis] = SAMPLE_ARM;
+                        (id, gizmo_pose([0.0; 3], end))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn multiplayer_only(&self) -> Option<&'static str> {
         Some("Forge runs on multiplayer maps; a campaign player HUD may have no grenade row")
     }
@@ -535,6 +663,7 @@ impl Describe for Forge {
 mod tests {
     use super::*;
     use crate::model::{Origin, banner_fault, message_fault};
+    use crate::world::Shape;
 
     fn units(s: &str) -> usize {
         s.encode_utf16().count()
@@ -701,6 +830,71 @@ mod tests {
             shown(&values(&v, &b), BUDGET_COUNT).as_deref(),
             Some("9999")
         );
+    }
+
+    /// A navpoint's number is its distance in whole metres, one for each
+    /// mark; the gizmo is three segments, each in its axis' colour.
+    #[test]
+    fn the_marks_follow_the_view() {
+        let b = Buttons::sample();
+        let mut v = View {
+            monitor: true,
+            ..View::default()
+        };
+        let none = values(&v, &b);
+        for id in NAV_MONITORS
+            .into_iter()
+            .chain([NAV_TARGET, NAV_FROM])
+            .chain(GIZMO)
+        {
+            assert!(!none.get(id).unwrap().shown, "{id}: nothing marked");
+        }
+        v.marks = Marks {
+            target: Some(12),
+            from: Some(1500),
+            monitors: [Some(23), None],
+            gizmo: true,
+        };
+        let out = values(&v, &b);
+        assert_eq!(shown(&out, NAV_TARGET).as_deref(), Some("12"));
+        assert_eq!(shown(&out, NAV_FROM).as_deref(), Some("999"), "clamped");
+        assert_eq!(shown(&out, NAV_MONITORS[0]).as_deref(), Some("23"));
+        assert_eq!(shown(&out, NAV_MONITORS[1]), None);
+        for (axis, id) in GIZMO.into_iter().enumerate() {
+            let x = out.get(id).unwrap();
+            assert!(x.shown, "{id}");
+            assert_eq!(x.style, Style::Axis(axis as u8), "{id}");
+        }
+        // With the monitor off none of them shows.
+        v.monitor = false;
+        assert_eq!(values(&v, &b), hidden());
+    }
+
+    /// The gizmo's samples are the three segments in every state that shows
+    /// it, and none in the others; the HUD's marks are the kit's kinds.
+    #[test]
+    fn the_gizmo_is_three_segments_in_the_states_that_show_it() {
+        let h = hud();
+        for (name, v) in views() {
+            let poses = Forge.world(name);
+            if v.marks.gizmo {
+                assert_eq!(poses.len(), 3, "{name}");
+                for (i, (id, pose)) in poses.iter().enumerate() {
+                    assert_eq!(*id, GIZMO[i]);
+                    assert_eq!(h.element(id).unwrap().kind.world(), Some(Shape::Segment));
+                    assert_eq!(pose.fault(), None);
+                    assert!(pose.to.is_some());
+                }
+            } else {
+                assert!(poses.is_empty(), "{name}");
+            }
+        }
+        for id in NAV_MONITORS.into_iter().chain([NAV_TARGET, NAV_FROM]) {
+            assert!(matches!(
+                h.element(id).unwrap().kind,
+                crate::model::Kind::Navpoint { .. }
+            ));
+        }
     }
 
     /// With the monitor off nothing shows and the layout is the same.
