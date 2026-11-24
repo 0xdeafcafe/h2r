@@ -3,15 +3,15 @@
 //!
 //! A set is a [`firefight::Def`] as JSON, in a file ending
 //! [`SUFFIX`] (`content/modes/firefight/holdout.firefight.json`). The
-//! director is a rules script built from it (`firefight::script::compile`):
+//! director loads the set as rules script data (`firefight::script::load`):
 //! the item is good when the definition is structurally valid and the
-//! script it compiles to verifies, so the same check a lobby makes of a
+//! director verifies with its data, so the same check a lobby makes of a
 //! wave set is made of the package's. It adds no tag. [`sets`] is what the
 //! game reads from a set of packages; the built-in four are the same files
 //! (`firefight::builtin::SETS`).
 use content::package::{Item, Kind};
 use firefight::Def;
-use firefight::script::compile;
+use firefight::script::load;
 
 use crate::build::{Cx, Failure, Loaded};
 use crate::builders::Job;
@@ -43,7 +43,7 @@ fn read(job: &Job<'_>) -> Result<Def, Failure> {
         why: format!("not a Firefight set: {e}"),
     })?;
     def.canonical_json().map_err(|e| e.to_string())?;
-    compile(&def).map_err(|e| e.to_string())?;
+    load(&def).map_err(|e| e.to_string())?;
     Ok(def)
 }
 
