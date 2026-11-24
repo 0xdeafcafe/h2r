@@ -795,10 +795,15 @@ pub fn attach_builtin(v: &mut GameVariant) -> Result<bool, PortableError> {
     Ok(true)
 }
 
-/// The attachment for a record that names its engine's built-in script
-/// (what [`attach_builtin`] writes): that script's IR and source, with the
-/// record's own options. `None` for a record that names no script or one
-/// other than the built-in, whose blob is not at hand.
+/// The attachment for a record that names a built-in script (what
+/// [`attach_builtin`] writes, and [`record_for`] for a new variant): that
+/// script's IR and source, with the record's own options. The script is the
+/// record's engine's built-in. A record on the script index has no engine
+/// to name one by, though a built-in rides it when it writes nothing in its
+/// type's area ([`settings_record`]; Slayer's does), so any of
+/// [`rules::builtin::ALL`] whose id has the prefix the record names is
+/// taken. `None` for a record that names no script or one that is no
+/// built-in, whose blob is not at hand.
 pub fn builtin_attach(v: &GameVariant) -> Result<Option<Attach>, PortableError> {
     let Block::Ext(e) = v.ext_state() else {
         return Ok(None);
@@ -806,19 +811,19 @@ pub fn builtin_attach(v: &GameVariant) -> Result<Option<Attach>, PortableError> 
     if e.script.mode != Mode::Rules {
         return Ok(None);
     }
-    let Some(src) = u8::try_from(v.game_type().engine())
+    let engine = u8::try_from(v.game_type().engine())
         .ok()
-        .and_then(rules::builtin::builtin)
-    else {
-        return Ok(None);
-    };
-    let named = rules::compile(src).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
-    if named.id().0[..8] != e.script.prefix {
-        return Ok(None);
+        .and_then(rules::builtin::builtin);
+    let builtins = engine.into_iter().chain(rules::builtin::ALL.iter().map(|b| b.source));
+    for src in builtins {
+        let named = rules::compile(src).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+        if named.id().0[..8] == e.script.prefix {
+            let mut attach = Attach::from_source(src)?;
+            attach.options = Some(e.script.options);
+            return Ok(Some(attach));
+        }
     }
-    let mut attach = Attach::from_source(src)?;
-    attach.options = Some(e.script.options);
-    Ok(Some(attach))
+    Ok(None)
 }
 
 /// The built-in options a retail record with no script plays with: each
