@@ -543,25 +543,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let ready = self.ready(mem)?;
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let objects = group.entries.iter().any(|e| structure_key(e).is_none());
-        let model_lights = if objects {
-            let name = crate::health::loaded_map_name(mem)
-                .map_err(|_| Keep::Unsupported("the loaded map's name does not read"))?;
-            let read = ReadMemory(&*mem);
-            Some(
-                self.models
-                    .get(
-                        &name,
-                        &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0,
-                        || native_render::object_streams::StreamFormats::read(&read),
-                        || crate::native_world_glue::scene_load_palettes(&*d, &*mem),
-                    )
-                    .ok_or(Keep::Unsupported(
-                        "the map's model shadow parts are loading",
-                    ))?,
-            )
-        } else {
-            None
-        };
+        let model_lights = objects.then(|| self.model_lights(&d, mem, &ready)).transpose()?;
         let held = Held {
             world,
             models: model_lights.as_deref().map(|m| &m.models),
@@ -1065,10 +1047,12 @@ impl d3d::DrawAdmission for LightAdmission {
         let context = crate::native_world_layers_glue::indexed_draw()?;
         let geometry = context.geometry?;
         let draw = snapshot.draw;
+        let indices = draw.indices.as_deref()?;
+        let index_count = context.index_count?;
         if context.layer.list != render_bridge::native_lights::LIGHT_LIST
             || !matches!(context.layer.number, 12 | 13)
             || draw.entry != "D3DDevice_DrawIndexedVertices"
-            || context.index_count? as usize != draw.indices.as_ref()?.len()
+            || index_count as usize != indices.len()
             || !draw.clip_rects.is_empty()
         {
             return None;
@@ -1078,12 +1062,11 @@ impl d3d::DrawAdmission for LightAdmission {
         let (entry, planned) = run.draws.get(&geometry.sorted_slot)?;
         if run.targets[..2] != [snapshot.color_header, snapshot.depth_header]
             || planned.layer != context.layer.number as usize
-            || !entry.matches(geometry, context.light_selection, draw.primitive, context.index_address?, context.index_count?)
-            || !run.light.matches(draw, planned)
-            || !crate::native_world_layers_glue::matches_triangle_range(
-                draw,
-                planned.ranges.first()?.len(),
+            || !entry.matches(
+                geometry, context.light_selection, draw.primitive, context.index_address?, index_count,
             )
+            || !run.light.matches(draw, planned)
+            || !entry.matches_triangles(indices, planned.ranges.first()?.len())
         {
             return None;
         }
@@ -1163,8 +1146,24 @@ impl LightSlot {
         indices: u32,
         index_count: u32,
     ) -> bool {
-        self.geometry == geometry && Some(self.selection) == selection
-            && self.primitive == primitive && self.index_address == indices && self.index_count == index_count
+        self.geometry == geometry
+            && Some(self.selection) == selection
+            && self.primitive == primitive
+            && self.index_address == indices
+            && self.index_count == index_count
+    }
+
+    /// The resident triangle list omits degenerate triangles and an
+    /// incomplete final triangle. The raw span was checked separately.
+    fn matches_triangles(&self, indices: &[u32], expected: usize) -> bool {
+        use gfx::vertex::PrimitiveType::{TriangleList, TriangleStrip};
+        let drawn = |t: &&[u32]| t[0] != t[1] && t[0] != t[2] && t[1] != t[2];
+        let triangles = match self.primitive {
+            TriangleList => indices.chunks_exact(3).filter(drawn).count(),
+            TriangleStrip => indices.windows(3).filter(drawn).count(),
+            _ => return false,
+        };
+        triangles * 3 == expected
     }
 }
 
@@ -1683,7 +1682,8 @@ impl LightsWorld {
         parts: impl IntoIterator<Item = (usize, usize, WorldDraw)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
-        self.resolve_world_parts(c, parts.into_iter().map(|(l, i, d)| (l, i, d, None)), produced_gel)
+        let parts = parts.into_iter().map(|(layer, imp, draw)| (layer, imp, draw, None));
+        self.resolve_world_parts(c, parts, produced_gel)
     }
 
     fn resolve_world_parts(
@@ -1723,7 +1723,8 @@ impl LightsWorld {
             }
             self.binds(&compiled.program, c.gel, produced_gel, &self.images)?;
             if let Some(previous) = out.last_mut()
-                && placement.is_none() && previous.placement.is_none()
+                && placement.is_none()
+                && previous.placement.is_none()
                 && previous.material == m
                 && previous.layer == layer
                 && Arc::ptr_eq(&previous.compiled, &compiled)
@@ -2234,8 +2235,9 @@ impl PreparedLight {
         use gfx::state::{CompareFunc, DepthBufferMode, FillMode};
         let r = &draw.state.render;
         let program = &planned.compiled.program;
-        if draw.hw.zpass_count_enable || !draw.state.bad.is_empty() ||
-            !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { microcode, .. }
+        if draw.hw.zpass_count_enable
+            || !draw.state.bad.is_empty()
+            || !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { microcode, .. }
                 if &microcode[..] == program.words.as_slice()) {
             return false;
         }
@@ -2611,6 +2613,11 @@ mod tests {
         assert!(!slot.matches(live, selection, TriangleList, 72, 9));
         assert!(!slot.matches(live, selection, TriangleStrip, 72, 6));
         assert!(!slot.matches(live, selection, TriangleStrip, 74, 9));
+        let indices = [1, 2, 3, 4, 4, 5, 6];
+        assert!(slot.matches_triangles(&indices, 9));
+        let list = LightSlot { primitive: TriangleList, ..slot };
+        assert!(list.matches_triangles(&indices, 3));
+        assert!(!list.matches_triangles(&indices, indices.len()));
     }
 
     #[test]

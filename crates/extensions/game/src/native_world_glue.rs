@@ -112,8 +112,7 @@ pub struct Ready {
     /// The model decorators' passes of this load (`native_decorators_glue`).
     pub decorators: OnceLock<Arc<crate::native_decorators_glue::DecoratorLooks>>,
     /// What the native lights draw over this world
-    /// (`native_lights_glue`; `None` when the world has no native
-    /// material).
+    /// (`native_lights_glue`), once the light resource worker publishes.
     pub lights: OnceLock<Arc<crate::native_lights_glue::LightsWorld>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
