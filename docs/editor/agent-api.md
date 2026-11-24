@@ -389,7 +389,10 @@ Notes on some:
     `Choice`, `Switches`, `Name`, `Tag reference`, `List`, `Bytes`,
     `Internal value`, `Unnamed value`, `Padding`), `unit` (or null) and
     `view` (the definition's `view=` word, such as `rgb` or `function`,
-    else null; [rich-editors.md](rich-editors.md));
+    else null; [rich-editors.md](rich-editors.md)); a `function` view's
+    row also carries `function: {type, ranged, range, length}`, its
+    curve's shape (null when the data is not a function blob, and the
+    row says why);
   - `editable`, and `read_only`, the reason as a sentence when not;
   - `edited` (the value differs from the loaded file) and `file_value`
     (the file's value when edited, else null);
@@ -418,6 +421,36 @@ Notes on some:
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
+- **Curves.** `function.read {tag, path}` reads the function blob a
+  `view=function` data field points at
+  ([rich-editors.md](rich-editors.md), "Curves"; `api/curves.rs`):
+  the type word (`identity`, `constant`, `transition`, `periodic`,
+  `linear`, `linear_key`, `multi_linear_key`, `spline`, `multi_spline`,
+  `exponent`, `spline_2`, `unknown_<byte>`), whether it is ranged, the
+  two sub-type bytes (set 0's and set 1's wave or shape), the output
+  range, the blob's length, and `sets`: the two sets' typed values, the
+  words the engine's evaluator reads named as the curve editor's
+  handles (`shape`, `from`, `to` for a transition; `wave`,
+  `frequency`, `phase`, `minimum`, `maximum` for a periodic; `slope`,
+  `intercept`; `base` and three `keys` of `value`, `position`,
+  `inverse_span`; `points` and `coefficients`; `minimum`, `maximum`,
+  `power`; a constant's, type 6's and type 8's words as `words`; `{}`
+  for identity), null for a type with no layout. `editable` is false
+  and `read_only` says why for a type the game evaluates as 0 or a
+  tag that may not be written. `function.set {tag, path, type?,
+  ranged?, range?, sets?}` edits the curve, same length, as one undo
+  step through the Tags tool's own command: `ranged` turns the second
+  set on or off, `range` sets the output range, and each set object's
+  keys present are written (its `shape` or `wave` writes the header
+  byte, as the dialog's picker rows do); the answer is the new
+  `function.read`. A type change is refused (the length would change;
+  F2 writes it), and so is anything the Curves section refuses.
+  `function.sample {tag, path, inputs, range_input?}` returns
+  `{outputs}` from `Function::evaluate` itself (the ported engine
+  evaluator) at each input, `range_input` blending the two sets of a
+  ranged function (default 0, set 0); types the engine does not
+  evaluate give 0. A path that is not a function curve field is
+  `REFUSED`.
 - **The field panel.** `tag.view {tag?, path?, field?, search?,
   changed?, unnamed?, show_as?}` drives the Tags tool's panel and
   returns what it shows. `tag` selects a tag in the Tags tool. `path`,
@@ -1534,6 +1567,13 @@ the window and the API stay one path.
   for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
   `script.follow` and `script.doc` are `Action::Script` through
   `App::perform`.
+- **Curves (rich editors F1).** `api/curves.rs` registers `Curves` for
+  `function.read`, `function.set` and `function.sample`, over
+  `tags::effects::function` (`Set`, `Function::set_values`,
+  `Function::write_set`) and the curve editor's own helpers
+  (`fields/curve.rs`); `function.set` is a `TagAction::Write` of the
+  same length at the data's start through `App::perform`, one undo
+  step, exactly as the dialog's drags write.
 - **Game type scripts.** `api/game_script.rs` registers `GameScript` for
   `rules.*`, over `App::rules` (`app/rules_edit.rs`), the state the
   window draws; `rules.reload` leaves the blob in its outbox and

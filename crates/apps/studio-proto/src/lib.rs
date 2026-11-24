@@ -102,6 +102,11 @@ pub mod method {
     pub const TAG_EXPORT: &str = "tag.export";
     pub const TAG_IMPORT: &str = "tag.import";
 
+    // Curve functions of a function field (api/curves.rs).
+    pub const FUNCTION_READ: &str = "function.read";
+    pub const FUNCTION_SET: &str = "function.set";
+    pub const FUNCTION_SAMPLE: &str = "function.sample";
+
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
     pub const SOUND_STOP: &str = "sound.stop";

@@ -18,6 +18,10 @@
 //!   tag document's actions. Return `None` for the scenario tag's
 //!   placement blocks (paths `<block>[<i>].<field>`): the built-in methods
 //!   route those to the scenario's own commands.
+//! - **curve functions** (the curve editor of a `view=function` data
+//!   field, rich editors F1): `function.read`, `function.set` (same
+//!   length, one undo step) and `function.sample` over
+//!   `tags::effects::function` ([`super::curves`]).
 //! - **tag browsing and bundles**: `tag.list` over the document the Tags
 //!   tool shows, `tag.browse`, `tag.resources`, `tag.export` and
 //!   `tag.import` through `Action::BrowseTags`, `Action::TagExport` and
@@ -76,6 +80,9 @@ pub trait Provider {
 pub fn register(api: &mut Api) {
     // studio-tags: every field of any tag through the Tags tool's commands.
     api.register(Box::new(super::tag_fields::TagFields));
+    // Curve functions of a `view=function` field, read, edited and
+    // sampled (rich editors F1).
+    api.register(Box::new(super::curves::Curves));
     api.register(Box::new(super::nav::Navigation));
     // The Navigation layers' data: the game's pathfinding, the bots' mesh
     // and spots, and a pick.

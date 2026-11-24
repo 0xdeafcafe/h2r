@@ -28,6 +28,7 @@ use crate::App;
 mod bitmaps;
 mod checks;
 mod collision;
+mod curves;
 mod docs;
 mod game_script;
 mod geometry;
