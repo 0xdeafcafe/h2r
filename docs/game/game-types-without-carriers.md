@@ -1,6 +1,6 @@
 # Game types without carriers
 
-Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT5 (filing and round-start lines), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index), GM1 (`crates/tools/firefight-kit/src/ground.rs`) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
+Status: Design, with GT0 (the reads, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)), GT1 (the header), GT2 (eligible Slayer scripts on index 6 and script role traits), GT5 (filing and round-start lines), GE1 to GE4 (the record clean-up, the wire codec, the protocol map and the engine object for the script index), GM1 (`crates/tools/firefight-kit/src/ground.rs`) and GM4 (`siege.rules`'s labels, `rules::labels::reads`) built, and GM3's document, session and screens built (the builder hook is not wired, below); "What the carrier supplies" is the state of the code and the slices are the order to change the rest in.
 Code: `crates/formats/rules/src` (`ir.rs` the header, `types.rs` the type table, `lang/check.rs`, `caps.rs`, `builtin/`), `crates/extensions/game/src/rules/` (`runtime.rs`, `scoring.rs`, `objectives.rs`, `roles.rs`), `crates/formats/variants/src/portable.rs` (`record_for`), `crates/formats/variants/src/record.rs` (`check`, `clean_up`, `protocol`), `crates/formats/variants/src/wire.rs` (the codec), `crates/extensions/game/src/rules/record.rs` (the record hooks), `crates/extensions/game/src/rules/engine_object.rs` (the engine object), `crates/hooking/guest-layout/src/points/game_types.rs` (its image entries), `crates/extensions/game/src/community_variants.rs`. Tests: `crates/formats/rules/tests/engines.rs`, `tests/modes.rs`, `crates/rewrites/engine/tests/variant_record_differential.rs`, `crates/extensions/game/src/rules/runtime/tests/script_index.rs`.
 Switch: none (the `rules` feature).
 
@@ -17,18 +17,21 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## What the carrier supplies
 
-`record_for` writes one of the seven retail engine indexes, selected
-by the script's type or its `uses` game ([rules-engine.md](rules-engine.md),
-"Which engine index a script rides"; `ir::Header::engine`, from the
-script's `type` or `uses`). The carrier gives a script game these things:
+A script's `type` or `uses` selects its retail settings template
+(`ir::Header::engine`). When the template is Slayer and the script writes
+no type-area setting, `variants::portable::record_for` builds a record on
+index 6 with Slayer's common defaults and a zero type area. Changes to common
+settings, extension fields and script options travel in that record. Other
+scripts use the retail template's engine. Existing saved records keep their
+engine and settings. See [rules-variants.md](rules-variants.md#the-record-of-a-script).
 
 | What | How the carrier gives it | Evidence | What replaces it |
 |---|---|---|---|
-| A record the game accepts | four retail paths refuse or reset an unknown engine index (the engine table, the record clean-up, the wire codec, the lobby protocol map), and a fifth files saved variants by it (the content category) | **E**, rules-engine.md, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "Owning the four paths" | first index 2 (Slayer, GT2), then an index of ours with the four paths answered natively and no retail engine object ("No retail engine object") |
-| Scoring | per-engine routines: the kill callbacks, and `SCORE_ADD` from ten carrier sites; a script game answers them in place (`rules/scoring.rs`, "One scorer") | **Code**; **E** | `score(who, n)` from the script is the only source of points; with one index only Slayer's kill callback is left to answer |
+| A record the game accepts | four retail paths refuse or reset an unknown engine index (the engine table, the record clean-up, the wire codec, the lobby protocol map), and a fifth files saved variants by it (the content category) | **E**, rules-engine.md, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md), "Owning the four paths" | index 6 for eligible scripts (GT2), with the four paths answered natively and a host-owned engine object ("No retail engine object") |
+| Scoring | per-engine routines: the kill callbacks, and `SCORE_ADD` from ten carrier sites; a script game answers them in place (`rules/scoring.rs`, "One scorer") | **Code**; **E** | `score(who, n)` from the script is the only source of points; the object on index 6 has no retail scorer, and games on retail indexes still need their scoring hooks |
 | Objectives | the flag, bomb, ball, hill and territories are run by the carrier's per-tick, per-player and objective slots, which still run in a script game | **E**, rules-engine.md | the script owns them: objects it spawns and tracks, zones it tests ([rules-world-api.md](rules-world-api.md)) |
-| Player traits by role | the trait query slot; a host makes `role_traits` on its own carrier only | **Code**, `rules/roles.rs` | the host answers the trait query itself for any script (Slayer's query is every engine's fallback, `ENGINE_TRAIT_QUERY`) |
-| The type area of the record | each engine's own settings and editor pages (`oddball_ball_speed`, `ctf_flag_type`), applying on that carrier only (`rules::settings::TABLE`) | **Code** | script options and settings; the type area is Slayer's and unused |
+| Player traits by role | the VM tracks role membership and the trait query answers for members on every script | **Code**, `rules/roles.rs` | built (GT2), through `ENGINE_TRAIT_QUERY` |
+| The type area of the record | each engine's own settings and editor pages (`oddball_ball_speed`, `ctf_flag_type`), applying on that carrier only (`rules::settings::TABLE`) | **Code** | script options and common settings, with a zero type area on index 6 |
 | The menu category | Each save keeps the content category of its retail loader template. The lobby and pause lists file it by the script header (`community_variants::filed_type`). | **Code**, [community-gametypes.md](community-gametypes.md#tweakers) | built (GT5) |
 | The announcer's line at the start | The authority waits for the seated players, then broadcasts the script type's retail event, sends its custom clip cue, or stays silent. The carrier's player-ready slot cannot post a second line. | **Code**, `rules/start_line.rs`; **E** for the event path, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md) | built (GT5) |
 | The HUD's objective parts and the scoreboard's labels | the replicated engine-globals entity is applied by each client's own engine slots after a type match (`0xa45e0`..`0xa4910`); events and the statborg need no engine; the HUD widget state (`0x13a050`) reads no engine; which widget shows which engine's state is not traced | **E**, partial, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md) | HUD kit HUDs fed by script state ([hud-kit.md](hud-kit.md)); labels from `type`; **E first** for the widget map |
@@ -82,9 +85,30 @@ total with `variant.score_limit` and ends the round; ties, sudden death
 and rounds are the common round resolution, which calls no engine slot
 (**E**, rules-engine.md). Slayer is `on kill: score(killer, 1)`; CTF is
 `score(team, 1)` when a flag reaches a stand; King of the Hill is
-`score(holder, 1)` each second. Nothing else scores: with every game on
-index 2 the one retail scorer left is Slayer's kill callback, which the
-feature answers as it does today.
+`score(holder, 1)` each second. The host-owned object on index 6 skips the retail scoring slots.
+For a script on a retail index, `rules/scoring.rs` still intercepts the
+retail kill callbacks and objective awards so the script scores each event
+once.
+
+### Role traits
+
+`role_traits(player, enabled)` sets or clears that player's bit in the
+VM's role mask. A role transfer clears the old holder and sets the new
+holder in the same handler. The mask is part of the VM snapshot. A quit
+clears the departing player's bit and round end clears all bits.
+
+The trait query gives a holder extra damage by default, with active camo
+and damage resistance off. A script can override those defaults with the
+boolean options `role_active_camo`, `role_extra_damage` and
+`role_damage_resistance`. A Juggernaut record retains the role flags the
+player set in the variant editor. The Live actor channel sends the
+authority’s role mask, trait values and script prefix in its mode-state
+deltas and keys. Guests apply a matching state to their trait queries.
+[Actor replication](ai-networking.md).
+
+The runtime admits a script independently of its header's retail template.
+The retail `reset_objective` implementation still needs the ball spawns in
+an active Oddball record.
 
 ### Objectives belong to the script
 
@@ -103,12 +127,10 @@ flag stand now. What the port of each objective type needs:
 
 ### Retail records
 
-A record with no script on engine 1, 3, 4, 7, 8 or 9 (a retail built-in,
-a player's saved CTF variant, a hopper slot) is turned into a script
-game when the game starts: the host makes the index 2 record of the
-built-in script of that type (`variants::portable::record_for`), with
-the record's common settings kept and its type-area settings read into
-the script's options. The swap happens at `GAME_ACTIVATE` entry, before the engine's
+GT7 covers records with no script on engine 1, 3, 4, 7, 8 or 9, including
+retail built-ins, saved variants and hopper slots. Its target is an
+index-6 record of the built-in script of that type, with common settings
+preserved and type-area settings mapped into script options. The swap belongs at `GAME_ACTIVATE` entry, before the engine's
 subsystem start copies the engine pointer from the options
 (`0x1574c0`), and every machine makes the same swap (**E**, [the GT0 note](notes/2026-11-24-game-type-engine-reads.md)). The record on disk and on the wire is not
 changed, so the clean-up and the codec see what they expect.
@@ -185,15 +207,13 @@ The record answers are `before`s of the `rules` feature (`rules/record.rs`),
 on every machine, so a record of the script index is kept by the host
 and by each guest's decode alike.
 
-With the object ours, `rules/scoring.rs` answers nothing: `SLAYER_KILL`
-and `scoring::CARRIER_SCORE_SITES` are never reached, since no retail
-engine's slot is called. What the Slayer object gave for free has to be
-supplied: the score and time on the HUD (a HUD kit HUD, GT6) and the
-engine-globals entity a client reads the round from.
+`rules/scoring.rs` still installs its hooks for games on retail indexes.
+A game using the host-owned object cannot reach the retail kill or
+objective scoring slots. GT6 supplies the base score and time HUD. The
+engine-globals entity uses the shared Slayer body on each client.
 
-The retail engines stay in the image and a record of a retail index
-still decodes and cleans as before; it is swapped to its type's script
-at game start ("Retail records"), so no game runs one.
+Retail records retain their encoding and clean-up rules. GT7 covers
+their conversion at game start.
 
 ## Maps for scripted games
 
@@ -343,9 +363,8 @@ and is stored nowhere but in the built map on each machine.
 
 ## Rules and limits
 
-- One scorer. While games ride index 2, a host that cannot answer
-  Slayer's kill callback runs no script and says so, as today; with the
-  script index no retail scorer is reachable.
+- A game on index 6 receives its scores from the script. Games that still
+  use retail engine objects need their scoring hooks to prevent a second award.
 - A type is display and filing. It changes no rule, and two scripts of
   one type need share nothing else.
 - A script names no engine. `variant.engine` is removed; CTF and
@@ -368,27 +387,26 @@ with tests, M under 2,500. Tests are headless on `rules::fake::FakeGame`.
 |---|---|---|---|---|
 | GT0 (built) | **The reads** (**E**), as a note in `docs/game/notes/`: what plays the start line; where the game type list groups by engine; what each engine's HUD and scoreboard draw from; the post-game's per-engine parts; who attaches a carried flag, bomb or ball; where the engine object is chosen at game start | S | nothing | the note gives each a guest address and a verdict, or says the disc has no such path |
 | GT1 (built) | **The header**: `type`, `points`, `uses`; `carrier`, `list` and `scoring carrier` refused; the IR header; `rules::types::TABLE`; every built-in rewritten; the option count per built-in | M | nothing | every file of `builtin/` compiles with a type; `carrier slayer` is an error naming `type`; an unknown type is refused by name; `tests/modes.rs` passes |
-| GT2 | **One index**: every script record is index 2 (`record_for`); `role_traits` for any script through the trait query; the refusals by carrier deleted from `rules/runtime.rs` | M | GT1 | on the fake game a Juggernaut script passes the role and its traits on an index 2 record; no code path reads a carrier |
+| GT2 (built) | **Eligible scripts on index 6**. `record_for` moves scripts with the Slayer template and no type-area writes. Any script can set role traits through the VM and the trait query. | M | GT1, GT5, GE1 to GE4 | an eligible script retains its common settings and options with a zero type area. A Juggernaut script transfers its role on index 6, and role membership survives a snapshot and clears on quit and round end |
 | GT3 | **Zones**: King of the Hill and Territories as scripts that own their hills and territories | M | GT2 | the two engines' core rules in `tests/engines.rs` pass with no carrier slot delivered |
 | GT4 | **Carried objectives**: the flag, bomb and ball as script objects; CTF, Assault and Oddball | M | GT2, GT0 | a capture scores and the flag returns, by time and by touch; a bomb armed on the plate scores; time held scores; with no carrier slot delivered |
 | GT5 (built) | **Filing and the start line**: variants filed by type; the host plays the type's line; clips of ours for our types | S | GT1, GT0 | each built-in lands in its type's row on an invented `goof` block; the round start posts the type's line on the fake game |
 | GT6 | **The display**: a HUD kit HUD per objective type, the `points` label on the scoreboard and post-game | M | GT3, GT4, GT0; PK11 of studio-redesign | each HUD compiles and shows its state from an invented script state; the label reaches the fake scoreboard |
-| GT7 | **Retail records**: a no-script record of another engine starts as its type's built-in on index 2, type-area settings mapped | M | GT3, GT4, GT0 | each retail engine's invented record maps to a script record whose settings read back equal; the stored record's bytes are unchanged |
+| GT7 | **Retail records**: a no-script record of another engine starts as its type's built-in on index 6, type-area settings mapped | M | GT3, GT4, GT0 | each retail engine's invented record maps to a script record whose settings read back equal; the stored record's bytes are unchanged |
 | GE0 | **The engine-object reads** (**E**), a note beside GT0's: the "E first" column of "No retail engine object"; the table's slots for the deprecated indexes; which number `SCRIPT_INDEX` is | S | nothing | the note lists every reader and caller with its address, the 51 slots marked own or shared, and the chosen index with its reason |
 | GE1 (built) | **The record**: `variants::record::check` and the native clean-up at `0x19d650` take the script index | M | GE0 | on invented records the native body equals `check` for every retail index; a script record keeps its index and reference; a non-zero type area on one is cleaned |
 | GE2 (built) | **The codec**: native encode and decode with an empty type area for the script index | M | GE1 | every invented record of a retail index encodes to the bytes the model in `crates/formats/variants` gives and decodes back; a script record round-trips; an out-of-range index fails the decode |
 | GE3 (built) | **The protocol map**: the native answer at `0x161c90` | S | GE0 | the script index answers distributed; every retail index answers as the table of [live-coop.md](../live/live-coop.md) says |
-| GE4 (built) | **The engine object**: a host-owned object of shared bodies for the script index; the runtime's events from the common paths; `rules/scoring.rs`' in-place answers deleted | L | GE0, GT3, GT4 | on the fake game a script game starts with the script index and its object; a kill reaches `on kill` with no engine slot answered; no retail scoring site is hooked |
-| GE5 | **Every script game on the script index**: `record_for`, the retail-record swap, films and the session; the base HUD (score, time) as a HUD kit HUD | M | GE1 to GE4, GT6, GT7 | `tests/modes.rs` and `tests/engines.rs` pass on script-index records; no built-in's record is index 2; the base HUD compiles and shows an invented score and clock |
+| GE4 (built) | **The engine object**. Index 6 selects a host-owned object with shared engine bodies. The runtime receives kills and round events from the common paths. | L | GE0 to GE3 | a scripted kill on index 6 reaches `on kill` without invoking a retail scoring slot |
+| GE5 | **Every script game on the script index**. Move the remaining templates and retail-record swap, films and sessions to index 6. Remove retail scoring hooks after the last scripted retail record is covered. The base HUD shows score and time. | M | GT2, GT6, GT7 | `tests/modes.rs` and `tests/engines.rs` pass on script-index records; no built-in's record is index 2; the base HUD compiles and shows an invented score and clock |
 | GM1 (built) | **Ground as a build step**: `firefight_kit`'s generator behind `ground::build(map, labels, recipe)`, labels in place of found bases and picked drops, the stale rule, the receipt | M | nothing | on the kit's invented court: no labels gives the tags `build_package` gives; a moved `ff_drop` moves its zone; the same inputs give the same bytes; over headroom is refused with its biggest part |
 | GM2 | **Studio**: the AI and objectives group, **Build AI ground**, `ground.status`, `ground.build`, the Navigation layers, the `map` item's `ground` | M | GM1, PK9 of studio-redesign | a label placed in the window and by `scenario.add` make the same document; a build on an invented map lists its sectors; an edit that moves collision marks it stale |
 | GM3 (built, but for the reload) | **Forge**: the palette page, the `ground` recipe in the document and `Tier::Variant`, **Build AI ground**, the rebuild and reload (the build is built; the reload is not), build on save, the overlay | M | GM1 | a variant with labels and a recipe validates as a variant; materialising it equals GM1's build of the same inputs; a save with stale ground builds first |
 | GM4 (built) | **Labels the scripts read**: Firefight's director and `siege.rules` take their places from labels; the lobby's refusal for a map without them | S | GM1, GT1 | on the fake game a wave lands at a placed drop; Siege's sites are the placed ones; a map with no required label is refused by name |
 
-GT1, GT0, GE0 and GM1 start together. Index 2 (GT2) is the step that
-lets GT3 to GT7 land before the engine object is ours; GE5 then moves
-every game off it.
-
+GT2 uses the GE1 to GE4 record and engine paths and GT5 filing. GT3 and
+GT4 supply the script-owned objectives. GT7 maps retail records onto the
+new scripts. GE5 extends index 6 to the remaining games.
 
 ## Evidence
 

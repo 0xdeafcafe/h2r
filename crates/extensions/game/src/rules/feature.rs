@@ -383,6 +383,7 @@ impl hooks::Feature for Rules {
             Some(crate::firefight::feature::FEATURE),
         );
         super::scoring::register(b, &self.shared);
+        super::roles::register(b, &self.shared);
         super::record::register(b);
         super::engine_object::register(b)?;
         register_spawns(b, &self.shared);
@@ -524,6 +525,15 @@ pub fn install(
     }
     let _ = SHARED.set(shared);
     Ok(true)
+}
+
+/// The host's role membership and traits for an actor-channel frame.
+pub fn network_roles(m: &dyn GuestMemory) -> Option<crate::actor_net::roles::State> {
+    let rt = SHARED.get()?.lock();
+    let state = super::roles::network_state(m, &rt)?;
+    // An empty Juggernaut mask clears the native role of a former holder
+    // while its replicated engine globals catch up.
+    (state.mask != 0 || rt.running()?.record_engine == super::roles::JUGGERNAUT).then_some(state)
 }
 
 /// One tick's superbounce awards (`superbounce_chain::Medals::step`), as

@@ -2145,7 +2145,7 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
 - `Variant` is `{id, name, description, author: {xuid, gamertag}, engine,
   game_type, record_hex, script_hash, script_name, visibility, created,
   bundle_url, settings: [{label, value}], eligible}`. `engine` is the record's
-  retail engine index and `game_type` our label of it; `script_hash` and
+  engine index (including 6 for a script record) and `game_type` our label of it; `script_hash` and
   `script_name` are null for an unscripted variant; `created` is RFC 3339;
   `bundle_url` is the file's path; `settings` is the record's settings in
   words (each setting of its game type we have a name for, then the
@@ -2168,8 +2168,10 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   the record decodes and the game would keep it, the name and description
   keep the name rules (1 to 31 characters, at most 150 for a
   description), and a named script hashes to its hash, starts with the
-  prefix, verifies, fits the tick budget and the IR cap (`rules::fits`)
-  and rides the record's engine. A variant whose record runs no script
+  prefix, verifies and fits the tick budget and the IR cap (`rules::fits`).
+  A retail record must match the script's template. A script attached to
+  an index-6 record may write common settings and extension fields. A
+  variant whose record runs no script
   (mode 0, or Firefight's mode 1) is refused by name: Live lists scripted
   variants only. A refusal is 400 with the reason. The file's id is the SHA-256 of its canonical bytes, author
   included, so the same file published again answers 200 with the same
@@ -2177,10 +2179,11 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   id once published.
 - `from-script` and `bundle` take `{script_hash | source, name,
   description, visibility, options}`. The record is the script's own
-  (`variants::portable::record_for`): the stock record of its carrier
-  engine with the script's `settings` written, named, with mode 2, the
-  IR's prefix and `options` packed into the 32 option bits in
-  declaration order. A `description` left out or blank is the script's
+  (`variants::portable::record_for`). When the script uses Slayer's
+  template and writes no type-area setting, the record has index 6 and
+  a zero type area. Other scripts keep their retail templates. The
+  record carries the requested name, the script's settings, its mode-2
+  reference and the options packed in declaration order. A `description` left out or blank is the script's
   `about`. `options` maps an option's name to a
   number, a bool or an enum value's name; one left out takes its default;
   an unknown name or a value out of range is 400. A `script_hash` is a

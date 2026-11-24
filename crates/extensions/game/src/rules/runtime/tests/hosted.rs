@@ -170,19 +170,123 @@ fn role_traits_without_the_juggernaut_globals_is_an_engine_refusal() {
 }
 
 #[test]
-fn role_traits_on_another_carrier_is_refused_by_the_carrier() {
+fn every_supported_record_answers_script_role_traits_and_leaves_nonholders_to_its_engine() {
     let src = CROWN.replace("type juggernaut", "type slayer");
     let store = Local::default();
     let (s, id) = hosting(&store, &src);
-    let (m, _) = guest(block(prefix(&id), 0), SLAYER);
+    for engine in [1, 2, 3, 4, 6, 7, 8, 9] {
+        let (mut m, players) = guest(block(prefix(&id), 0), engine);
+        // Camo and resistance in an edited Juggernaut record. On any
+        // other record arbitrary values in this area are unrelated.
+        m.put_u8(GAME_GLOBALS + guest::VARIANT + variants::record::TYPE_AREA.start as u32, 0x44);
+        assert!(s.lock().start(&m, false).contains("Crown"));
+        s.lock().kill(&m, 0, Some(1));
+        assert_eq!(roles::network_state(&m, &s.lock()), None, "before authority");
+        s.lock().finish(TICK, Some(true), Vec::new());
+        let state = roles::network_state(&m, &s.lock()).unwrap();
+        assert_eq!(state.prefix, prefix(&id));
+        assert_eq!(state.mask, 2);
+        let traits = if engine == JUGGERNAUT { [true, false, true] } else { [false, true, false] };
+        for (i, on) in traits.into_iter().enumerate() {
+            let id = i as u32 + 1;
+            assert_eq!(roles::answer(&m, state, players[1], id), Some(on));
+            assert_eq!(roles::answer(&m, state, players[0], id), None);
+            assert_eq!(roles::answer(&m, state, players[1] ^ (1 << 16), id), None);
+        }
+        assert_eq!(roles::answer(&m, state, players[1], 4), None);
+        if engine != JUGGERNAUT {
+            assert!(s.lock().running().unwrap().pending().is_empty(), "VM owns the role");
+        }
+        s.lock().kill(&m, 1, Some(0));
+        let transferred = roles::network_state(&m, &s.lock()).unwrap();
+        assert_eq!(transferred.mask, 1);
+        assert_eq!(roles::answer(&m, transferred, players[1], 2), None);
+    }
+}
+
+#[test]
+fn a_released_native_juggernaut_has_normal_variant_traits_before_the_setter_runs() {
+    let store = Local::default();
+    let (s, id) = hosting(&store, CROWN);
+    let (mut m, players) = juggernaut_guest(block(prefix(&id), 0), 2);
+    m.put_u32(GAME_GLOBALS + guest::VARIANT + guest::VARIANT_FLAGS, 1 << 13);
     s.lock().start(&m, false);
-    assert_eq!(
-        s.lock().state().refused.as_deref(),
-        Some("the script calls role_traits, which a host makes only on juggernaut, and the script rides slayer")
-    );
+    s.lock().kill(&m, 1, Some(0));
+    s.lock().finish(TICK, Some(true), Vec::new());
+    let state = roles::network_state(&m, &s.lock()).unwrap();
+    assert_eq!(state.mask, 1);
+    assert_eq!(roles::answer(&m, state, players[1], 1), Some(false));
+    assert_eq!(roles::answer(&m, state, players[1], 2), Some(false));
+    assert_eq!(roles::answer(&m, state, players[1], 3), Some(true));
+    m.put_u16(JUGGERNAUT_GLOBALS + roles::ROLE_MASK, 0);
+    assert_eq!(roles::answer(&m, state, players[1], 3), None);
+}
+
+#[test]
+fn script_index_role_options_reach_the_holder_and_a_guest_with_the_same_record() {
+    let src = CROWN.replace("type juggernaut", "type slayer\noption role_active_camo: bool = false \"Camo\" \"Role holder camo\"");
+    let store = Local::default();
+    let (s, id) = hosting(&store, &src);
+    let (m, players) = guest(block(prefix(&id), 1), i32::from(::rules::SCRIPT_INDEX));
+    s.lock().start(&m, false);
+    s.lock().kill(&m, 0, Some(1));
+    s.lock().finish(TICK, Some(true), Vec::new());
+    let state = roles::network_state(&m, &s.lock()).unwrap();
+    assert_eq!(state.traits, 3);
+    let received = roles::guest_state(&m, Some(state)).unwrap();
+    assert_eq!(roles::answer(&m, received, players[1], 1), Some(true));
+    let (other_game, _) = guest(block([0xee; 8], 1), i32::from(::rules::SCRIPT_INDEX));
+    assert_eq!(roles::guest_state(&other_game, Some(state)), None);
+}
+
+#[test]
+fn a_role_given_at_init_lasts_for_the_first_round_and_expires_at_the_next_reset() {
+    let src = "rules \"Opening role\" 1\ntype slayer\non init { for each players p { role_traits(p, true) } }\n";
+    for index in [i32::from(::rules::SCRIPT_INDEX), JUGGERNAUT] {
+        let store = Local::default();
+        let (s, id) = hosting(&store, src);
+        let (m, _) = guest(block(prefix(&id), 0), index);
+        s.lock().start(&m, false);
+        s.lock().finish(TICK, Some(true), Vec::new());
+        assert_eq!(roles::network_state(&m, &s.lock()).unwrap().mask, 3);
+        let old_calls = s.lock().running().unwrap().pending().len();
+        s.lock().round_start(&m);
+        assert_eq!(roles::network_state(&m, &s.lock()).unwrap().mask, 0);
+        let rt = s.lock();
+        let released = &rt.running().unwrap().pending()[old_calls..];
+        if index == JUGGERNAUT {
+            assert_eq!(released, [
+                Call::RoleTraits { player: 0, on: false },
+                Call::RoleTraits { player: 1, on: false },
+            ]);
+        } else {
+            assert!(released.is_empty());
+        }
+    }
 }
 
 const RETURN: &str = "rules \"Return\" 1\ntype oddball\n\non tick {\n    for each objectives b {\n        if b.carrier == none { reset_objective(b) }\n    }\n}\n";
+
+#[test]
+fn a_ball_return_needs_the_actual_oddball_record_at_start_and_reload() {
+    let store = Local::default();
+    let src = RETURN.replace("type oddball", "type slayer");
+    let (s, id) = hosting(&store, &src);
+    let (m, _) = oddball_guest(block(prefix(&id), 0), TICK, None);
+    s.lock().start(&m, false);
+    assert!(s.lock().state().running, "the active record supplies the ball spawns");
+    for index in [SLAYER, i32::from(::rules::SCRIPT_INDEX)] {
+        let (m, _) = guest(block(prefix(&id), 0), index);
+        assert!(s.lock().start(&m, false).contains("Oddball record's ball spawns"));
+        assert!(s.lock().running().is_none());
+
+        let (m, _) = guest(block(prefix(&slayer().id), 0), index);
+        s.lock().start(&m, false);
+        let ir = ::rules::compile(RETURN).unwrap();
+        assert!(s.lock().swap(ir).unwrap_err().contains("Oddball record's ball spawns"));
+        assert_eq!(s.lock().state().hash, Some(slayer().id.to_string()));
+    }
+}
 
 #[test]
 fn reset_objective_returns_an_oddball_through_the_engines_ball_return() {

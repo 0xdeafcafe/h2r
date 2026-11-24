@@ -99,9 +99,9 @@ disc by `live_proto::hopper::variant::VariantRecord::stock`, **Code**).
 The disc's per-type defaults in the `goof` tag play no part, so a script
 gives the same record offline, on Live and in the game. A script that
 wants a value the menu's Create New would have given states it.
-`h2 rules settings <file.rules>` (new) prints every setting of the
-type with its value and whether the script or the stock record set
-it.
+`h2 rules check <file.rules>` reports the engine index of the generated
+record. `h2 rules settings <file.rules>` lists the settings available on
+that index and marks the value of each as `script` or `stock`.
 
 **Checks, in three places.** No check falls back to another value.
 
@@ -158,17 +158,11 @@ names the built-in's hash, which every build has
 ([rules-engine.md](rules-engine.md#the-host-runtime), "A `uses`
 script").
 
-A built-in this host cannot run yet is refused by name, as any script
-is: "Sun King uses the built-in King of the Hill
-script, which this host cannot run yet: ...". Of the thirteen settings
-scripts, the nine on Slayer (Zombies, Jousting, SWAT, Duel, Tower of
-Power, Cops and Robbers, Bounce Practice, Glitch Hunt, Bumper Cars) run
-`slayer.rules`. The other four are refused: Clint Eastwood and Hide and
-Seek because `juggernaut.rules` answers on `round_start` and `quit`,
-Sun King because `koth.rules` answers on `round_start` and reads
-`variant.king_moving_hill`, and Wheeeeee! because `oddball.rules` calls
-`spawn_objective` and answers on `pickup` and `drop`, none of which the
-host does yet ([rules-engine.md](rules-engine.md#the-host-runtime)).
+A script using Slayer or Juggernaut inherits its built-in handlers.
+Juggernaut's `role_traits` assigns the role through the VM. A missing
+host entry or event still refuses a built-in by name. For example,
+Wheeeeee! uses Oddball, whose built-in needs objective pickup and drop
+events. See [rules-engine.md](rules-engine.md#the-host-runtime).
 
 ### Quick Options marks
 
@@ -242,18 +236,24 @@ script the machine lacks. `IR_VERSION` stays 1; blobs kept anywhere
 
 ### The record of a script
 
-`variants::portable::record_for(ir, options)` (new) is the one builder:
+`variants::portable::record_for(ir, options)` builds the variant in this order:
 
-1. `GameVariant::stock(engine)` (new; the stock record, in the
-   `variants` crate);
-2. each IR setting through `GameVariant::set`, or into the `Ext` for a
-   block row;
-3. the name (`header.name`);
-4. the script reference: mode 2, the hash's first 8 bytes and the option
-   bits (`Ir::pack_options`, the defaults when none are given).
+1. `portable::settings_record` chooses the stock record. The retail
+   template comes from `uses` when present, otherwise from `type`.
+   A Slayer-template script that writes no type-area field starts with
+   `GameVariant::stock(GameType::Script)`, index 6. It has Slayer's
+   common defaults and a zeroed type area. Other templates keep their
+   retail index and stock defaults.
+2. Each named setting goes to its record field or extension field.
+   Eligibility for index 6 depends on which fields a script writes.
+   Writing zero to a type-area field still counts as a write.
+3. The record receives its name and its mode-2 reference, consisting of
+   the first eight bytes of the IR hash and the packed script options.
+   Omitted options take their declared defaults.
 
-Every place that makes a variant from a script calls it: the built-in
-entries, `Bundle` construction, Live's `bundle_for_script` and Studio.
+The built-in list, Live's from-script builder, the CLI and Studio use
+this record. Opening a saved or portable variant keeps the record's
+original engine. The script header determines its visible type.
 
 ### Built-in list entries
 

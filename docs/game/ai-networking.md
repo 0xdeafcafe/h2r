@@ -121,6 +121,18 @@ and facing delta into bits 11–15. Each five-bit field maps codes 0–30 to
 31 equally spaced values across ±1 for throttle or ±π radians for facing.
 Code 15 means zero. Code 31 is reserved.
 
+When a script grants a role, the mode blob carries tag `0x81`, the
+selected script's eight-byte reference, a little-endian player-slot
+mask (16 bits) and one byte of trait flags. Bits 0, 1 and 2 enable camo,
+extra damage and damage resistance. The Firefight HUD bytes follow when
+the director is active. After the last holder loses the role, a retail
+Juggernaut record sends a zero mask so a guest can release the role
+before the native mask catches up. Other records send the HUD alone or
+an empty state. A late joiner gets the
+current holders and trait values in its first key. The guest checks the
+script reference before answering a player's trait query
+(`crates/extensions/game/src/actor_net/roles.rs`).
+
 Posture combines a requested animation mode and the crouch request.
 The eight bare mode bytes are `84`, `85`, `86`, `89`, `cb`, `2c`,
 `39` and `c9` in hex. Each is the low byte of a mode handled by the

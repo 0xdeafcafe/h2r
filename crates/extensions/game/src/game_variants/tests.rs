@@ -178,24 +178,40 @@ fn saved_variants_port_once_and_the_saves_are_left_alone() {
 }
 
 #[test]
-fn porting_a_script_index_save_keeps_its_script_and_options() {
+fn newly_created_and_legacy_script_saves_keep_their_settings_through_port_and_reopen() {
+    use variants::save::{CONTENT_TYPES, XbeNames};
     let root = tmp("script-save");
+    let names = XbeNames {
+        file_names: (0..CONTENT_TYPES).map(|i| format!("type{i}")).collect(),
+        labels: (0..CONTENT_TYPES).map(|i| format!("Label {i}")).collect(),
+    };
+    let saves = SaveStore::new(root.join("saves"), Some(names));
     let ir = ::rules::compile(::rules::builtin::SLAYER).unwrap();
     let options = [("kill_points".into(), ::rules::ir::OptionValue::Int(3))];
-    let v = variants::portable::record_for_named(&ir, "My rules", &options).unwrap();
-    let mut raw = v.to_bytes();
-    raw[variants::record::TYPE_AREA].fill(0);
-    let mut saved = GameVariant::from_bytes(&raw).unwrap();
-    saved.set_game_type(GameType::Script);
-    write_save(&root, "AAAA", &saved);
-    let mut store = Store::in_memory();
-    let report = port::port_saves(&mut store, &SaveStore::new(&root, None), &PortScript::Builtin);
-    assert_eq!(report.ported, 1, "{report:?}");
-    let entry = &store.entries()[0];
-    assert_eq!(entry.bundle.engine, GameType::Script.engine());
-    assert_eq!(entry.bundle.game_type, ir.header.game_type.row().label);
-    assert_eq!(entry.bundle.variant().unwrap().ext().script, saved.ext().script);
-    assert_eq!(entry.bundle.ir().unwrap(), Some(ir.encode()));
+    let mut made = variants::portable::record_for_named(&ir, "My rules", &options).unwrap();
+    assert_eq!(made.game_type(), GameType::Script);
+    made.set(SettingId(2), 35).unwrap();
+    made.set_ext(&variants::ext::Ext { gravity: 75, ..made.ext() }).unwrap();
+    saves.create(&made).unwrap();
+
+    let mut legacy = GameVariant::stock(GameType::Slayer).unwrap();
+    legacy.set_name("Old rules").unwrap();
+    legacy.set_ext(&made.ext()).unwrap();
+    saves.create(&legacy).unwrap();
+
+    let store_root = root.join("game-variants");
+    let (mut store, _) = Store::open(&store_root);
+    let report = port::port_saves(&mut store, &saves, &PortScript::Builtin);
+    assert_eq!(report.ported, 2, "{report:?}");
+    let (reopened, lines) = Store::open(&store_root);
+    assert!(lines.is_empty(), "{lines:?}");
+    for saved in [&made, &legacy] {
+        let entry = reopened.entries().iter().find(|e| e.bundle.name == saved.name()).unwrap();
+        assert_eq!(entry.bundle.engine, saved.game_type().engine());
+        assert_eq!(entry.bundle.game_type, ir.header.game_type.row().label);
+        assert_eq!(entry.record, *saved.bytes());
+        assert_eq!(entry.bundle.ir().unwrap(), Some(ir.encode()));
+    }
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -343,20 +359,15 @@ fn the_merged_block_holds_retail_community_and_store_entries() {
     // Both records share a goof loader. Their menu names still select
     // distinct records, even when the name fills the UTF-16 field.
     let long = "Long shared store variant name!";
-    let mut source = bundle(long, 10, Some(ir(1)));
-    let mut script = source.variant().unwrap();
-    script.set_game_type(GameType::Script);
-    let mut raw = script.to_bytes();
-    raw[variants::record::TYPE_AREA].fill(0);
-    source.engine = GameType::Script.engine();
-    source.record_hex = super::bundle::hex(&raw);
+    let src = format!("rules \"{long}\" 1\ntype slayer\nuses slayer\nsettings {{ score_limit = 10 }}\n");
+    let ir = ::rules::compile(&src).unwrap();
+    let source = variants::portable::from_script(&ir, None, &[]).unwrap();
+    let script = source.variant().unwrap();
+    assert_eq!(script.game_type(), GameType::Script);
+    let retail = Bundle::new(&record(long, 10), long, "", None).unwrap();
     let mut both = Store::in_memory();
-    let mut retail = source.clone();
-    retail.engine = GameType::Slayer.engine();
-    retail.record_hex = super::bundle::hex(record(long, 10).bytes());
-    retail.script = None;
     both.add(Origin::Imported, retail).unwrap();
-    both.add(Origin::Imported, source).unwrap();
+    both.add(Origin::Imported, variants::portable::read(&source.canonical()).unwrap()).unwrap();
     let (rows, omitted) = inject::entries(&both, &offered, 2);
     assert!(omitted.is_empty(), "{omitted:?}");
     assert_eq!(rows.len(), 2);

@@ -449,6 +449,7 @@ settings {
         assert_eq!(b.name, "SWAT");
         assert_eq!(b.description, "No shields. 50 points to win.");
         assert_eq!(b.game_type, "Slayer");
+        assert_eq!(b.engine, variants::GameType::Script.engine());
         let v = b.variant().unwrap();
         assert_eq!(v.get(variants::SettingId(2)), Some(50));
         assert_eq!(v.get(variants::SettingId(19)), Some(1));

@@ -302,6 +302,38 @@ fn juggernaut_passes_to_its_killer_and_only_it_scores() {
     assert_eq!(scores(&g), vec![(j, 1), (k, 1)]);
 }
 
+#[test]
+fn script_index_carries_the_crown_and_its_trait_choices_across_a_restore() {
+    let source = builtin::JUGGERNAUT.replace(
+        "type juggernaut",
+        r#"type juggernaut
+option role_active_camo: bool = true "Camo"
+option role_extra_damage: bool = false "Damage""#,
+    );
+    let mut g = FakeGame::with_players(3);
+    g.carrier = rules::SCRIPT_INDEX;
+    let mut vm = start(&source, &mut g, 11);
+    let holder = vm.global("juggernaut").unwrap() as u8;
+    let killer = (holder + 1) % 3;
+    assert!(vm.has_role(holder));
+    assert!(!vm.has_role(killer));
+    assert_eq!(vm.role_trait(1), Some(true));
+    assert_eq!(vm.role_trait(2), Some(false));
+    assert_eq!(vm.role_trait(3), Some(false));
+    assert_eq!(vm.role_trait(4), None);
+    vm.fire(&mut g, Input::Kill { victim: holder, killer: Some(killer) });
+    let ext = rules::RulesExt::decode(&vm.ext().encode()).unwrap();
+    let mut vm = Vm::resume(vm.ir().clone(), vm.ir().default_options(), ext).unwrap();
+    assert!(!vm.has_role(holder));
+    assert!(vm.has_role(killer));
+    vm.fire(&mut g, Input::Quit(killer));
+    assert!(!vm.has_role(killer));
+    vm.fire(&mut g, Input::RoundStart);
+    assert_ne!(vm.ext().role_mask, 0);
+    vm.fire(&mut g, Input::RoundEnd);
+    assert_eq!(vm.ext().role_mask, 0);
+}
+
 // ---- King of the Hill ----
 
 #[test]

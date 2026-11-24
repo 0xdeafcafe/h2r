@@ -280,8 +280,8 @@ impl Client {
         Ok(true)
     }
 
-    /// The host's mode state as last received: the Firefight HUD's blob
-    /// (`crate::firefight::hud`), empty when none was sent.
+    /// The host's complete mode blob for the last accepted tick. The HUD
+    /// and trait query read their own parts through `super::roles`.
     pub fn mode_state(&self) -> &[u8] {
         self.replica.set().state()
     }
@@ -367,7 +367,7 @@ pub fn install(
     b.game()
         .on_start("clear actor puppets for the new match", move |_| {
             *new_match.lock().unwrap() = Client::default();
-            crate::firefight::hud::received().set(None);
+            super::roles::receive(&[]);
         });
 
     let client = Arc::clone(&state);
@@ -392,18 +392,13 @@ pub fn install(
                     let mut current = client.lock().unwrap();
                     let Some(tick) = tick else {
                         *current = Client::default();
-                        crate::firefight::hud::received().set(None);
+                        super::roles::receive(&[]);
                         super::report::clear(agent::actors::Role::Client);
                         return Ok(Flow::Continue);
                     };
                     receive(&mut current, tick);
                     super::report::publish_client(tick, &current);
-                    // The HUD reads the mode state from here, not from the
-                    // client, which is taken out of its lock while its
-                    // presentation runs.
-                    let mode = current.mode_state();
-                    crate::firefight::hud::received()
-                        .set((!mode.is_empty()).then(|| mode.to_vec()));
+                    super::roles::receive(current.mode_state());
                     if current.presentation.is_empty() && current.pending_cues.is_empty() {
                         return Ok(Flow::Continue);
                     }

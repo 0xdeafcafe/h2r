@@ -1580,14 +1580,14 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_one_engine_makes_is_unhostable_on_another_type() {
+    fn any_script_can_give_its_players_role_traits() {
         let src = |ty: &str| {
             format!("rules \"Crown\" 1\ntype {ty}\n\non kill(victim, killer) {{ role_traits(victim, false) }}\n")
         };
         let on_juggernaut = crate::compile(&src("juggernaut")).unwrap();
         assert_eq!(unhostable(&on_juggernaut), None);
         let on_slayer = crate::compile(&src("slayer")).unwrap();
-        assert_eq!(unhostable(&on_slayer).map(|e| e.name), Some("role_traits"));
+        assert_eq!(unhostable(&on_slayer), None);
     }
 
     /// The sample with one `on kill` handler of `code`: registers victim,

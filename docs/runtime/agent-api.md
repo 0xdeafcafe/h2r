@@ -4785,7 +4785,8 @@ built-in script has hash prefix ..., and fetching a blob from Live is
 not built"). `hash` is the blob's SHA-256 in hex, or the record's
 16-digit prefix when no blob was found. While a script runs: `script`
 and `version` are its header's, `source` is `builtin` or `live`,
-`carrier` the engine index it rides (the wire's name for the type's engine), `scoring` who scores the game,
+`carrier` the active variant record's physical index (6 on a script-index
+record), `scoring` who scores the game,
 `options` the record's option bits, and `authority` what
 `GAME_ENGINE_AUTHORITATIVE` answered at the first tick boundary (absent
 before it). `scoring` is `script`: the running script's VM scores. A

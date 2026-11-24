@@ -445,13 +445,18 @@ fn a_ranked_game_refuses_a_script_that_grants_edits_by_the_capability() {
 }
 
 #[test]
-fn a_script_on_another_engine_is_refused() {
+fn a_script_runs_on_another_supported_record_and_reports_its_actual_index() {
     let store = Local::default();
     let s = shared(&store, Box::new(no_fetch));
-    let (m, _) = guest(block(prefix(&slayer().id), 0), 1);
-    s.lock().start(&m, false);
-    let why = s.lock().state().refused.unwrap();
-    assert!(why.contains("rides engine 2"), "{why}");
+    for index in [1, i32::from(::rules::SCRIPT_INDEX)] {
+        let (m, _) = guest(block(prefix(&slayer().id), 0), index);
+        let line = s.lock().start(&m, false);
+        let state = s.lock().state();
+        assert!(state.running, "{line}");
+        assert_eq!(state.carrier, Some(index as u8));
+    }
+    let (m, _) = guest(block(prefix(&slayer().id), 0), 5);
+    assert!(s.lock().start(&m, false).contains("unsupported engine index 5"));
 }
 
 #[test]

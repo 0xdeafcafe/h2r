@@ -19,7 +19,8 @@
 //! hand; [`port`] makes a version-2 file from any variant.
 //!
 //! A script's own variant is [`record_for`]'s record: the stock record of
-//! its carrier with the script's `settings`, its name and the reference to
+//! the script index for Slayer scripts with only common settings, otherwise
+//! its retail engine, with the script's `settings`, its name and the reference to
 //! it. [`from_script`] makes its bundle (docs/game/rules-variants.md, "The
 //! record of a script").
 
@@ -489,8 +490,8 @@ fn text_chars(s: &str) -> Result<(), &'static str> {
 
 // ---- the record of a script ----
 
-/// The record of a script's own variant: the stock record of its carrier
-/// ([`GameVariant::stock`]), the script's `settings` written through
+/// The record of a script's own variant: its stock record ([`settings_record`]),
+/// the script's `settings` written through
 /// [`GameVariant::set`] or into the `hx` block, the script's name, and the
 /// script reference (mode 2, the first 8 bytes of [`rules::Ir::id`] and
 /// the option bits `options` pack to, [`rules::Ir::pack_options`]; an
@@ -532,27 +533,42 @@ pub fn record_for_named(
     Ok(v)
 }
 
-/// The stock record of the script's carrier with the script's settings
-/// written, refused as [`record_for`] refuses it; it keeps the stock name
-/// and has no script reference. [`Bundle::check`] and `h2 rules check`
-/// hold a script to it.
+/// The stock record with the script's settings, before its name and
+/// reference are attached. Scripts that ride Slayer and write no setting
+/// in its type area use the script index, whose stock type area is zero.
 pub fn settings_record(ir: &rules::Ir) -> Result<GameVariant, PortableError> {
-    settings_on(ir, ir.header.engine())
-}
-
-/// The settings a bundled script can write on this record. A script-index
-/// record has only common settings and extension fields.
-fn attached_settings(ir: &rules::Ir, v: &GameVariant) -> Result<GameVariant, PortableError> {
-    if v.game_type() == GameType::Script {
-        settings_on(ir, rules::SCRIPT_INDEX)
+    let carrier = ir.header.engine();
+    let ty = GameType::from_engine(i32::from(carrier));
+    let stock = if ty == GameType::Slayer && !writes_type_area(ir, carrier) {
+        GameType::Script
     } else {
-        settings_record(ir)
-    }
+        ty
+    };
+    settings_on(ir, stock, carrier)
 }
 
-fn settings_on(ir: &rules::Ir, carrier: u8) -> Result<GameVariant, PortableError> {
-    let mut v = GameVariant::stock(GameType::from_engine(i32::from(carrier)))
-        .ok_or(PortableError::NoStock(carrier))?;
+/// Test the field a setting writes, including a write of zero. The stock
+/// Slayer record has nonzero type defaults even when a script writes none.
+fn writes_type_area(ir: &rules::Ir, carrier: u8) -> bool {
+    ir.settings.iter()
+        .filter_map(|s| rules::settings::row_at(s.index)?.setting(carrier))
+        .filter_map(|id| record::field(SettingId(id)))
+        .any(|field| record::TYPE_AREA.contains(&field.offset))
+}
+
+/// Validate an attachment on its existing record. A script-index record
+/// accepts only common settings and extension fields.
+fn attached_settings(ir: &rules::Ir, v: &GameVariant) -> Result<GameVariant, PortableError> {
+    let engine = if v.game_type() == GameType::Script {
+        rules::SCRIPT_INDEX
+    } else {
+        ir.header.engine()
+    };
+    settings_on(ir, GameType::from_engine(i32::from(engine)), engine)
+}
+
+fn settings_on(ir: &rules::Ir, stock: GameType, carrier: u8) -> Result<GameVariant, PortableError> {
+    let mut v = GameVariant::stock(stock).ok_or(PortableError::NoStock(carrier))?;
     let mut e = ext::Ext::default();
     for s in &ir.settings {
         write_setting(&mut v, &mut e, carrier, *s)?;
@@ -1354,7 +1370,7 @@ settings {
         let ir = compiled(SWAT);
         let got = record_for(&ir, &[]).unwrap();
 
-        let mut want = GameVariant::stock(GameType::Slayer).unwrap();
+        let mut want = GameVariant::stock(GameType::Script).unwrap();
         for (s, value) in [
             (91, 1),
             (2, 50),
@@ -1405,11 +1421,44 @@ settings {
         let slayer = compiled(rules::builtin::SLAYER);
         let given = vec![("kill_points".to_string(), rules::ir::OptionValue::Int(3))];
         let v = record_for(&slayer, &given).unwrap();
-        let mut stock = GameVariant::stock(GameType::Slayer).unwrap();
+        let mut stock = GameVariant::stock(GameType::Script).unwrap();
         stock.set_name(&slayer.header.name).unwrap();
         assert_eq!(v.bytes()[..ext::AT], stock.bytes()[..ext::AT]);
         assert_eq!(v.ext().script.options, slayer.pack_options(&given).unwrap());
         assert_eq!(v.ext().gravity, 100);
+    }
+
+    #[test]
+    fn only_slayer_scripts_without_type_area_writes_move_to_the_script_index() {
+        // A category and the game whose rules it uses can differ. An hx
+        // extra and a common setting do not need Slayer's type area.
+        let research = compiled(
+            "rules \"Practice\" 1\ntype research\nuses slayer\nsettings {\ngravity = 50\nlives = 3\n}\n",
+        );
+        let v = record_for(&research, &[]).unwrap();
+        assert!(!writes_type_area(&research, research.header.engine()));
+        assert_eq!(v.game_type(), GameType::Script);
+        assert!(v.bytes()[record::TYPE_AREA].iter().all(|&b| b == 0));
+        assert_eq!(v.ext().gravity, 50);
+        assert_eq!(v.get(SettingId(16)), Some(3));
+        assert_eq!(v.ext().script.prefix[..], research.id().0[..8]);
+
+        for (setting, writes_area) in [("lives = 3", false), ("ctf_flag_type = 0", true)] {
+            let ir = compiled(&carried("ctf", &format!("{setting}\n")));
+            assert_eq!(writes_type_area(&ir, ir.header.engine()), writes_area);
+            assert_eq!(record_for(&ir, &[]).unwrap().game_type(), GameType::Ctf);
+        }
+        let party = compiled("rules \"Duel\" 1\ntype party\nuses juggernaut\n");
+        assert_eq!(record_for(&party, &[]).unwrap().game_type(), GameType::Juggernaut);
+
+        // Importing an existing Slayer record keeps its engine and type
+        // settings. The producer's index choice is only for new records.
+        let old = GameVariant::stock(GameType::Slayer).unwrap();
+        let attached = Attach::from_source(rules::builtin::SLAYER).unwrap();
+        let b = Bundle::new(&old, "Earlier variant", "", Some(attached)).unwrap();
+        let back = read(&b.canonical()).unwrap().variant().unwrap();
+        assert_eq!(back.game_type(), GameType::Slayer);
+        assert_eq!(back.bytes()[record::TYPE_AREA], old.bytes()[record::TYPE_AREA]);
     }
 
     #[test]
@@ -1501,7 +1550,7 @@ settings {
         assert_eq!(a.id(), b.id());
         assert_eq!(a.name, "SWAT");
         assert_eq!(a.description, ir.header.about);
-        assert_eq!(a.engine, 2);
+        assert_eq!(a.engine, record::SCRIPT_INDEX);
         assert_eq!(a.variant().unwrap(), record_for(&ir, &[]).unwrap());
         let s = a.script.as_ref().unwrap();
         assert_eq!(s.name, "SWAT");

@@ -156,7 +156,8 @@ and the file carries the script that prefix names, as its IR blob
 (base64) and, when it was made from source, the source. Reading one
 checks that the IR hashes to the file's hash, that the hash starts with
 the record's prefix, that `rules::verify::load` takes the IR and that
-its type's engine (`Header::engine`) is the record's engine; a record with mode 2 and no script
+the record uses the script index or the script's retail settings layout
+(`Header::engine`). A record with mode 2 and no script
 is refused. So a variant file plays with no server, and Live keeps game
 variants as these files ([live-api.md](../live/live-api.md#game-variants)).
 
@@ -185,9 +186,10 @@ larger cap pays for names and strings.
 
 ### Which engine index a script rides
 
-`portable::record_for` writes a record on the script's retail engine index, as Firefight
-is a Slayer game ([firefight.md](firefight.md#the-game-engine-underneath)).
-A new index is not possible without rewriting four retail paths:
+A new script variant uses index 6 when its retail settings layout is
+Slayer and none of its settings write the type area. This includes a
+variant that `uses slayer`. Other variants retain their layout's retail
+index. These four retail paths need a native answer for index 6:
 
 | Path | What it does with an unknown index | Evidence |
 |---|---|---|
@@ -201,23 +203,22 @@ host-owned engine object, native clean-up and wire codec, and the
 distributed protocol. It has common settings and an empty type area.
 The variant store accepts it with a named script. Saves and editor pages
 use the Slayer template, and the script header supplies the menu row and
-round-start line. The record producer still writes its retail index.
+round-start line.
 [Engine paths](game-types-without-carriers.md#no-retail-engine-object).
 
 **Design.** The script names its game type (`type`), and the type's row carries the index
 ([game-types-without-carriers.md](game-types-without-carriers.md#the-header)):
 
-- **A new mode rides Slayer (index 2).** Slayer has the least behaviour
-  of its own, scores through the statborg, and gets the distributed
-  protocol.
+- **A new mode uses the Slayer settings layout.** The script index
+  carries the common settings and the reference to its rules.
 - **A port rides its own engine's index.** A saved CTF variant stays a
   CTF record, its type-area settings keep their meaning and their place
   in the editor, and the client keeps that engine's replicated globals
   entity (types 0 to 5, **E**, [notes/ai-networking.md](notes/ai-networking.md))
   for whatever its HUD draws from it.
 
-On the host, in a script game, the `rules` feature answers the carrier
-engine's scoring and role-making routines in place, so the script is the
+On the host, in a script game with a retail index, the `rules` feature
+answers the retail engine's scoring and role-making routines in place, so the script is the
 game's one scorer ("One scorer", under "The host runtime"); the script's
 handlers run beside the engine's other work and make their calls at the
 next tick boundary. No guest memory is patched.
@@ -305,12 +306,10 @@ does not fetch: the host runs the script, and the guest's runtime is
 dropped at the authority check.
 
 The blob is loaded (`verify::load`) and refused, by name, when its hash
-does not start with the record's prefix, when it rides another engine
-than the record's, when it calls an entry no host can make on its carrier
-(`verify::unhostable`, `caps::Entry::hostable_on`: `role_traits` is made
-only on Juggernaut and `reset_objective` only on Oddball, so a script on
-another carrier is refused as "the script calls role_traits, which a host
-makes only on juggernaut, and the script rides slayer"). Then the start
+does not start with the record's prefix or it needs an unsupported
+operation. The physical record matters for operations that use a retail
+object, such as returning a registered Oddball through its ball-return
+routine. Role traits are available on every script. Then the start
 gate checks the map's labels (`Runtime::gate`, `rules/census.rs`;
 [rules-start-gate.md](rules-start-gate.md)), unless the run plays a film:
 a map that lacks or breaks a label or tag the script needs blocks the
@@ -339,7 +338,7 @@ own engine.** Nothing runs with a call stubbed out.
 
 **A `uses` script** ([rules-variants.md](rules-variants.md#a-script-that-keeps-its-carriers-rules))
 runs the built-in script of the type it uses under the variant's own
-record. It passes the same prefix, engine and policy checks; then the
+record. It passes the same prefix and policy checks; then the
 runtime takes that built-in (`runtime::used_builtin`, the
 compiled-in `rules::builtin::of_type` of `header.uses`) and every
 later step is the built-in's: the host checks, the start gate, the VM,
@@ -483,17 +482,22 @@ refused calls. What mode 2 does with the weapons it empties is not
 traced, so the listed scripts that give loadouts spawn players unarmed
 (`starting_weapon = none`).
 
-`role_traits(p, on)` (`rules/roles.rs`) is Juggernaut's own role setter,
-`JUGGERNAUT_ROLE_SET` (`0x192970`), with the salted player datum in EAX
-and `on` in ECX: it sets or clears the player's bit of the role mask
-`[0x510c9c]+0`, announces a new Juggernaut, marks the engine globals for
-replication and rebuilds the teams' mask, and Juggernaut's trait query
-(`0x1926c0`) answers the role's traits from the mask. A player already
-in the asked state is left alone, so the announcement is not made twice.
-Oddball and CTF give their carrier traits to whoever holds the
-objective, and Slayer, King and Territories have no role traits, so a
-host makes the call on no other carrier. A game whose Juggernaut globals
-are not set up, or a slot with no player, is a refused call.
+`role_traits(p, on)` sets or clears the player's bit in
+`RulesExt::role_mask`. The VM clears it on quit. On a round reset it drops the prior round’s
+roles before running the new round’s handler. Checkpoints and restores carry the mask with the script
+state. The host answers the base and retail overrides of the trait
+query (slot `+0x8c`) for a role holder. Other players and unknown trait
+IDs continue through the game's query.
+
+On a script record the default role gives extra damage. Scripts can
+expose the booleans `role_active_camo`, `role_extra_damage` and
+`role_damage_resistance` as ordinary variant options. Their defaults
+without an option are false, true and false. A physical Juggernaut
+record keeps its edited Juggernaut flags. Its native setter
+(`JUGGERNAUT_ROLE_SET`) also announces a newly crowned player and
+updates the retail teams and role mask. Distributed viewers on the Live
+actor channel receive the membership and trait bits with the selected
+script’s prefix. [Actor replication](ai-networking.md).
 
 `spawn_areas(team, label, n)` and `spawn_near(team, zone, n)`
 (`rules/world/spawns.rs`) set the team's spawn rule, which the VM keeps
@@ -612,8 +616,7 @@ Live client and on System Link, a Live variant's script fetched by its
 full hash and run, each fetch failure refused by name, the carrier's
 scoring answered only once a running script's authority is known (and
 never on a guest or for a refused script), `role_traits` making the
-role setter's call (none for a player already in that state, and a
-refusal by carrier on Slayer), `reset_objective` making Oddball's ball
+trait-query answer for the current holder and the native role setter's call on Juggernaut, `reset_objective` making Oddball's ball
 return with each refusal named, and the objective set and its carriers
 read from the registry; the built-in Juggernaut (`round_start_and_quit`)
 running for a record with no mode, dealing the role at the start and at
@@ -652,7 +655,9 @@ decides, purely (`reload::decide`):
    variables, not 0").
 3. **Restart** otherwise, unless the caller asked for in place only, or
    the game cannot restart: a Live game (it restarts from its lobby),
-   another engine than the record's, or no agent guest calls.
+   the replacement needs a different physical record layout, or guest
+   calls are unavailable. A restart on index 6 accepts a replacement
+   whose generated record also uses index 6.
 
 In place, `Runtime::swap` syncs the `RULES` record, then
 `Vm::swap_program` verifies the blob, checks it again, carries the
@@ -789,9 +794,10 @@ a row of the closed table in `crates/formats/rules/src/types.rs`
 `party`, `firefight` and `siege` (ours). A row holds the word, the list
 label, what a point is called when the script has no `points` line, where
 the start line comes from (retail's announcer, one of ours, or none) and
-the engine index the record is on. A retail type keeps its engine's
+the retail settings layout. A retail type names its engine's
 index (ctf 1, slayer 2, oddball 3, koth 4, juggernaut 7, territories 8,
-assault 9); our types ride Slayer's, 2. `Header::engine` reads it. The
+assault 9); our types use Slayer's layout, 2. `Header::engine` reads
+it. Eligible Slayer-layout records use index 6 on disk and in play. The
 type files a variant under its row of the game type list: `research`
 under Research and Devolution, `party` under Party Games, and the other
 nine under their named rows. At round start the authority posts the
@@ -1377,7 +1383,7 @@ Actions:
 | `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050` (object, team; no check for a duplicate), `0x15e130`, `0x15e250`, `0x15e460`; every object a host script can name is already registered, since Forge labels are not built | traced | core |
 | `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as Oddball's `0x2bc1f0` does: placement `0xb7930`, `0xb7b40`, `0x15e050`, `0xa7870`. Not built: the host resolves no tag path to a tag datum (the loaded map's names are only in its file), and has no `at` but a registered objective | traced | core |
 | `reset_objective(o)`: return an objective to where it spawned | Oddball: `ODDBALL_BALL_RETURN` `0x2bc340`, the ball's spawn flag through `OBJECTIVE_RETURN` `0x15e360`. CTF's flag return reaches `0x15e360` at `0x242b41` from a routine whose start is not read | named on Oddball | core |
-| `role_traits(p, on)`: the carrier engine's role and its traits from the variant's type area | Juggernaut: `JUGGERNAUT_ROLE_SET` `0x192970` (the player's bit of the role mask `[0x510c9c]+0`), whose trait query `0x1926c0` answers from the mask. Oddball's and CTF's carrier traits follow the held object (`0x2bcc90`); Slayer, King and Territories have none | named on Juggernaut | core |
+| `role_traits(p, on)`: give or take the script role | the VM's player mask and the host's answers at `ENGINE_TRAIT_QUERY` and the retail overrides | named | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `spawn_areas(team, label, n)`: the team spawns only at the starting locations labelled `label` and numbered `n` | the rule in the VM's state; `SPAWN_LOCATION_FREE` `0x23bb70`, the free-spot test of `PLAYER_SPAWN_LOCATION` `0x14ef00`, answers "taken" for every other location (`rules/world/spawns.rs`); how the chooser weighs a location is not traced and not needed | named | `player.spawn` |
@@ -1998,10 +2004,10 @@ tests only.
 | Script | Waits on | Not reproduced |
 |---|---|---|
 | Slayer | nothing | |
-| Oddball | `spawn_objective`; `role_traits`, made only on Juggernaut | the Oddball globals; the reset delay is a script option |
+| Oddball | `spawn_objective` | the Oddball globals; the reset delay is a script option |
 | King of the Hill | the record's `king_moving_hill`, whose offset the host does not read | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
 | Juggernaut | nothing | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores; the record's own Juggernaut settings (the script's options take their defaults); a Juggernaut out of lives keeps the role |
-| CTF and Assault | `spawn_objective`; `reset_objective`, made only on Oddball; `role_traits`, made only on Juggernaut | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
+| CTF and Assault | `spawn_objective`; `reset_objective`, made only on Oddball | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
 | Territories | `register_objective` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
 
 **Parity method.** The lifted engine is the oracle. A headless match is
@@ -2038,8 +2044,8 @@ name (an int, `true` or `false`, or an enum value's name), packed
 against the attached script's options (`portable::port_with_options`,
 `Ir::pack_options`, which Live's variant routes pack through too); an
 option the script does not declare, a value out of its range and any
-option with `keep` are refused. The record's engine must be the script's
-carrier, as in every variant file ("Carrying a script"). The
+option with `keep` are refused. The bundle checks the script against
+the physical record's settings layout ("Carrying a script"). The
 retail built-ins port from the disc (`--all-builtins`); the community
 variants are built by the game at boot (`community_variants.rs` is in
 the game crate) and are not ported by the tool.

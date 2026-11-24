@@ -124,6 +124,15 @@ fn a_restart_this_game_cannot_make_is_refused_with_both_reasons() {
 }
 
 #[test]
+fn restarting_a_script_index_record_accepts_a_script_whose_settings_fit_it() {
+    let s = Situation { engine: Some(i32::from(::rules::SCRIPT_INDEX)), ..host(Seat::Alone) };
+    assert_eq!(decide(&s, Some(&slayer()), &with_streak(), ReloadMode::Auto),
+        Decision::Restart { reasons: vec!["the script has 1 player variables, not 0".into()] });
+    let ir = ::rules::compile("rules \"Rival\" 1\ntype ctf\nuses ctf\nsettings { ctf_flag_type = 0 }\n").unwrap();
+    assert!(restart_refusal(&s, &ir).unwrap().contains("different variant record"));
+}
+
+#[test]
 fn a_script_this_host_cannot_run_is_refused_before_anything() {
     let src = format!("{}\non pickup(p, o) {{ score(p, 1) }}\n", ::rules::builtin::SLAYER);
     let ir = ::rules::compile(&src).unwrap();

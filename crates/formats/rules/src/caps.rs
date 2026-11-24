@@ -137,7 +137,7 @@ pub struct Entry {
     pub since: u16,
     /// The carriers (retail engine indices, [`CARRIERS`]) a host makes the
     /// call on; `None` for every carrier. The engine routine behind such an
-    /// entry is one engine's own (`role_traits` sets Juggernaut's role mask).
+    /// entry is one engine's own (`reset_objective` returns an Oddball).
     pub hosts: Option<&'static [u8]>,
 }
 
@@ -214,7 +214,6 @@ const fn vm(id: u16, name: &'static str, args: &'static [Ty], result: Ty) -> Ent
 use self::Order::{Now, Queued};
 
 /// The carriers of the entries one engine's routine makes.
-const ON_JUGGERNAUT: &[u8] = &[7];
 const ON_ODDBALL: &[u8] = &[3];
 
 use self::Status::{Named, Traced, Untraced};
@@ -395,18 +394,8 @@ pub const ENTRIES: &[Entry] = &[
         hosts: Some(ON_ODDBALL),
         ..act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Named)
     },
-    // Give (or take) the carrier engine's role and its traits from the
-    // variant's type area. A host makes it on Juggernaut, through the
-    // engine's own role setter `JUGGERNAUT_ROLE_SET` `0x192970` (the
-    // player's bit of the role mask `[0x510c9c]+0`), whose trait query
-    // `0x1926c0` then answers the Juggernaut traits. Oddball and CTF give
-    // their carrier traits to whoever holds the objective (`0x2bcc90`), so
-    // a script there has no role to give; Slayer, King and Territories have
-    // no role traits (docs/engine/notes/2026-11-22-script-scoring-and-roles.md).
-    Entry {
-        hosts: Some(ON_JUGGERNAUT),
-        ..act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Named)
-    },
+    // The VM records membership. The host answers the trait query for role holders.
+    act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Named),
     // The tick the host began (`Vm::begin_tick`).
     vm(id::NOW, "now", &[], Int),
     // The VM generator's next draw modulo `n`; 0, with no draw, for n <= 0.
@@ -868,10 +857,8 @@ mod tests {
     fn an_engine_routines_entry_is_hostable_on_its_carrier_only() {
         let roles = entry(id::ROLE_TRAITS, API_VERSION).unwrap();
         assert!(roles.status.hostable());
-        assert!(roles.hostable_on(7));
-        for other in [1, 2, 3, 4, 8, 9] {
-            assert!(!roles.hostable_on(other), "{other}");
-        }
+        assert!(roles.hostable_on(crate::SCRIPT_INDEX));
+        assert!(CARRIERS.iter().all(|&(_, e)| roles.hostable_on(e)));
         let reset = entry(id::RESET_OBJECTIVE, API_VERSION).unwrap();
         assert!(reset.hostable_on(3));
         assert!(!reset.hostable_on(1) && !reset.hostable_on(2));
