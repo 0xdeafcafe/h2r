@@ -2894,6 +2894,7 @@ dependencies = [
  "ureq",
  "variants",
  "vfs",
+ "workspace",
  "xbe",
  "xiso",
 ]
@@ -8836,6 +8837,20 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "workspace"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "map",
+ "png",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tags",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

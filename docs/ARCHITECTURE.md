@@ -184,6 +184,7 @@ the workspace checks are in
 | `pogo-kit` | tools | The Pogo Stick's models, built from art/pogo into each multiplayer map |  |  |
 | `scenario-edit` | tools | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
 | `stage-kit` | tools | The content stage: Studio's test map of ours, its layout, geometry, collision and textures built from art/stage (docs/editor/content-stage.md) | [content-stage.md](editor/content-stage.md) | in progress |
+| `workspace` | tools | The package build: the builder registry, Layered tag sources and the build of a package set onto a map's TagSet (docs/editor/studio-redesign.md, "Packages") | [studio-redesign.md](editor/studio-redesign.md), [tag-workspace.md](editor/tag-workspace.md) | in progress |
 | `xtask` (bin `xtask`) | tools | The workspace's test and check runner, `cargo xtask`: a branch's affected crates in one nextest run, their doctests, the disc tier, the web tests and the pre-merge checks (docs/dev/build-speed.md) | [build-speed.md](dev/build-speed.md), [crate-structure.md](dev/crate-structure.md) |  |
 | `app` (bin `h2-app-demo`) | apps | Host shell for h2recomp: window, presentation, live input, audio device and guest-thread lifecycle (macOS first) | [app.md](runtime/app.md) | done; `h2 play` runs the game in it |
 | `app-icon` | apps | The app icon for the unbundled Mac windows (h2 play, h2-editor) from art/app-icon |  |  |

@@ -36,6 +36,8 @@ forge-doc.workspace = true
 forge-build.workspace = true
 # `h2 hud preview` and `h2 hud sheet` (docs/game/hud-kit.md).
 hud-kit = { path = "../../tools/hud-kit" }
+# `h2 package check|build`: the package build (docs/editor/studio-redesign.md).
+workspace = { path = "../../tools/workspace" }
 # `h2 tags build --project`: the content stage (docs/editor/content-stage.md).
 stage-kit = { path = "../../tools/stage-kit" }
 # `h2 superbounce scan` (docs/game/superbounce.md, "Spots in the geometry").
