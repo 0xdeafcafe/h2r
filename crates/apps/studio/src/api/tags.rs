@@ -41,11 +41,27 @@ const KINDS: MethodDef = def(
     r#"{"group":"weap"}"#,
 );
 
+const OPEN: MethodDef = def(
+    m::TAG_OPEN,
+    "Open a tag in its editor and make it the subject: the own game stands it where its kind says, and plays a sound",
+    r#"{"tag":"string|integer"}"#,
+    r#"{"tag":"string","group":"string","name":"string","kind":"string","editor":"string","preview":"string","subject":"{rule,show,scene,at,yaw,note}","front":"string|null"}"#,
+    r#"{"tag":"scnr"}"#,
+);
+
+const SUBJECT: MethodDef = def(
+    m::TAG_SUBJECT,
+    "The subject in Studio's own game: its place, the object standing for it, the follow-ups queued after a write and the fields the game may not have read",
+    "{}",
+    r#"{"own":"boolean","tag":"string|null","place":"{rule,show,scene,at,yaw,note}|null","object":"string|null","owed":"{respawn,retrigger}","unread":"[string]","refusal":"string|null","failure":"string|null","busy":"string|null","calls":"{spawn,delete,respawn,retrigger}"}"#,
+    "null",
+);
+
 pub(super) struct TagGraph;
 
 impl Provider for TagGraph {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![TREE, REFS, KINDS]
+        vec![TREE, REFS, KINDS, OPEN, SUBJECT]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -54,6 +70,8 @@ impl Provider for TagGraph {
             m::TAG_TREE => Some(tree(app, &p)),
             m::TAG_REFS => Some(refs(app, &p)),
             m::TAG_KINDS => Some(kinds_list(app, params)),
+            m::TAG_OPEN => Some(open(app, &p)),
+            m::TAG_SUBJECT => Some(subject(app)),
             _ => None,
         }
     }
@@ -97,6 +115,57 @@ fn kinds_list(app: &App, params: &Value) -> Reply {
             .collect::<Vec<_>>(),
         "target": target,
     }))
+}
+
+/// `tag.open`: the tag in its editor (as `shell.open` opens it), made the
+/// subject. The reply says which editor and preview it got and where the
+/// own game stands it (`app::subject`); the own game acts on it at its
+/// next frame.
+fn open(app: &mut App, p: &P) -> Reply {
+    use crate::app::kinds;
+    let tag = super::nav::open_tag(app, p)?;
+    super::shell::call(app, m::SHELL_OPEN, p)?;
+    let entry = app
+        .tags
+        .tag(tag)
+        .ok_or_else(|| err(code::INVALID_PARAMS, format!("no tag {}", tag_id(tag))))?;
+    let (group, name) = (entry.group, entry.name.clone());
+    let row = kinds::kind(group);
+    app.pairing.opened = Some(tag);
+    Ok(json!({
+        "tag": tag_id(tag),
+        "group": kinds::group_id(group),
+        "name": name,
+        "kind": row.label,
+        "editor": row.editor.id(),
+        "preview": row.preview.id(),
+        "subject": app.place_of(tag).json(),
+        "front": app.front_doc().map(|d| app.doc_id(d)),
+    }))
+}
+
+/// `tag.subject`: what the own game holds for the subject.
+fn subject(app: &App) -> Reply {
+    let subject = app.subject();
+    let mut out = match &app.pairing.subject {
+        Value::Null => json!({
+            "own": false,
+            "tag": subject.map(tag_id),
+            "place": subject.map(|t| app.place_of(t).json()),
+            "object": null,
+            "owed": {"respawn": false, "retrigger": false},
+            "unread": [],
+            "refusal": null,
+            "failure": null,
+            "busy": null,
+            "calls": {"spawn": 0, "delete": 0, "respawn": 0, "retrigger": 0},
+        }),
+        published => published.clone(),
+    };
+    if out["own"].is_null() {
+        out["own"] = json!(true);
+    }
+    Ok(out)
 }
 
 /// The map open in the scenario tool, read from its source (edits are not
@@ -1030,5 +1099,40 @@ mod tests {
             .unwrap();
         assert_eq!(unknown["default"], true);
         assert!(api.call(&mut app, m::TAG_KINDS, json!({"group": 3})).is_err());
+    }
+
+    /// `tag.open` opens the tag in its kind's editor, names the editor,
+    /// the preview and the subject's place, and leaves the tag for the own
+    /// game to stand; `tag.subject` reads the state with no own game.
+    #[test]
+    fn tag_open_names_the_editor_the_preview_and_the_subject_place() {
+        let mut f = fixture();
+        let mut api = Api::new();
+        let open = api
+            .call(&mut f.app, m::TAG_OPEN, json!({"tag": tag_id(f.weapon)}))
+            .unwrap();
+        assert_eq!(open["tag"], tag_id(f.weapon));
+        assert_eq!(open["group"], "weap");
+        assert_eq!(open["kind"], "Objects");
+        assert_eq!(
+            (open["editor"].clone(), open["preview"].clone()),
+            (json!("field_panel"), json!("model_render"))
+        );
+        assert_eq!(open["subject"]["rule"], "placement");
+        assert_eq!(open["subject"]["show"], "object");
+        // No game of Studio's own: nowhere to stand, and it says so.
+        assert_eq!(open["subject"]["scene"], "nowhere");
+        assert!(open["subject"]["at"].is_null());
+        assert_eq!(f.app.pairing.opened, Some(f.weapon));
+        assert_eq!(f.app.subject(), Some(f.weapon));
+
+        let state = api.call(&mut f.app, m::TAG_SUBJECT, Value::Null).unwrap();
+        assert_eq!(state["own"], false);
+        assert_eq!(state["tag"], tag_id(f.weapon));
+        assert_eq!(state["place"]["show"], "object");
+        assert_eq!(state["owed"], json!({"respawn": false, "retrigger": false}));
+        assert!(state["object"].is_null());
+
+        assert!(api.call(&mut f.app, m::TAG_OPEN, json!({"tag": "no\\such"})).is_err());
     }
 }

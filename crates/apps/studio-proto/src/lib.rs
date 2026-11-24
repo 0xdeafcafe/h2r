@@ -110,6 +110,8 @@ pub mod method {
     pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
     pub const TAG_KINDS: &str = "tag.kinds";
+    pub const TAG_OPEN: &str = "tag.open";
+    pub const TAG_SUBJECT: &str = "tag.subject";
     pub const STRINGS_LIST: &str = "strings.list";
     pub const TAG_CHAIN: &str = "tag.chain";
     pub const TAG_USES: &str = "tag.uses";

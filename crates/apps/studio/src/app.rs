@@ -30,6 +30,7 @@ pub mod rules_edit;
 pub mod scripts;
 pub mod shared_refs;
 pub mod shell;
+pub mod subject;
 pub mod tag_api;
 pub mod tag_browse;
 pub mod tag_bundle;

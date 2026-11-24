@@ -116,6 +116,16 @@ pub struct Pad {
     pub radius: f32,
 }
 
+/// Where the subject stands in a bay ([`Layout::subject_place`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SubjectPlace {
+    pub bay: String,
+    /// The subject pad's centre, on the floor.
+    pub point: [f32; 3],
+    /// Radians from +x towards +y: towards the player's spawn.
+    pub facing: f32,
+}
+
 /// A scale or movement reference.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Reference {
@@ -619,6 +629,21 @@ impl Layout {
             }
         }
         Ok(())
+    }
+
+    /// Where content under test stands in the bay `name`: its subject
+    /// pad, and the way a thing there faces the player's spawn.
+    pub fn subject_place(&self, name: &str) -> Result<SubjectPlace> {
+        let bay = self
+            .bays
+            .iter()
+            .find(|b| b.name == name)
+            .ok_or_else(|| Error::Layout(format!("no bay named {name}")))?;
+        Ok(SubjectPlace {
+            bay: bay.name.clone(),
+            point: bay.subject.point,
+            facing: bay.spawn.facing + std::f32::consts::PI,
+        })
     }
 
     /// Every bay's camera with this name, in bay order.
