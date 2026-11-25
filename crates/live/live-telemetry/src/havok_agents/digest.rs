@@ -209,7 +209,6 @@ pub fn read(m: &dyn GuestMemory) -> Result<Digest, MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use layout as l;
     use runtime::{Guest, guest::Permissions};
 
     const WORLD: u32 = 0x10_0000;
