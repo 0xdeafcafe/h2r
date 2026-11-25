@@ -3,7 +3,7 @@
 use super::*;
 use x87::abi::{self as fp, arith_op, src_kind};
 
-pub(super) fn load_fpu(c: &CpuAbi) -> fp::X87Abi {
+pub(crate) fn load_fpu(c: &CpuAbi) -> fp::X87Abi {
     fp::X87Abi {
         st: c.x87.st,
         control: c.x87.control,
@@ -13,7 +13,7 @@ pub(super) fn load_fpu(c: &CpuAbi) -> fp::X87Abi {
     }
 }
 
-pub(super) fn finish_fpu(
+pub(crate) fn finish_fpu(
     c: &mut CpuAbi,
     g: &impl Memory,
     x: &fp::X87Abi,

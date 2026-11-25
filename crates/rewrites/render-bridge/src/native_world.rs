@@ -66,6 +66,7 @@ mod opaque_interleave_tests;
 mod scene_build;
 mod scene_walk;
 mod section;
+pub use section::display_late_shader;
 
 fn claimed_entries(layer: u32) -> bool {
     match layer {
@@ -330,6 +331,15 @@ pub(crate) fn load_bsp(mem: &dyn GuestMemory, esp: u32) {
     if mem.u32(skip::CURRENT_LAYER).ok() != Some(LIGHTMAP_LAYER)
         || mem.u32(esp).ok().is_none_or(|ret| layer_site(LIGHTMAP_LAYER, ret) == Site::FirstPerson)
     {
+        return;
+    }
+    load_active_bsp(mem);
+}
+
+/// Both a scene base layer and the dynamic light pass can be the first
+/// consumer in a BSP. They share the activation's single pending load.
+pub(crate) fn load_active_bsp(mem: &dyn GuestMemory) {
+    if !BSP_LOAD_PENDING.load(Ordering::Acquire) {
         return;
     }
     let Ok(bsp) = mem.u32(ACTIVE_BSP) else {

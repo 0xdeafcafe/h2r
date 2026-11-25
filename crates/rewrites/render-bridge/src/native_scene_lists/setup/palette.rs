@@ -220,6 +220,7 @@ pub(super) fn fill(
     pose: u32,
     offset: u32,
     reserved: u32,
+    node_maps: Option<&[Vec<u8>]>,
 ) -> Result<()> {
     let nodes = m.u32(at(model, 0x48)?)?;
     if nodes == 0 || nodes > 127 {
@@ -256,21 +257,33 @@ pub(super) fn fill(
             continue;
         }
         let section = section_addr(m, model, u32::from(index))?;
-        if residency::resource_cache_in_use(m)? && !residency::touch(m, at(section, 0x38)?, false)?
-        {
-            return Err(Refusal::Residency);
-        }
-        let geometry = ptr(m, at(section, 0x34)?)?;
-        let remap = m.i32(at(geometry, 0x64)?)?;
-        if remap > 0 {
-            if final_rows.len() + remap as usize > reserved as usize {
+        let guest_map;
+        let remap = if let Some(maps) = node_maps {
+            maps.get(usize::from(index)).ok_or(Refusal::Palette)?.as_slice()
+        } else {
+            if residency::resource_cache_in_use(m)? && !residency::touch(m, at(section, 0x38)?, false)? {
+                return Err(Refusal::Residency);
+            }
+            let geometry = ptr(m, at(section, 0x34)?)?;
+            let count = m.i32(at(geometry, 0x64)?)?.max(0) as usize;
+            if count > 0 {
+                if final_rows.len() + count > reserved as usize {
+                    return Err(Refusal::Palette);
+                }
+                guest_map = m.bytes(ptr(m, at(geometry, 0x68)?)?, count)?;
+                guest_map.as_slice()
+            } else {
+                &[]
+            }
+        };
+        if !remap.is_empty() {
+            if final_rows.len() + remap.len() > reserved as usize {
                 return Err(Refusal::Palette);
             }
-            let map = ptr(m, at(geometry, 0x68)?)?;
             m.set_u16(pair, final_rows.len() as u16)?;
-            m.set_u16(at(pair, 2)?, remap as u16)?;
-            for j in 0..remap as u32 {
-                let index = m.u8(at(map, j)?)? as usize;
+            m.set_u16(at(pair, 2)?, remap.len() as u16)?;
+            for &index in remap {
+                let index = usize::from(index);
                 let source = if single { &rows } else { &final_rows };
                 let row = *source.get(index).ok_or(Refusal::Palette)?;
                 final_rows.push(row);

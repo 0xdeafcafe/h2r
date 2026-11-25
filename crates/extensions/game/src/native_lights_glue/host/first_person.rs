@@ -45,22 +45,10 @@ pub(super) fn wanted(
     out
 }
 
-/// The vertex classification of a section's light buffers: the one they
-/// share, or `None` when they have none or differ (a first-person item
-/// does not carry the classification a sorted entry's build chose).
-pub(super) fn classification(classes: impl IntoIterator<Item = u32>) -> Option<u16> {
-    let mut classes = classes.into_iter();
-    let first = classes.next()?;
-    if classes.any(|c| c != first) {
-        return None;
-    }
-    u16::try_from(first).ok()
-}
-
 /// `part` as a gathered object entry of its held part `held`, so it
 /// resolves and draws as one ([`LightsWorld::resolve_model`]): its model,
 /// section and part, the held part's raw range and topology, the
-/// section's classification, its shader and the implementation chosen
+/// part's classification, its shader and the implementation chosen
 /// for the light. The owner and slot are not read there.
 pub(super) fn entry(
     part: &FirstPersonPart,
@@ -92,7 +80,7 @@ pub(super) fn entry(
 }
 
 /// `part`'s entry for `implementation`, when the map's model parts hold
-/// its section and part with one classification.
+/// its part with one classification.
 fn model_entry(
     lights: &models::ModelLights,
     part: &FirstPersonPart,
@@ -105,8 +93,7 @@ fn model_entry(
         .sections
         .get(&part.section)?;
     let held = section.parts.get(&part.part)?;
-    let class = classification(section.buffers.iter().map(|b| b.classification))?;
-    Some(entry(part, held, class, implementation))
+    Some(entry(part, held, held.vertex_class?, implementation))
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
@@ -130,7 +117,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let held = self
             .begin_lights(&mut device, mem, draw.view_target)
             .and_then(|ready| {
-                let models = self.first_person_models(&device, &*mem, &ready)?;
+                let models = self.model_lights(&device, &*mem, &ready)?;
                 Ok((ready, models))
             });
         let (ready, models) = match held {
@@ -150,27 +137,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             self.count_host(answer);
         }
         drawn
-    }
-
-    /// The map's model parts, as a gathered group's object entries take
-    /// them ([`Glue::scene_light_draws`]).
-    fn first_person_models(
-        &self,
-        d: &d3d::Device<B>,
-        mem: &dyn GuestMemory,
-        ready: &Ready,
-    ) -> Result<Arc<models::ModelLights>, Keep> {
-        let name = crate::health::loaded_map_name(mem)
-            .map_err(|_| Keep::Unsupported("the loaded map's name does not read"))?;
-        let read = ReadMemory(mem);
-        self.models
-            .get(
-                &name,
-                &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0,
-                || native_render::object_streams::StreamFormats::read(&read),
-                || crate::native_world_glue::scene_load_palettes(d, mem),
-            )
-            .ok_or(Keep::Unsupported("the map's model light parts are loading"))
     }
 
     /// One light's passes over the first-person parts: each part's pass
@@ -205,7 +171,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             else {
                 continue;
             };
-            match world.resolve_model(c, lights, layer, &entry, &part.rows) {
+            match world.resolve_model(c, lights, layer, &entry, &part.rows, None, false) {
                 Ok(next) => planned.push(next),
                 Err(Keep::MaterialPending) => pending = true,
                 Err(_) => {}
@@ -290,23 +256,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_sections_classification_is_the_one_its_buffers_share() {
-        assert_eq!(classification([2, 2]), Some(2));
-        assert_eq!(classification([2, 3]), None, "differing");
-        assert_eq!(classification([]), None, "no buffer");
-        assert_eq!(classification([0x1_0000]), None, "past a u16");
-    }
-
     /// A first-person part made an entry finds the held part it was made
     /// from, as a gathered object entry finds its own.
     #[test]
     fn a_first_person_entry_finds_its_held_part() {
         let held = LightPart {
+            vertex_class: Some(1),
             first_index: 30,
             index_count: 12,
             topology: Topology::Strip,
             indices: 0..30,
+            as_list: 30..42,
         };
         let section = LightSection {
             decompression: [[0.0; 4]; 3],
@@ -329,7 +289,7 @@ mod tests {
         );
         assert_eq!(e.pose, LightPose::Rows(0..6));
         let (_, found) = models.part(&e).expect("the held part");
-        assert_eq!(found, &held);
+        assert_eq!(found, held.indices);
         let other = entry(&part(1, 10), &held, 1, 4);
         assert!(models.part(&other).is_none(), "a part the section lacks");
     }

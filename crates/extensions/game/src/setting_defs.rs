@@ -153,13 +153,12 @@ pub static HUD_POSITION: Def = Def {
     }),
 };
 
-/// Render-distance multipliers in half units. Zero selects the guest's
-/// original pixel scale independently of the output resolution.
+/// The distance choices use half units. Highest is a separate selection.
+pub const LOD_HIGHEST: u32 = 9;
 pub static LOD_DISTANCE: Def = Def {
     key: "graphics.lod_distance",
     label: "LOD Distance",
-    help: "Choose how far away models keep their detail. 1x matches the rendering resolution. \
-           Network play and film recording use retail distances.",
+    help: "Highest selects the finest model detail at any distance. 1x matches the rendering resolution.",
     kind: Kind::Choice(&[
         Choice { value: 0, name: "retail", label: "Retail" },
         Choice { value: 1, name: "0.5", label: "0.5x" },
@@ -168,8 +167,9 @@ pub static LOD_DISTANCE: Def = Def {
         Choice { value: 4, name: "2.0", label: "2x" },
         Choice { value: 6, name: "3.0", label: "3x" },
         Choice { value: 8, name: "4.0", label: "4x" },
+        Choice { value: LOD_HIGHEST as i64, name: "highest", label: "Highest" },
     ]),
-    default: Value::Int(2),
+    default: Value::Int(LOD_HIGHEST as i64),
     env: Some("H2_LOD_DISTANCE"),
     flag: None,
     aliases: &[
@@ -1574,14 +1574,14 @@ mod tests {
     }
 
     #[test]
-    fn lod_distance_matches_output_by_default_and_retail_is_independent_of_output() {
+    fn lod_distance_defaults_to_highest_and_persists_the_distance_choices() {
         let data = tmp("lod-distance");
         let (store, problems) = with_env(&data, &[]);
         assert!(problems.is_empty());
         let setting = store.handle::<u32>(LOD_DISTANCE.key);
-        assert_eq!(lod_pixel_multiplier(480, setting.get()), 1.0);
-        assert_eq!(lod_pixel_multiplier(1920, setting.get()), 4.0);
-        assert_eq!(lod_pixel_multiplier(2160, setting.get()), 4.5);
+        assert_eq!(setting.get(), LOD_HIGHEST);
+        assert_eq!(LOD_DISTANCE.parse("highest").unwrap(), LOD_DISTANCE.default);
+        assert_eq!(LOD_DISTANCE.to_toml(LOD_DISTANCE.default).as_str(), Some("highest"));
         for (name, scale_at_4x) in [
             ("0.5", 2.0), ("1", 4.0), ("1.0", 4.0), ("1.5", 6.0),
             ("2", 8.0), ("3", 12.0), ("4", 16.0), ("retail", 1.0),

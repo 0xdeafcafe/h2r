@@ -75,17 +75,8 @@ impl Objects {
     /// read it.
     pub fn next_live<M: Mem + ?Sized>(&self, m: &M, from: u32) -> Result<Option<u16>, Fault> {
         let high = self.high_water(m)?.min(1 << 16);
-        let mut at = from;
-        while at < high {
-            let word = self.bitmap_word(m, at >> 5)? & (u32::MAX << (at & 31));
-            let base = at & !31;
-            if word != 0 {
-                let slot = base + word.trailing_zeros();
-                return Ok((slot < high).then_some(slot as u16));
-            }
-            at = base + 32;
-        }
-        Ok(None)
+        let slot = crate::walk::next_live(from..high, |at| self.bitmap_word(m, at >> 5))?;
+        Ok(slot.map(|slot| slot as u16))
     }
 
     /// The live object `handle` names: a slot below the high-water mark,

@@ -128,6 +128,15 @@ pub struct Geometry {
 }
 
 impl Geometry {
+    /// The light pass selector from the fifth geometry-handler argument
+    /// and the class from its sorted slot. Call at the same indexed draw
+    /// as `read`, before the guest resumes.
+    pub fn light_selection(&self, mem: &dyn GuestRead, esp: u32) -> Option<(u8, u16)> {
+        let selector = u8::try_from(mem.read_u32(esp.checked_add(HANDLER_FRAME + 20)?)?).ok()?;
+        let vertex_class = mem.read_u32(self.sorted_slot.checked_add(8)?)? as u16;
+        Some((selector, vertex_class))
+    }
+
     /// Decode only the standard handler calling the standard emitter.
     /// A sky or special handler can share the D3D entry and the layer.
     pub fn read(mem: &dyn GuestRead, esp: u32, layer: u32) -> Option<Self> {
@@ -263,6 +272,23 @@ mod tests {
         assert_eq!(Geometry::read(&mem, STACK, 3), None);
         mem.w(STACK + EMITTER_RETURN_SLOT, 0xbeef);
         assert_eq!(Geometry::read(&mem, STACK, 1), None);
+    }
+
+    #[test]
+    fn light_selection_uses_the_handler_pass_argument_and_sorted_vertex_class() {
+        let mut mem = Mem::default();
+        draw(&mut mem, 4, 0, 9 << 9);
+        mem.w(STACK + HANDLER_FRAME + 8, 99); // the layer-loop argument
+        mem.w(STACK + HANDLER_FRAME + 16, 12);
+        mem.w(STACK + HANDLER_FRAME + 20, 5);
+        mem.w(ENTRY + 8, 0xbeef_0123);
+        let geometry = Geometry::read(&mem, STACK, 12).unwrap();
+        assert_eq!(geometry.light_selection(&mem, STACK), Some((5, 0x123)));
+        mem.w(STACK + HANDLER_FRAME + 20, 256);
+        assert_eq!(geometry.light_selection(&mem, STACK), None);
+        mem.w(STACK + HANDLER_FRAME + 20, 0);
+        mem.0.remove(&(ENTRY + 8));
+        assert_eq!(geometry.light_selection(&mem, STACK), None);
     }
 
     #[test]

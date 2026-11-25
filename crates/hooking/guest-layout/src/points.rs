@@ -544,6 +544,18 @@ points! { ALL;
     HAVOK_WELD_CONTACTS @ 0x002f_a2f0: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SOLVER @ 0x0031_c940: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SUPPORT_VERTICES @ 0x0030_48a0: [opaque], Hot; "docs/perf/sim-budget.md";
+    /// The Havok world step: collide, then integrate, each phase a guest
+    /// call resumed inside the wrapper (sim-rewrite-havok.md §2).
+    HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_COLLIDE @ 0x0031_7d30: [fn(island: ecx, broadphase: stack 0, input: stack 1) ret 8], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_ISLAND_INTEGRATE @ 0x0031_6a20: [fn(island: ecx, input: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The world broadphase's batch update, the sweep's virtual at slot
+    /// `+0x14` of the broadphase behind `W+0xc4`.
+    HAVOK_BROADPHASE_BATCH @ 0x002e_0350: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The two shared unconstrained-motion methods, vtable slots `+0x04`
+    /// and `+0x08` of a dynamic motion.
+    HAVOK_MOTION_FORCES @ 0x0031_b060: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_MOTION_POSE @ 0x0031_b1c0: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
     OBJECT_SPATIAL_VISIT @ 0x000b_b050: [fn(lists: stack 0, types: stack 1, location: stack 2, center: stack 3, radius: stack 4, out: stack 5, capacity: stack 6) ret 28], Hot; "docs/perf/sim-budget.md";
     OBSERVER_RESULT @ 0x0017_1d90: [fn(observer: esi) ret 0], Hot; "docs/perf/sim-budget.md";
     OBJECT_SPATIAL_PORTAL @ 0x0014_a370: [fn(portal: eax, center: ecx, bsp: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
@@ -624,6 +636,10 @@ points! { ALL;
     CREATURE_PROBE_OBJECT_POSITION @ 0x000b_75a0: [fn(position: eax, forward: ecx, up: edx, object: stack 0, a: stack 1, b: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
     /// Select replica physics for an object at its initial placement.
     CREATURE_PROBE_REPLICA_PHYSICS @ 0x000b_9b90: [fn(replica: edx, object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    HS_THREAD_EXECUTE @ 0x0020_9850: [fn(thread: edi) ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE @ 0x0020_99f0: [fn(thread: edx, expr: stack 0, dest: ebx) ret 4], Optional; "docs/engine/hs_vm.md";
+    HS_GLOBAL_READ @ 0x0020_9bc0: [fn(index: esi) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE_ARGUMENTS @ 0x0020_9d50: [fn(thread: stack 0, count: stack 1, parameters: stack 2, first: stack 3) -> eax ret 16], Optional; "docs/engine/hs_vm.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
@@ -1699,11 +1715,31 @@ points! { ALL;
     /// `0x24ba16`, `0x24ba5a`.
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Allocates a one-shot sound after native playback admission.
-    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(source: stack 0, channel: stack 1, tag: stack 2, rule: stack 3) ret 16]; "docs/halo1/sounds.md";
+    SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(tag: stack 0, channel: stack 1, source: stack 2, rule: stack 3) -> eax ret 16]; "docs/halo1/sounds.md";
+    /// Chooses the channel for a due instance. The low word of EAX is -1 when no channel is available.
+    SOUND_CHOOSE_CHANNEL @ 0x0012_8700: [fn(instance: stack 0, reason: stack 1) -> eax ret 8]; "docs/audio/dsound.md";
+    /// Unbinds the channel and notifies the owner before freeing the instance.
+    SOUND_FINISH_INSTANCE @ 0x0012_7320: [fn(instance: eax, reason: stack 0) ret 4]; "docs/audio/dsound.md";
+    /// Drops the instance's companion and returns its salted slot to the sound pool.
+    SOUND_FREE_INSTANCE @ 0x0012_7390: [fn(instance: edi) ret 0]; "docs/audio/dsound.md";
     /// Walks a block of predicted resources in the requested prediction mode.
     PREDICT_RESOURCES @ 0x0016_e5e0: [fn(mode: edi, resources: stack 0) -> al ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Smooth a mix-in's position, obstruction and occlusion.
+    SOUND_SUBMIX_UPDATE @ 0x0022_0e00: [fn(source: edi, slot: stack 0) ret 4], Optional; "docs/audio/dsound.md";
     /// Sets source reverb and filter parameters on a DirectSound submix buffer.
     SOUND_SUBMIX_FX @ 0x0022_11e0: [fn(submix: eax, room: stack 0) ret 4], Optional; "docs/perf/sim-budget.md";
+    /// Convert the submix filter cutoff to its coefficient word.
+    SOUND_SUBMIX_CUTOFF @ 0x0021_e270: [fn(frequency: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Convert the submix filter resonance to its coefficient word.
+    SOUND_SUBMIX_RESONANCE @ 0x0021_e2d0: [fn(resonance: stack 0) ret 4], Optional; "docs/audio/dsound.md";
+    /// Construct the spatial descriptor consumed by the channel mixer.
+    SOUND_CHANNEL_SPATIAL @ 0x0012_9aa0: [fn(channel: eax, gain: stack 0, output: stack 1) ret 8], Optional; "docs/audio/dsound.md";
+    /// Gather the sound instance parameters and submit the channel update.
+    SOUND_CHANNEL_UPDATE @ 0x0012_8ca0: [fn(channel: stack 0, gain: stack 1, listener: stack 2) ret 12], Optional; "docs/engine/sim-rewrite.md";
+    /// Collect a listener's cluster ambience candidates.
+    SOUND_CLUSTER_AMBIENCE @ 0x0018_d730: [fn(bsp: stack 0, cluster: stack 1, position: stack 2, fallback_radius: stack 3, palettes: stack 4, gains: stack 5, portals: stack 6, clusters: stack 7, count: stack 8) ret 36], Optional; "docs/formats/structure-bsp.md";
+    /// Compare two candidate distances during ambience selection.
+    SOUND_AMBIENCE_FARTHER @ 0x0018_ae50: [fn(a: stack 0, b: stack 1, distances: stack 2) -> eax ret 12], Optional; "docs/formats/structure-bsp.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
@@ -1866,6 +1902,9 @@ points! { ALL;
     /// A seconds value times the tick rate, rounded by `fistp` (`ecx`
     /// returns the same integer).
     GAME_SECONDS_TO_TICKS @ 0x0014_69f0: [fn(seconds: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// Visit active unit actions in order. A callback returning zero clears
+    /// its action. Returns one if any callback returned nonzero.
+    UNIT_ACTIONS_UPDATE @ 0x000e_6830: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// An action request for the unit: eight words on the stack, the action
     /// first, handed to `0xe6900`.
     BIPED_ACTION @ 0x000e_68c0: [fn(action: ecx, object: stack 0) ret 4], Hot; "docs/engine/object-update.md";

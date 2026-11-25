@@ -1,13 +1,13 @@
-//! `anim.graph_walk` (docs/runtime/agent-api.md, "anim"): the counters of
-//! the animation graph's node walk `1dd1c0`, its arm and its body
-//! (docs/engine/skeleton-walk.md, "The graph walk `1dd1c0`"). A game
-//! method, answered at a tick boundary. The counters are process globals,
-//! so the answer needs no guest memory; with `impl.sim.native.anim` off
-//! they stay zero.
+//! Animation parity counters at a tick boundary. `anim.graph_walk` reports
+//! whole node walks and `anim.manager` reports manager and graph segments.
+//! Both read process counters under `impl.sim.native.anim`.
 
 use crate::{Access, Agent};
-use agent_proto::anim::{Arm, Body, GraphWalk, Mismatch, method};
+use agent_proto::anim::{
+    Arm, Body, GraphWalk, Manager, ManagerEntry, Mismatch, SegmentMismatch, method,
+};
 use engine::sim_anim::graph_walk::{self as walk, ArmStats, Decline, Stats};
+use engine::sim_anim::manager::arm;
 use std::collections::BTreeMap;
 
 /// Registers `anim.*` on `agent`.
@@ -18,6 +18,33 @@ pub fn install(agent: &Agent) {
                 .expect("stats serialise"),
         )
     });
+    agent.add_game_method(method::MANAGER, Access::Read, |_, _| {
+        Ok(serde_json::to_value(manager_wire(arm::stats())).expect("stats serialise"))
+    });
+}
+
+fn manager_wire(stats: Vec<(u32, arm::Stats)>) -> Manager {
+    Manager {
+        switch: "impl.sim.native.anim".into(),
+        entries: stats
+            .into_iter()
+            .map(|(addr, s)| {
+                let entry = ManagerEntry {
+                    matched: s.matched,
+                    differed: s.differed,
+                    declined: s.declined,
+                    interrupted: s.interrupted,
+                    first: s.first.map(|m| SegmentMismatch {
+                        pc: format!("{:08x}", m.pc),
+                        what: m.what,
+                        plan: m.plan,
+                        guest: m.guest,
+                    }),
+                };
+                (format!("{addr:08x}"), entry)
+            })
+            .collect(),
+    }
 }
 
 fn reasons(counts: &[u64]) -> BTreeMap<String, u64> {
@@ -107,7 +134,34 @@ mod tests {
     }
 
     #[test]
-    fn the_method_is_registered_and_needs_no_guest() {
+    fn manager_reports_segment_outcomes_and_the_first_difference() {
+        let stats = arm::Stats {
+            matched: 7,
+            differed: 2,
+            declined: 3,
+            interrupted: 4,
+            first: Some(arm::Mismatch {
+                pc: 0x10124,
+                what: "eax".into(),
+                plan: "1".into(),
+                guest: "3".into(),
+            }),
+        };
+        let result = serde_json::to_value(manager_wire(vec![(0x10100, stats)])).unwrap();
+        assert_eq!(
+            result,
+            serde_json::json!({
+                "switch": "impl.sim.native.anim",
+                "entries": { "00010100": {
+                    "matched": 7, "differed": 2, "declined": 3, "interrupted": 4,
+                    "first": {"pc": "00010124", "what": "eax", "plan": "1", "guest": "3"}
+                }}
+            })
+        );
+    }
+
+    #[test]
+    fn the_methods_are_registered_and_need_no_guest() {
         use agent_proto::Object;
         let a = Agent::new();
         install(&a);
@@ -128,7 +182,9 @@ mod tests {
         );
         a.between_slices(&mut NoGuest, 0);
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(line.contains(method::GRAPH_WALK), "{line}");
+        for name in method::ALL {
+            assert!(line.contains(*name), "{line}");
+        }
         a.submit(
             conn,
             r#"{"jsonrpc":"2.0","id":2,"method":"anim.graph_walk"}"#,
@@ -137,5 +193,11 @@ mod tests {
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(line.contains("\"001dd1c0\""), "{line}");
         assert!(line.contains("impl.sim.native.anim"), "{line}");
+        a.submit(conn, r#"{"jsonrpc":"2.0","id":3,"method":"anim.manager"}"#);
+        a.between_slices(&mut NoGuest, 0);
+        let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let counters: Manager = serde_json::from_value(reply["result"].clone()).unwrap();
+        assert_eq!(counters.switch, "impl.sim.native.anim");
     }
 }

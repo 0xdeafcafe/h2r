@@ -5,8 +5,9 @@
 //! each installed body through [`Shadow::run`]. With nothing turned on that
 //! is one relaxed atomic load. The agent API's `shadow.enable` turns checks
 //! on for named ports or groups; then each sampled call is [`check`]ed
-//! before the port runs on the live Guest as it always does, and
-//! `shadow.status` reads the counts and the mismatches.
+//! before the port runs on the live Guest. A guest-authoritative port uses
+//! [`Shadow::compare_only`] and leaves the live call to the generated
+//! original. `shadow.status` reads the counts and the mismatches.
 
 mod check;
 
@@ -141,13 +142,21 @@ struct State {
     dropped: u64,
 }
 
+/// Keep the registry locked until the sample is recorded. Re-enabling a port
+/// resets its counters and must not interleave with an outstanding check.
+struct Sample<'a> {
+    state: std::sync::MutexGuard<'a, State>,
+    call: u64,
+    outcome: Outcome,
+    copy: Option<(CpuAbi, TransferAbi)>,
+}
+
 impl State {
-    /// Count the call while holding the same registry lock as enable/disable.
-    /// None means native authority; Some(None) is an unsampled checked call.
-    fn next_sample(&mut self, name: &str) -> Option<Option<(u64, u32)>> {
-        let p = self.ports.get_mut(name).filter(|p| p.on)?;
-        p.calls += 1;
-        Some(((p.calls - 1) % self.every == 0).then_some((p.calls, p.base)))
+    /// None for a disabled port; Some(None) between samples.
+    fn sample(&mut self, name: &str) -> Option<Option<(u64, u32)>> {
+        let port = self.ports.get_mut(name).filter(|port| port.on)?;
+        port.calls += 1;
+        Some(((port.calls - 1) % self.every == 0).then_some((port.calls, port.base)))
     }
 }
 
@@ -343,6 +352,12 @@ impl Shadow {
         Ok(off)
     }
 
+    /// Whether any port requests samples. A fused dispatcher can take its
+    /// ordinary path for the whole chain while checks are disabled.
+    pub fn any_enabled(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
     pub fn status(&self) -> Status {
         let s = self.lock();
         let ports: Vec<Port> = s.ports.values().cloned().collect();
@@ -363,6 +378,80 @@ impl Shadow {
         }
     }
 
+    fn sample(
+        &self,
+        name: &'static str,
+        cpu: &CpuAbi,
+        guest: &Guest,
+        pc: u32,
+        port: &mut PortFn<'_>,
+    ) -> Option<Sample<'_>> {
+        if !self.on.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mut guard = self.lock();
+        let s = &mut *guard;
+        let p = s.ports.get_mut(name).filter(|p| p.on)?;
+        p.calls += 1;
+        let call = p.calls;
+        if (call - 1) % s.every != 0 {
+            return None;
+        }
+        let code = s.code.as_deref_mut()?;
+        code.prime(p.base);
+        let (outcome, copy) = check(code, &mut s.view, guest, cpu, pc, s.step_limit, port);
+        Some(Sample {
+            state: guard,
+            call,
+            outcome,
+            copy,
+        })
+    }
+
+    /// Compare the candidate on private state at a sampled entry or resume.
+    /// The caller retains the live CPU and memory for the generated original.
+    pub fn compare_only(
+        &self,
+        name: &'static str,
+        cpu: &CpuAbi,
+        guest: &Guest,
+        pc: u32,
+        tick: TickFn,
+        port: &mut PortFn<'_>,
+    ) {
+        if let Some(mut sample) = self.sample(name, cpu, guest, pc, port) {
+            Self::record(&mut sample.state, name, pc, sample.call, tick(guest), cpu, sample.outcome);
+        }
+    }
+
+    /// Check a candidate while the original is authoritative. A selected
+    /// port always returns true, including on unsampled calls and failed
+    /// comparisons: the caller must dispatch the original on the live state.
+    pub fn check_before_original(
+        &self,
+        name: &'static str,
+        cpu: &CpuAbi,
+        guest: &Guest,
+        pc: u32,
+        tick: TickFn,
+        port: &mut PortFn<'_>,
+    ) -> bool {
+        if !self.on.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut guard = self.lock();
+        let s = &mut *guard;
+        let Some(sample) = s.sample(name) else { return false };
+        if let Some((call, base)) = sample
+            && let Some(code) = s.code.as_deref_mut()
+        {
+            code.prime(base);
+            let (outcome, _) = check(code, &mut s.view, guest, cpu, pc, s.step_limit, port);
+            Self::record(s, name, pc, call, tick(guest), cpu, outcome);
+        }
+        true
+    }
+
     /// Run the port `name` at `pc` on the live Guest, checking it first
     /// when its checks are on and this call is sampled. The port's answer
     /// on the live Guest is returned either way.
@@ -375,26 +464,13 @@ impl Shadow {
         tick: TickFn,
         port: &mut PortFn<'_>,
     ) -> Result<TransferAbi, GuestFault> {
-        if !self.on.load(Ordering::Relaxed) {
+        let Some(mut sample) = self.sample(name, cpu, guest, pc, port) else {
             return port(cpu, guest);
-        }
+        };
         let entry = *cpu;
-        let mut guard = self.lock();
-        let s = &mut *guard;
-        let Some(Some((call, base))) = s.next_sample(name) else {
-            drop(guard);
-            return port(cpu, guest);
-        };
-        let limit = s.step_limit;
-        let Some(code) = s.code.as_deref_mut() else {
-            drop(guard);
-            return port(cpu, guest);
-        };
-        code.prime(base);
-        let (mut outcome, copy) = check(code, &mut s.view, guest, &entry, pc, limit, port);
         // The real call: on the live Guest, as without checks.
         let live = port(cpu, guest);
-        if let (Ok(t), Some((copy_cpu, copy_t))) = (&live, copy)
+        if let (Ok(t), Some((copy_cpu, copy_t))) = (&live, sample.copy)
             && (copy_cpu != *cpu || copy_t != *t)
         {
             let mut registers = crate::cpu::diff(
@@ -404,7 +480,7 @@ impl Shadow {
             registers
                 .iter_mut()
                 .for_each(|r| r.name = format!("{} (live, copy)", r.name));
-            outcome = Outcome::Mismatched(Box::new(Diff {
+            sample.outcome = Outcome::Mismatched(Box::new(Diff {
                 kind: "nondeterministic",
                 summary: format!(
                     "the port answered differently on the live Guest ({}) than on the copy ({})",
@@ -421,37 +497,8 @@ impl Shadow {
                 steps: 0,
             }));
         }
-        Self::record(s, name, pc, call, tick(guest), &entry, outcome);
+        Self::record(&mut sample.state, name, pc, sample.call, tick(guest), &entry, sample.outcome);
         live
-    }
-
-    /// With checks enabled for this port, the caller dispatches the original
-    /// on live state, including on unsampled calls and after a mismatch.
-    /// The sampled candidate and interpreter only see private copies.
-    pub fn guest_arm(
-        &self,
-        name: &'static str,
-        entry: &CpuAbi,
-        guest: &Guest,
-        pc: u32,
-        tick: TickFn,
-        port: &mut PortFn<'_>,
-    ) -> bool {
-        if !self.on.load(Ordering::Relaxed) {
-            return false;
-        }
-        let mut state = self.lock();
-        let s = &mut *state;
-        let Some(sample) = s.next_sample(name) else {
-            return false;
-        };
-        if let Some((call, base)) = sample {
-            let code = s.code.as_deref_mut().expect("enabling a shadow port loads its image");
-            code.prime(base);
-            let (outcome, _) = check(code, &mut s.view, guest, entry, pc, s.step_limit, port);
-            Self::record(s, name, pc, call, tick(guest), entry, outcome);
-        }
-        true
     }
 
     fn record(

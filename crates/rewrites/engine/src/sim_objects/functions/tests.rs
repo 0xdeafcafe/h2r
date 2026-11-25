@@ -163,3 +163,45 @@ fn every_slice_three_body_is_in_the_table() {
         assert!(TABLE.owns(point.base), "{}", point.name);
     }
 }
+
+#[test]
+fn value_reads_the_new_table_count_and_name_after_evaluating_an_export() {
+    // Resume bab40 after its import failed. Its saved ECX holds the eventual
+    // result byte. The guest evaluator can rewrite the definition and frame.
+    let (mut c, mut g) = guest(&[]);
+    let first = ARRAY + 0x9000;
+    let second = first + 0x200;
+    g.set_u32(TAGS, LEVELS).unwrap();
+    g.set_u32(LEVELS + 8, DESCRIPTOR).unwrap();
+    g.set_u32(DESCRIPTOR + 0x64, 1).unwrap();
+    g.set_u32(DESCRIPTOR + 0x68, first).unwrap();
+    g.set_u32(first + 8, NAME).unwrap();
+    c.esp = STACK - 20;
+    c.eax = 0;
+    c.ebp = OUT;
+    c.esi = 3 * 12;
+    let resume = |c: &mut CpuAbi, g: &mut Guest, pc| {
+        value::value(&mut Cx { cpu: c, g }, pc).unwrap()
+    };
+    let evaluate = Next::Call { target: points::OBJECT_FUNCTION_EVALUATE.base, site: value::VALUE_SITES[2] };
+    assert_eq!(resume(&mut c, &mut g, value::VALUE_SITES[1]), evaluate);
+    assert_eq!((c.eax, c.esi, c.ebx), (first, 0, 0));
+
+    c.esp += 8; // callee pops both arguments
+    c.eax = 0;
+    g.set_u32(DESCRIPTOR + 0x64, 3).unwrap();
+    g.set_u32(DESCRIPTOR + 0x68, second).unwrap();
+    g.set_u32(STACK + 8, NAME + 1).unwrap();
+    g.set_u32(second + 0x20 + 8, NAME).unwrap();
+    g.set_u32(second + 0x40 + 8, NAME + 1).unwrap();
+    assert_eq!(resume(&mut c, &mut g, value::VALUE_SITES[2]), evaluate);
+    assert_eq!((c.eax, c.ecx, c.edx, c.esi, c.ebx), (second + 0x40, second + 0x40, NAME + 1, 2, 0x40));
+
+    c.esp += 8;
+    c.eax = 0x27;
+    // A shrunken array must end the scan without touching its pointer.
+    g.set_u32(DESCRIPTOR + 0x64, 1).unwrap();
+    g.set_u32(DESCRIPTOR + 0x68, u32::MAX).unwrap();
+    assert_eq!(resume(&mut c, &mut g, value::VALUE_SITES[2]), Next::Ret { pop: 12 });
+    assert_eq!((c.eax as u8, c.esp), (0x27, STACK));
+}

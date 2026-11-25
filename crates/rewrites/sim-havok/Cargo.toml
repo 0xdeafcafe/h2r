@@ -1,0 +1,14 @@
+[package]
+name = "sim-havok"
+description = "Ordered Havok simulation kernels over transient, Rust-owned data"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+sim-core.workspace = true
+simd.workspace = true
+x87.workspace = true
+
+[lints]
+workspace = true

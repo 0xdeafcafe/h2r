@@ -15,7 +15,7 @@
 //! precision control); the sphere and polygon tests are SSE scalar
 //! operations ([`Checked`]). Anything off the checked fast path declines
 //! the whole query.
-use crate::{Bail, GuestRead};
+use crate::{Bail, GuestRead, store::Column};
 use sim_core::det::{Chain, Checked, checked_inputs};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -115,10 +115,17 @@ struct Cluster {
 pub struct Topology {
     key: TopologyKey,
     clusters: Vec<Cluster>,
+    links: Column<u32>,
+    portals: Vec<Result<Portal, Bail>>,
+    ring: Column<[u32; 2]>,
+    sources: Vec<(u32, u32)>,
+}
+
+#[derive(Default)]
+struct PortalBuilder {
     links: Vec<u32>,
     portals: Vec<Result<Portal, Bail>>,
     ring: Vec<[u32; 2]>,
-    sources: Vec<(u32, u32)>,
 }
 
 fn word(b: &[u8], at: usize) -> u32 {
@@ -198,14 +205,8 @@ impl Topology {
         let normal_planes = r.u32(key.bsp.wrapping_add(BSP_PLANES))?;
         let n = count.min(MAX_CLUSTERS);
         let block = r.bytes(clusters_at, n * CLUSTER_STRIDE)?;
-        let mut t = Topology {
-            key,
-            clusters: Vec::with_capacity(n as usize),
-            links: Vec::new(),
-            portals: Vec::new(),
-            ring: Vec::new(),
-            sources: Vec::new(),
-        };
+        let mut builder = PortalBuilder::default();
+        let mut clusters = Vec::with_capacity(n as usize);
         let mut slots = HashMap::<u16, u32>::new();
         let planes = Planes {
             portals: portals_at,
@@ -216,12 +217,26 @@ impl Topology {
         for c in 0..n as usize {
             let at = c * CLUSTER_STRIDE as usize + CLUSTER_PORTAL_COUNT as usize;
             let (count, list) = (word(&block, at), word(&block, at + 4));
-            let links = t.cluster_links(&mut r, &mut slots, &planes, count, list);
-            t.clusters.push(Cluster { count, links });
+            let links = builder.cluster_links(&mut r, &mut slots, &planes, count, list);
+            clusters.push(Cluster { count, links });
         }
-        t.sources = r.sources;
-        Ok(t)
+        Ok(Self {
+            key,
+            clusters,
+            links: builder.links.into(),
+            portals: builder.portals,
+            ring: builder.ring.into(),
+            sources: r.sources,
+        })
     }
+
+    pub(crate) fn share_columns(&mut self, dir: &std::path::Path) {
+        self.links.share(dir);
+        self.ring.share(dir);
+    }
+}
+
+impl PortalBuilder {
 
     /// One cluster's portal list, decoding each portal the first time any
     /// cluster names it.
@@ -343,6 +358,9 @@ impl Topology {
         })
     }
 
+}
+
+impl Topology {
     pub fn key(&self) -> TopologyKey {
         self.key
     }
@@ -428,8 +446,8 @@ pub struct Flood {
     /// The deepest nesting (0 is the first cluster) at which a portal test
     /// ran, for the dead stack the original uses; `None` when none ran.
     pub deepest: Option<u32>,
-    /// The first cluster's portal count word, which the guest returns in
-    /// `ecx` and whose last compare sets the flags.
+    /// The first cluster's portal count word. Its sign selects the last
+    /// flag-producing instruction.
     pub portal_count: u32,
 }
 

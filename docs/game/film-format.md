@@ -322,13 +322,11 @@ scheduler boundaries, snapshots and the continuation data needed after a
 restore. It also covers cold replay when the first snapshot has yet to be
 taken. Absolute offsets preserve which calls preceded each snapshot.
 
-The private `BOOT` record preserves LOD Distance and other `View` settings,
-including their saved values and locks. Theater clears the viewer's LOD
-override before restoring them. Resolution has `Host` scope, so the viewer
-chooses the displayed raster. The recorded guest uses retail geometry for
-readbacks. Films that recorded both the legacy render scale and LOD Distance
-recover their original startup geometry multiplier. The private guest Video
-menu also retains its recorded choices during playback.
+The private `BOOT` record preserves the guest Video settings, including
+their saved values and locks. Theater reads the display raster and LOD
+Distance from the viewer's settings. The guest's reference uses retail
+geometry for readbacks. Films with both the legacy render scale and LOD
+Distance recover that startup geometry multiplier for the reference.
 [Startup settings](../../crates/extensions/game/src/theater/startup.rs).
 
 The private `INDX` is a JSON array in physical envelope order. Each row

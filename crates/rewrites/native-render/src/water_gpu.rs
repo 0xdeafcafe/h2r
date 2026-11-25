@@ -17,9 +17,9 @@
 //! anything else refuses the material, and the census names what a
 //! level binds.
 //!
-//! The geometry is the water surfaces themselves, the kind-4 transparent
-//! parts ([`crate::world::World::transparents`]): one item draws them in
-//! layer 15 and again in layer 6, and only layer 6 is taken here.
+//! Pool surfaces use the sorted layer-15 geometry handler. [`sorted_pool`]
+//! identifies them at BSP load for the resolved indexed pass. This GPU
+//! set holds only materials with a separate layer-6 edge pass.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 
@@ -60,7 +60,7 @@ pub(crate) struct WaterItem {
 }
 
 /// `items` as packets for the D3D pass already open on these attachments:
-/// the whole target as viewport and scissor, the world's program vertices
+/// the whole target as viewport and the player view as scissor, the world's program vertices
 /// and indices ([`crate::gpu::GpuWorld::water_draws`]).
 // wgpu compares and hashes pipelines by their stable handle identity.
 #[allow(clippy::mutable_key_type)]
@@ -70,9 +70,9 @@ pub(crate) fn item_packets(
     vertices: &wgpu::Buffer,
     indices: &wgpu::Buffer,
     target_size: (u32, u32),
+    scissor: gfx::ScissorRect,
 ) -> Result<Vec<gfx::RecordedDraw>, &'static str> {
-    use gfx::{BoundGroup, RecordedDraw, ScissorRect};
-    let scissor = ScissorRect::full(target_size.0, target_size.1);
+    use gfx::{BoundGroup, RecordedDraw};
     let render = gfx::state::RenderState::default();
     let mut packets = Vec::with_capacity(items.len());
     for it in items {
@@ -530,8 +530,15 @@ impl WaterSet {
     }
 }
 
-/// The layer-6 passes of `material` with the per-view supplied engine
-/// stages kept: [`supplied_layer_passes`] at [`WATER_LAYER`].
+/// Pool surfaces use LOD 0's sorted range in the compiled template.
+pub fn sorted_pool(template: Option<&str>, material: &tags::shader::TemplatePostprocess) -> bool {
+    template.is_some_and(|name| name.rsplit('\\').next().is_some_and(|leaf|
+        leaf.eq_ignore_ascii_case("water_pool") || leaf.eq_ignore_ascii_case("water_pool_static")))
+        && material.lods.first().is_some_and(|lod| usize::from(lod.layers.count) > 15)
+        && material.layer_passes(0, 15).is_some_and(|passes| !passes.is_empty())
+}
+
+/// Edge-blend passes and their per-view engine texture supplies.
 pub fn water_passes(material: &tags::material::Material, rasterizer: Option<map::TagId>) -> Result<Vec<FogPass>, crate::fog_gpu::FogRefusal> {
     supplied_layer_passes(material, WATER_LAYER, rasterizer)
 }
@@ -539,9 +546,30 @@ pub fn water_passes(material: &tags::material::Material, rasterizer: Option<map:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fog_gpu::tests::{fogs, parts, pass, render, selected, view, world, SIZE};
+    use crate::fog_gpu::tests::{assert_split_images, fogs, parts, pass, player_viewport, render, selected, view, world, SIZE};
     use crate::gpu::GpuWorld;
     use wgpu::TextureFormat as F;
+
+    #[test]
+    fn pool_uses_the_first_lods_sorted_range() {
+        use tags::shader::{IndexRange, TemplateLod, TemplatePass, TemplatePostprocess, TagRef};
+        let mut template = TemplatePostprocess {
+            lods: vec![TemplateLod { layers: IndexRange { start: 1, count: 16 },
+                layer_mask: 1 << 15, unknown_6: 0 }],
+            layers: vec![IndexRange::default(); 17],
+            passes: vec![TemplatePass { pass: TagRef { group: map::FourCC(*b"spas"), id: map::TagId(3) },
+                implementations: IndexRange { start: 0, count: 1 } }],
+            implementations: vec![Default::default()],
+            bindings: vec![],
+        };
+        template.layers[16] = IndexRange { start: 0, count: 1 };
+        let pool = Some(r"shaders\shader_templates\water\water_pool");
+        assert!(sorted_pool(pool, &template));
+        assert!(!sorted_pool(Some("glass"), &template));
+        assert!(template.layer_passes(0, WATER_LAYER).is_none());
+        template.lods[0].layers.count = 15;
+        assert!(!sorted_pool(pool, &template));
+    }
 
     /// A water set over the synthetic scene: `samples_view` makes its
     /// stage 0 the view's own target (engine texture 5), else it samples
@@ -560,6 +588,52 @@ mod tests {
         assert_eq!(set.len(), 1);
         gpu.set_water(set);
         gpu
+    }
+
+    #[test]
+    fn water_and_fog_reach_the_presented_edge_for_a_cluster_outside_retail() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let mut gpu = scene(&ctx, false, 0.);
+        let (_, program) = pass(Stage::Empty);
+        let set = crate::fog_gpu::FogSet::new(
+            &ctx.device, &ctx.queue, gpu.world(), parts(gpu.world()), [(0, vec![program])].into(),
+            &mut |_| None, &mut |_| None,
+        );
+        gpu.set_fog(set);
+        let selected = [(Owner::Cluster(0), 0)];
+        let fog = fogs();
+        for water in [false, true] {
+            for factor in [1.0, 0.75] {
+                let mut camera = view();
+                // The test shader writes guest window pixels. At 4:3 its
+                // quad spans -2.5..-0.5. Widen around the same viewport centre.
+                let centre = SIZE as f32 / 2.;
+                camera.constants[0] = [0., -0.5 * factor, 0., centre + (-1.5 - centre) * factor];
+                let (color, _) = render(&ctx, |enc, arena, t| {
+                    let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
+                    let viewport = player_viewport(false);
+                    let depth = t.depth.unwrap();
+                    let n = if water {
+                        gpu.prepare_water(&mut uploads, &camera, &fog);
+                        gpu.encode_water(&ctx.device, enc, t.color, F::Rgba8Unorm, depth, F::Depth32Float,
+                            t.size, viewport, d3d::TargetCopy::Display, &selected, &[])
+                    } else {
+                        gpu.prepare_fog(&mut uploads, &camera, &fog, &crate::fog_gpu::LayerSamples::new());
+                        gpu.encode_fog(&ctx.device, enc, t.color, F::Rgba8Unorm, depth, F::Depth32Float,
+                            t.size, viewport, &selected)
+                    };
+                    assert_eq!(n, 1);
+                });
+                let mut covered = false;
+                for (i, pixel) in color.chunks_exact(4).enumerate() {
+                    if pixel != [0; 4] {
+                        assert!(i % (SIZE as usize) < (SIZE / 8) as usize, "outside the added left strip");
+                        covered = true;
+                    }
+                }
+                assert_eq!(covered, factor < 1., "water={water}, factor={factor}");
+            }
+        }
     }
 
     #[test]
@@ -589,7 +663,7 @@ mod tests {
                 gpu.prepare_water(&mut uploads, &view(), &fogs());
                 let count = gpu.encode_water(
                     &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float,
-                    (SIZE, SIZE), d3d::TargetCopy::Display, &[(Owner::Instance(5), 0)], &[],
+                    (SIZE, SIZE), player_viewport(false), d3d::TargetCopy::Display, &[(Owner::Instance(5), 0)], &[],
                 );
                 assert_eq!(count, 1);
             }).0
@@ -609,10 +683,10 @@ mod tests {
         let mut gpu = scene(&ctx, false, 3.0);
         let (selected, view, fogs) = (selected(), view(), fogs());
         let mut images = Vec::new();
-        for packets in [true, false] {
+        for (packets, split) in [(true, false), (false, false), (true, true), (false, true)] {
             images.push(render(&ctx, |enc, arena, target| {
                 let draws = gpu
-                    .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &[], &view, &fogs)
+                    .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(split), &selected, &[], &view, &fogs)
                     .unwrap();
                 assert_eq!((draws.ranges, draws.packets.len()), (2, 2));
                 assert_eq!(draws.writes.len(), 4, "cluster uniforms and placement view rows");
@@ -626,7 +700,7 @@ mod tests {
                     gpu.prepare_water(&mut uploads, &view, &fogs);
                     assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
                     let recorded = gpu.encode_water(
-                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE),
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split),
                         d3d::TargetCopy::Display, &selected, &[],
                     );
                     assert_eq!(recorded, 2);
@@ -634,7 +708,7 @@ mod tests {
             }));
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the water drew something");
-        assert_eq!(images[0], images[1]);
+        assert_split_images(&images);
     }
 
     /// A set that samples the view: the encoded commands (the staged
@@ -647,16 +721,16 @@ mod tests {
         let mut gpu = scene(&ctx, true, 3.0);
         let (selected, view, fogs) = (selected(), view(), fogs());
         assert!(gpu
-            .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &[], &view, &fogs)
+            .water_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(false), &selected, &[], &view, &fogs)
             .is_err());
         let mut images = Vec::new();
-        for encoded in [true, false] {
+        for (encoded, split) in [(true, false), (false, false), (true, true), (false, true)] {
             images.push(render(&ctx, |enc, arena, target| {
                 if encoded {
                     let commands = gpu
                         .water_encoded(
                             &ctx.device, &ctx.queue, arena, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float,
-                            (SIZE, SIZE), d3d::TargetCopy::Display, &selected, &[], &view, &fogs,
+                            (SIZE, SIZE), player_viewport(split), d3d::TargetCopy::Display, &selected, &[], &view, &fogs,
                         )
                         .unwrap();
                     assert_eq!((commands.ranges, commands.passes), (2, 1));
@@ -668,7 +742,7 @@ mod tests {
                     let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
                     gpu.prepare_water(&mut uploads, &view, &fogs);
                     let recorded = gpu.encode_water(
-                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE),
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split),
                         d3d::TargetCopy::Display, &selected, &[],
                     );
                     assert_eq!(recorded, 2);
@@ -676,6 +750,6 @@ mod tests {
             }));
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the water drew something");
-        assert_eq!(images[0], images[1]);
+        assert_split_images(&images);
     }
 }

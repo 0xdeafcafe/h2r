@@ -1,15 +1,15 @@
 //! Pixel-based detail in the structure record walks. Each of their three
 //! callers resets the record counters, builds clusters and placements, then
-//! builds object records. Object lighting needs the retail projection.
-//! A menu's model widget (the profile and Appearance previews) renders
-//! through the same record walk; it keeps the retail factor.
+//! builds object records. Menu model widgets use the same record walk.
+//! Exact readbacks use the guest selection. Native display passes can sample
+//! a separate detail without publishing its pose, palette or cache writes.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::setting_defs::{GUEST_FRAME, LOD_DISTANCE, lod_pixel_multiplier};
+use crate::setting_defs::{GUEST_FRAME, LOD_DISTANCE, LOD_HIGHEST, lod_pixel_multiplier};
 use d3d::scaled::ScaleStats;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
-use render_bridge::native_scene_lists::{NativeSceneLists, ViewLodScale};
+use render_bridge::native_scene_lists::{LodDetail, NativeSceneLists, ViewLodScale};
 use runtime::{Guest, GuestFault, guest::Permissions};
 
 #[derive(Clone)]
@@ -17,7 +17,7 @@ pub struct LodDistance {
     scale_stats: Option<Arc<Mutex<ScaleStats>>>,
     distance: Option<settings::Setting<u32>>,
     startup_distance: u32,
-    fixed_multiplier: Option<f32>,
+    reference_multiplier: Option<f32>,
     /// Guest address published during registration for the native object walk.
     view_scale: OnceLock<ViewLodScale>,
 }
@@ -26,8 +26,9 @@ impl LodDistance {
     pub fn new(
         store: Option<&settings::Store>,
         scale_stats: Option<Arc<Mutex<ScaleStats>>>,
+        viewer_distance: Option<settings::Setting<u32>>,
     ) -> anyhow::Result<Self> {
-        let distance = store.map(|s| s.handle(LOD_DISTANCE.key));
+        let distance = viewer_distance.or_else(|| store.map(|s| s.handle(LOD_DISTANCE.key)));
         let mut value = LOD_DISTANCE.default;
         if distance.is_none()
             && let Ok(raw) = std::env::var("H2_LOD_DISTANCE")
@@ -40,14 +41,14 @@ impl LodDistance {
             scale_stats,
             view_scale: OnceLock::new(),
             distance,
-            fixed_multiplier: None,
+            reference_multiplier: None,
             startup_distance: value.as_int().expect("LOD Distance is a numeric choice") as u32,
         })
     }
 
     /// Keep protected geometry independent of the local display and settings.
-    pub fn with_fixed_multiplier(mut self, multiplier: f32) -> Self {
-        self.fixed_multiplier = Some(multiplier);
+    pub fn with_reference_multiplier(mut self, multiplier: f32) -> Self {
+        self.reference_multiplier = Some(multiplier);
         self
     }
 
@@ -63,16 +64,12 @@ impl LodDistance {
         self.view_scale.get().copied()
     }
 
-    /// Sample the geometry multiplier once at the view boundary.
-    fn multiplier(&self) -> f32 {
-        if let Some(fixed) = self.fixed_multiplier {
-            return fixed;
+    /// Sample the display geometry once at the view boundary.
+    fn detail(&self) -> LodDetail {
+        match self.distance.as_ref().map_or(self.startup_distance, settings::Setting::get) {
+            LOD_HIGHEST => LodDetail::Highest,
+            units => scaled(lod_pixel_multiplier(self.output_height(), units)),
         }
-        let distance = self
-            .distance
-            .as_ref()
-            .map_or(self.startup_distance, settings::Setting::get);
-        lod_pixel_multiplier(self.output_height(), distance)
     }
 }
 
@@ -83,10 +80,8 @@ impl Feature for LodDistance {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // Both words belong to the current render context. A worker snapshot
-        // or a mid-view restore carries the factor and original projection together.
-        // The third word marks the UI model view, so a snapshot taken inside
-        // a widget's view carries it with the factor.
+        // A worker snapshot carries the original projection, the guest
+        // selection and the display selection with the model-view bit.
         b.snapshot(SnapshotPolicy::Stateless);
         let saved = b.guest_alloc(12, Permissions::RW)?;
         let view_scale = ViewLodScale::new(saved + 4);
@@ -101,21 +96,19 @@ impl Feature for LodDistance {
                 "size structure records",
                 move |c| {
                     if c.addr == points::RESET_SCENE_RECORDS.base {
-                        let factor = setting.multiplier();
+                        let detail = setting.detail();
                         let mut mem = c.ctx.runtime().memory();
                         let caller = caller(mem.u32(c.cpu.esp)?);
-                        reset_view(&mut mem, saved, caller, factor)?;
+                        reset_view(&mut mem, saved, caller, detail, setting.reference_multiplier)?;
                     }
                     Ok(Flow::Continue)
                 },
             )
             .context_only();
-        // A model widget's view (0x2b0e12 calls 0x2c560, which reaches the
-        // world caller 0x31ef5 through 0x2bcd0 and 0x31c80) keeps retail
-        // detail. The mark is set only when the return site is generated,
-        // so it cannot be left set for the next world view.
+        // Preserve the exact reference's original model-widget policy
+        // even when a legacy film supplies a fixed world multiplier.
         b.raw()
-            .before(&points::ui_render::MODEL_VIEW_CALL, "retail LOD in the UI model view", move |c| {
+            .before(&points::ui_render::MODEL_VIEW_CALL, "mark the UI model view", move |c| {
                 let rt = c.ctx.runtime();
                 if rt.read_dispatch(|d| d.has_generated(points::ui_render::MODEL_VIEW_RETURN.base)) {
                     set_model_view(&mut rt.memory(), saved, true)?;
@@ -126,7 +119,7 @@ impl Feature for LodDistance {
             .after_feature("native-hud")
             .optional();
         b.raw()
-            .before(&points::ui_render::MODEL_VIEW_RETURN, "end the UI model view's retail LOD", move |c| {
+            .before(&points::ui_render::MODEL_VIEW_RETURN, "end the UI model view", move |c| {
                 set_model_view(&mut c.ctx.runtime().memory(), saved, false)?;
                 Ok(Flow::Continue)
             })
@@ -161,16 +154,32 @@ fn caller(return_address: u32) -> u32 {
     }
 }
 
-fn reset_view(mem: &mut Guest, saved: u32, caller: u32, factor: f32) -> Result<(), GuestFault> {
-    // A prior walk may have exited before OBJECT_RENDER_RECORDS restored the
-    // projection. Recover it even when switching to Retail or another caller.
+fn scaled(multiplier: f32) -> LodDetail {
+    if multiplier == 1.0 { LodDetail::Retail } else { LodDetail::Scaled(multiplier) }
+}
+
+pub(super) fn reset_view(
+    mem: &mut Guest, saved: u32, caller: u32, display: LodDetail, reference: Option<f32>,
+) -> Result<(), GuestFault> {
+    // A prior walk may have exited before OBJECT_RENDER_RECORDS restored the projection.
     end_structure(mem, saved)?;
-    // Only these three callers bracket both structure walks with the reset
-    // and OBJECT_RENDER_RECORDS. Any other view, and a menu's model widget
-    // (which reaches 0x31ef5), records retail detail.
+    // Only these callers bracket both structure walks with the reset and
+    // OBJECT_RENDER_RECORDS. The model widget reaches 0x31ef5.
     let world = matches!(caller, 0x0002_cbcc | 0x0003_1ef5 | 0x0003_f3b9);
-    let factor = if world && !in_model_view(mem, saved)? { factor } else { 1.0 };
-    mem.set_f32(saved + 4, factor)?;
+    let model_view = mem.u32(saved + 8)? & ViewLodScale::MODEL_VIEW;
+    let (guest, display) = if world {
+        let guest = match reference {
+            Some(_) if model_view != 0 => LodDetail::Retail,
+            Some(multiplier) => scaled(multiplier),
+            None => display,
+        };
+        (guest, display)
+    } else {
+        (LodDetail::Retail, LodDetail::Retail)
+    };
+    mem.set_u32(saved + 4, guest.guest_word())?;
+    mem.set_u32(saved + 8, display.guest_word() | model_view)?;
+    let factor = guest.pixel_multiplier();
     if factor == 1.0 {
         return Ok(());
     }
@@ -183,14 +192,9 @@ fn reset_view(mem: &mut Guest, saved: u32, caller: u32, factor: f32) -> Result<(
     Ok(())
 }
 
-const MODEL_VIEW: u32 = 8;
-
 fn set_model_view(mem: &mut Guest, saved: u32, inside: bool) -> Result<(), GuestFault> {
-    mem.set_u32(saved + MODEL_VIEW, u32::from(inside))
-}
-
-fn in_model_view(mem: &Guest, saved: u32) -> Result<bool, GuestFault> {
-    Ok(mem.u32(saved + MODEL_VIEW)? != 0)
+    let value = if inside { ViewLodScale::MODEL_VIEW } else { 0 };
+    mem.set_u32(saved + 8, value)
 }
 
 fn end_structure(mem: &mut Guest, saved: u32) -> Result<(), GuestFault> {
@@ -213,26 +217,37 @@ mod tests {
             output: GUEST_FRAME,
             ..Default::default()
         }));
-        let lod = LodDistance::new(Some(&store), Some(stats.clone())).unwrap();
+        let lod = LodDistance::new(Some(&store), Some(stats.clone()), None).unwrap();
         store
             .set(
                 crate::setting_defs::RESOLUTION.key,
                 settings::Resolution::Fixed(2560, 1600).value(),
             )
             .unwrap();
-        assert_eq!(lod.multiplier(), 1.0);
-        let recorded = lod.clone().with_fixed_multiplier(2.5);
+        assert_eq!(lod.detail(), LodDetail::Highest);
+        store.set(LOD_DISTANCE.key, LOD_DISTANCE.parse("1").unwrap()).unwrap();
+        assert_eq!(lod.detail(), LodDetail::Retail);
         stats.lock().unwrap().output = (2560, 1600);
-        assert_eq!(lod.multiplier(), 1600.0 / 480.0);
-        store
-            .set(LOD_DISTANCE.key, LOD_DISTANCE.parse("1.5").unwrap())
-            .unwrap();
-        assert_eq!(lod.multiplier(), 5.0);
-        assert_eq!(recorded.multiplier(), 2.5);
-        store
-            .set(LOD_DISTANCE.key, LOD_DISTANCE.parse("retail").unwrap())
-            .unwrap();
-        assert_eq!(lod.multiplier(), 1.0);
+        assert_eq!(lod.detail(), LodDetail::Scaled(1600.0 / 480.0));
+        store.set(LOD_DISTANCE.key, LOD_DISTANCE.parse("1.5").unwrap()).unwrap();
+        assert_eq!(lod.detail(), LodDetail::Scaled(5.0));
+        store.set(LOD_DISTANCE.key, LOD_DISTANCE.parse("retail").unwrap()).unwrap();
+        assert_eq!(lod.detail(), LodDetail::Retail);
+    }
+
+    #[test]
+    fn a_viewer_chooses_detail_independently_of_the_recorded_settings() {
+        let recorded = settings::Store::defaults(crate::setting_defs::ALL);
+        recorded.set(LOD_DISTANCE.key, LOD_DISTANCE.parse("retail").unwrap()).unwrap();
+        let viewer = settings::Store::defaults(crate::setting_defs::ALL);
+        let handle = viewer.handle(LOD_DISTANCE.key);
+        let lod = LodDistance::new(Some(&recorded), None, Some(handle)).unwrap()
+            .with_reference_multiplier(1.0);
+        assert_eq!(lod.detail(), LodDetail::Highest);
+
+        viewer.set(LOD_DISTANCE.key, LOD_DISTANCE.parse("2").unwrap()).unwrap();
+        assert_eq!(lod.detail(), LodDetail::Scaled(2.0));
+        assert_eq!(lod.reference_multiplier, Some(1.0));
     }
 
     #[test]
@@ -254,15 +269,15 @@ mod tests {
             (0, 3.0, 30.0, 1.0),
             (caller, 3.0, 90.0, 3.0),
         ] {
-            reset_view(&mut mem, saved, next_caller, factor).unwrap();
+            reset_view(&mut mem, saved, next_caller, scaled(factor), None).unwrap();
             assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), pixels);
-            assert_eq!(cached.read(&mem), kept);
+            assert_eq!(cached.read(&mem), scaled(kept));
         }
         end_structure(&mut mem, saved).unwrap();
         assert_eq!(mem.u32(saved).unwrap(), 0);
         assert_eq!(
             cached.read(&mem),
-            3.0,
+            LodDetail::Scaled(3.0),
             "object records retain this view's factor"
         );
     }
@@ -274,26 +289,29 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_model_view_keeps_retail_detail_and_the_world_still_scales() {
+    fn a_menu_model_view_uses_the_requested_detail() {
         let mut mem = Guest::new();
         let saved = 0x1000;
         let cached = ViewLodScale::new(saved + 4);
-        let world = 0x0003_1ef5; // The caller the UI model view reaches.
+        let caller = 0x0003_1ef5;
         mem.map_zeroed(saved, 0x1000, Permissions::RW).unwrap();
-        mem.map_zeroed(points::PIXEL_SCALE & !0xfff, 0x1000, Permissions::RW)
-            .unwrap();
+        mem.map_zeroed(points::PIXEL_SCALE & !0xfff, 0x1000, Permissions::RW).unwrap();
         mem.set_f32(points::PIXEL_SCALE, 30.0).unwrap();
 
         set_model_view(&mut mem, saved, true).unwrap();
-        reset_view(&mut mem, saved, world, 4.0).unwrap();
-        assert_eq!(cached.read(&mem), 1.0);
+        reset_view(&mut mem, saved, caller, LodDetail::Highest, None).unwrap();
+        assert_eq!(cached.read(&mem), LodDetail::Highest);
+        assert_eq!(cached.display(&mem), LodDetail::Highest);
+
+        reset_view(&mut mem, saved, caller, LodDetail::Scaled(4.0), Some(2.5)).unwrap();
+        assert_eq!(cached.read(&mem), LodDetail::Retail);
+        assert_eq!(cached.display(&mem), LodDetail::Scaled(4.0));
         assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 30.0);
-        assert_eq!(mem.u32(saved).unwrap(), 0, "no projection saved to restore");
 
         set_model_view(&mut mem, saved, false).unwrap();
-        reset_view(&mut mem, saved, world, 4.0).unwrap();
-        assert_eq!(cached.read(&mem), 4.0);
-        assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 120.0);
+        reset_view(&mut mem, saved, caller, LodDetail::Highest, Some(2.5)).unwrap();
+        assert_eq!(cached.read(&mem), LodDetail::Scaled(2.5));
+        assert_eq!(cached.display(&mem), LodDetail::Highest);
         end_structure(&mut mem, saved).unwrap();
         assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 30.0);
     }
@@ -316,7 +334,8 @@ mod tests {
                 &mut mem,
                 saved,
                 0x0003_f3b9,
-                lod_pixel_multiplier(output_height, half_units),
+                scaled(lod_pixel_multiplier(output_height, half_units)),
+                None,
             )
             .unwrap();
             assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), want);

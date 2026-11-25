@@ -256,13 +256,17 @@ fn registry_with_film(
         replay: None,
     };
     let lockstep_on = lockstep.enabled();
+    #[cfg(feature = "gpu")]
+    let protected = crate::d3d_glue::protected_readbacks(live.is_some(), film.is_some(), lockstep_on);
     let mut late = register_late_for_profile(
         &mut features,
         LateInputs {
             #[cfg(feature = "gpu")]
             view: windowed.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
             #[cfg(feature = "gpu")]
-            fixed_lod: None,
+            reference_lod: protected.then_some(1.0),
+            #[cfg(feature = "gpu")]
+            viewer_lod: None,
             #[cfg(feature = "gpu")]
             world_line_present: None,
             rt: &rt,
@@ -994,22 +998,19 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
 
 #[test]
 fn viewer_skips_follow_the_light_profile_and_independent_switches() {
-    use engine::points::SOUND_SUBMIX_FX;
-    for (light, spec, expected) in [
+    use engine::points::PREDICT_RESOURCES;
+    for (light, spec, predicted) in [
         (false, "", false),
         (false, "impl.sim=on", false),
         (true, "", true),
-        (true, "-impl.sim.submix-fx", false),
+        (true, "-impl.sim.observer-resources", false),
+        (true, "impl.sim.native.seats", false),
         (true, "-impl.sim", false),
     ] {
         let mut registry = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
         super::register_viewer_skips(&mut registry, light).unwrap();
         let plan = registry.build(&hooks::Base).unwrap();
-        assert_eq!(
-            plan.chains.contains_key(&SOUND_SUBMIX_FX.base),
-            expected,
-            "{light} {spec}"
-        );
+        assert_eq!(plan.chains.contains_key(&PREDICT_RESOURCES.base), predicted, "{light} {spec}");
     }
 }
 

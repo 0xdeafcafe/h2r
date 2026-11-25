@@ -11,7 +11,10 @@ pub mod method {
     /// The graph walk's counters since start (no params → [`super::GraphWalk`]).
     pub const GRAPH_WALK: &str = "anim.graph_walk";
 
-    pub const ALL: &[&str] = &[GRAPH_WALK];
+    /// Manager and graph segment comparisons since start (no params → [`super::Manager`]).
+    pub const MANAGER: &str = "anim.manager";
+
+    pub const ALL: &[&str] = &[GRAPH_WALK, MANAGER];
 }
 
 /// `anim.graph_walk`: the animation graph's node walk `1dd1c0`.
@@ -62,4 +65,32 @@ pub struct Body {
     pub nodes: u64,
     /// Calls left to the guest, by reason as in [`Arm::declined`].
     pub declined: BTreeMap<String, u64>,
+}
+
+/// `anim.manager`: segment outcomes keyed by the function entry (8 hex digits).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Manager {
+    pub switch: String,
+    pub entries: BTreeMap<String, ManagerEntry>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ManagerEntry {
+    pub matched: u64,
+    pub differed: u64,
+    /// The Rust arm declined before the guest ran.
+    pub declined: u64,
+    /// The guest exited before reaching the predicted boundary.
+    pub interrupted: u64,
+    pub first: Option<SegmentMismatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SegmentMismatch {
+    /// The entry or return selector at which this segment started (8 hex digits).
+    pub pc: String,
+    /// The differing transfer, register or memory byte.
+    pub what: String,
+    pub plan: String,
+    pub guest: String,
 }

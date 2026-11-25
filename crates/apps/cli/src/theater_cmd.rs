@@ -423,7 +423,8 @@ fn child_with_start(
     #[cfg(feature = "desktop")]
     if let Some(capture) = capture {
         let observer = film.header.version >= 2 && local_gpu != Some(true);
-        return run(export::host(capture, camera, observer, host_bots)?, None);
+        let lod = settings.handle(boot::setting_defs::LOD_DISTANCE.key);
+        return run(export::host(capture, camera, observer, host_bots, lod)?, None);
     }
     if opts.every == 0 {
         let host = boot::Host { host_light: true, host_bots, ..Default::default() };
@@ -440,6 +441,7 @@ fn child_with_start(
                         backend: None,
                         native_target: std::sync::Arc::new(|| settings::NativeTarget::windowed(boot::setting_defs::GUEST_FRAME)),
                         viewer_output: Some(retail),
+                        viewer_lod: None,
                         display_size: std::sync::Arc::new(|size| size),
                     }),
                     ..host
@@ -549,6 +551,7 @@ fn child_with_start(
                         backend: Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
                         native_target: native,
                         viewer_output: Some(raster),
+                        viewer_lod: Some(settings.handle(boot::setting_defs::LOD_DISTANCE.key)),
                         display_size: std::sync::Arc::new(window.display_size()),
                     }),
                     None,

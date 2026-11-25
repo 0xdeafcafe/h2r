@@ -228,6 +228,7 @@ pub fn base_program(material: u16, lit: bool) -> Result<FogProgram, String> {
         look,
         state: state(),
         fog: FogWords::default(),
+        planar: None,
     };
     let extra = base_coordinates();
     FogProgram::compile_rigid_pass(

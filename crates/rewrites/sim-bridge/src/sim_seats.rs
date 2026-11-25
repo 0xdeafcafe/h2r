@@ -6,8 +6,10 @@
 //! return sites. At either, the body runs one segment; a decline (or a
 //! transfer anywhere else) falls back to the original at the entry, or
 //! its resume at a site, exactly as the per-function ports do. It retires
-//! `sim.native_observer_camera` and `sim.observer-resources`: the camera
-//! and the whole prediction walk are two of the entries.
+//! `sim.native_observer_camera`: the camera is one of the entries. The
+//! whole prediction walk is another, which takes over from
+//! `sim.observer-resources` (`crate::sim_observer`) while the seats are
+//! on; that trim stays the default until the seats are promoted.
 //!
 //! **Parity arm, then authority.** The seats install as the shadow's
 //! guest-authoritative arm (docs/engine/shadow-exec.md): while the agent
@@ -65,7 +67,7 @@ pub(crate) fn install(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     // The parity arm: with this seat's checks on, the
                     // original answers and the body runs on a copy.
-                    let checked = crate::shadow::SHADOW.guest_arm(
+                    let checked = crate::shadow::SHADOW.check_before_original(
                         name,
                         &*cpu,
                         &*mem,
@@ -91,7 +93,11 @@ pub(crate) fn install(b: &mut Builder) {
                 crate::sim_objects::original(cpu, ctx, pc, site)
             })
             .resumes(sites)
-            .context_only();
+            .context_only()
+            // The light-host trim hooks the prediction point too; it
+            // stands down while the seats are on, and this orders the two
+            // should a plan ever hold both.
+            .after_feature("sim-observer-resources");
     }
 }
 
@@ -160,9 +166,9 @@ mod tests {
     }
 
     #[test]
-    fn the_retired_observer_switches_are_gone() {
+    fn the_retired_observer_camera_switch_is_gone_and_the_trim_stays() {
         assert!(hooks::switches::table::get("impl.sim.native_observer_camera").is_none());
-        assert!(hooks::switches::table::get("impl.sim.observer-resources").is_none());
+        assert!(hooks::switches::table::get("impl.sim.observer-resources").is_some());
         assert!(hooks::switches::table::get("impl.sim.native.seats").is_some());
     }
 }

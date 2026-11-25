@@ -684,9 +684,9 @@ at its beginning, and two runs of one level drift apart over minutes
 (agent-api.md), so keep the window short and compare percentiles, not frames.
 
 Report both render resolution and LOD Distance with results above 480 lines.
-In offline runs at the default distance of 1x, higher resolutions also retain
-more detailed geometry. Film and input-tape runs use a fixed geometry
-multiplier. [Readback and LOD policy](../graphics/high-resolution.md#determinism).
+At 1x LOD Distance, higher resolutions also retain more detailed geometry
+in single-copy runs. Highest requests the finest model tier. Film and
+input-tape runs use a fixed geometry multiplier for the guest reference. [Readback and LOD policy](../graphics/high-resolution.md#determinism).
 For a comparison against timings taken with 480-line LOD choices, pass
 `--env H2_LOD_DISTANCE=retail` at each scale in an ordinary offline run.
 To measure the cost of retaining higher detail, keep the resolution fixed

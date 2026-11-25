@@ -1,6 +1,6 @@
 //! Display aspect on captured GPU constants and the retail callbacks
 //! that own on-screen UI packets. All guest coordinates remain 640 × 480.
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{PixelRect, UiFit};
@@ -21,6 +21,7 @@ type Position = Arc<dyn Fn() -> u32 + Send + Sync>;
 /// before its packet moves to the GPU thread or becomes a native UI pass.
 pub trait UiLayoutSink: Send + Sync {
     fn set_projection_factor(&self, factor: f32);
+    fn set_camera_projection_factor(&self, _: f32) { self.set_projection_factor(1.0); }
     fn set_fit(&self, guest: &mut runtime::Guest, fit: Option<UiFit>);
 }
 
@@ -29,6 +30,9 @@ impl<B: d3d::Backend + Send> UiLayoutSink for Mutex<d3d::Device<B>> {
         self.lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_projection_factor(factor);
+    }
+    fn set_camera_projection_factor(&self, factor: f32) {
+        self.lock().unwrap_or_else(|e| e.into_inner()).set_camera_projection_factor(factor);
     }
     fn set_fit(&self, guest: &mut runtime::Guest, fit: Option<UiFit>) {
         if let Err(err) = self
@@ -73,8 +77,7 @@ fn pixel_aspect((w, h): (u32, u32)) -> Option<f32> {
 
 // The width term selected by the retail projection at 0x2fc45..0x2fc90.
 // Reading it here allows machines already in dashboard widescreen mode to
-// use the display aspect exactly once. The FOV and all guest matrices stay
-// in the game's coordinate system for the visibility walk and the tick.
+// use the display aspect exactly once. The display lens changes only X.
 fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
     let Some(pixel) = pixel_aspect(output) else {
         return 1.0;
@@ -100,34 +103,37 @@ fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
     retail / pixel
 }
 
-// 0x441b0 copies the projection's tangent rectangle into the root polygon
-// and builds its bounds and planes from the same rectangle. Feed both uses
-// the local copy at +0xa0, the rectangle field of the output frustum. The
-// portal flood and its per-window sphere tests inherit these side planes.
-fn display_frustum_rect(
-    mem: &mut impl GuestMemory,
-    source: u32,
-    frustum: u32,
-    factor: f32,
-) -> Option<u32> {
+// 0x2fd90 reserves 0x74 stack bytes. After its call to 0x2fb70,
+// +0x54 holds the X/Y biases, X/Y scales and four tangent bounds.
+// All three consumers (matrix, CPU pixel scale and frustum) use these
+// terms. Keep the vertical lens and the centre of an off-axis window.
+fn fit_view_projection(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Option<()> {
     if factor == 1.0 || !factor.is_finite() || factor <= 0.0 {
         return None;
     }
-    let mut rect = [0; 16];
-    mem.read(source, &mut rect).ok()?;
-    let left = f32::from_le_bytes(rect[..4].try_into().ok()?);
-    let right = f32::from_le_bytes(rect[4..8].try_into().ok()?);
+    let caller = mem.u32(esp.checked_add(0x74)?).ok()?;
+    match caller {
+        // Active and saved camera of render_view_scene and render_alternate_view.
+        0x0002_badc | 0x0002_bb21 | 0x0002_c7cc | 0x0002_c7ff => {}
+        // Popping the last nested view rebuilds the displayed camera.
+        0x0001_3cc0 if mem.u32(0x0046_701c).ok() == Some(0) => {}
+        _ => return None,
+    }
+    let at = esp.checked_add(0x54)?;
+    let mut words = [0u8; 24];
+    mem.read(at, &mut words).ok()?;
+    let get = |i: usize| f32::from_le_bytes(words[i..i + 4].try_into().unwrap());
+    let (bias, scale, left, right) = (get(0), get(8), get(16), get(20));
     let centre = (left + right) * 0.5;
     let half = (right - left) * 0.5 / factor;
-    let (left, right) = (centre - half, centre + half);
-    if !left.is_finite() || !right.is_finite() || left >= right {
+    let terms = [bias * factor, scale * factor, centre - half, centre + half];
+    if !terms.iter().all(|v| v.is_finite()) || terms[1] <= 0.0 || terms[2] >= terms[3] {
         return None;
     }
-    rect[..4].copy_from_slice(&left.to_le_bytes());
-    rect[4..8].copy_from_slice(&right.to_le_bytes());
-    let local = frustum.checked_add(0xa0)?;
-    mem.write(local, &rect).ok()?;
-    Some(local)
+    for (i, value) in [0, 8, 16, 20].into_iter().zip(terms) {
+        words[i..i + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    mem.write(at, &words).ok()
 }
 
 fn viewport(mem: &impl GuestMemory, address: u32) -> Option<PixelRect> {
@@ -206,6 +212,7 @@ struct Canvas {
     hud: bool,
     pinned: bool,
     projection_factor: f32,
+    projected_points_fitted: bool,
 }
 
 impl Canvas {
@@ -253,7 +260,7 @@ impl Canvas {
             fit.transform[2] += edge_x * self.rect.width as f32 * (safe_x - fit.transform[0]);
             fit.transform[3] += edge_y * self.rect.height as f32 * (safe_y - fit.transform[1]);
         }
-        if anchor.is_some_and(|(id, _)| id >= 4) && self.hud {
+        if anchor.is_some_and(|(id, _)| id >= 4) && self.hud && !self.projected_points_fitted {
             // The guest's tracked point is in the retail lens. Move its
             // centre with the world, then fit the artwork about that point.
             fit.transform[2] += (pivot[0] - self.centre()[0]) * (self.projection_factor - 1.0);
@@ -493,11 +500,14 @@ impl Feature for RenderAspect {
     fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
         let view_lens = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let single_copy = self.single_copy;
+        let projected = Arc::new(AtomicBool::new(false));
         for point in [&points::RENDER_GAME_VIEW, &points::RENDER_ALTERNATE_VIEW] {
             let (size, sink, lens) = (self.size.clone(), self.sink.clone(), view_lens.clone());
+            let projected = projected.clone();
             b.raw()
                 .observe_before(point, "select the GPU projection", move |o| {
                     let factor = projection_factor(&*o.guest(), size());
+                    projected.store(false, Ordering::Relaxed);
                     lens.store(factor.to_bits(), Ordering::Relaxed);
                     sink.set_projection_factor(factor);
                     #[cfg(feature = "desktop-runtime")]
@@ -517,19 +527,18 @@ impl Feature for RenderAspect {
         }
 
         if single_copy {
+            let projected = projected.clone();
+            let sink = self.sink.clone();
             b.raw()
-                .before(&points::render_aspect::VIEW_FRUSTUM_RECT, "fit the main visibility frustum", move |c| {
-                    let mut mem = c.ctx.memory();
-                    let caller = c.cpu.esp.checked_add(8).and_then(|sp| GuestMemory::u32(&*mem, sp).ok());
-                    if caller == Some(points::render_aspect::VIEW_FRUSTUM_CALL_RETURN) {
-                        let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
-                        if let Some(rect) = display_frustum_rect(&mut *mem, c.cpu.ecx, c.cpu.esi, factor) {
-                            c.cpu.ecx = rect;
-                            #[cfg(feature = "desktop-runtime")]
-                            render_bridge::scene_step::set_visibility_lens(
-                                render_bridge::scene_step::VisibilityLens::Guest(factor),
-                            );
-                        }
+                .before(&points::render_aspect::VIEW_PROJECTION_TERMS, "fit the displayed camera projection", move |c| {
+                    let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
+                    if fit_view_projection(&mut *c.ctx.memory(), c.cpu.esp, factor).is_some() {
+                        projected.store(true, Ordering::Relaxed);
+                        sink.set_camera_projection_factor(factor);
+                        #[cfg(feature = "desktop-runtime")]
+                        render_bridge::scene_step::set_visibility_lens(
+                            render_bridge::scene_step::VisibilityLens::Guest(factor),
+                        );
                     }
                     Ok(Flow::Continue)
                 })
@@ -548,6 +557,7 @@ impl Feature for RenderAspect {
                 self.position.clone(),
                 self.sink.clone(),
             );
+            let projected = projected.clone();
             b.raw()
                 .before(point, "fit this view's UI", move |c| {
                     let output = size();
@@ -586,6 +596,7 @@ impl Feature for RenderAspect {
                         layout.active = Some(Canvas {
                             output,
                             projection_factor: projection_factor(&*mem, output),
+                            projected_points_fitted: projected.load(Ordering::Relaxed),
                             rect,
                             hud,
                             pinned: hud && position() == crate::setting_defs::HUD_PINNED,
@@ -630,12 +641,13 @@ impl Feature for RenderAspect {
             (&FLARE_COMPOSITE_LOOP, &FLARE_COMPOSITE_DONE, false),
         ] {
             let (layout, size, sink) = (layout.clone(), self.size.clone(), self.sink.clone());
+            let projected = projected.clone();
             b.raw()
                 .before(
                     begin,
                     "align the CPU-projected effect with the display lens",
                     move |c| {
-                        if !c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
+                        if projected.load(Ordering::Relaxed) || !c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
                             return Ok(Flow::Continue);
                         }
                         let mut l = layout.lock().unwrap_or_else(|e| e.into_inner());
@@ -826,6 +838,7 @@ mod tests {
             hud: true,
             pinned,
             projection_factor: 0.75,
+            projected_points_fitted: false,
         };
         // Pinned at 16:9: squeezed about the view's bottom-left corner.
         publish_hud_corner(Some(canvas(FULL, true)));
@@ -905,25 +918,35 @@ mod tests {
     }
 
     #[test]
-    fn main_gather_uses_the_display_edges_and_keeps_the_off_centre_lens() {
+    fn displayed_camera_maps_the_side_rays_to_the_full_viewport() {
         let mut mem = FakeGuest::new();
-        let src = 0x1000;
-        let frustum = 0x2000;
-        mem.map(frustum, 0x1bc);
-        for (i, bound) in [-0.75, 1.25, -0.6, 0.5].into_iter().enumerate() {
-            mem.put_f32(src + 4 * i as u32, bound);
+        let esp = 0x1000;
+        let at = esp + 0x54;
+        let terms = [0.25, -0.125, 1.0, 2.0, -1.25, 0.75, -0.5, 0.5];
+        for (i, value) in terms.into_iter().enumerate() {
+            mem.put_f32(at + i as u32 * 4, value);
         }
-        for output in [(1920, 1080), (3440, 1440), (900, 1200)] {
-            let factor = projection_factor(&mem, output);
-            let rect = display_frustum_rect(&mut mem, src, frustum, factor).unwrap();
-            for (offset, ndc) in [(0, -1.0), (4, 1.0)] {
-                close((mem.f32(rect + offset).unwrap() - 0.25) * factor, ndc);
+        mem.put_u32(0x0046_701c, 0);
+        for caller in [0x0002_badc, 0x0002_bb21, 0x0002_c7cc, 0x0002_c7ff, 0x0001_3cc0] {
+            let mut camera = mem.clone();
+            camera.put_u32(esp + 0x74, caller);
+            fit_view_projection(&mut camera, esp, 0.75).unwrap();
+            let bias = camera.f32(at).unwrap();
+            let scale = camera.f32(at + 8).unwrap();
+            for (offset, pixel) in [(16, 0.), (20, 5120.)] {
+                let ray = camera.f32(at + offset).unwrap();
+                close((ray * scale + bias + 1.) * 2560., pixel);
             }
-            assert_eq!(mem.f32(rect + 8), mem.f32(src + 8));
-            assert_eq!(mem.f32(rect + 12), mem.f32(src + 12));
+            for i in [1, 3, 6, 7] {
+                assert_eq!(camera.f32(at + 4 * i).unwrap(), terms[i as usize]);
+            }
         }
-        assert_eq!(mem.f32(src).unwrap(), -0.75);
-        assert_eq!(display_frustum_rect(&mut mem, src, frustum, 1.0), None);
+        mem.put_u32(0x0046_701c, 1);
+        for caller in [0x0003_f794, 0x0001_3cc0] {
+            mem.put_u32(esp + 0x74, caller);
+            assert_eq!(fit_view_projection(&mut mem, esp, 0.75), None);
+            assert_eq!(mem.f32(at + 8).unwrap(), terms[2]);
+        }
     }
 
     fn physical(fit: Option<UiFit>, output: (u32, u32), xy: [f32; 2]) -> [f32; 2] {
@@ -999,6 +1022,7 @@ mod tests {
                 hud: false,
                 pinned: true,
                 projection_factor: projection_factor(&FakeGuest::new(), output),
+                projected_points_fitted: false,
             }),
             ..Default::default()
         }
@@ -1178,6 +1202,7 @@ mod tests {
                 hud: true,
                 pinned: true,
                 projection_factor: projection_factor(&FakeGuest::new(), output),
+                projected_points_fitted: false,
             };
             for (id, point) in [
                 (0, [605., 20.]),
@@ -1248,6 +1273,7 @@ mod tests {
                 hud: true,
                 pinned: true,
                 projection_factor: projection_factor(&guest, output),
+                projected_points_fitted: false,
             };
             // An authored square is 12 × 16 guest pixels on this source.
             let p = [24., 18.];
@@ -1325,6 +1351,7 @@ mod tests {
         let canvas = Canvas {
             output: (1920, 1080),
             projection_factor: 0.75,
+            projected_points_fitted: false,
             rect,
             hud: true,
             pinned: false,
