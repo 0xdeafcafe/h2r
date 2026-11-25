@@ -108,7 +108,7 @@ image and starts the clang build in the background. The window banner
 or has failed. Restart to use the finished clang build.
 
 Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
-default), `--transfers N`, `--aspect 4:3|16:9|source` (default `source` for play), `--scaling
+default), `--transfers N`, `--aspect 4:3|16:9|source` (default play shape follows the drawable), `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,
 `--no-watermark`, `--no-mappack` (or `H2_MAPPACK=0`; a `mappack.iso` beside the
@@ -613,15 +613,16 @@ surface, clearing the rest to black.
 - **Ordering** comes from the single shared queue: the copy is submitted
   before the slot is published, and the window's read is submitted before
   the slot can return to the guest. No fences.
-- **Scaling** (`scale.rs`). Play uses square output pixels by default.
+- **Scaling** (`scale.rs`). Play renders for the drawable’s shape by default, including at fixed internal resolutions.
   Native uses physical viewport pixels. Fullscreen targets larger than 4K
   use a 3840 × 2160 pixel budget.
   `GuestHost::native_target` publishes the physical drawable, fitted viewport
   and fullscreen state together. `GuestHost::display_size` reports where a
   given raster is presented.
-  `--aspect 4:3` and `16:9` fit those shapes inside the window. `Fit`
-  adds bars as needed. In Native resolution with Source aspect, Fit uses
-  the drawable's aspect for the game frame. `Integer` takes the largest
+  With Fit scaling, `--aspect 4:3` and `16:9` fit those shapes inside
+  the window. `--aspect source` fits a fixed raster at its own aspect and
+  follows the drawable in Native resolution. The host loading picture
+  keeps its source shape by default. `Integer` takes the largest
   whole multiple of the frame height that fits, and `Stretch` fills the
   drawable.
 - **Resize** (`crates/apps/app/src/shell.rs`, `crates/apps/app/src/surface.rs`)

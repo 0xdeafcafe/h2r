@@ -331,7 +331,7 @@ fn a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame() {
         (p.width, p.height) = (640, 480);
     });
     set_states(&mut d, &mut m);
-    quad_vb(&mut m, 0.0, 0.0, 640.0, 480.0, 0xFFFF_FFFF);
+    quad_vb(&mut m, 112.0, 64.0, 208.0, 160.0, 0xFFFF_FFFF);
     bind_quad(&mut d, &mut m);
     let fit = d3d::backend::UiFit::about((2560, 1080), [320., 240.]);
     assert!(fit.is_some());
@@ -342,15 +342,73 @@ fn a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame() {
     let back = data_of(&m, f::BACK_BUFFER);
     frame_texture(&mut m, back, 0x12, 640, 480);
     d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    quad_vb(&mut m, 0.0, 0.0, 640.0, 480.0, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     let copy = (*d.backend.draws().last().unwrap()).clone();
     assert_eq!(copy.texture_info[0].map(|i| (i.width, i.height)), Some((640, 480)));
-    assert_eq!(copy.ui_fit, None);
+    assert_eq!(copy.ui_fit, None, "a frame copy covers the frame");
 
     // Unbound again: a widget keeps the fit.
     d.set_texture(&mut m, 0, 0).unwrap();
+    quad_vb(&mut m, 112.0, 64.0, 208.0, 160.0, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(d.backend.draws().last().unwrap().ui_fit, fit);
+}
+
+/// Full-screen fills, tints, fades and colour passes push a quad whose
+/// positions reach both edges of the frame along the axis the UI fit
+/// shrinks. At any display shape the fit places widgets, and such a quad
+/// spans the display — the screen effects' hand-pushed strips have no
+/// submission site `render_aspect` could read, so the device reads the
+/// draw's own vertices (docs/graphics/high-resolution.md).
+#[test]
+fn full_frame_quads_span_the_display_in_a_fitted_ui_scope() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    for output in [
+        (1920, 1080), // 16:9
+        (2560, 1080), // 64:27
+        (3440, 1440), // 21:9
+        (5120, 2880), // a 5K raster
+        (5120, 2648), // the same window's drawable
+        (1200, 1600), // taller than 4:3: the fit shrinks y
+    ] {
+        let fit = d3d::backend::UiFit::about(output, [320., 240.]);
+        assert!(fit.is_some(), "a fit at {output:?}");
+        d.set_ui_fit(&mut m, fit).unwrap();
+        let shrinks_x = fit.unwrap().transform[0] < 1.0;
+
+        // A widget inside the view keeps the fit.
+        quad_vb(&mut m, 112.0, 64.0, 208.0, 160.0, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(d.backend.draws().last().unwrap().ui_fit, fit, "a widget at {output:?}");
+
+        // A quad over the whole window is a full-frame pass.
+        quad_vb(&mut m, 0.0, 0.0, 640.0, 480.0, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(
+            d.backend.draws().last().unwrap().ui_fit,
+            None,
+            "the whole frame spans the display at {output:?}"
+        );
+
+        // A cutscene's letterbox band: full width, part height. It spans
+        // the display along the fitted axis only.
+        quad_vb(&mut m, 0.0, 60.0, 640.0, 420.0, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(
+            d.backend.draws().last().unwrap().ui_fit,
+            if shrinks_x { None } else { fit },
+            "the cinema window at {output:?}"
+        );
+    }
 }
 
 #[test]
