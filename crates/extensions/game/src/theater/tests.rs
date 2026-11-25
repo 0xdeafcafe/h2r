@@ -966,7 +966,13 @@ fn camera_motion_and_display_lod_leave_film_and_netgame_digests_unchanged() {
         const VIEW_LOD: u32 = 0x10000;
         let scale = ViewLodScale::new(VIEW_LOD + 4);
         let display = if highest { LodDetail::Highest } else { LodDetail::Retail };
+        // A protected session's recorded geometry, and the local single-copy
+        // case with no reference at all: both keep the guest word — the walk
+        // the digests hash — at retail whatever the display choice.
         crate::lod_distance::reset_view(guest, VIEW_LOD, 0x0003_1ef5, display, Some(1.0)).unwrap();
+        assert_eq!(scale.display(guest), display);
+        assert_eq!(scale.read(guest), LodDetail::Retail);
+        crate::lod_distance::reset_view(guest, VIEW_LOD, 0x0003_1ef5, display, None).unwrap();
         assert_eq!(scale.display(guest), display);
         assert_eq!(scale.read(guest), LodDetail::Retail);
     };

@@ -32,10 +32,10 @@ forces an anamorphic aspect with `--aspect`. See the
 
 - **Guest device coordinates.** The device (`d3d::Device`) keeps
   every size, viewport, scissor, header and return value in guest pixels.
-  Raster scaling lives below the `d3d::Backend` trait. In offline play
-  structure LOD uses projected pixels at the accepted render height, and
-  model LOD the camera distance divided by the same factor. Both copies
-  draw the same chosen geometry. See
+  Raster scaling lives below the `d3d::Backend` trait. In offline play the
+  guest walk always selects retail geometry whatever the LOD setting; the
+  display draws the chosen selection through the substituting render
+  paths. See
   [projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail).
 - **One draw per target in single-copy mode.** At increased resolution
   the display encoder owns the draw stream, including draws to guest-size intermediates. Guest reads sample the
@@ -167,10 +167,10 @@ The playerless Theater observer has the whole BSP and object array. It
 uses the same Hor+ lens for projection and its own frustum test on both.
 See [the host film view](../game/film-format.md#choosing-a-players-view).
 
-**Highest** requests the finest model tiers at any resolution. At **1x**,
-higher resolutions also increase projected sizes in the single-copy
-structure walks. To compare raster cost with retail geometry choices,
-select **Retail** at every resolution. Record both settings with the timings.
+**Highest** requests the finest model tiers at any resolution; the
+structure walks keep their retail projected sizes and pixel radii. To
+compare raster cost with retail geometry choices, record both settings
+with the timings.
 [Lab benchmarks](../runtime/lab.md#--serve-and-bench).
 
 ## Single-copy readbacks
@@ -740,12 +740,16 @@ independently of the recorded guest. The Video row itself writes its label
 into guest memory. Local films record each size the row or picker observes so
 replaying a trip through Settings shows the same choices on another monitor.
 See [film playback](../game/film-format.md#choosing-a-players-view).
-Protected sessions keep retail geometry selection on the guest and
-reference path. The native opaque object pass builds supported display
+Every session keeps retail geometry selection on the guest and reference
+path: the display choice changes only the drawn geometry, through the
+native display passes and, in single-copy rendering, the D3D fallback's
+draw-boundary swap (whose records and palettes are per-frame render
+scratch). The native opaque object pass builds supported display
 sections on a private overlay and submits them to the display attachments.
 The overlay keeps the guest object pose, lighting cache, palette and
 residency writes private. Marker lookup reads the live object's node
-matrices, and film and lockstep checkpoints hash the live arena. Older
+matrices, and film and lockstep checkpoints hash the live arena; both are
+retail whatever the setting. Older
 films with a scalar render scale and LOD selection reproduce that startup
 multiplier on the reference. In offline single-copy play, guest readbacks
 sample the display raster.

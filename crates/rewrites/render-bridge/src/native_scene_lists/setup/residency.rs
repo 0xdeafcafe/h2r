@@ -79,7 +79,7 @@ fn stamp(m: &mut Staged<'_>, index: u32) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn resource_cache_in_use(m: &dyn GuestMemory) -> Result<bool> {
+pub(in crate::native_scene_lists) fn resource_cache_in_use(m: &dyn GuestMemory) -> Result<bool> {
     Ok(m.u32(RESOURCE_BASE)? != 0)
 }
 

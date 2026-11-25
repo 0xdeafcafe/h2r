@@ -40,6 +40,19 @@ absent at the sides in protected sessions. When the unit pose tail
 object setup leaves palette construction to the guest. This also
 applies when both earlier actor pose overlays are idle.
 
+When the native pass leaves a run to the guest and the guest's D3D draws
+are the display — single-copy rendering, so no distinct reference copy
+takes the readbacks — the Highest choice swaps the record's section,
+palette block and part index range at the sorted geometry handler itself
+(`native_scene_lists/display_swap.rs`, after the native objects walk has
+taken its runs): the substituted section must classify and material
+identically, its geometry must be resident, and its remap rows must
+already be in the palette, or the retail draw stands. No pose step runs
+for the substituted tier; the walk and every resource request stay
+retail. In every other configuration the guest's D3D draws are the
+reference and keep the retail geometry
+([projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail)).
+
 The stack holds the remaining entry count at handler ESP + `0x28`, with
 the array immediately after it. The entry contains its item index, the
 selected implementation byte at `+4`, vertex classification at `+8` and

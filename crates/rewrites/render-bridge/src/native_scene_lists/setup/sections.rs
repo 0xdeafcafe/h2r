@@ -613,7 +613,12 @@ fn pick(
 
 /// Each section and its blend group share one model tier. Choose the
 /// finest authored tier that can draw every active region.
-fn finest_lod(m: &dyn GuestMemory, model: u32, body: u32, first_person: bool) -> Result<u8> {
+pub(in crate::native_scene_lists) fn finest_lod(
+    m: &dyn GuestMemory,
+    model: u32,
+    body: u32,
+    first_person: bool,
+) -> Result<u8> {
     let (regions, current) = permutations(m, model, body, first_person)?;
     let section_count = m.u32(at(model, 0x24)?)?;
     for lod in (0..=HIGHEST_LOD).rev() {
@@ -637,8 +642,11 @@ fn finest_lod(m: &dyn GuestMemory, model: u32, body: u32, first_person: bool) ->
     Err(Refusal::ObjectModel)
 }
 
-fn permutations(
-    m: &dyn GuestMemory, model: u32, body: u32, first_person: bool,
+pub(in crate::native_scene_lists) fn permutations(
+    m: &dyn GuestMemory,
+    model: u32,
+    body: u32,
+    first_person: bool,
 ) -> Result<(u32, Vec<u8>)> {
     let count = m.u32(at(model, 0x1c)?)? as usize;
     if count > REGION_LIMIT {
@@ -661,7 +669,12 @@ fn permutations(
     Ok((regions, current))
 }
 
-fn section_index(m: &dyn GuestMemory, region: u32, permutation: u8, lod: u8) -> Result<u8> {
+pub(in crate::native_scene_lists) fn section_index(
+    m: &dyn GuestMemory,
+    region: u32,
+    permutation: u8,
+    lod: u8,
+) -> Result<u8> {
     if permutation > i8::MAX as u8 || i32::from(permutation) >= m.i32(at(region, 8)?)? {
         return Err(Refusal::ObjectModel);
     }

@@ -2,6 +2,7 @@
 //! (`impl.render.native`, on by default). A builder reads under the
 //! guest-memory guard and proposes all its writes before any output
 //! becomes visible.
+mod display_swap;
 mod geometry;
 mod lights;
 mod objects;
@@ -120,9 +121,12 @@ impl ViewLodScale {
 
 impl NativeSceneLists {
     /// Install LOD adjustment at the guest functions invoked by the fallback
-    /// paths. These hooks also apply when native scene lists are disabled.
-    pub fn install_guest_lod(b: &mut Builder, scale: ViewLodScale) {
+    /// paths, and the D3D draw-boundary geometry swap when the guest's own
+    /// draws render the display (`d3d_display`: no distinct readback copy).
+    /// These hooks also apply when native scene lists are disabled.
+    pub fn install_guest_lod(b: &mut Builder, scale: ViewLodScale, d3d_display: bool) {
         object_lod::install(b, scale);
+        display_swap::install(b, scale, d3d_display);
     }
 
     /// Configure the replacement object setup and record writer for this view.

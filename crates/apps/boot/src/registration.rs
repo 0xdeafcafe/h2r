@@ -662,9 +662,14 @@ pub struct LateInputs<'a> {
     /// The effective resolution source of the backend drawing this run.
     #[cfg(feature = "gpu")]
     pub view: Option<&'a crate::d3d_glue::DrawingView>,
-    /// Retail guest geometry, or a legacy film's recorded geometry.
+    /// A legacy film's recorded geometry multiplier; the guest walk is
+    /// retail otherwise, whatever the local display choice.
     #[cfg(feature = "gpu")]
     pub reference_lod: Option<f32>,
+    /// Single-copy rendering: the guest's own D3D draws render the display,
+    /// so they take the draw-boundary geometry swap.
+    #[cfg(feature = "gpu")]
+    pub d3d_display: bool,
     #[cfg(feature = "gpu")]
     pub viewer_lod: Option<settings::Setting<u32>>,
     #[cfg(feature = "gpu")]
@@ -787,6 +792,7 @@ pub(crate) fn register_late_for_profile(
                 Some(factor) => lod.with_reference_multiplier(factor),
                 None => lod,
             };
+            let lod = lod.with_d3d_display(i.d3d_display);
             features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
             lod.view_scale()
         } else {
