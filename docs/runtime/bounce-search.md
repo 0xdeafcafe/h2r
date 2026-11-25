@@ -392,7 +392,7 @@ wrote and loads every section; its time is the open number.
 - [sim.md](sim.md): sim mode, and [Seam drops](sim.md#seam-drops), whose
   drop, targets and verdict the search uses.
 - [snapshots.md](snapshots.md): the sections and the quiescence rule.
-- [theater-design.md](../game/theater-design.md#the-session-ring): the
-  ring the fork's RAM goes through.
+- `crates/extensions/game/src/theater/ring.rs`: the page pool the
+  fork's RAM goes through.
 - [superbounce.md](../game/superbounce.md): the pair word, the touchdown
   tick and the verified file.
