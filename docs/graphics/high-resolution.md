@@ -140,7 +140,21 @@ a full-window quad covered only the centred 4:3 box at a wide display
 while the scene under it, drawn with the display lens, spanned the whole
 raster — hard vertical edges at the box. A quad that covers the cinema
 window (full width, letterboxed height) spans the display along the
-fitted axis and keeps the fit on the other. Corner HUD
+fitted axis and keeps the fit on the other.
+
+A projected-effect fit (the flare, light volume and billboard scopes in
+`crates/extensions/game/src/render_aspect.rs`) keeps frame copies and
+frame-edge strips, since a sprite can be bigger than the view. Inside
+such a scope one draw kind drops it: four vertices whose window bounds
+match the frame's edges to within a guest pixel on both axes, sampling
+an image the device rendered (a render target, the depth buffer or a
+frame snapshot). That is a screen pass, not a sprite: the title screen's
+depth of field, blur composite and frame-snapshot passes draw while a
+projected-effect fit is set and otherwise stay in the centred box
+(`lies_over_the_frame` in `crates/platform/d3d/src/device.rs`; test
+`a_screen_pass_in_a_projected_effect_scope_spans_the_display`). A depth
+billboard, whose fit also moves its screen-position input, keeps the
+fit. Corner HUD
 groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.

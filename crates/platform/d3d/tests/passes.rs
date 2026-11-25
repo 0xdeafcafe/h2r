@@ -458,6 +458,67 @@ fn full_frame_quads_span_the_display_in_a_fitted_ui_scope() {
     }
 }
 
+/// A projected-effect fit places flares, light volumes and CPU-projected
+/// sprites with the display lens, and keeps frame copies and frame-edge
+/// strips (a sprite can be bigger than the view). A quad laid exactly over
+/// the frame that samples an image the device rendered is a screen pass
+/// (the title screen's depth of field, blur and tint run inside such a
+/// scope) and spans the display. Sprites keep the fit, a depth billboard
+/// with its screen input included (docs/graphics/high-resolution.md).
+#[test]
+fn a_screen_pass_in_a_projected_effect_scope_spans_the_display() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    let back = data_of(&m, f::BACK_BUFFER);
+    frame_texture(&mut m, back, 0x12, 640, 480);
+    texture(&mut m, 0x80);
+    for output in [(1920, 1080), (2496, 1662)] {
+        let factor = (640.0 / 480.0) / (output.0 as f32 / output.1 as f32);
+        let sprite = d3d::backend::UiFit::projected_sprite(factor, 320.0 * (1.0 - factor));
+        let draw = |d: &mut Device<RecordingBackend>,
+                    m: &mut SparseMemory,
+                    fit: d3d::backend::UiFit,
+                    art: u32,
+                    [x0, y0, x1, y1]: [f32; 4]| {
+            d.set_ui_fit(m, Some(fit)).unwrap();
+            d.set_texture(m, 0, art).unwrap();
+            quad_vb(m, x0, y0, x1, y1, 0xFFFF_FFFF);
+            bind_quad(d, m);
+            d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+            d.backend.draws().last().unwrap().ui_fit
+        };
+        let frame = [0.0, 0.0, 640.0, 480.0];
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, FRAME_TEX, frame),
+            None,
+            "a screen pass over the frame at {output:?}"
+        );
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, FRAME_TEX, [400.0, 100.0, 500.0, 200.0]),
+            Some(sprite),
+            "a sprite sampling the frame at {output:?}"
+        );
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, FRAME_TEX, [-200.0, -100.0, 900.0, 600.0]),
+            Some(sprite),
+            "a sprite bigger than the view at {output:?}"
+        );
+        assert_eq!(
+            draw(&mut d, &mut m, sprite, TEX_HEADER, frame),
+            Some(sprite),
+            "a quad over the frame with uploaded art at {output:?}"
+        );
+        let billboard = sprite.with_screen_input(1);
+        assert_eq!(
+            draw(&mut d, &mut m, billboard, FRAME_TEX, frame),
+            Some(billboard),
+            "a depth billboard at {output:?}"
+        );
+    }
+}
+
 const SCREEN_VAF: u32 = MISC + 0x7800;
 const SCREEN_PROGRAM: u32 = MISC + 0x7A00;
 const SCREEN_CONSTANTS: u32 = MISC + 0x7C00;

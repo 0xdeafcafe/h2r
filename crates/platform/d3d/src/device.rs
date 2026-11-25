@@ -6305,19 +6305,39 @@ impl<B: Backend> Device<B> {
         // own quads choose this at their submission sites (`render_aspect`);
         // the strips a screen effect pushes by hand have no site, so the
         // device reads where the draw's vertices land.
+        let vertices = crate::screen_rect::DrawVertices {
+            shader: &shader,
+            layout: &parts.layout,
+            streams: streams.as_slice(),
+            vertex_count: parts.vertex_count,
+            indexed: parts.indices.is_some(),
+            tex_coord_index: std::array::from_fn(|s| state.stages[s].tex_coord_index),
+        };
+        let frame = (target.width, target.height);
         let spans_frame = match &self.ui_fit {
-            Some(fit) if !fit.applies_to_frame_sample() => spans_the_fitted_frame(
-                fit,
-                &crate::screen_rect::DrawVertices {
-                    shader: &shader,
-                    layout: &parts.layout,
-                    streams: streams.as_slice(),
-                    vertex_count: parts.vertex_count,
-                    indexed: parts.indices.is_some(),
-                    tex_coord_index: std::array::from_fn(|s| state.stages[s].tex_coord_index),
-                },
-                (target.width, target.height),
-            ),
+            Some(fit) if !fit.applies_to_frame_sample() => {
+                spans_the_fitted_frame(fit, &vertices, frame)
+            }
+            _ => false,
+        };
+        // A projected-effect fit (flares, light volumes, CPU-projected
+        // sprites) keeps frame copies and frame-edge strips: a sprite can
+        // be bigger than the view. A quad laid exactly over the whole
+        // frame that samples an image the device rendered (a render
+        // target, the depth buffer, a frame snapshot) is a screen pass
+        // instead: the depth of field, blur and tint passes over the
+        // title screen draw inside such a scope.
+        let screen_pass = match &self.ui_fit {
+            Some(fit) if fit.applies_to_frame_sample() && fit.screen_input.is_none() => {
+                (0..4).any(|stage| {
+                    sampled[stage]
+                        && (extras[stage].samples_frame
+                            || snapshots[stage].is_some()
+                            || frames[stage].is_some()
+                            || aliases[stage].is_some()
+                            || depth_levels[stage].is_some())
+                }) && lies_over_the_frame(&vertices, frame)
+            }
             _ => false,
         };
         let full_frame_pass = copies_a_frame || spans_frame;
@@ -6352,7 +6372,8 @@ impl<B: Backend> Device<B> {
             ui_fit: self
                 .ui_fit
                 .filter(|fit| (target.width, target.height) == (640, 480)
-                    && (!full_frame_pass || fit.applies_to_frame_sample())),
+                    && (!full_frame_pass || fit.applies_to_frame_sample())
+                    && !screen_pass),
             glyph_cache,
         };
         let (mut draw, snapshots) = if self
@@ -7430,6 +7451,22 @@ fn spans_the_fitted_frame(
     (0..2).any(|axis| {
         shrunk[axis] && lo[axis] <= 1.0 && hi[axis] >= frame[axis] - 1.0
     })
+}
+
+/// Whether a draw is one quad laid over the whole `frame`: four unindexed
+/// vertices whose window bounds match the frame's edges to within a guest
+/// pixel on both axes ([`crate::screen_rect`]). A projected sprite or flare
+/// fan lands where its world point projects and has no reason to match the
+/// frame's edges exactly; a screen pass is built from them.
+fn lies_over_the_frame(vertices: &crate::screen_rect::DrawVertices<'_>, frame: (u32, u32)) -> bool {
+    if vertices.vertex_count != 4 {
+        return false;
+    }
+    let Some([lo, hi]) = vertices.window_rect(4) else {
+        return false;
+    };
+    let frame = [frame.0 as f32, frame.1 as f32];
+    (0..2).all(|axis| lo[axis].abs() <= 1.0 && (hi[axis] - frame[axis]).abs() <= 1.0)
 }
 
 /// The attributes of an inline-array vertex and its size in bytes, from the
