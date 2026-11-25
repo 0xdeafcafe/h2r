@@ -692,12 +692,11 @@ mod retained_admission {
     #[test]
     fn every_inexact_admission_still_draws_the_packet_once_with_its_own_outcome() {
         type Case = fn(&mut RetainedAdmission<u32>, &mut ResolvedDraw, [u32; 3]);
-        let cases: [(&str, bool, Case); 7] = [
+        let cases: [(&str, bool, Case); 6] = [
             ("one-shot pass", false, |a, _, _| {
                 a.pass = Arc::new(Mutex::new(Box::new(Flare(false)) as Box<dyn ExternalPass>));
             }),
             ("packet differs from the submitted draw", false, |_, d, _| d.entry = "adapted"),
-            ("unretained stage: particles", false, |a, _, _| a.plan.stage = Stage::Particles),
             ("unretained stage: world", false, |a, _, _| a.plan.stage = Stage::World),
             ("sampled levels need their own replay samples", false, |a, _, s| a.surfaces.sampled.push(s[2])),
             ("admission bound other attachments", false, |a, _, s| a.surfaces.depth = s[2]),

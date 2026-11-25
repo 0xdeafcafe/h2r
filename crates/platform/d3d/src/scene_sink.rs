@@ -57,7 +57,7 @@ pub type SlotSource = fn() -> Option<SlotAt>;
 
 pub(crate) fn retains_draw_stage(stage: timeline::native::Stage) -> bool {
     use timeline::native::Stage;
-    matches!(stage, Stage::Flares | Stage::Sky | Stage::Transparents | Stage::Particles)
+    matches!(stage, Stage::Flares | Stage::Sky | Stage::Water | Stage::Transparents | Stage::Particles)
 }
 
 /// The scene's object shadow the guest is drawing, by index into the
