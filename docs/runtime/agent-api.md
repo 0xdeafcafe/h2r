@@ -32,6 +32,7 @@ connection to hold `session.claim`.
 | `host.pause`, `host.step` | act, without the controller check | [Window pause and frame step](#window-pause-and-frame-step) |
 | `host.screenshot` | act, without the controller check | [Window screenshots](#window-screenshots) |
 | `host.quit` | act, without the controller check | [Close the window](#close-the-window) |
+| `host.window.resize` | act, without the controller check | [Resize the window](#resize-the-window) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.object.animate` | act | [`world.object.animate`](#worldobjectanimate) |
@@ -530,6 +531,42 @@ paused game takes it too. A headless game has no window: `UNAVAILABLE`.
 
 ```sh
 h2 agent host.quit '{}'
+```
+
+### Resize the window
+
+`host.window.resize {width, height}` sets the game window's inner size,
+in physical pixels (the size the game renders at), and
+`host.window.resize {fullscreen}` takes the window in or out of
+borderless fullscreen on its display, as Cmd+F does. An aspect or
+field-of-view check drives a live window through the shapes it covers
+with it. A size leaves fullscreen first; `{width, height, fullscreen:
+false}` says the same thing, and a size with `fullscreen: true` is
+refused, since a fullscreen window takes its display's size.
+
+| Method | Params | Result |
+|---|---|---|
+| `host.window.resize` | `{width, height}` (each 64 to 16384), `{fullscreen: bool}`, or both with `fullscreen: false` | `{width, height, fullscreen, scale}` once the window has that shape |
+
+`scale` is physical pixels per point (2 on a Retina display). The call
+waits up to 5 s for the window to take the shape: a fullscreen change
+animates on macOS, and a size asked for while leaving fullscreen is asked
+again once the window is out. A shape the window does not take in time
+(larger than the display, or a fullscreen size other than the one asked)
+answers `TIMEOUT`, with the window's state as `data`.
+
+Like `host.pause` it is answered on the connection's own thread, through
+the window shell's hub (`crates/apps/app/src/shell.rs`, over
+`agent_proto::host_window`): the shell applies the request on its event
+loop and reports the window's shape after it and on every resize. A
+headless game has no window: `UNAVAILABLE` (its render size comes from
+its command line). Missing or partial params (a width with no height),
+a side out of range and unknown fields are `INVALID_PARAMS`.
+
+```sh
+h2 agent host.window.resize '{"width":2560,"height":1080}'
+h2 agent host.window.resize '{"fullscreen":true}'
+h2 agent host.window.resize '{"fullscreen":false}'
 ```
 
 ## `world`: what is in the level

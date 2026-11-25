@@ -428,6 +428,14 @@ sim benchmark, a profiled run) leaves out **Start alongside**: the dialog
 has the two rows **Not now** and **Close and start**, and the request
 carries `"alongside": false`.
 
+Every game drawn by its own D3D with XAPI pads, outside lockstep, the
+light host and the sim, plans the dialog's hooks, with a window or
+without one. Only a windowed game that is not a Theater replay takes a
+request; in the others the hooks stay idle. A film's replay therefore
+installs the hooks its recording did, and its hook digest matches
+(`registration::lab_takeover` in `crates/apps/boot/src/registration.rs`,
+[film-format.md](../game/film-format.md#determinism-and-verification)).
+
 **Start alongside** (the request's `alongside` answer) starts the job at
 once and leaves the player's game open. The lab doesn't call `host.quit`.
 The job's `player` field, run log and summary say
