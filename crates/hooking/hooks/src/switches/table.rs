@@ -92,11 +92,12 @@ pub const TABLE: &[Switch] = &[
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.seats", Off, "sim", "2026-11-25",
+        "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.page-census", On, "sim", "2026-11-22",
         "the guest page census in the report (docs/perf/sim-light.md, L1): a timing arm turns it off; deleted when the page figures are measured for good"),
-    sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.submix-fx", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.status-poll", On, "sim", "2026-11-22",
@@ -124,7 +125,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_unit_aim", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_pose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_filters", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_observer_camera", Off, "sim", "2026-11-20", SIM_PORT),
 ];
 
 /// The row named `name`.

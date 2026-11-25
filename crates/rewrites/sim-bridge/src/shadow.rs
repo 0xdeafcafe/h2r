@@ -57,7 +57,9 @@ mod tests {
 
     fn every_switch() -> impl Iterator<Item = &'static str> {
         let native = crate::sim_native::ENTRIES.iter().map(|&(_, name, _)| name);
-        native.chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+        native
+            .chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+            .chain(engine::sim_seats::SEATS.iter().map(|s| s.name))
     }
 
     #[test]

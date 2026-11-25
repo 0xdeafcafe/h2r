@@ -133,6 +133,9 @@ impl Feature for SimNative {
             if crate::sim_objects::owns(b.switches(), point.base) {
                 continue;
             }
+            if crate::sim_seats::owns(b.switches(), point.base) {
+                continue;
+            }
             let completes_query = query_on && point.base == points::COLLISION_BSP_SEGMENT.base;
             // Long programs yield at the float VM dispatch loop. Some
             // generated images omit loop selectors.
@@ -173,6 +176,11 @@ impl Feature for SimNative {
         }
         if crate::sim_objects::on(b.switches()) {
             crate::sim_objects::install(b);
+        }
+        // Phase 7: the seats, as the shadow's guest-authoritative arm
+        // first (crate::sim_seats).
+        if crate::sim_seats::on(b.switches()) {
+            crate::sim_seats::install(b);
         }
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to

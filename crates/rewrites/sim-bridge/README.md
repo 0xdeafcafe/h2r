@@ -9,11 +9,11 @@ The guest side of the native simulation: adapters from hook entries to the sim c
 ## Layout
 
 - `src/lib.rs`: the install entry point.
-- `src/sim_native.rs`, `src/sim_objects.rs`, `src/sim_physics.rs`: the installs per subsystem.
+- `src/sim_native.rs`, `src/sim_objects.rs`, `src/sim_seats.rs`, `src/sim_physics.rs`: the installs per subsystem. (The seats run as the shadow's guest-authoritative arm first, then answer themselves.)
 - `src/sim_frame.rs`: the tick driver.
 - `src/shadow.rs`: shadow checks against the guest.
 - `src/sim_ext.rs`: the `SimExt` records moved with checkpoint save, revert and full restore, and its snapshot section.
-- `src/sim_observer.rs`, `src/sim_static_light.rs`, `src/sim_submix.rs`: smaller ports.
+- `src/sim_submix.rs`, `src/sim_status_poll.rs`: smaller ports.
 
 ## Tests
 

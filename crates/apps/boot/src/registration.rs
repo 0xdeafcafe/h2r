@@ -60,9 +60,6 @@ pub(crate) fn register_viewer_skips(
 ) -> anyhow::Result<()> {
     if host_light {
         features
-            .add(&sim_bridge::sim_observer::ObserverResources)
-            .map_err(anyhow::Error::msg)?;
-        features
             .add(&sim_bridge::sim_submix::SimSubmix)
             .map_err(anyhow::Error::msg)?;
         // Off unless `impl.sim.status-poll` is set (docs/runtime/cache-slots.md).

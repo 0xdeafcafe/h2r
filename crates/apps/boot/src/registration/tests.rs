@@ -994,21 +994,19 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
 
 #[test]
 fn viewer_skips_follow_the_light_profile_and_independent_switches() {
-    use engine::points::{PREDICT_RESOURCES, SOUND_SUBMIX_FX};
-    let points = [&PREDICT_RESOURCES, &SOUND_SUBMIX_FX];
+    use engine::points::SOUND_SUBMIX_FX;
     for (light, spec, expected) in [
-        (false, "", [false; 2]),
-        (false, "impl.sim=on", [false; 2]),
-        (true, "", [true; 2]),
-        (true, "-impl.sim.observer-resources", [false, true]),
-        (true, "-impl.sim.submix-fx", [true, false]),
-        (true, "-impl.sim", [false; 2]),
+        (false, "", false),
+        (false, "impl.sim=on", false),
+        (true, "", true),
+        (true, "-impl.sim.submix-fx", false),
+        (true, "-impl.sim", false),
     ] {
         let mut registry = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
         super::register_viewer_skips(&mut registry, light).unwrap();
         let plan = registry.build(&hooks::Base).unwrap();
         assert_eq!(
-            points.map(|p| plan.chains.contains_key(&p.base)),
+            plan.chains.contains_key(&SOUND_SUBMIX_FX.base),
             expected,
             "{light} {spec}"
         );
