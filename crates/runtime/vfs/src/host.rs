@@ -263,6 +263,10 @@ pub struct HostBackend {
     /// (create, remove, format) drops them, and so do flush and cleanup.
     /// Shared with queued write-behind jobs, which close their last copy.
     handles: Vec<(PathBuf, Arc<File>)>,
+    /// While [`Backend::guard_writes`] holds, this backend is the private
+    /// copy and `guarded` keeps the real backend, untouched, and the
+    /// directory the copy lives in.
+    guarded: Option<Guarded>,
     /// Host data writes queued off the calling thread; `None` writes
     /// synchronously (`with_write_behind(false)`). docs/runtime/storage.md
     /// "Write-behind".
@@ -278,6 +282,29 @@ pub struct HostBackend {
     /// Fail the next format after this many root-swap renames.
     #[cfg(test)]
     format_error_after_renames: std::cell::Cell<Option<usize>>,
+}
+
+struct Guarded {
+    real: Box<HostBackend>,
+    scratch: PathBuf,
+}
+
+/// Clones the tree at `from` into the new directory `to`: files by
+/// [`crate::clone_or_copy`] (shared blocks on APFS), directories by
+/// recursion. Links are left out, as the volume never serves them.
+fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+    durable_create_dirs(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            clone_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            crate::clone_or_copy(&entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn host_litter(name: &str) -> bool {
@@ -389,6 +416,7 @@ impl HostBackend {
             serial: 1,
             cache: RefCell::new(Cache::default()),
             handles: Vec::new(),
+            guarded: None,
             write_behind: WriteBehind::spawn(),
             #[cfg(test)]
             next_create_sync_error: std::cell::Cell::new(None),
@@ -1168,6 +1196,56 @@ impl Backend for HostBackend {
         *self.cache.borrow_mut() = Cache::default();
         result.map(|()| placed)
     }
+    /// The volume's files and records are cloned under `scratch`
+    /// (`disk`, `metadata`), a second backend of the same volume is built
+    /// on the clones and takes this one's place, and this one is kept whole
+    /// in `guarded`. The real files are read once, by the clone, and never
+    /// written: the real backend does no I/O until [`end_guard`].
+    fn guard_writes(&mut self, scratch: &Path) -> Result<()> {
+        if self.guarded.is_some() {
+            return Err(Error::InvalidParameter);
+        }
+        // Queued data and pending write metadata land first, so the clone
+        // is the volume as it is now.
+        self.settle_all();
+        self.handles.clear();
+        self.written.flush(None)?;
+        let scratch = std::path::absolute(scratch)?;
+        let result = (|| -> Result<HostBackend> {
+            clone_tree(&self.root, &scratch.join("disk"))?;
+            clone_tree(&self.metadata_root, &scratch.join("metadata"))?;
+            let copy = HostBackend::new(scratch.join("disk"), scratch.join("metadata"))?
+                .with_volume(self.label.clone(), self.serial, self.capacity)
+                .with_write_behind(self.write_behind.is_some());
+            Ok(copy)
+        })();
+        let mut copy = match result {
+            Ok(copy) => copy,
+            Err(e) => {
+                let _ = fs::remove_dir_all(&scratch);
+                return Err(e);
+            }
+        };
+        std::mem::swap(self, &mut copy);
+        // `copy` is now the real backend.
+        self.guarded = Some(Guarded {
+            real: Box::new(copy),
+            scratch,
+        });
+        Ok(())
+    }
+    fn end_guard(&mut self) {
+        let Some(guarded) = self.guarded.take() else {
+            return;
+        };
+        let Guarded { real, scratch } = guarded;
+        // The copy's queued writes land before its directory goes.
+        self.settle_all();
+        self.handles.clear();
+        let copy = std::mem::replace(self, *real);
+        drop(copy);
+        let _ = fs::remove_dir_all(&scratch);
+    }
     fn remove(&mut self, path: &str) -> Result<()> {
         self.handles.clear();
         if path.is_empty() {
@@ -1334,6 +1412,10 @@ impl Drop for HostBackend {
         for path in paths {
             let _ = self.cleanup(&path, false);
         }
+        // A process that ends under the guard leaves no copy behind.
+        if let Some(guarded) = &self.guarded {
+            let _ = fs::remove_dir_all(&guarded.scratch);
+        }
     }
 }
 
@@ -1417,6 +1499,58 @@ mod tests {
             b"keep",
             "no link was followed"
         );
+    }
+
+    #[test]
+    fn writes_under_the_guard_never_reach_the_real_volume() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        let read = |b: &mut HostBackend, path: &str| {
+            let mut v = vec![0; 64];
+            let got = b.read_at(path, 0, &mut v).unwrap();
+            v.truncate(got);
+            v
+        };
+        backend.create("profile", false, 0).unwrap();
+        backend.write_at("profile", 0, b"player").unwrap();
+        backend.flush("profile").unwrap();
+        let real = temp.0.join("root").join("profile");
+        let bytes = fs::read(&real).unwrap();
+        let time = fs::metadata(&real).unwrap().modified().unwrap();
+        let before = backend.stat("profile").unwrap();
+        let scratch = temp.0.join("scratch");
+
+        backend.guard_writes(&scratch).unwrap();
+        assert_eq!(backend.guard_writes(&scratch), Err(Error::InvalidParameter));
+        // The copy answers as the volume did.
+        assert_eq!(read(&mut backend, "profile"), b"player");
+        backend.write_at("profile", 0, b"FILM!!").unwrap();
+        backend.create("checkpoint", false, 0).unwrap();
+        backend.write_at("checkpoint", 0, b"made in the film").unwrap();
+        backend.flush("profile").unwrap();
+        // Later reads see the writes; the real volume does not.
+        assert_eq!(read(&mut backend, "profile"), b"FILM!!");
+        assert_eq!(read(&mut backend, "checkpoint"), b"made in the film");
+        assert_eq!(fs::read(&real).unwrap(), bytes);
+        assert_eq!(fs::metadata(&real).unwrap().modified().unwrap(), time);
+        assert!(!temp.0.join("root").join("checkpoint").exists());
+        assert!(scratch.exists());
+
+        backend.end_guard();
+        assert_eq!(read(&mut backend, "profile"), b"player");
+        assert_eq!(backend.stat("checkpoint"), Err(Error::ObjectNameNotFound));
+        let after = backend.stat("profile").unwrap();
+        assert_eq!(after.basic.last_write_time, before.basic.last_write_time);
+        assert_eq!(after.end_of_file, before.end_of_file);
+        assert_eq!(fs::read(&real).unwrap(), bytes);
+        assert_eq!(fs::metadata(&real).unwrap().modified().unwrap(), time);
+        assert!(!scratch.exists());
+        // A guard can be taken again, and a drop under it leaves no copy.
+        backend.guard_writes(&scratch).unwrap();
+        assert!(scratch.exists());
+        drop(backend);
+        assert!(!scratch.exists());
+        assert_eq!(fs::read(&real).unwrap(), bytes);
     }
 
     #[test]

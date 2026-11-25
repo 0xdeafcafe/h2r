@@ -142,6 +142,20 @@ swap fails and clears caches and pending metadata after both swaps succeed.
 Cleanup of the old trees is best effort. A tree left aside stays outside
 the guest namespace for the next mount to sweep.
 
+`Vfs::guard_writes(scratch)` guards every mounted volume's writes while a
+film plays, and `Vfs::end_guard` ends it. `HostBackend::guard_writes` first
+lands queued writes and pending write metadata, clones the data and metadata
+roots under `scratch` (`clone_or_copy`: shared blocks on APFS, a copy
+elsewhere), builds a second backend of the same volume on the clones and
+takes its place; the real backend is kept whole and does no I/O until the
+guard ends. Reads after a write see it. `end_guard` drops the copy and its
+directory and puts the real backend back, so a file created under the guard
+does not exist after, and a dropped backend removes its copy. A backend with
+nothing writable (the disc layers) has nothing to guard; `PackageBackend` and
+`VariantFiles` forward the call and forget their open-file cache. Take the
+guard with no guest running. Theater's slice 4
+([theater-design.md](../game/theater-design.md#slices)) is its user.
+
 On Unix, the format code in `crates/runtime/vfs/src/host_format.rs` holds
 descriptors for each root and its parent from mount time. It identifies the
 mounted root by device and inode, finding it under its new name if it moves

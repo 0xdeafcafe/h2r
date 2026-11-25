@@ -133,6 +133,18 @@ pub trait Backend: Send {
     fn seed(&mut self, _seed: &std::path::Path) -> Result<usize> {
         Err(Error::NotSupported)
     }
+    /// Starts guarding the volume's writes: from now on this backend reads
+    /// and writes a private copy of its contents under `scratch`, and the
+    /// real contents are never written. A backend with no writable host
+    /// contents has nothing to guard (the default). Layers forward it and
+    /// forget what they cached of the contents. Fails when already guarded.
+    fn guard_writes(&mut self, _scratch: &std::path::Path) -> Result<()> {
+        Ok(())
+    }
+    /// Ends [`guard_writes`](Self::guard_writes): the private copy and
+    /// everything written to it is dropped and the real contents are served
+    /// again, exactly as they were.
+    fn end_guard(&mut self) {}
     /// Final file-object cleanup. Read-only opens need no data sync by default;
     /// backends with deferred timestamps or dirty data can override this hook.
     fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {
