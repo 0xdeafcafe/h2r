@@ -1757,6 +1757,28 @@ pub trait Backend: Send {
         self.draw_owned(color, depth, draw, textures)
     }
 
+    /// A native producer is about to commit `admission`'s pass with no guest
+    /// draw to carry it (the guest's call is skipped, [`Self::draw_admitted`]
+    /// is never reached). A backend that retains the frame answers whether it
+    /// will carry that commit and the packet the pass replaces, so the
+    /// retained frame holds the pass as it holds an admitted guest draw. On
+    /// true, [`Self::prepare_external`] and the commits that follow are not
+    /// refused as unretainable until [`Self::end_native_carry`]. Every
+    /// `begin_native_carry` is closed by one `end_native_carry`.
+    fn begin_native_carry(
+        &mut self, _color: Self::Surface, _depth: Option<Self::Surface>, _admission: &RetainedAdmission<Self::Surface>,
+    ) -> bool { false }
+
+    /// The pass prepared under a true [`Self::begin_native_carry`] is about to
+    /// commit: retain its packet, with the textures it was resolved against,
+    /// as an admitted draw.
+    fn record_native_carry(
+        &mut self, _color: Self::Surface, _depth: Option<Self::Surface>, _textures: [Option<&Self::Texture>; 4],
+    ) {}
+
+    /// Closes [`Self::begin_native_carry`], committed or not.
+    fn end_native_carry(&mut self) {}
+
     /// Try to enqueue an independently resolved draw with its exact fallback.
     /// True guarantees the same Drawn outcome and attachment writes for either route.
     fn queue_external_draw(

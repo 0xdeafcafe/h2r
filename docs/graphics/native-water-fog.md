@@ -220,6 +220,11 @@ the cached pipelines with their own uniforms and sampled textures.
   (`scene_extract::late::WATER_COMPOSITE_RETURN`, a call continuation).
   No resume point inside the helper is needed. Refusals take the original
   indexed call.
+  Under a retaining scene sink the committed composite is carried as the
+  replay's admitted draw (`Backend::begin_native_carry`; see
+  [framescene.md](framescene.md)); without that the sink refuses the
+  reservation ("the scene recorder cannot retain an unsealed
+  reservation") and the guest draws the water.
   Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses
   its own model rows at the rigid program's dynamic uniform offset.
   Each pass must compile the rigid classification and the part must supply

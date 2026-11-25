@@ -6586,6 +6586,10 @@ impl<B: Backend> Device<B> {
                     return Ok(());
                 }
             }
+            // A native producer has no guest draw to carry its pass into a
+            // retaining replay: the backend carries the packet instead.
+            let carried = native.is_some()
+                && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, depth, a));
             let commands = self.backend.prepare_external(
                 binding.surfaces.clone(),
                 binding.request,
@@ -6600,6 +6604,11 @@ impl<B: Backend> Device<B> {
                 // The original first draw is still intact. On a stale
                 // cursor or a stack fault, drop every unpublished copy.
                 if tail.is_none_or(|t| t.consume(mem, parts.indexed_esp)) {
+                    // Recorded before the display copies materialise: the
+                    // carried textures borrow the device's cache.
+                    if carried {
+                        self.backend.record_native_carry(color, depth, textures);
+                    }
                     for &(_, surface) in &binding.colors {
                         self.materialize_display_copy(surface)?;
                     }
@@ -6609,6 +6618,9 @@ impl<B: Backend> Device<B> {
                         recordings,
                     }
                     .commit();
+                    if carried {
+                        self.backend.end_native_carry();
+                    }
                     if let Some(p) = prepared {
                         timeline::native::world_packet(p.material, None);
                     }
@@ -6622,6 +6634,9 @@ impl<B: Backend> Device<B> {
                     *streams = draw.streams;
                     return Ok(());
                 }
+            }
+            if carried {
+                self.backend.end_native_carry();
             }
             fallback_reason = "backend recording";
             self.stats.external_passes_dropped += 1;
