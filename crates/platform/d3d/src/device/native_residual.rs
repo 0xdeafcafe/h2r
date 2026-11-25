@@ -104,7 +104,7 @@ impl<B: Backend> Device<B> {
             .clear(target, depth, clear)
             .map_err(D3dError::Backend)?;
         if clear.color.is_some() {
-            self.present_cameras.color_written(target);
+            self.color_surface_written(target);
         }
         self.mark_written(clear.depth.is_some() || clear.stencil.is_some());
         Ok(())

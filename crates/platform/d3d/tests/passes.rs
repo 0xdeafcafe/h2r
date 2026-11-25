@@ -16,7 +16,8 @@ use d3d::{
     Device, Event, GfxBackend, GuestLayout, GuestMemory, PixelRect, Recorded, RecordingBackend,
     SparseMemory, UploadPolicy,
 };
-use gfx::GfxContext;
+use d3d::resource::SurfaceHeader;
+use gfx::{D3DFormat, GfxContext};
 use gfx::surface::HostPixelOrder;
 use gfx::vertex::fvf;
 
@@ -456,6 +457,147 @@ fn copy_swap_device_keeps_its_back_buffer_and_shows_a_copy() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(snapshots(&d), [back, front]);
     assert!(d.take_events().is_empty());
+}
+
+/// A free-standing colour target the size of the frame: draws into it
+/// sample the back buffer without writing it.
+const OFFSCREEN: u32 = MISC + 0x7300;
+
+fn offscreen(m: &mut SparseMemory) {
+    SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, W, H, W * 4, 0x0040_0000)
+        .write(m, OFFSCREEN)
+        .unwrap();
+}
+
+/// The texture stage 0 of the last draw bound.
+fn last_stage0(d: &Device<RecordingBackend>) -> Option<u32> {
+    d.backend
+        .calls
+        .iter()
+        .rev()
+        .find_map(|c| match c {
+            Recorded::Draw { textures, .. } => Some(textures[0]),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// `n` draws with the bindings as they are: the distinct copies they bound
+/// at stage 0, in order.
+fn sampling_draws(d: &mut Device<RecordingBackend>, m: &mut SparseMemory, n: usize) -> Vec<u32> {
+    let mut seen = Vec::new();
+    for _ in 0..n {
+        d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+        let t = last_stage0(d).expect("the draw samples the copy");
+        if seen.last() != Some(&t) {
+            seen.push(t);
+        }
+    }
+    seen
+}
+
+#[test]
+fn frame_sampling_draws_with_no_write_between_share_one_copy() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    offscreen(&mut m);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x12, W, H);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    // Five draws read the back buffer and write only the other target.
+    let ids = sampling_draws(&mut d, &mut m, 5);
+    assert_eq!(snapshots(&d), [d.back_buffer().unwrap()]);
+    assert_eq!(ids.len(), 1, "every draw binds the one copy");
+    let snap = d.backend.calls.iter().find_map(|c| match c {
+        Recorded::Snapshot { id, .. } => Some(*id),
+        _ => None,
+    });
+    assert_eq!(ids.first().copied(), snap);
+    assert_eq!(d.stats().frame_snapshots, 1);
+    assert_eq!(d.stats().frame_snapshot_reuses, 4);
+    assert_eq!(d.frame_snapshots_held(), 1);
+    // An X8 view of the same buffer forces alpha: a copy of its own.
+    frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x1E, W, H);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.stats().frame_snapshots, 2);
+    assert!(d.take_events().is_empty());
+    // A present drops every copy.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(d.frame_snapshots_held(), 0);
+}
+
+#[test]
+fn a_write_between_frame_samples_makes_a_new_copy() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    offscreen(&mut m);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x12, W, H);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    let first = sampling_draws(&mut d, &mut m, 2);
+    assert_eq!(first.len(), 1);
+
+    // A clear of the back buffer: the next sample sees it.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+    let second = sampling_draws(&mut d, &mut m, 2);
+    assert_eq!(second.len(), 1);
+    assert_ne!(second, first);
+
+    // A draw into the back buffer that samples it reads the copy from
+    // before it, and its own write makes the next copy fresh: each of
+    // these draws reads what the one before drew.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let feedback = sampling_draws(&mut d, &mut m, 3);
+    assert_eq!(feedback.first(), second.first(), "nothing wrote it yet");
+    assert_eq!(feedback.len(), 3);
+    assert_eq!(d.stats().frame_snapshots, 4);
+    assert!(d.take_events().is_empty());
+    assert_eq!(
+        snapshots(&d),
+        [d.back_buffer().unwrap(); 4],
+        "every copy is of the back buffer"
+    );
+}
+
+#[test]
+fn a_long_session_of_frame_sampling_draws_holds_a_bounded_number_of_copies() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    offscreen(&mut m);
+    let back = m.read_u32(L.device + f::BACK_BUFFER).unwrap();
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    let mut held = 0;
+    for frame in 0..1000 {
+        // The back buffer's Data turns over at each flip.
+        frame_texture(&mut m, data_of(&m, f::BACK_BUFFER), 0x12, W, H);
+        // 25 draws that only read the frame (a distortion target), then
+        // 25 that read and write it (refraction drawn into the frame).
+        d.set_render_target(&mut m, OFFSCREEN, 0).unwrap();
+        for _ in 0..25 {
+            d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+            held = held.max(d.frame_snapshots_held());
+        }
+        d.set_render_target(&mut m, back, 0).unwrap();
+        for _ in 0..25 {
+            d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+            held = held.max(d.frame_snapshots_held());
+        }
+        d.swap(&mut m, 0).unwrap();
+        assert_eq!(d.frame_snapshots_held(), 0, "frame {frame}");
+        assert!(d.take_events().is_empty(), "frame {frame}");
+        d.backend.calls.clear();
+    }
+    assert_eq!(held, 1);
+    let s = d.stats();
+    // Per frame: one copy for the 25 reads, which the first write's read
+    // shares; each later write's read needs its own.
+    assert_eq!(s.frame_snapshots, 1000 * 25);
+    assert_eq!(s.frame_snapshot_reuses, 1000 * 25);
 }
 
 #[test]

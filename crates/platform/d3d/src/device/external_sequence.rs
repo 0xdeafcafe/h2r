@@ -276,7 +276,7 @@ impl<B: Backend> PreparedSequence<'_, B> {
         for step in self.steps {
             d.backend.commit_carried_stage(step.stage, step.copies);
             for (header, surface) in step.colors {
-                d.present_cameras.color_written(surface);
+                d.color_surface_written(surface);
                 d.mark_color_written(header);
             }
             if step.depth != 0 {
