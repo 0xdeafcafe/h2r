@@ -173,7 +173,7 @@ mod tests {
         for y in 0..8usize {
             for x in 0..8usize {
                 let d = ((x as f32 - 3.5).hypot(y as f32 - 3.5) - 2.5).abs();
-                alpha[y * 8 + x] = (3.0 - d).clamp(0.0, 1.0) * 255.0;
+                alpha[y * 8 + x] = ((3.0 - d).clamp(0.0, 1.0) * 255.0) as u8;
             }
         }
         let before: f64 = alpha.iter().map(|v| f64::from(*v)).sum();

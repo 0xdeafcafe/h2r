@@ -78,7 +78,7 @@ fn ui_stats() -> Option<agent_proto::UiStats> {
 
 /// The report's wire shape ([`agent_proto::UiStats`]).
 fn ui_stats_of(
-    ((w, h), (sx, sy, ox, oy), pinned): ((u32, u32), [f32; 4], bool),
+    ((w, h), [sx, sy, ox, oy], pinned): ((u32, u32), [f32; 4], bool),
     atlas_scale: u32,
     atlas_page: u32,
 ) -> agent_proto::UiStats {
