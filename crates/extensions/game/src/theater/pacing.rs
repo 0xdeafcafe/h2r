@@ -100,7 +100,7 @@ mod tests {
         let mut mem = FlatMemory::new(0x8000, 0x100);
         let before = mem.bytes.clone();
         let mut eax = 2;
-        answer(&mut mem, &mut eax, mem.base, 2, 30.0).unwrap();
+        { let base = mem.base; answer(&mut mem, &mut eax, base, 2, 30.0).unwrap(); }
         assert_eq!((eax, mem.bytes), (2, before));
     }
 }
