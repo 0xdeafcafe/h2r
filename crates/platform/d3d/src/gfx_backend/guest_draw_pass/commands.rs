@@ -80,23 +80,37 @@ impl<B: SceneDevice> Commands<B> {
         external: &crate::scene_sink::RetainedExternal,
         handles: &[Option<B::Texture>; 4],
     ) -> bool {
+        let stage = external.plan.stage;
+        let decline = |line: u32, why: &str| crate::backend::note_declined(stage, "replay", line, why);
         if !gpu.can_replay_admission(draw) {
+            decline(line!(), "the packet carries retail projection or UI placement a raw replay does not restore");
             return false;
         }
         let Some(surfaces) = external.resolve(draw, targets, bound, display, scale) else {
+            decline(line!(), &format!(
+                "the admission no longer describes the draw (display {display}: equal packet, target map or bound attachments differ)"));
             return false;
         };
-        let Ok(Some(recordings)) = gpu.prepare_external(
+        let recordings = match gpu.prepare_external(
             surfaces,
             external.request,
             handles.each_ref().map(Option::as_ref),
             &external.plan,
             crate::TargetCopy::Reference,
             Arc::clone(&external.pass),
-        ) else {
-            return false;
+        ) {
+            Ok(Some(recordings)) => recordings,
+            Ok(None) => {
+                decline(line!(), "the backend did not prepare the replay's copies");
+                return false;
+            }
+            Err(e) => {
+                decline(line!(), &format!("prepare failed: {e}"));
+                return false;
+            }
         };
         if !crate::device::complete_recordings(&external.plan, &recordings) {
+            decline(line!(), "the replay's recordings are incomplete");
             return false;
         }
         for recording in recordings {
