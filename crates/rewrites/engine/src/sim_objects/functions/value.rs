@@ -31,6 +31,7 @@ use crate::datum::layout;
 use crate::points;
 use crate::sim_objects::{Cx, Next, Result};
 use runtime::{CpuAbi, Guest};
+use ::sim_objects::functions::{ExportCursor, ExportStop};
 
 /// Scripted override lookup `(name, value, out) -> al`, object in `ebx`.
 const OVERRIDE: u32 = 0x0010_aac0;
@@ -56,8 +57,6 @@ const HASH_ADD: u32 = 0x000b_a9ee;
 const PHYSICS_FLAGS: u32 = 0xc0;
 /// Definition `+64` export count, `+68` exports, `20` bytes each.
 const EXPORT_COUNT: u32 = 0x64;
-const EXPORTS: u32 = 0x68;
-const EXPORT_BYTES: u32 = 0x20;
 
 pub(in crate::sim_objects) const VALUE_SITES: [u32; 4] = [0xbab93, 0xbabe2, 0xbac3c, 0xbac74];
 pub(in crate::sim_objects) const EVALUATE_SITES: [u32; 6] =
@@ -200,29 +199,44 @@ fn value_exports(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
     value_export(c, g)
 }
 
-/// `bac20`: one export record.
+/// `bac20`: scan consecutive export names up to the next evaluator call.
 fn value_export(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
-    c.ecx = g.u32(c.edi.wrapping_add(EXPORTS))?;
-    c.edx = g.u32(c.ecx.wrapping_add(c.ebx).wrapping_add(8))?;
-    c.ecx = c.ecx.wrapping_add(c.ebx);
-    if c.edx == slot(c, g, 0x1c)? {
-        c.eax = slot(c, g, 0x18)?;
-        push(c, g, c.ebp)?;
-        push(c, g, c.eax)?;
-        c.eax = c.ecx;
-        return call(c, EVALUATE, VALUE_SITES[2]);
+    let mut cursor = ExportCursor { index: c.esi, offset: c.ebx };
+    let stop = cursor.find(c.edi, c.esp.wrapping_add(0x1c), |addr| g.u32(addr))?;
+    c.esi = cursor.index;
+    c.ebx = cursor.offset;
+    match stop {
+        ExportStop::Evaluate { record, name } => {
+            c.ecx = record;
+            c.edx = name;
+            c.eax = slot(c, g, 0x18)?;
+            push(c, g, c.ebp)?;
+            push(c, g, c.eax)?;
+            c.eax = record;
+            call(c, EVALUATE, VALUE_SITES[2])
+        }
+        ExportStop::End { count, last_name } => {
+            c.ecx = count as u32;
+            c.edx = last_name;
+            value_exports_done(c, g)
+        }
     }
-    value_export_next(c, g)
 }
 
-/// `bac42`: the next export, or what follows the loop.
+/// `bac42`: re-read the count after a matching export has run.
 fn value_export_next(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
     c.ecx = g.u32(c.edi.wrapping_add(EXPORT_COUNT))?;
-    c.esi = c.esi.wrapping_add(1);
-    c.ebx = c.ebx.wrapping_add(EXPORT_BYTES);
+    let mut cursor = ExportCursor { index: c.esi, offset: c.ebx };
+    cursor.advance();
+    c.esi = cursor.index;
+    c.ebx = cursor.offset;
     if (c.esi as i32) < (c.ecx as i32) {
         return value_export(c, g);
     }
+    value_exports_done(c, g)
+}
+
+fn value_exports_done(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
     if c.eax as u8 != 0 {
         return value_frame_ret(c, g);
     }

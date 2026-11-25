@@ -948,7 +948,7 @@ fn camera_rig_survives_the_seek_presentation_round_trip() {
 }
 
 #[test]
-fn camera_motion_and_private_render_rng_leave_synthetic_replay_digests_unchanged() {
+fn camera_motion_and_display_lod_leave_film_and_netgame_digests_unchanged() {
     let dir = std::env::temp_dir().join(format!("film-camera-{}", live_proto::sign::random_id()));
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("synthetic.h2film");
@@ -960,8 +960,22 @@ fn camera_motion_and_private_render_rng_leave_synthetic_replay_digests_unchanged
     let pointer = crate::sim_glue::RANDOM_SEED_PTR;
     guest.map_zeroed(pointer & !4095, 4096, Permissions::RW).unwrap();
     guest.set_u32(pointer, SEED).unwrap();
+    #[cfg(feature = "gpu")]
+    let change_lod = |guest: &mut runtime::Guest, highest| {
+        use render_bridge::native_scene_lists::{LodDetail, ViewLodScale};
+        const VIEW_LOD: u32 = 0x10000;
+        let scale = ViewLodScale::new(VIEW_LOD + 4);
+        let display = if highest { LodDetail::Highest } else { LodDetail::Retail };
+        crate::lod_distance::reset_view(guest, VIEW_LOD, 0x0003_1ef5, display, Some(1.0)).unwrap();
+        assert_eq!(scale.display(guest), display);
+        assert_eq!(scale.read(guest), LodDetail::Retail);
+    };
+    #[cfg(feature = "gpu")]
+    guest.map_zeroed(0x10000, 4096, Permissions::RW).unwrap();
     for tick in 1..=60 {
         guest.set_u32(SEED, tick).unwrap();
+        #[cfg(feature = "gpu")]
+        change_lod(&mut guest, false);
         rec.checkpoint(&guest);
     }
     rec.finish(90, true).unwrap();
@@ -1004,6 +1018,12 @@ fn camera_motion_and_private_render_rng_leave_synthetic_replay_digests_unchanged
                     draw.set_u32(SEED, 0xfeed).unwrap();
                     draw.set_u32(SEED + 4, 0xbeef).unwrap();
                 });
+            }
+            #[cfg(feature = "gpu")]
+            {
+                let before = lockstep::hash_sim(&guest, lockstep::SimRegion::HALO2).unwrap();
+                change_lod(&mut guest, moving_camera);
+                assert_eq!(lockstep::hash_sim(&guest, lockstep::SimRegion::HALO2), Some(before));
             }
             player.checkpoint(&guest);
         }

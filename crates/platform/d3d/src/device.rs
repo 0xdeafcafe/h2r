@@ -1073,7 +1073,7 @@ pub struct Device<B: Backend> {
     cache: HashMap<TextureKey, CachedTexture<B::Texture>>,
     /// Guest-write tracking (see [`crate::dirty`]).
     pub tracker: WriteTracker,
-    events: Vec<Event>,
+    events: crate::events::EventLog,
     last_stop: Option<HleStop>,
     stats: Stats,
     queued_external_stats: Arc<QueuedExternalStats>,
@@ -1429,7 +1429,7 @@ impl<B: Backend> Device<B> {
             regs: None,
             cache: HashMap::default(),
             tracker: WriteTracker::new(),
-            events: Vec::new(),
+            events: Default::default(),
             last_stop: None,
             stats: Stats::default(),
             queued_external_stats: Default::default(),
@@ -1518,9 +1518,15 @@ impl<B: Backend> Device<B> {
         stats
     }
 
-    /// Drains recorded events.
+    /// Drains recorded events: the first `EventLog::LIMIT` since the last
+    /// drain (crates/platform/d3d/src/events.rs).
     pub fn take_events(&mut self) -> Vec<Event> {
-        std::mem::take(&mut self.events)
+        self.events.take().0
+    }
+
+    /// Drains recorded events with the count of those past the kept limit.
+    pub fn take_events_counted(&mut self) -> (Vec<Event>, u64) {
+        self.events.take()
     }
 
     /// Records the call that stopped the guest (the runtime glue does this).
@@ -6158,13 +6164,40 @@ impl<B: Backend> Device<B> {
         #[cfg(not(feature = "gpu"))]
         let retail_constants = None;
 
+        let frame_size = self.swap.as_ref().map(|swap| swap.size);
+        for stage in 0..4 {
+            let Some(info) = texture_info[stage] else { continue };
+            let size = (info.width, info.height);
+            if !sampled[stage] || extras[stage].samples_frame || Some(size) != frame_size
+                || info.kind != gfx::texture::TextureKind::D2 || info.levels != 1
+            {
+                continue;
+            }
+            // Texaccum can be bound directly, through a feedback snapshot, or
+            // after writeback through the ordinary texture cache. In each case
+            // the sampler addresses the same screen image in guest coordinates.
+            let pixels = crate::resource::PixelContainer::read(mem, info.header)?;
+            let data = self.cfg.address_map.to_virtual(pixels.resource.data);
+            extras[stage].samples_frame = self.rtt.values().any(|level| {
+                level.data == data
+                    && (level.width, level.height) == size
+                    && level.identity[1] == pixels.format
+                    && level.identity[2] == pixels.size
+            });
+        }
+        #[cfg(feature = "gpu")]
+        self.projection.fit_camera_bumps(
+            &shader,
+            self.ui_fit.is_none() && (target.width, target.height) == (640, 480),
+            &mut extras,
+        );
         // A draw that samples a frame-sized render target into a frame-sized
         // target copies the frame (the blur under a menu dialog ping-pongs
         // two of them). The UI fit places widgets; it must not shrink a
         // copy into the safe area (docs/graphics/high-resolution.md).
         let copies_a_frame = (0..4).any(|stage| {
             sampled[stage]
-                && (snapshots[stage].is_some() || aliases[stage].is_some())
+                && (extras[stage].samples_frame || snapshots[stage].is_some() || aliases[stage].is_some())
                 && texture_info[stage]
                     .is_some_and(|i| (i.width, i.height) == (target.width, target.height))
         });
@@ -6341,7 +6374,7 @@ impl<B: Backend> Device<B> {
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
             // These passes can record again on replay's attachments.
-            if matches!(plan.stage, timeline::native::Stage::Flares | timeline::native::Stage::Sky)
+            if matches!(plan.stage, timeline::native::Stage::Flares | timeline::native::Stage::Sky | timeline::native::Stage::Water)
                 && let Some(packet) = &fallback
             {
                 retained = Some(crate::backend::RetainedAdmission {

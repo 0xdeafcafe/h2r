@@ -65,9 +65,11 @@ pub fn compare_only(
 mod tests {
     use super::*;
 
-    fn every_switch() -> impl Iterator<Item = &'static str> {
+    fn every_port() -> impl Iterator<Item = &'static str> {
         let native = crate::sim_native::ENTRIES.iter().map(|&(_, name, _)| name);
-        native.chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+        native
+            .chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+            .chain(crate::sim_objects::SHADOW_POINTS.iter().map(|p| p.name))
     }
 
     #[test]
@@ -80,7 +82,7 @@ mod tests {
         registry.add(&crate::sim_physics::NativePhysics).unwrap();
         registry.build(&hooks::Base).unwrap();
         let status = SHADOW.status();
-        for name in every_switch() {
+        for name in every_port() {
             let port = status.ports.iter().find(|p| p.name == name);
             assert!(port.is_some(), "{name} is not registered");
         }
@@ -92,11 +94,11 @@ mod tests {
         assert_eq!(pose.group, SIM_NATIVE);
     }
 
-    /// `scripts/shadow-gate.sh` turns every port on by its switch.
+    /// The disc gate accepts each port by its registered name.
     #[test]
     fn the_disc_gate_names_every_port() {
         let script = include_str!("../../../../scripts/shadow-gate.sh");
-        for name in every_switch() {
+        for name in every_port() {
             assert!(
                 script.contains(&format!(" {name} ")) || script.contains(&format!(" {name}\n")),
                 "scripts/shadow-gate.sh does not list {name}"

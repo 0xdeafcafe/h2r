@@ -79,6 +79,7 @@ fn vertex_position(draw: &ResolvedDraw) -> String {
         use d3d::clip_space::epilogue::{Position, position};
         return match position(microcode) {
             Position::Rows(first) => format!("rows c[{}..={}]", first, first + 3),
+            Position::FarPlaneRows(first) => format!("far plane rows c[{}..={}]", first, first + 3),
             Position::Fixed => "no constant rows".into(),
             Position::Unknown => "unrecognised".into(),
         };

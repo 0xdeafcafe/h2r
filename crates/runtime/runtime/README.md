@@ -32,6 +32,17 @@ code must spill the current EIP before an observable operation; otherwise a
 handler's diagnostic PC is its entry PC. Native handlers must not retain CPU
 or context pointers or unwind through a C frame.
 
+A diagnostic entry hook can register
+`ctx.observe_guest_return(cpu, pop, |cpu, ctx| { ... })` before invoking
+the guest body. Release any memory guard first. The observer reads the
+real return word at ESP and matches a Return to that address with ESP
+advanced by four bytes plus the callee's argument cleanup. Read-only and
+aliased stack mappings work. While an observation is open, this context
+routes new generated calls through the runner. It also checks a return
+through a host-call thunk before its generated caller resumes inline.
+Preemption preserves the observation. Unwinds, faults, stack replacement
+and snapshot restore discard it. See `src/return_observers.rs`.
+
 Rust overrides save callback state in an owned continuation closure. With a
 memory guard already held, `ctx.call_guest(cpu, &mut memory, target, closure)`
 pushes a distinct guest return token and yields an ordinary Call. On Return to

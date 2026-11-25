@@ -9,10 +9,8 @@
 //! and `layer`):
 //!
 //! - `render_scene_passes` calls `0x0002_5d50` between its state call and
-//!   the layer-16 begin (`0x0002c0d6`), then the layer draw (returns
-//!   `0x0002c0e9`); the call's own content is not read, but whatever it
-//!   pushes is in the device's state before the layer begins, so a pass
-//!   asked at the layer draw reads it after the drain.
+//!   the layer-16 begin (call at `0x0002c0db`), then the layer draw
+//!   (returns `0x0002c0e9`). The host reads the device after the drain.
 //! - The layer draw draws layer 16 only when `[FOG_MODE] == 3` or either
 //!   fog byte (`0x00485a75`, `0x00485a76`) is set (`0x00044582`); a
 //!   native pass applies the same gate ([`layer_draws`]).

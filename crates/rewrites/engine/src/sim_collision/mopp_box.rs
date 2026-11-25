@@ -16,7 +16,6 @@ use super::preflight::{CollisionMemory, Outputs};
 use super::{Read, finish};
 use crate::sim_native::{Memory, add_flags};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
-use sim_collision::mem::overlaps;
 use sim_collision::mopp::{Corners, Found};
 use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};
 use sim_core::det;
@@ -39,16 +38,6 @@ struct Plan {
 fn dead_depth(sp: u32, frames: u32) -> u32 {
     let aligned = sp.wrapping_sub(4) & !15;
     sp.wrapping_sub(aligned.wrapping_sub(l::ROOT_FRAME + frames * l::NESTED_FRAME))
-}
-
-/// Two guest ranges share no physical byte.
-fn apart(g: &impl CollisionMemory, a: (u32, u32), b: (u32, u32)) -> Result<(), Bail> {
-    let pa = g.physical_range(a.0, a.1).ok_or(Bail::Alias)?;
-    let pb = g.physical_range(b.0, b.1).ok_or(Bail::Alias)?;
-    if overlaps(pa, a.1, pb, b.1) {
-        return Err(Bail::Alias);
-    }
-    Ok(())
 }
 
 fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Result<Plan, Bail> {
@@ -76,11 +65,14 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
     let capacity = m.u32(array.wrapping_add(l::CAPACITY))? & l::CAPACITY_MASK;
     let room = capacity.checked_sub(size).ok_or(Bail::Grow)?;
     let Found { keys, frames } = tree.query_box(&corners, room as usize)?;
+    let keys_at = data.wrapping_add(size.wrapping_mul(4));
+    let bytes = keys.len() as u32 * 4;
+    let key_range = if bytes == 0 { (sp, 0) } else { (keys_at, bytes) };
     let outputs = Outputs::new(
         g,
         sp,
         dead_depth(sp, frames),
-        [(vm, l::VM_SIZE), (array, l::ARRAY_SIZE)],
+        [(vm, l::VM_SIZE), (array, l::ARRAY_SIZE), key_range],
     )?;
     // The original reads its arguments after the first VM write, and the
     // AABB and the code between the corner writes.
@@ -88,17 +80,6 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
     outputs.separate(g, sp.wrapping_add(4), l::ARGS)?;
     outputs.separate(g, aabb, l::AABB_SIZE)?;
     outputs.separate(g, code_span.0, code_span.1)?;
-    let keys_at = data.wrapping_add(size.wrapping_mul(4));
-    let bytes = keys.len() as u32 * 4;
-    if bytes != 0 {
-        if !g.writable(keys_at, bytes) {
-            return Err(Bail::Fault);
-        }
-        outputs.separate(g, keys_at, bytes)?;
-        apart(g, (keys_at, bytes), (aabb, l::AABB_SIZE))?;
-        apart(g, (keys_at, bytes), code_span)?;
-        apart(g, (keys_at, bytes), (sp.wrapping_add(4), l::ARGS))?;
-    }
     Ok(Plan {
         target: outputs.target,
         sp,
@@ -324,5 +305,40 @@ mod tests {
         assert_eq!(dead_depth(0x1003, 0), 0x1003 - (0xff0 - 0xa4));
         assert!(dead_depth(0x1003, sim_collision::mopp::MAX_FRAMES) <= l::DEAD_BELOW);
         assert!(dead_depth(0x1000, sim_collision::mopp::MAX_FRAMES) <= l::DEAD_BELOW);
+    }
+
+    #[test]
+    fn keys_cannot_overwrite_the_callers_return_address_through_an_alias() {
+        use runtime::{Guest, guest::Permissions};
+        use sim_collision::mopp::{HEADER_BYTES, SIZE};
+        use sim_core::Epoch;
+
+        const MEM: u32 = 0x10000;
+        const ALIAS: u32 = 0x20000;
+        let (code, vm, aabb, array, stack) =
+            (MEM, MEM + 0x100, MEM + 0x200, MEM + 0x300, MEM + 0xf00);
+        let mut g = Guest::new();
+        g.map(MEM, 0x1000, 0, Permissions::RW).unwrap();
+        g.map(ALIAS, 0x1000, 0, Permissions::RW).unwrap();
+        g.set_u32(code + 12, 1.0f32.to_bits()).unwrap();
+        g.set_u32(code + SIZE, HEADER_BYTES + 1).unwrap();
+        g.set_u8(code + HEADER_BYTES, 0x31).unwrap(); // a single key
+        g.set_u32(array + l::CAPACITY, 1).unwrap();
+        g.set_u32(array + l::DATA, ALIAS + stack - MEM).unwrap();
+        for (i, value) in [0x12345678, code, aabb, array].into_iter().enumerate() {
+            g.set_u32(stack + 4 * i as u32, value).unwrap();
+        }
+        let mut c = CpuAbi { ecx: vm, esp: stack, ..Default::default() };
+        c.x87.control = 0x027f;
+        c.x87.status = l::X87_PE;
+        c.x87.tag = 0xffff;
+        static EPOCH: Epoch = Epoch::new();
+        let world = CollisionWorld::new(&EPOCH);
+        let before = c;
+        let memory = g.physical_ram()[..0x1000].to_vec();
+        assert!(mopp_box(&mut c, &mut g, &world).unwrap().is_none());
+        assert_eq!(c, before);
+        assert_eq!(&g.physical_ram()[..0x1000], &memory[..]);
+        assert_eq!(world.stats().entries[Entry::MoppBox as usize].bails[Bail::Alias as usize], 1);
     }
 }

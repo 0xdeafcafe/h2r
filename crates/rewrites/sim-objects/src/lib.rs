@@ -14,8 +14,12 @@
 pub mod damage;
 pub mod defs;
 pub mod events;
+pub mod functions;
+pub mod light;
+pub mod unit;
 pub mod view;
 pub mod wake;
+pub mod walk;
 // Slice 4: the bounds arithmetic.
 pub mod bounds;
 

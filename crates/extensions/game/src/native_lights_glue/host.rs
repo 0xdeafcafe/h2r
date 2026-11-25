@@ -219,7 +219,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     for next in done {
                         match planned.last_mut() {
                             Some(last)
-                                if last.material == next.material
+                                if last.placement.is_none() && next.placement.is_none()
+                                    && last.material == next.material
                                     && last.layer == next.layer
                                     && Arc::ptr_eq(&last.compiled, &next.compiled) =>
                             {

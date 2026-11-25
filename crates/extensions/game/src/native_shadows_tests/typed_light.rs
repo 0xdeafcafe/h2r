@@ -129,6 +129,7 @@ impl d3d::ExternalPass for PacketRun {
                 gel_scale: None,
                 shadow_map: None,
                 ranges: std::slice::from_ref(&group.range),
+                placement: None,
                 model: None,
             })
             .collect();

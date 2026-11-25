@@ -33,6 +33,8 @@ use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, Sta
 /// The water of one loaded world: what compiled, the parts the native
 /// pass draws, and the engine-texture supplies it needs per view.
 pub struct WaterData {
+    /// Shader datums whose pool surface draws from the sorted layer-15 list.
+    pub pools: Arc<BTreeSet<u32>>,
     /// Each material's resolved layer-6 passes (with the engine stages
     /// kept) and their compiled programs, in draw order.
     pub passes: HashMap<u16, Vec<native_render::fog_gpu::FogPass>>,
@@ -81,6 +83,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let mut words: HashMap<u16, FogWords> = HashMap::new();
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
     let materials: Vec<u16> = world.transparents.iter().map(|t| t.material).collect::<BTreeSet<_>>().into_iter().collect();
+    let mut pools = BTreeSet::new();
     if !materials.is_empty() {
         if let Ok(mut lib) = tags::material::ShaderLibrary::read(map) {
             let rasterizer = map.tags().iter().find(|tag| tag.group.0 == *b"matg")
@@ -89,11 +92,34 @@ pub fn load<R: std::io::Read + std::io::Seek>(
                     lib.metadata(), loc.address, crate::native_lights_glue::RASTERIZER_DATUM_14,
                 ));
             let mut refused: HashMap<String, usize> = HashMap::new();
+            let mut edge_materials = 0;
             for &m in &materials {
-                let Some(&shader) = shaders.get(usize::from(m)) else { continue };
-                let compiled = lib
-                    .material(shader, None)
-                    .map_err(|e| format!("material: {e}"))
+                let Some(&shader) = shaders.get(usize::from(m)) else {
+                    *refused.entry("missing BSP material shader".into()).or_default() += 1;
+                    continue;
+                };
+                // The sorted handler reads the stem from the compiled instance.
+                // Its live pass supplies animated images and constants at issue.
+                let routes = lib.shader(shader).and_then(|instance| {
+                    let id = instance.compiled()?.template;
+                    let name = map.tag(id).ok().and_then(|t| t.name.as_deref());
+                    let template = lib.template(id)?.compiled()?;
+                    Ok((water_gpu::sorted_pool(name, template),
+                        template.layer_passes(0, WATER_LAYER).is_some_and(|p| !p.is_empty())))
+                });
+                let edge = match routes {
+                    Ok((sorted, edge)) => {
+                        if sorted { pools.insert(shader.0); }
+                        edge
+                    }
+                    Err(e) => {
+                        *refused.entry(format!("template lookup: {e}")).or_default() += 1;
+                        continue;
+                    }
+                };
+                if !edge { continue; }
+                edge_materials += 1;
+                let compiled = lib.material(shader, None).map_err(|e| format!("material: {e}"))
                     .and_then(|mat| water_gpu::water_passes(&mat, rasterizer).map_err(|r| r.describe()))
                     .and_then(|ps| {
                         ps.iter()
@@ -164,11 +190,13 @@ pub fn load<R: std::io::Read + std::io::Seek>(
             let mut why: Vec<_> = refused.into_iter().collect();
             why.sort();
             eprintln!(
-                "native-water: {} of {} water materials' layer-6 passes translate, {} parts native ({unlit} without their lightmap page); on the D3D path: {why:?}",
+                "native-water: {} of {edge_materials} layer-6 edge materials translate, {} edge parts eligible ({unlit} without lightmap); {} sorted pool shaders use live layer 15; refusals: {why:?}",
                 programs.len(),
-                materials.len(),
                 parts.len(),
+                pools.len(),
             );
+        } else {
+            eprintln!("native-water: shader library unreadable for {} transparent materials", materials.len());
         }
     }
     let mut targets: Vec<u32> = passes
@@ -189,6 +217,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0 as u16)))
         .collect();
     WaterData {
+        pools: Arc::new(pools),
         passes,
         programs,
         words,
@@ -236,13 +265,14 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
         };
         let (water, palettes) = ready.water.get()?;
+        if water.parts.is_empty() { return None; }
         let Ok(mut d) = self.device.lock() else { return None };
         if !d.can_external_pass()
             || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
@@ -283,6 +313,42 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_fog_words_view", 1);
             return None;
         };
+        let writes_depth = water
+            .programs
+            .values()
+            .any(|passes| passes.iter().any(|p| p.state.depth_write));
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = |ranges| d3d::ExternalPlan { stage: Stage::Water, view, ranges, slots: Vec::new() };
+        let run = u64::from(d.swap_count()).wrapping_add(1);
+        let pass = |selected, fogs, display_only| -> Box<dyn d3d::ExternalPass> {
+            Box::new(WaterViewPass {
+                ready: Arc::clone(&ready),
+                selected,
+                fogs,
+                display_only,
+                headers: headers.clone(),
+                samples_view: water.samples_view,
+                view: None,
+                w_clip: None,
+                writes_depth,
+                run,
+            })
+        };
+        if !display_clusters.is_empty() {
+            let selected = crate::native_fog_glue::display_late_part(mem, display_clusters, &water.part_set,
+                WATER_LATE_LAYER, |_, _| true);
+            if let Some(selected) = selected {
+                let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+                if d.projection_factor_for_target(target.surface_size) < 1.0 {
+                    ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+                        gpu.prewarm_water(device, color, depth).then_some(())
+                    })?;
+                    let plan = plan(1);
+                    let display = pass(vec![selected], crate::native_fog_glue::late_fogs(&materials), true);
+                    let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, display);
+                }
+            }
+        }
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
         let read = ReadMemory(mem);
@@ -311,28 +377,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let fogs = crate::native_fog_glue::late_fogs(&late.materials);
         let selected = crate::native_fog_glue::late_selected(&late.parts);
         let ranges = selected.len();
-        let writes_depth = water
-            .programs
-            .values()
-            .any(|passes| passes.iter().any(|p| p.state.depth_write));
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: Stage::Water, view, ranges, slots: Vec::new() };
-        let run = u64::from(d.swap_count()).wrapping_add(1);
-        let pass = || -> Box<dyn d3d::ExternalPass> {
-            Box::new(WaterViewPass {
-                ready: Arc::clone(&ready),
-                selected: selected.clone(),
-                fogs: fogs.clone(),
-                headers: headers.clone(),
-                samples_view: water.samples_view,
-                view: None,
-                w_clip: None,
-                writes_depth,
-                run,
-            })
-        };
         drop(planning);
-        if !crate::native_fog_glue::commit_late(&mut d, mem, &self.state, &ready, scene, plan, &pass, &masks) {
+        if !crate::native_fog_glue::commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
             return None;
         }
         render_bridge::scene_step::late_drawn(late.key, WATER_LATE_LAYER);
@@ -355,6 +401,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 
 /// One view's water replacement.
 struct WaterViewPass {
+    display_only: bool,
     ready: Arc<Ready>,
     /// The parts the masks surrendered, in the layer's item order.
     selected: Vec<(Owner, u8)>,
@@ -436,6 +483,7 @@ impl WaterViewPass {
 }
 
 impl d3d::ExternalPass for WaterViewPass {
+    fn display_only(&self) -> bool { self.display_only }
     // The selection and constants belong to this view. Ready pins the BSP,
     // and each recording binds the target copy passed to it by the renderer.
     fn replays_scene(&self) -> bool { true }
@@ -494,7 +542,10 @@ impl d3d::ExternalPass for WaterViewPass {
         };
         let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
-        Some(gpu.water_draws(&t.device, t.color_format, t.depth_format, t.size, &self.selected, &sampled, &view, &self.fogs))
+        Some(gpu.water_draws(
+            &t.device, t.color_format, t.depth_format, t.size, d3d::external_viewport(&request, t.size),
+            &self.selected, &sampled, &view, &self.fogs,
+        ))
     }
 
     /// The set that samples the view: the scene copy and the pass as
@@ -514,7 +565,7 @@ impl d3d::ExternalPass for WaterViewPass {
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         Some(gpu.water_encoded(
             &t.device, &t.queue, &t.uploads, &t.color, t.color_format, &t.depth, t.depth_format,
-            t.size, t.copy, &self.selected, &sampled, &view, &self.fogs,
+            t.size, d3d::external_viewport(&request, t.size), t.copy, &self.selected, &sampled, &view, &self.fogs,
         ))
     }
 
@@ -536,7 +587,7 @@ impl d3d::ExternalPass for WaterViewPass {
         }
         gpu.encode_water(
             t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format,
-            t.size, t.copy, &self.selected, &sampled,
+            t.size, t.viewport, t.copy, &self.selected, &sampled,
         )
     }
 }
@@ -596,6 +647,7 @@ mod tests {
                     .into_iter()
                     .collect();
                 let mut pass = WaterViewPass {
+                    display_only: false,
                     ready: Arc::new(Ready::default()),
                     selected: Vec::new(),
                     fogs: HashMap::new(),

@@ -249,7 +249,7 @@ fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
 pub enum VisibilityLens {
     #[default]
     Retail,
-    /// Bounds applied in the single-copy guest frustum builder.
+    /// Lens applied to the single-copy camera projection by the view builder.
     Guest(f32),
     /// Extra visible space on the exact-mode display copy.
     Display(f32),
@@ -313,6 +313,18 @@ pub fn view(mem: &dyn GuestMemory) -> Option<Camera> {
     open_view(mem).map(|v| v.camera)
 }
 
+/// Additions from the base layer of this same view. A late-layer hook may
+/// run without a new base view, so check its camera and view index.
+pub(crate) fn late_display_visibility(mem: &dyn GuestMemory, layer: u8) -> Option<Arc<frame_scene::DisplayVisibility>> {
+    with_step(|step| {
+        let view = step.builder.view()?;
+        let extra = view.display_visibility.as_ref()?;
+        (view.key.kind == ViewKind::Game && u32::from(view.key.view) == mem.u32(VIEW_INDEX).ok()?
+            && !extra.whole_clusters.is_empty() && view.camera == extract::camera(&Ro(mem))?
+            && scene_extract::late::layer_items(&Ro(mem), layer)? == 0).then(|| Arc::clone(extra))
+    })
+}
+
 /// [`view`], returning the view itself (a copy: its ranges index the
 /// scene being written).
 pub fn open_view(mem: &dyn GuestMemory) -> Option<View> {
@@ -372,11 +384,7 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                 .and_then(|()| step.builder.set_world(extract::world(&m)))
                 .and_then(|()| {
                     if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
-                        let lens = view_record_arm(&m, &camera, key);
-                        let guest_lens = match step.visibility_lens {
-                            VisibilityLens::Guest(factor) => native_render::camera::display_camera(lens, factor),
-                            _ => lens,
-                        };
+                        let guest_lens = view_record_arm(&m, &camera, key, step.visibility_lens);
                         let display_factor = match step.visibility_lens {
                             VisibilityLens::Display(factor) => Some(factor),
                             _ => None,
@@ -1185,8 +1193,14 @@ fn display_additions(
     ).ok()?;
     let placements = windows.as_ref().and_then(|w| cache.display_placements(mem, retail, w)).unwrap_or_default();
     visible.retain_display_additions(baseline, gather);
+    let whole_clusters = windows.as_ref().map_or_else(Vec::new, |windows| {
+        visible.clusters.iter().copied().filter(|&id| {
+            crate::native_scene_lists::late_cluster_bounds(mem.0, id)
+                .is_some_and(|bounds| windows.contains_cluster(id, bounds))
+        }).collect()
+    });
     (!visible.clusters.is_empty() || !visible.objects.is_empty() || !placements.is_empty()).then_some(frame_scene::DisplayVisibility {
-        clusters: visible.clusters, objects: visible.objects, placements,
+        whole_clusters, clusters: visible.clusters, objects: visible.objects, placements,
     })
 }
 
@@ -1254,9 +1268,9 @@ fn visibility_arm(
 /// `camera`, the start cluster and the mode, and counted. The visibility
 /// takes the Rust camera only when the whole record is equal; otherwise,
 /// and on a decline, the guest's.
-fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey) -> Camera {
+fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey, lens: VisibilityLens) -> Camera {
     use scene_extract::visibility::view::{self, Decline};
-    let (rust, guest) = match view::build(m, camera) {
+    let (mut rust, guest) = match view::build(m, camera) {
         Ok(pair) => pair,
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
@@ -1265,6 +1279,9 @@ fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey) -> Camera {
         }
     };
     VIEW_RECORD_CHECKED.fetch_add(1, Ordering::Relaxed);
+    if let VisibilityLens::Guest(factor) = lens {
+        rust.camera = native_render::camera::display_camera(rust.camera, factor);
+    }
     let (lens, parity) = view::arm(&rust, &guest);
     match parity.first {
         None => {

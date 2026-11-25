@@ -636,6 +636,10 @@ points! { ALL;
     CREATURE_PROBE_OBJECT_POSITION @ 0x000b_75a0: [fn(position: eax, forward: ecx, up: edx, object: stack 0, a: stack 1, b: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
     /// Select replica physics for an object at its initial placement.
     CREATURE_PROBE_REPLICA_PHYSICS @ 0x000b_9b90: [fn(replica: edx, object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    HS_THREAD_EXECUTE @ 0x0020_9850: [fn(thread: edi) ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE @ 0x0020_99f0: [fn(thread: edx, expr: stack 0, dest: ebx) ret 4], Optional; "docs/engine/hs_vm.md";
+    HS_GLOBAL_READ @ 0x0020_9bc0: [fn(index: esi) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
+    HS_EVALUATE_ARGUMENTS @ 0x0020_9d50: [fn(thread: stack 0, count: stack 1, parameters: stack 2, first: stack 3) -> eax ret 16], Optional; "docs/engine/hs_vm.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
@@ -1868,6 +1872,9 @@ points! { ALL;
     /// A seconds value times the tick rate, rounded by `fistp` (`ecx`
     /// returns the same integer).
     GAME_SECONDS_TO_TICKS @ 0x0014_69f0: [fn(seconds: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// Visit active unit actions in order. A callback returning zero clears
+    /// its action. Returns one if any callback returned nonzero.
+    UNIT_ACTIONS_UPDATE @ 0x000e_6830: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// An action request for the unit: eight words on the stack, the action
     /// first, handed to `0xe6900`.
     BIPED_ACTION @ 0x000e_68c0: [fn(action: ecx, object: stack 0) ret 4], Hot; "docs/engine/object-update.md";

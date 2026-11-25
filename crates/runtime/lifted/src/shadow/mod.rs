@@ -151,6 +151,15 @@ struct Sample<'a> {
     copy: Option<(CpuAbi, TransferAbi)>,
 }
 
+impl State {
+    /// None for a disabled port; Some(None) between samples.
+    fn sample(&mut self, name: &str) -> Option<Option<(u64, u32)>> {
+        let port = self.ports.get_mut(name).filter(|port| port.on)?;
+        port.calls += 1;
+        Some(((port.calls - 1) % self.every == 0).then_some((port.calls, port.base)))
+    }
+}
+
 /// The registry. One per process ([`SHADOW`]); tests make their own.
 pub struct Shadow {
     on: AtomicBool,
@@ -343,6 +352,12 @@ impl Shadow {
         Ok(off)
     }
 
+    /// Whether any port requests samples. A fused dispatcher can take its
+    /// ordinary path for the whole chain while checks are disabled.
+    pub fn any_enabled(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
     pub fn status(&self) -> Status {
         let s = self.lock();
         let ports: Vec<Port> = s.ports.values().cloned().collect();
@@ -407,6 +422,34 @@ impl Shadow {
         if let Some(mut sample) = self.sample(name, cpu, guest, pc, port) {
             Self::record(&mut sample.state, name, pc, sample.call, tick(guest), cpu, sample.outcome);
         }
+    }
+
+    /// Check a candidate while the original is authoritative. A selected
+    /// port always returns true, including on unsampled calls and failed
+    /// comparisons: the caller must dispatch the original on the live state.
+    pub fn check_before_original(
+        &self,
+        name: &'static str,
+        cpu: &CpuAbi,
+        guest: &Guest,
+        pc: u32,
+        tick: TickFn,
+        port: &mut PortFn<'_>,
+    ) -> bool {
+        if !self.on.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut guard = self.lock();
+        let s = &mut *guard;
+        let Some(sample) = s.sample(name) else { return false };
+        if let Some((call, base)) = sample
+            && let Some(code) = s.code.as_deref_mut()
+        {
+            code.prime(base);
+            let (outcome, _) = check(code, &mut s.view, guest, cpu, pc, s.step_limit, port);
+            Self::record(s, name, pc, call, tick(guest), cpu, outcome);
+        }
+        true
     }
 
     /// Run the port `name` at `pc` on the live Guest, checking it first

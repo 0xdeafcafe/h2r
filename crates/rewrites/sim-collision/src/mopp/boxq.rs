@@ -202,9 +202,7 @@ impl Tree {
     /// Up to eight boxes through the tree in one walk (section 6.2). Each
     /// node is visited once for the boxes that reach it, and each box's
     /// keys come out in the serial order, so every answer equals
-    /// [`Self::query_box`] with unlimited room. The packet does not
-    /// report or limit nesting: that is a property of the guest's stack,
-    /// which only the single-box adapter has.
+    /// [`Self::query_box`] with unlimited room, including the per-box depth limit.
     pub fn query_packet(&self, boxes: &[Corners]) -> Vec<Result<Vec<u32>, Bail>> {
         assert!(boxes.len() <= 8, "a packet holds at most eight boxes");
         let mut out: Vec<Result<Vec<u32>, Bail>> = boxes
@@ -225,9 +223,9 @@ impl Tree {
             }
         }
         let nodes = self.nodes();
-        let mut pending: Vec<(u32, u8)> = Vec::new();
-        let mut next = Some((self.root(), live));
-        while let Some((mut n, mut mask)) = next {
+        let mut pending = Vec::new();
+        let mut next = Some((self.root(), live, [0u16; 8]));
+        while let Some((mut n, mut mask, mut depth)) = next {
             mask &= live;
             while n != NONE && mask != 0 {
                 let (low_mask, high_mask, low, high) = match nodes[n as usize] {
@@ -297,10 +295,21 @@ impl Tree {
                     }
                 };
                 if high != NONE && high_mask != 0 {
-                    pending.push((high, high_mask));
+                    pending.push((high, high_mask, depth));
+                }
+                // The interpreter recursively calls the low side only for boxes
+                // that take both children, even if the low side is empty.
+                for (i, d) in depth.iter_mut().enumerate() {
+                    if low_mask & high_mask & (1 << i) != 0 {
+                        *d += 1;
+                        if u32::from(*d) > MAX_FRAMES {
+                            live &= !(1 << i);
+                            out[i] = Err(Bail::Depth);
+                        }
+                    }
                 }
                 n = low;
-                mask = low_mask;
+                mask = low_mask & live;
             }
             next = pending.pop();
         }
