@@ -881,18 +881,37 @@ and allocations are bounded before anything is read:
     crossfade evaluator `0x002ab270`, which reads the previous parity.
   - A texture whose `Data` is a frame buffer's, `LIN_A8R8G8B8` or
     `LIN_X8R8G8B8`, 2D, the buffer's size, is sampled from a copy of that
-    buffer made for the draw (`Backend::snapshot_surface`; `GfxBackend`
-    uses `gfx::SurfaceStore::snapshot`). Over the back buffer it reads the
+    buffer (`Backend::snapshot_surface`; `GfxBackend` uses
+    `gfx::SurfaceStore::snapshot`). Over the back buffer it reads the
     image being drawn, also while it is the target: the draw reads what
     was there before it (same-frame feedback). Over the display surface
     it reads the image last presented, which nothing draws into until the
     next flip makes it the back buffer. On a copy-swap device whose shown
     image still waits in back0, that is back0; if the copy to the front
-    was lost (`copy_surface` unsupported), the draw is skipped. All are
-    counted in `Stats::frame_snapshots`, the display-surface ones also in
-    `Stats::previous_frame_snapshots`. An `X8` texture reads alpha as
-    one: the copy's alpha is cleared to one with an alpha-only masked
+    was lost (`copy_surface` unsupported), the draw is skipped. Copies
+    made are counted in `Stats::frame_snapshots`, the display-surface ones
+    also in `Stats::previous_frame_snapshots`. An `X8` texture reads alpha
+    as one: the copy's alpha is cleared to one with an alpha-only masked
     clear, as uploads of `X8` texels force it to 255.
+    - A copy is shared between draws while its surface is unwritten
+      (`src/device/frame_snaps.rs`, `Device::frame_copy` in
+      `src/device/raster.rs`). Each colour surface has a colour-write
+      generation, moved on by every drawn draw or pass that writes its
+      colour, every colour clear, the owed copy into the front of a
+      copy-swap device, a render-to-texture fill or mirror load, and a
+      display-only scene stage over it; a write also drops the surface's
+      copies. A draw that samples the surface at the generation a held
+      copy was taken at binds that copy (`Stats::frame_snapshot_reuses`),
+      so a run of distortion draws into their own target that all read
+      the frame costs one copy, and a draw that reads the frame after
+      another wrote it still gets a fresh one. Copies are keyed by surface
+      and alpha rule, at most eight are held (least recently used goes
+      first), a destroyed surface forgets its generation, and a present
+      drops them all (a frame owner replays each frame's samples with that
+      frame), so a long session holds a bounded number
+      (`Device::frame_snapshots_held`). While post-process draws are held
+      (swallowing), their writes are not issued yet, so each draw gets a
+      copy of its own kept with its packet.
   - A new device (CreateDevice after teardown) starts with new, cleared
     frame buffers and the headers back at their first `Data`: nothing
     presented by the old device can be read as the previous frame. Halo
