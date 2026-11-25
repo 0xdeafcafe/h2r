@@ -203,8 +203,9 @@ the cached pipelines with their own uniforms and sampled textures.
     A draw with no depth buffer (`no_depth`), a disabled or
     always/never test (`depth_not_tested`) or a depth or stencil write
     (`writes_depth`) is refused.
-  - **Lens.** The projective 2D stage whose image is a frame-sized 2D
-    texture (`pool_lens_stage`) samples a copy of the bound colour made in
+  - **Lens.** The first sampled projective 2D stage (`pool_lens_stage`; the
+    guest image's size is not compared, its coordinates are normalised by
+    its header) samples a copy of the bound colour made in
     each Reference and Display recording, immediately before the pool
     draws (`IndexedPass::record_pool`: the copy, then a render pass of the
     pool's packets, as the layer-6 water's `record_encoded` does). It does
@@ -222,8 +223,9 @@ the cached pipelines with their own uniforms and sampled textures.
   `no_lens`, `geometry`; recording: the causes above and the pass's
   prepare errors, e.g. `sample_aliases_attachment`), and
   `layer_plan_15_pool_on_d3d` for every pool draw the admission leaves to
-  the guest. Remaining slices: a pool whose lens is not frame-sized
-  (`no_lens`) needs a scaled copy; a pool that writes depth needs the
+  the guest. The first `no_lens` logs each stage's mode, image and size
+  against the guest target once (stderr). Remaining slice: a pool that
+  writes depth needs the
   write proven against the world's depth first.
   Mainmenu's aerial water is an alpha-tested
   environment material. Lockout has no pool template. Neither requires a
