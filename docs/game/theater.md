@@ -315,8 +315,12 @@ second press to confirm. The selector takes its data from the library
 and the Live listing. Older recordings and archives can leave some fields
 blank.
 
-**Watch** starts an isolated instance of the recompiled game that
-replays the recording. The library checks the cached header for an account
+**Watch** plays a film that has a game start in the running game: it
+queues the film's game as the next game, the game loads the film's map, and
+the film's updates play in it (`theater.watch`, [theater-design.md](theater-design.md#starting-a-film-in-the-running-game)).
+End Film returns to the film page. No second process starts. A film
+recorded before game starts does not open and says why. **Prepare** still
+uses an isolated instance of the recompiled game. The library checks the cached header for an account
 film and checks the exact recording after the first download. Playback
 needs a compatible installed game image and the
 same initial files where the film references them by digest. An archive
