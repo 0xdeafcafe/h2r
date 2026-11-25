@@ -876,7 +876,14 @@ fn a_pool_lens_samples_the_bound_colour_not_the_guests_sample() {
             timeline::native::Stage::Water, Box::new(pass))
     }));
     assert!(recorded(&pool_recording_counters()) > before);
-    let pixels = backend.read_color(color).unwrap().0;
+    // The readback is in the host's pixel order: blue is the last colour
+    // byte in RGBA and the first in BGRA.
+    let (pixels, order) = backend.read_color(color).unwrap();
     let at = 4 * (4 * SIZE as usize + 4);
-    assert_eq!(&pixels[at..at + 4], &[0, 0, 255, 255], "the lens is the bound colour, not the guest's red");
+    let (blue, red) = match order {
+        HostPixelOrder::Bgra8 => ([255, 0, 0, 255], [0, 0, 255, 255]),
+        HostPixelOrder::Rgba8 => ([0, 0, 255, 255], [255, 0, 0, 255]),
+    };
+    assert_ne!(&pixels[at..at + 4], &red, "the lens sampled the guest's red");
+    assert_eq!(&pixels[at..at + 4], &blue, "the lens is the bound colour");
 }
