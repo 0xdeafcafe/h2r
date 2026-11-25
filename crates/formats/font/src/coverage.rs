@@ -125,8 +125,10 @@ mod tests {
     #[test]
     fn an_edge_stays_on_its_texel_boundary() {
         for scale in [2, 3, 4, 8] {
-            let out = up(4, 1, scale, &[&[0, 0, 255, 255]]);
-            assert_eq!(out.len(), 4 * scale as usize);
+            let all = up(4, 1, scale, &[&[0, 0, 255, 255]]);
+            assert_eq!(all.len(), 4 * scale as usize * scale as usize);
+            // Every output row of a one-row source is the same; read the first.
+            let out = &all[..4 * scale as usize];
             // The true edge sits between source texels 1 and 2: output
             // texel 2*scale, half a step in.
             let boundary = 2.0 * scale as f32;
@@ -210,7 +212,7 @@ mod tests {
         let tall = up(1, 4, scale, &[&[0, 0, 255, 255]]);
         let wide = up(4, 1, scale, &[&[0, 0, 255, 255]]);
         let side = scale as usize;
-        assert_eq!((tall.len(), wide.len()), (4 * side * side, 4 * side));
+        assert_eq!((tall.len(), wide.len()), (4 * side * side, 4 * side * side));
         for y in 0..4 * side {
             let (a, b) = (tall[y * side], wide[y]);
             assert!(a.abs_diff(b) <= 1, "row {y}: {a} against {b}");
