@@ -11,18 +11,18 @@ use native_render::gpu::Image;
 use native_render::light_gpu::{LightGpu, light_gpu_key, same_gpu_pass};
 use native_render::light_look::{
     InputKey, LightInputs, LightProgram, LightRefusal, LightStage, compile_light,
-    compile_light_model, engine_inputs, light_look,
+    compile_light_model, engine_inputs, selected_light_look,
 };
 use tags::material::{EngineInputs, ShaderLibrary};
 
-use super::{Compiled, Keep, LitMaterial, models::ModelLights};
+use super::{Compiled, Keep, LitMaterial, models::{ModelLights, ModelSetId}};
 
 const CAPACITY: usize = 512;
 const QUEUE_DEPTH: usize = 64;
 const LOADING: Keep = Keep::MaterialPending;
 
 type Images = HashMap<(usize, TagId, u32), Image>;
-type Programs = HashMap<TagId, Vec<u8>>;
+type Programs = HashMap<(TagId, u32), Vec<u8>>;
 
 /// What a live edit of an image reaches: the light passes the worker has
 /// built (by whether they belong to a model part) and the images it
@@ -58,7 +58,17 @@ struct Variant {
     implementation: usize,
     // A structure part uses WorldVertex. Model programs depend on the actual
     // shader-selected stream in the section and its classification.
-    model: Option<(u32, u16, u32)>,
+    model: Option<(u32, u16)>,
+    vertex_class: u32,
+    selection: Option<(u8, u8)>,
+}
+
+/// World resources belong to this BSP resolver. Model resources can be
+/// replaced independently, including while draws still hold the old images.
+type ResourceKey<T> = (Option<ModelSetId>, T);
+
+fn resource_key<T>(model: Option<&ModelLights>, value: T) -> ResourceKey<T> {
+    (model.map(|resources| resources.id), value)
 }
 
 type ResultSlot = OnceLock<(u64, Result<Resolved, Keep>)>;
@@ -73,8 +83,8 @@ struct Job {
 
 #[derive(Default)]
 struct Variants {
-    slots: HashMap<Variant, Arc<ResultSlot>>,
-    order: VecDeque<Variant>,
+    slots: HashMap<ResourceKey<Variant>, Arc<ResultSlot>>,
+    order: VecDeque<ResourceKey<Variant>>,
 }
 
 impl Variants {
@@ -86,7 +96,8 @@ impl Variants {
         instance: &EngineInputs,
         model: Option<&Arc<ModelLights>>,
     ) -> Result<Resolved, Keep> {
-        if let Some(slot) = self.slots.get(&key) {
+        let scoped = resource_key(model.map(Arc::as_ref), key);
+        if let Some(slot) = self.slots.get(&scoped) {
             let (_, result) = slot
                 .get()
                 .filter(|(frame, _)| *frame < timeline::frames())
@@ -107,8 +118,8 @@ impl Variants {
             slot: Arc::downgrade(&slot),
         };
         sender.try_send(job).map_err(|_| LOADING)?;
-        self.order.push_back(key);
-        self.slots.insert(key, slot);
+        self.order.push_back(scoped);
+        self.slots.insert(scoped, slot);
         Err(LOADING)
     }
 
@@ -265,12 +276,16 @@ impl Resolver {
         inputs: LightInputs,
         layer: usize,
         implementation: usize,
+        vertex_class: u32,
+        selection: Option<(u8, u8)>,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
             inputs: Some(inputs.key()),
             layer,
             implementation,
+            vertex_class,
+            selection,
             model: None,
         };
         self.request(key, &material.instance, Some(inputs), None)
@@ -281,12 +296,15 @@ impl Resolver {
         &self,
         material: &LitMaterial,
         implementation: usize,
+        vertex_class: u32,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
             inputs: None,
             layer: native_render::shadow_look::CASTER_LAYER,
             implementation,
+            vertex_class,
+            selection: None,
             model: None,
         };
         self.request(key, &material.instance, None, None)
@@ -298,12 +316,15 @@ impl Resolver {
         material: &LitMaterial,
         layer: usize,
         implementation: usize,
+        vertex_class: u32,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
             inputs: None,
             layer,
             implementation,
+            vertex_class,
+            selection: None,
             model: None,
         };
         self.request(key, &material.instance, None, None)
@@ -323,11 +344,9 @@ impl Resolver {
             inputs: None,
             layer,
             implementation: usize::from(entry.binding.implementation),
-            model: Some((
-                entry.model,
-                entry.stream.section,
-                u32::from(entry.stream.vertex_class),
-            )),
+            model: Some((entry.model, entry.stream.section)),
+            vertex_class: u32::from(entry.stream.vertex_class),
+            selection: None,
         };
         self.request(key, instance, None, Some(lights))
     }
@@ -341,17 +360,16 @@ impl Resolver {
         implementation: usize,
         lights: &Arc<ModelLights>,
         entry: &LightEntry,
+        selection: Option<(u8, u8)>,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader,
             inputs: Some(inputs.key()),
             layer,
             implementation,
-            model: Some((
-                entry.model,
-                entry.stream.section,
-                u32::from(entry.stream.vertex_class),
-            )),
+            model: Some((entry.model, entry.stream.section)),
+            vertex_class: u32::from(entry.stream.vertex_class),
+            selection,
         };
         self.request(key, instance, Some(inputs), Some(lights))
     }
@@ -369,11 +387,9 @@ impl Resolver {
             inputs: None,
             layer: native_render::shadow_look::CASTER_LAYER,
             implementation: usize::from(entry.binding.implementation),
-            model: Some((
-                entry.model,
-                entry.stream.section,
-                u32::from(entry.stream.vertex_class),
-            )),
+            model: Some((entry.model, entry.stream.section)),
+            vertex_class: u32::from(entry.stream.vertex_class),
+            selection: None,
         };
         self.request(key, instance, None, Some(lights))
     }
@@ -389,7 +405,7 @@ struct Worker {
     device: wgpu::Device,
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
-    uploaded: HashMap<(bool, u64), (Weak<LightProgram>, Weak<Mutex<LightGpu>>)>,
+    uploaded: HashMap<ResourceKey<u64>, (Weak<LightProgram>, Weak<Mutex<LightGpu>>)>,
     shared: Arc<Shared>,
 }
 
@@ -417,7 +433,7 @@ impl Worker {
         ) {
             native_render::shadow_look::receiver_look(&material, key.layer, key.implementation)
         } else {
-            light_look(&material, key.layer, key.implementation)
+            selected_light_look(&material, key.layer, key.implementation, key.selection)
         }
         .map_err(|reason| match reason {
             LightRefusal::NoLayer => {
@@ -426,7 +442,8 @@ impl Worker {
             reason => Keep::Refused(format!("{reason:?}").into()),
         })?;
         let (program, buffer) = match (key.model, model) {
-            (Some((model, section, class)), Some(lights)) => {
+            (Some((model, section)), Some(lights)) => {
+                let class = key.vertex_class;
                 let section = lights
                     .models
                     .models
@@ -473,8 +490,8 @@ impl Worker {
             (None, None) => {
                 let code = self
                     .code
-                    .get(&look.vertex_shader)
-                    .ok_or(Keep::Unsupported("no world-space vertex program"))?;
+                    .get(&(look.vertex_shader, key.vertex_class))
+                    .ok_or(Keep::Unsupported("no structure light program for the selected classification"))?;
                 let program = if key.layer == native_render::shadow_look::CASTER_LAYER {
                     native_render::shadow_look::compile_shadow(&look, code)
                 } else if matches!(
@@ -491,9 +508,7 @@ impl Worker {
             _ => return Err(Keep::Unsupported("light geometry unavailable")),
         };
         let program = Arc::new(program.map_err(|why| Keep::Refused(why.into()))?);
-        // A model load may have used different stage palettes from the BSP.
-        // Keep their expanded images in distinct GPU entries.
-        let id = (model.is_some(), light_gpu_key(&program));
+        let id = resource_key(model, light_gpu_key(&program));
         let gpu = self.uploaded.get(&id).and_then(|(original, gpu)| {
             same_gpu_pass(original.upgrade()?.as_ref(), &program)
                 .then(|| gpu.upgrade())
@@ -569,6 +584,43 @@ mod tests {
     }
 
     #[test]
+    fn model_reload_requests_fresh_variants_and_uploads_for_the_same_light_pass() {
+        let old = Arc::new(ModelLights::default());
+        let reloaded = Arc::new(ModelLights::default());
+        let mut variants = Variants::default();
+        let (send, recv) = mpsc::sync_channel(2);
+        let instance = EngineInputs::default();
+        for layer in [10, 11, 12, 13, 14] {
+            let key = Variant {
+                shader: TagId(27),
+                inputs: None,
+                layer,
+                implementation: 2,
+                model: Some((5, 3)),
+                vertex_class: 4,
+                selection: None,
+            };
+            // Two draws against the old buffers share one request. The same
+            // shader + section after reload must enqueue another.
+            for resources in [&old, &old, &reloaded] {
+                assert_eq!(variants.request(&send, key, None, &instance, Some(resources)).err(), Some(LOADING));
+            }
+            let jobs: Vec<_> = recv.try_iter().collect();
+            assert_eq!(jobs.len(), 2);
+            assert!(Arc::ptr_eq(jobs[0].model.as_ref().unwrap(), &old));
+            assert!(Arc::ptr_eq(jobs[1].model.as_ref().unwrap(), &reloaded));
+        }
+
+        let same_program_hash = 16_u64;
+        let uploaded = HashMap::from([
+            (resource_key(None, same_program_hash), "world palette"),
+            (resource_key(Some(&old), same_program_hash), "original palette"),
+        ]);
+        assert_eq!(uploaded[&resource_key(Some(&old), same_program_hash)], "original palette");
+        assert!(!uploaded.contains_key(&resource_key(Some(&reloaded), same_program_hash)));
+    }
+
+    #[test]
     fn a_cold_material_keeps_the_guest_draw_and_a_full_queue_retries() {
         let (send, recv) = mpsc::sync_channel(1);
         let key = |layer| Variant {
@@ -576,6 +628,8 @@ mod tests {
             inputs: Some(InputKey([0; 5])),
             layer,
             implementation: 0,
+            vertex_class: 0,
+            selection: None,
             model: None,
         };
         let instance = EngineInputs::default();
@@ -601,7 +655,7 @@ mod tests {
         );
         assert_eq!(request(&mut variants, 13), Some(LOADING));
         assert!(
-            !variants.slots.contains_key(&key(13)),
+            !variants.slots.contains_key(&resource_key(None, key(13))),
             "a full queue does not retain an unbuilt slot"
         );
 

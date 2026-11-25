@@ -15,6 +15,15 @@ use crate::light_gpu::{LightDraw, LightSet, LightTarget};
 use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
+/// The player viewport in physical target texels. External requests round
+/// both edges when scaling from guest pixels.
+pub(crate) fn viewport_scissor(viewport: [f32; 4], size: (u32, u32)) -> Option<[u32; 4]> {
+    let [x, y, w, h] = viewport.map(|v| v.max(0.0).round() as u32);
+    let (x, y) = (x.min(size.0), y.min(size.1));
+    let (w, h) = (w.min(size.0 - x), h.min(size.1 - y));
+    (w != 0 && h != 0).then_some([x, y, w, h])
+}
+
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
 /// Clones share the decoded storage across material programs.
 #[derive(Clone, Debug, PartialEq)]
@@ -264,6 +273,7 @@ impl PassStencil {
 /// A single guest list in draw order. Only uniform destinations are deduplicated.
 #[derive(Default)]
 pub struct WorldSelection {
+    pub texaccum: Option<crate::world_layers::Texaccum>,
     spans: Vec<(usize, usize, usize)>,
     pub(crate) materials: HashMap<u16, MaterialUse>,
     pub(crate) vertices: HashSet<(u16, Option<u32>)>,
@@ -1023,7 +1033,7 @@ impl GpuWorld {
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs, stencil, samples)
+        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, gfx::ScissorRect::full(target_size.0, target_size.1), selected, view, fogs, stencil, samples)
     }
 
     /// Draws the water edge blend of `set`'s materials from now on.
@@ -1065,10 +1075,12 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         target_copy: gfx::external::TargetCopy,
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
     ) -> usize {
+        let Some([x, y, w, h]) = viewport_scissor(viewport, target_size) else { return 0 };
         let Some(set) = self.water.as_mut() else { return 0 };
         set.pipelines(device, color_format, depth_format);
         let copy = set
@@ -1105,6 +1117,7 @@ impl GpuWorld {
         // The programs carry the game's viewport in their constants: the
         // pass covers the whole target, as the world's programs do.
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+        pass.set_scissor_rect(x, y, w, h);
         pass.set_vertex_buffer(0, self.program_vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         set.draw(device, &mut pass, color_format, depth_format, copy.as_ref(), selected, sampled)
@@ -1122,11 +1135,14 @@ impl GpuWorld {
         color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        let [x, y, width, height] = viewport_scissor(viewport, target_size).ok_or("empty layer viewport")?;
+        let scissor = gfx::ScissorRect { x, y, width, height };
         let Self { water, packet_pipelines, program_vertices, indices, .. } = self;
         let set = water.as_mut().ok_or("water materials unavailable")?;
         if set.samples_view {
@@ -1137,7 +1153,7 @@ impl GpuWorld {
             packet_pipelines.clear();
         }
         let items = set.items(device, color_format, depth_format, None, selected, sampled)?;
-        let packets = crate::water_gpu::item_packets(&items, packet_pipelines, program_vertices, indices, target_size)?;
+        let packets = crate::water_gpu::item_packets(&items, packet_pipelines, program_vertices, indices, target_size, scissor)?;
         let writes = set.writes(view, fogs, selected)?;
         // Conservative: the programs' alpha tests and kill sources discard.
         Ok(gfx::external::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
@@ -1159,12 +1175,14 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         target_copy: gfx::external::TargetCopy,
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     ) -> Result<gfx::external::ExternalEncoded, &'static str> {
+        let [x, y, w, h] = viewport_scissor(viewport, target_size).ok_or("empty water viewport")?;
         let Self { water, program_vertices, indices, .. } = self;
         let set = water.as_mut().ok_or("water materials unavailable")?;
         set.pipelines(device, color_format, depth_format);
@@ -1212,6 +1230,7 @@ impl GpuWorld {
                 multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+            pass.set_scissor_rect(x, y, w, h);
             pass.set_vertex_buffer(0, vertices.slice(..));
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
             for it in &items {
@@ -1233,9 +1252,10 @@ impl GpuWorld {
         uploads: &mut gfx::ring::EncoderUploads<'_>,
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) {
         if let Some(set) = self.fog.as_ref() {
-            set.prepare(uploads, view, fogs);
+            set.prepare_layer(uploads, view, fogs, samples);
         }
     }
 
@@ -1253,11 +1273,12 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         selected: &[(Owner, u8)],
     ) -> usize {
         let Self { fog, program_vertices, indices, .. } = self;
         let Some(set) = fog.as_mut() else { return 0 };
-        encode_set(set, "native fog", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
+        encode_set(set, "native fog", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, viewport, selected)
     }
 
     /// The uniforms of `layer`'s set for one view ([`FogSet::prepare`];
@@ -1295,7 +1316,7 @@ impl GpuWorld {
     ) -> usize {
         let Self { layers, program_vertices, indices, .. } = self;
         let Some(set) = layers.get_mut(&layer) else { return 0 };
-        encode_set(set, "native layer", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
+        encode_set(set, "native layer", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, [0.0, 0.0, target_size.0 as f32, target_size.1 as f32], selected)
     }
     /// [`GpuWorld::prepare_fog`] and [`GpuWorld::encode_fog`] as packets for
     /// the D3D pass already open on these attachments, the uniforms as
@@ -1306,17 +1327,21 @@ impl GpuWorld {
         color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        let [x, y, width, height] = viewport_scissor(viewport, target_size).ok_or("empty layer viewport")?;
+        let scissor = gfx::ScissorRect { x, y, width, height };
         let Self { fog, packet_pipelines, program_vertices, indices, .. } = self;
         let set = fog.as_mut().ok_or("fog materials unavailable")?;
         set.pipelines(device, color_format, depth_format);
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs)
+        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, scissor, selected, view, fogs, samples)
     }
 
     /// Draws lights with `set` from now on.
@@ -1436,6 +1461,15 @@ impl GpuWorld {
         Some(selection)
     }
 
+    /// Bind the live target descriptor only for selections whose sampled stages or
+    /// vertex constants use it. A missing descriptor prevents their reservation.
+    pub fn select_texaccum(&self, selection: &mut WorldSelection, target: Option<crate::world_layers::Texaccum>) -> bool {
+        let needed = self.programs.as_ref().is_some_and(|p| selection.materials.keys()
+            .any(|&m| p.program(m).is_some_and(|p| p.needs_texaccum())));
+        selection.texaccum = target.filter(|_| needed);
+        !needed || selection.texaccum.is_some()
+    }
+
     /// Check bindings on this attachment pair before the guest parts can be suppressed.
     pub fn prepare_selection(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
@@ -1452,7 +1486,8 @@ impl GpuWorld {
         };
         let state = &self.stencil.state;
         p.selected_pipelines(device, color, depth, state, &selection.materials, usage)
-            && selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
+            && selection.spans.iter().all(|&(batch, _, _)| p.lit_batch_binding(batch, d3d::Lighting::Retail).is_some())
+            && (selection.texaccum.is_some() || !selection.materials.keys().any(|&m| p.program(m).is_some_and(|p| p.needs_texaccum())))
             && selection.vertices.iter().all(|&(material, instance)| match instance {
                 Some(n) => p.rigid(material, n, color, depth, state).is_some(),
                 None => p.cluster(material, color, depth, state).is_some(),
@@ -1628,6 +1663,15 @@ impl GpuWorld {
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        self.selection_draws_bound(color_format, depth_format, target_size, selection, view, lighting, None)
+    }
+
+    pub fn selection_draws_bound(
+        &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+        accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        use crate::program::BatchTextures;
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
         let p = programs.as_ref().ok_or("world programs unavailable")?;
@@ -1646,7 +1690,8 @@ impl GpuWorld {
         }
         let mut packets = Vec::new();
         let mut ranges = 0;
-        let mut bound: Option<((u16, &wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut bound: Option<((u16, wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut live_groups = HashMap::new();
         let mut pending: Option<std::ops::Range<u32>> = None;
         let emit = |packets: &mut Vec<RecordedDraw>, b: &Bound, range: std::ops::Range<u32>| {
             let count = range.end - range.start;
@@ -1664,7 +1709,18 @@ impl GpuWorld {
         };
         for &(i, first, last) in &selection.spans {
             let batch = &world.batches[i];
-            let textures = p.lit_batch_textures(i, lighting).ok_or("world batch textures unavailable")?;
+            let textures: &wgpu::BindGroup = match p.lit_batch_binding(i, lighting).ok_or("world batch textures unavailable")? {
+                BatchTextures::Resident(group) => group,
+                BatchTextures::Accumulation { page } => {
+                    let (device, target) = accumulation.ok_or("world accumulation target unavailable")?;
+                    match live_groups.entry((batch.material, batch.lightmap)) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                            p.accumulation_group(device, batch.material, page.as_ref(), target)
+                                .ok_or("world accumulation binding unavailable")?),
+                    }
+                }
+            };
             let draws = &world.draws[first..last];
             let mut k = 0;
             while k < draws.len() {
@@ -1679,7 +1735,7 @@ impl GpuWorld {
                     Owner::Cluster(_) => None,
                     Owner::Instance(n) => Some(n),
                 };
-                let binding = (batch.material, textures, instance, reference);
+                let binding = (batch.material, textures.clone(), instance, reference);
                 if bound.as_ref().is_none_or(|(at, _)| *at != binding) {
                     if let (Some(range), Some((_, b))) = (pending.take(), &bound) {
                         emit(&mut packets, b, range);
@@ -1909,8 +1965,10 @@ fn encode_set(
     depth: &wgpu::TextureView,
     depth_format: wgpu::TextureFormat,
     target_size: (u32, u32),
+    viewport: [f32; 4],
     selected: &[(Owner, u8)],
 ) -> usize {
+    let Some([x, y, w, h]) = viewport_scissor(viewport, target_size) else { return 0 };
     set.pipelines(device, color_format, depth_format);
     let set = &*set;
     let has_stencil = depth_format.has_stencil_aspect();
@@ -1947,6 +2005,7 @@ fn encode_set(
     // unplaced local coordinates, which its rigid program places with
     // its rows.
     pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+    pass.set_scissor_rect(x, y, w, h);
     pass.set_vertex_buffer(0, program_vertices.slice(..));
     pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
     set.draw(&mut pass, color_format, depth_format, selected)

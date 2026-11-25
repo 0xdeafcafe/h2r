@@ -170,6 +170,18 @@ impl Frustum {
 pub struct WindowFrusta(pub Vec<(u16, Frustum)>);
 
 impl WindowFrusta {
+    /// A late-layer replacement draws a complete part. Reaching a cluster
+    /// through a sliver of a portal is insufficient to admit all its subparts.
+    pub fn contains_cluster(&self, cluster: u16, bounds: [f32; 6]) -> bool {
+        if !bounds.chunks_exact(2).all(|r| r[0].is_finite() && r[1].is_finite() && r[0] <= r[1]) {
+            return false;
+        }
+        self.0.iter().any(|(id, window)| *id == cluster &&
+            [bounds[0], bounds[1]].into_iter().all(|x|
+                [bounds[2], bounds[3]].into_iter().all(|y|
+                    [bounds[4], bounds[5]].into_iter().all(|z| window.admits([x, y, z], 0.)))))
+    }
+
     /// `0x00172ee0`'s builds over the merged windows.
     pub fn build(windows: &[(u16, Rect)], lens: &Lens, inputs: &Inputs) -> Self {
         Self(

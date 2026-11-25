@@ -26,8 +26,8 @@
 //!   readers in the game, a fake in tests.
 //! * [`collision`] answers `collision.stats`: the native collision
 //!   world's call, bail and decode counters.
-//! * [`anim`] answers `anim.graph_walk`: the animation graph walk's arm
-//!   and body counters, and the arm's first mismatch.
+//! * [`anim`] reports the graph walk and manager parity counters and their
+//!   first mismatches through `anim.graph_walk` and `anim.manager`.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`firefight`] answers `firefight.*` over the game's Firefight
@@ -65,6 +65,8 @@ pub mod ai;
 pub mod anim;
 mod capture;
 pub mod collision;
+pub mod collision_sources;
+pub mod collision_trace_query;
 mod collision_traces;
 pub use collision_traces::{CollisionTrace, CollisionTraces};
 pub mod compare;

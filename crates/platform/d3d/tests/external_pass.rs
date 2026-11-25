@@ -439,7 +439,7 @@ fn refusal_of_the_display_discards_even_the_recorded_reference_clear() {
 }
 
 #[test]
-fn a_display_supplement_draws_only_to_the_wide_attachment() {
+fn a_display_supplement_leaves_the_guest_attachment_unchanged_at_each_scale() {
     struct Supplement(Counting);
     impl ExternalPass for Supplement {
         fn display_only(&self) -> bool { true }
@@ -449,23 +449,26 @@ fn a_display_supplement_draws_only_to_the_wide_attachment() {
             self.0.record_ranges(target)
         }
     }
-    let Some(reference) = backend() else { return };
-    let display = GfxBackend::new(reference.ctx.clone());
-    let (mut device, mut mem) = create(
-        d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap(),
-        UploadPolicy::Always,
-    );
-    let back = device.back_buffer().unwrap();
-    device.clear(&mut mem, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
-    let seen = Arc::default();
-    let pass = Supplement(Counting { seen: Arc::clone(&seen), display_ranges: 1 });
-    assert!(device.begin_external_boundary(&mut mem).unwrap());
-    assert!(device.draw_display_stage(&mut mem, plan(1), Box::new(pass)).unwrap());
-    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Display]);
-    let reference = device.backend.reference_mut().read_color(back.reference).unwrap().0;
-    let display = device.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
-    assert_eq!(&reference[..4], &[0, 255, 0, 255]);
-    assert_eq!(display[1], 0, "the supplemental red clear reached the display");
+    for scale in [1, 2] {
+        let Some(reference) = backend() else { return };
+        let display = GfxBackend::new(reference.ctx.clone());
+        let mut scaled = d3d::ScaledBackend::with_single_copy(reference, display, scale, false).unwrap();
+        if scale == 1 {
+            scaled.keep_display_copy();
+        }
+        let (mut device, mut mem) = create(scaled, UploadPolicy::Always);
+        let back = device.back_buffer().unwrap();
+        device.clear(&mut mem, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+        let seen = Arc::default();
+        let pass = Supplement(Counting { seen: Arc::clone(&seen), display_ranges: 1 });
+        assert!(device.begin_external_boundary(&mut mem).unwrap());
+        assert!(device.draw_display_stage(&mut mem, plan(1), Box::new(pass)).unwrap());
+        assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Display]);
+        let reference = device.backend.reference_mut().read_color(back.reference).unwrap().0;
+        let display = device.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+        assert_eq!(&reference[..4], &[0, 255, 0, 255]);
+        assert_eq!(display[1], 0, "the supplemental red clear reached the display");
+    }
 }
 
 #[test]
@@ -722,7 +725,7 @@ impl ExternalPass for SlotCopy {
 }
 
 #[test]
-fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scaled_view() {
+fn an_indexed_intermediate_keeps_its_guest_size_and_is_drawn_and_read_at_every_scale() {
     for scale in [1, 2] {
         let Some(reference) = backend() else { return };
         let ctx = &reference.ctx;
@@ -737,15 +740,13 @@ fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scale
         d.clear(&mut m, 0, 0, 0xf0, 0xff000000, 1., 0).unwrap();
         let mut p = plan(2);
         p.slots = vec![None, Some(d3d::ExternalSlot { header, written: true })];
-        if let Some(ready) = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap() {
-            assert_eq!(scale, 1);
-            ready.commit();
-        } else {
-            assert_eq!(scale, 2);
-        }
+        // Smaller targets keep their guest dimensions in both copies, so
+        // the pass sees the same 16x16 slot at every scale.
+        let ready = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap();
+        ready.expect("guest-size slot at every scale").commit();
         let back = d.back_buffer().unwrap();
         let pixels = d.backend.reference_mut().read_color(back.reference).unwrap().0;
-        assert_eq!(pixels[1], if scale == 1 { 255 } else { 0 });
+        assert_eq!(pixels[1], 255);
     }
 }
 

@@ -218,3 +218,79 @@ fn walk_with_no_lights_calls_the_iterator_once_and_returns() {
     assert_eq!(c.ebx, 0xb0);
     assert_eq!(c.esi, 0x51);
 }
+
+#[test]
+fn radius_and_intensity_blends_match_the_record_port() {
+    use crate::sim_objects::{BODIES, Table};
+    use crate::sim_physics::ORACLES;
+
+    let entry = points::LIGHT_RECORD_UPDATE.base;
+    let record = Table::new(BODIES.iter().filter(|body| body.point.base == entry)).unwrap();
+    let oracle = ORACLES.iter().find(|port| port.point.base == entry).unwrap();
+    for site in [0xc0e1c, 0xc0edb, 0xc0f75] {
+        for (start, end, weight) in [
+            (0.7f32.to_bits(), 2.3f32.to_bits(), 0.3f32.to_bits()),
+            (3.0f32.to_bits(), (-2.0f32).to_bits(), 1.25f32.to_bits()),
+            (0, (-0.0f32).to_bits(), (-0.0f32).to_bits()),
+            (0x0000_0001, 0x7fc1_2345, 0.5f32.to_bits()),
+        ] {
+            for mxcsr in [0x1f80, 0x1fa0] {
+                let setup = || {
+                    let (mut c, mut g) = guest();
+                    c.ebp = ELEMENTS;
+                    c.ebx = BLOCK;
+                    c.esi = if site == 0xc0e1c { BLOCK } else { ELEMENTS + 212 };
+                    c.edi = ELEMENTS + 236;
+                    c.xmm = [[0xac; 16]; 8];
+                    c.xmm[7][..4].copy_from_slice(&1.25f32.to_le_bytes());
+                    c.mxcsr = mxcsr;
+                    for (base, word) in [
+                        (BLOCK + 112, start),
+                        (BLOCK + 116, end),
+                        (BLOCK + 8, start),
+                        (BLOCK + 12, end),
+                        (ELEMENTS + 208, weight),
+                        (STACK + 104, CALLER),
+                    ] {
+                        g.set_u32(base, word).unwrap();
+                    }
+                    (c, g)
+                };
+                let (mut c, mut g) = setup();
+                let (mut expected, mut reference) = setup();
+                let target = drive(&mut c, &mut g, &record, site).unwrap();
+                assert_eq!(target, oracle.invoke(&mut expected, &mut reference, site).unwrap());
+                assert_eq!(c, expected, "site {site:x} MXCSR {mxcsr:x}");
+                assert_eq!(g.read::<272>(ELEMENTS).unwrap(), reference.read::<272>(ELEMENTS).unwrap());
+                assert_eq!(g.read::<144>(STACK - 24).unwrap(), reference.read::<144>(STACK - 24).unwrap());
+            }
+        }
+    }
+}
+
+#[test]
+fn root_lookup_resume_copies_all_lower_bound_lanes_for_clamped_colours() {
+    let (mut c, mut g) = guest();
+    let record = ELEMENTS + STRIDE;
+    c.eax = 0;
+    c.ebp = record;
+    c.ebx = BLOCK;
+    c.esi = record + 212;
+    c.edi = record + 236;
+    c.xmm[1] = [0xb7; 16];
+    c.xmm[1][..4].copy_from_slice(&0f32.to_le_bytes());
+    g.set_u32(points::OBJECTS.base, ARRAY).unwrap();
+    g.set_u32(ELEMENTS + 8, TIME).unwrap();
+    g.set_u8(TIME + 170, 2).unwrap();
+    g.set_u32(STACK + 104, CALLER).unwrap();
+    for (i, v) in [-1.0f32, 0.25, -2.0, 4.0, 0.75, -3.0].into_iter().enumerate() {
+        g.set_u32(record + 212 + 4 * i as u32, v.to_bits()).unwrap();
+    }
+
+    let transfer = drive(&mut c, &mut g, &TABLE, 0xc0f95).unwrap();
+    assert_eq!(transfer, TransferAbi::ret(CALLER));
+    assert_eq!(c.xmm[7], c.xmm[1]);
+    assert_eq!(c.xmm[6], u128::from(1.0f32.to_bits()).to_le_bytes());
+    assert_eq!(c.xmm[5], u128::from(0.75f32.to_bits()).to_le_bytes());
+    assert_eq!(c.xmm[4], c.xmm[1]);
+}

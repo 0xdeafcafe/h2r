@@ -26,7 +26,7 @@
 use hooks::Builder;
 use engine::points;
 use engine::sim_objects::{self as objects, Table, damage};
-use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
+use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
 /// The switch, without its `impl.` prefix, and the label of the bodies'
 /// implementations.
@@ -57,10 +57,49 @@ fn table(switches: &hooks::Switches) -> &'static Table {
     if crate::sim_native::anim_on(switches) { &WITHOUT_AIM } else { &objects::TABLE }
 }
 
+// Each listed segment reads or writes only its CpuAbi and Guest. Bodies
+// with host-visible effects (e.g. finalize records a deletion) run once on
+// the live path, including when reached by a checked segment.
+pub(crate) const SHADOW_POINTS: &[&points::Point] = &[
+    &points::OBJECTS_PRE_PHYSICS,
+    &points::OBJECTS_POST_PHYSICS,
+    &points::OBJECT_FUNCTION_VALUE,
+    &points::LIGHT_RECORD_UPDATE,
+    &points::UNIT_CLAMP_DIRECTION,
+    &points::UNIT_ACTIONS_UPDATE,
+];
+
 pub(crate) fn install(b: &mut Builder) {
+    let installed = on(b.switches());
     let bodies = table(b.switches());
-    install_table(b, bodies, OBJECTS, |_| &[]);
-    install_events(b);
+    for point in SHADOW_POINTS {
+        crate::shadow::register(point.name, OBJECTS, point, installed && bodies.owns(point.base));
+    }
+    if installed {
+        install_table(b, bodies, OBJECTS, |_| &[]);
+        install_events(b);
+    }
+}
+
+fn drive(
+    cpu: &mut CpuAbi,
+    g: &mut Guest,
+    table: &Table,
+    pc: u32,
+    shadow: &crate::shadow::Shadow,
+) -> objects::Result<TransferAbi> {
+    if !shadow.any_enabled() {
+        return objects::drive(cpu, g, table, pc);
+    }
+    objects::drive_with(cpu, g, table, pc, |body, cpu, g, pc| {
+        if SHADOW_POINTS.iter().any(|point| point.base == body.point.base) {
+            shadow.run(body.point.name, cpu, g, pc, crate::shadow::game_tick, &mut |cpu, g| {
+                body.segment(cpu, g, pc)
+            })
+        } else {
+            body.segment(cpu, g, pc)
+        }
+    })
 }
 
 /// The event observers. They write only the game thread's event buffer.
@@ -91,7 +130,7 @@ pub(crate) fn install_table(
                 let site = pc != point.base && body.sites.contains(&pc);
                 if (pc == point.base || site) && table.supports(cpu) {
                     let mut mem = ctx.memory();
-                    return objects::drive(cpu, &mut mem, table, pc);
+                    return drive(cpu, &mut mem, table, pc, &crate::shadow::SHADOW);
                 }
                 original(cpu, ctx, pc, site)
             })
@@ -144,6 +183,64 @@ mod tests {
         static T: std::sync::LazyLock<Table> =
             std::sync::LazyLock::new(|| Table::new(TEST_BODIES.iter()).unwrap());
         &T
+    }
+
+    #[test]
+    fn shadow_checks_a_fused_call_and_resume_without_replaying_the_callee() {
+        use engine::points::Sig;
+        use lifted::code::Assembled;
+        use runtime::guest::Permissions;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        const VALUE: u32 = points::OBJECT_FUNCTION_VALUE.base;
+        const SITE: u32 = VALUE + 5;
+        const STACK: u32 = 0x8100;
+        static START: Point = Point::new("START", VALUE + 32, Sig::Opaque, "");
+        static EFFECT: Point = Point::new("EFFECT", VALUE + 16, Sig::Opaque, "");
+        static CALLS: AtomicU32 = AtomicU32::new(0);
+        static BODIES: [Body; 3] = [
+            Body { point: &START, sites: &[], run: |_, _| Ok(Next::Tail { target: VALUE }) },
+            Body { point: &points::OBJECT_FUNCTION_VALUE, sites: &[SITE], run: |cx, pc| {
+                if pc == VALUE {
+                    Ok(Next::Call { target: EFFECT.base, site: SITE })
+                } else {
+                    cx.cpu.eax = 27;
+                    Ok(Next::Ret { pop: 0 })
+                }
+            } },
+            Body { point: &EFFECT, sites: &[], run: |_, _| {
+                CALLS.fetch_add(1, Ordering::Relaxed);
+                Ok(Next::Ret { pop: 0 })
+            } },
+        ];
+        let table = Table::new(BODIES.iter()).unwrap();
+        let shadow = crate::shadow::Shadow::new();
+        let value = &points::OBJECT_FUNCTION_VALUE;
+        shadow.register(value.name, OBJECTS, value.name, VALUE, true);
+
+        for answer in [27, 28] {
+            // Synthetic original: call EFFECT; mov eax,answer; ret.
+            let bytes = [0xe8, 11, 0, 0, 0, 0xb8, answer, 0, 0, 0, 0xc3];
+            shadow.set_code(Box::new(Assembled::new(VALUE, &bytes)));
+            shadow.enable(&[OBJECTS.into()], None, None).unwrap();
+            let mut g = Guest::new();
+            g.map_zeroed(0x8000, 0x1000, Permissions::RW).unwrap();
+            g.set_u32(STACK, 0xabcd).unwrap();
+            let mut cpu = CpuAbi { esp: STACK, ..Default::default() };
+            let before = CALLS.load(Ordering::Relaxed);
+            let transfer = drive(&mut cpu, &mut g, &table, START.base, &shadow).unwrap();
+            assert_eq!(CALLS.load(Ordering::Relaxed) - before, 1);
+            assert_eq!(transfer, TransferAbi::ret(0xabcd));
+            assert_eq!((cpu.esp, cpu.eax), (STACK + 4, 27));
+            let status = shadow.status();
+            assert_eq!((status.calls, status.checked, status.skipped), (2, 2, 0));
+            if answer == 27 {
+                assert_eq!(status.matched, 2);
+            } else {
+                assert_eq!((status.matched, status.mismatched), (1, 1));
+                assert_eq!(status.mismatches[0].pc, format!("{SITE:#010x}"));
+            }
+        }
     }
 
     #[test]

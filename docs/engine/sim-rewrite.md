@@ -8,14 +8,17 @@ with it at every call. The phase 1c bodies cover
 [markers](markers.md), the [first-person palette](palette.md), the
 [unit pose](unit-pose.md), unit aim (`c7840`) and the
 [first-person filters](first-person-filters.md) (`166d75`, including
-`11eed0`). Slice 1d implements the [channel manager and graph lookups](animation-manager.md). Run parity and the cumulative timing gate remain open.
-Under the collision switch, phase 2 compares the BSP vector test's hit
-byte and result record against the guest ([entries C and D](collision-queries.md)).
-The outer BSP walk also compares the returned context. The native matcher
-caches edge origins and deltas for short surface rings and tests them
-four at a time ([ring layout](sim-rewrite-collision.md#44-rings-and-the-inside-test)).
-The whole query's object-reference sphere pretest runs through the Rust
-sphere kernel at its guest call site ([sphere pretest](collision-queries.md#object-reference-sphere-pretest)).
+`11eed0`). Slice 1d compares all six [channel manager and graph entries](animation-manager.md)
+with the guest at their entry and return selectors. The guest supplies the
+result. The verification ladder and cumulative 1.2 ms/tick gate remain open.
+Phase 2 answers point, location and MOPP box queries, the object-reference
+sphere pretest and exact exits in the BSP walk, instance trace, cluster
+flood and object visit. The whole-query planner follows structure,
+liquid, instances and object models. It compares its answer at the
+lifted return and supplies the read-only `collision.trace` method.
+The general Havok ray remains under live parity. The exit ladder includes
+run hashes, a cold-cache comparison, cross-architecture results and timing.
+The [collision entry contracts](collision-queries.md) list each exit.
 Phase 4 runs as an opt-in sound arm. Its synthetic differential harness compares the
 guest and Rust sound bodies at each call and return. The owner-image, match,
 campaign, cross-architecture and timing results are pending.
@@ -359,8 +362,8 @@ as runtime before).
   - surfaces, planes and leaves as flat arrays;
   - MOPP programs pre-decoded (the `mopp` crate already holds the interpreter
     as a query model and an offline compiler);
-  - an object spatial index that replaces the `bb050` visit-mark walk on the
-    Rust side, while still writing the guest's visit stamps.
+  - a decoded portal graph and a per-query traversal of the live object
+    reference lists, preserving visit order and guest stamps.
 - *Entries:*
   - collision query `1697c0`;
   - BSP segment `1de630` and `1de6d0`;
@@ -374,8 +377,9 @@ as runtime before).
     ([collision-queries.md](collision-queries.md), "Entry I");
   - the datum walk `b89b0`;
   - spatial query `14a370` and the cluster walk `14a5b0`.
-- *Not in this phase.* The integer MOPP box query `2ff8b0` is called only
-  from the world step's contact agents (0.79%). It moves with Havok.
+- *Havok boxes.* The collision world answers the box wrapper `300150`.
+  Its inner integer interpreter `2ff8b0` and contact-agent callers also
+  belong to the Havok world-step census in phase 5.
 - *Callers.* The observer camera asks for 32% of the queries and 82% of the
   ray casts (`16f280` → `170fd0` → `171830`), sound 19% (listener leaf
   `11bed0`, obstruction `221e30`), the object spatial marks 24% and aim
@@ -458,9 +462,11 @@ as runtime before).
 
 **AI, actors, pathfinding and HaloScript (campaign; slot set by census B).**
 
-- *HaloScript.* The `crates/formats/hs` VM exists and is not wired in
-  ([hs_vm.md](hs_vm.md)). It goes in behind `impl.sim.native.hs`, with
-  arena-hash parity on campaign levels.
+- *HaloScript.* Under `impl.sim.native.hs` the [Rust VM](hs_vm.md#live-comparison)
+  compares supported whole threads, scheduling order, expression results,
+  global cells and builtin argument dispatch against the guest. The guest
+  is authoritative. Promotion requires engine-call and suspension coverage
+  plus campaign arena-hash parity through the verification ladder.
 - *Pathfinding.* `crates/formats/pathfind` decodes and generates the data.
 - *AI.* `AI_TARGET_SCORE` `265d30` is already a named hot point.
 - *Order.* Set by the phase 0 campaign census, not guessed here.
@@ -492,8 +498,8 @@ still uses them.
 | **1a** | Animation sampling (detailed below). 3.5% of the thread. | `impl.sim.native.anim` | Ladder steps 1-6 clean. Waterworks ≥ 0.3 ms/tick faster. Evaluator family self samples down ≥ 80%. Retires `native_rotation_codec` and `native_animation_stream`. This delta calibrates the model's *k*. |
 | **1b** | Node-matrix build (`1421f0`, `142a60`, `141e10`, the loop that drives them in `bd090`'s pose step, and `1dd1c0`). 2.9%. | same switch; the `bd090` walk also has `impl.sim.native.anim.skeleton` (on) | Ladder clean. Cumulative ≥ 0.6 ms. Retires `native_transform_compose` and `native_pose_matrix`. |
 | **1c** | Unit pose and overlays (`112070` with its aim channels and aim angles), the unit aim update `c7840`, first-person pose and filters (`16760c`, `166d75` with its filter step `11eed0`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
-| **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. Retires `native_graph_resolve`. |
-| **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. |
+| **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. The animation switch owns graph resolution. |
+| **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. The subsystem owns collision dispatch and the per-function bodies serve as differential oracles. |
 | **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (units, then bipeds, vehicles, weapons) | `impl.sim.native.objects` | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
 | **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm. Promote after the ladder matches, including voice start and completion order per tick, and Waterworks saves ≥ 0.6 ms/tick. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |
@@ -676,10 +682,10 @@ The differential in `engine/tests/sim_physics_differential.rs` checks
 the transfer, CPU and memory at the boundaries and requires every site.
 The phase 1c ladder and cumulative timing gate are in the table above.
 
-The unit animation state `111650`
-is a body of the object update (slice 6c, [object-update.md](object-update.md)). 1d's step 0 is the write set of `1c66a0`, `1c6560` and
-`1cd590` (channel state in object data) and the readers of the graph
-resolve results.
+The unit animation state `111650` is a body of the object update
+(slice 6c, [object-update.md](object-update.md)). The [channel manager
+contract](animation-manager.md) describes the channel writes, callback
+frames and sampling view that the phase 1d arms compare.
 
 ## 6. Threading inside a tick
 

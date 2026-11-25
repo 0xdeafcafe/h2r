@@ -6609,6 +6609,7 @@ name = "sim-anim"
 version = "0.1.0"
 dependencies = [
  "sim-core",
+ "simd",
 ]
 
 [[package]]
@@ -6627,6 +6628,8 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "hooks",
+ "hs",
+ "ir",
  "lifted",
  "runtime",
  "sim-ext",
@@ -6636,7 +6639,11 @@ dependencies = [
 name = "sim-collision"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "host-dirs",
+ "memmap2",
  "mopp",
+ "sha2 0.10.9",
  "sim-core",
 ]
 

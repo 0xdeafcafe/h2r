@@ -215,6 +215,7 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_CARRIER, sites: &[], run: biped::carrier },
     Body { point: &points::BIPED_TIMER_UPDATE, sites: &biped::TIMER_SITES, run: biped::timer_update },
     Body { point: &points::GAME_SECONDS_TO_TICKS, sites: &[], run: biped::seconds_to_ticks },
+    Body { point: &points::UNIT_ACTIONS_UPDATE, sites: &biped::ACTIONS_SITES, run: biped::actions_update },
     Body { point: &points::BIPED_ACTION, sites: &biped::ACTION_SITES, run: biped::action },
     Body { point: &points::BIPED_ANIMATION_KIND, sites: &[], run: biped::animation_kind },
     Body { point: &points::BIPED_AIRBORNE_TEST, sites: &[], run: biped::airborne_test },
@@ -401,43 +402,63 @@ fn unowned(pc: u32) -> GuestFault {
 ///
 /// No yield point is added: the scheduler gets control at true callouts,
 /// as it does inside a lifted function.
-pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, mut pc: u32) -> Result<TransferAbi> {
-    let (first, mut fused) = (pc, 0);
-    loop {
-        progress(&mut fused, first, pc);
-        let (body, _) = table.at(pc).ok_or_else(|| unowned(pc))?;
-        let next = (body.run)(&mut Cx { cpu: &mut *cpu, g: &mut *g }, pc)?;
+pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, pc: u32) -> Result<TransferAbi> {
+    drive_with(cpu, g, table, pc, Body::segment)
+}
+
+impl Body {
+    /// One segment, including the guest stack change made by its transfer.
+    /// The caller decides whether to fuse into the target or visit the runtime.
+    pub fn segment(&self, cpu: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<TransferAbi> {
+        let next = (self.run)(&mut Cx { cpu, g }, pc)?;
         match next {
-            Next::Call { target, site } | Next::CallOriginalResume { target, site } => {
-                if matches!(next, Next::CallOriginalResume { .. }) {
-                    debug_assert!(table.at(site).is_none(), "lifted return site {site:#x} is owned");
-                } else {
-                    debug_assert!(body.sites.contains(&site), "{} omitted site {site:#x}", body.point.name);
-                }
+            Next::Call { target, site } => {
+                debug_assert!(
+                    self.sites.contains(&site),
+                    "{} calls {target:#x} from an unlisted site {site:#x}",
+                    self.point.name
+                );
                 frame::push(cpu, g, site)?;
-                if table.fuses(target) && table.supports(cpu) {
-                    pc = target;
-                    continue;
-                }
-                return Ok(TransferAbi::call(target, site));
+                Ok(TransferAbi::call(target, site))
+            }
+            Next::CallOriginalResume { target, site } => {
+                frame::push(cpu, g, site)?;
+                Ok(TransferAbi::call(target, site))
             }
             Next::Ret { pop } => {
                 let target = frame::pop(cpu, g)?;
                 cpu.esp = cpu.esp.wrapping_add(u32::from(pop));
-                if table.resumes(target) && table.supports(cpu) {
-                    pc = target;
-                    continue;
-                }
-                return Ok(TransferAbi::ret(target));
+                Ok(TransferAbi::ret(target))
             }
-            Next::Tail { target } => {
-                if table.fuses(target) && table.supports(cpu) {
-                    pc = target;
-                    continue;
-                }
-                return Ok(TransferAbi::jump(target));
-            }
+            Next::Tail { target } => Ok(TransferAbi::jump(target)),
         }
+    }
+}
+
+/// As [`drive`], with a caller-supplied runner for each individual segment,
+/// including internal calls and resumes. Shadow checks use this boundary to
+/// compare one segment before running its callee.
+pub fn drive_with(
+    cpu: &mut CpuAbi,
+    g: &mut Guest,
+    table: &Table,
+    mut pc: u32,
+    mut run_segment: impl FnMut(&Body, &mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
+) -> Result<TransferAbi> {
+    let (first, mut fused) = (pc, 0);
+    loop {
+        progress(&mut fused, first, pc);
+        let (body, _) = table.at(pc).ok_or_else(|| unowned(pc))?;
+        let transfer = run_segment(body, cpu, g, pc)?;
+        let fuse = match transfer.kind {
+            runtime::abi::CALL | runtime::abi::JUMP => table.fuses(transfer.target_pc),
+            runtime::abi::RETURN => table.resumes(transfer.target_pc),
+            _ => false,
+        };
+        if !fuse || !table.supports(cpu) {
+            return Ok(transfer);
+        }
+        pc = transfer.target_pc;
     }
 }
 

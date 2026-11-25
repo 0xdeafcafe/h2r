@@ -23,9 +23,9 @@ use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
     self, ConvolutionDraw, ConvolutionGrid, Dest, QuadFrame, ScreenConvolution, ScreenDraw,
-    ScreenKey, ScreenTarget, StripRaster, StripVertex,
+    ScreenKey, ScreenTarget, PostRaster, StripVertex,
 };
-use native_render::screen_look::ScreenStage;
+use native_render::screen_look::{CombinerInputs, ScreenStage};
 use render_bridge::native_post::{
     self as post_feature, CallSite, Fp, Host, PostCall, ScreenEffect,
 };
@@ -702,7 +702,12 @@ fn swallow_call(site: CallSite) -> d3d::SwallowCall {
 struct ScreenPass {
     effects: Arc<ScreenEffects>,
     call: ScreenCall,
-    raster: OnceLock<Vec<StripRaster>>,
+    raster: OnceLock<Vec<ScreenRaster>>,
+}
+
+struct ScreenRaster {
+    strip: PostRaster,
+    convolutions: Vec<PostRaster>,
 }
 
 impl ScreenPass {
@@ -722,7 +727,7 @@ impl ScreenPass {
             .raster
             .get()
             .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
-        for ((key, dest, strips, convolutions), &raster) in self.call.passes.iter().zip(raster) {
+        for ((key, dest, strips, convolutions), raster) in self.call.passes.iter().zip(raster) {
             let program = self
                 .effect(*key)
                 .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
@@ -730,10 +735,11 @@ impl ScreenPass {
                 key: *key,
                 program,
                 strips,
-                raster,
+                raster: raster.strip,
                 dest: *dest,
                 values: self.call.values,
                 convolutions,
+                convolution_rasters: &raster.convolutions,
             });
         }
         let images = &self.effects.images;
@@ -834,8 +840,8 @@ impl d3d::SwallowPass for ScreenPass {
                         "the resolved screen strip differs from the planned vertices".into(),
                     );
                 }
-                let mut live = strip_raster(original.draw, program.state.alpha_test)
-                    .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
+                let mut live = post_raster(original.draw, Some(program.combiner_inputs))
+                .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
                 for (stage, source) in reads.iter().enumerate() {
                     if let Some(index) = source {
                         let is_view = *index == 0;
@@ -850,15 +856,18 @@ impl d3d::SwallowPass for ScreenPass {
                     return Err("screen strip raster state changed within the pass".into());
                 }
             }
-            raster.push(pass_raster.ok_or("the screen pass has no strips")?);
+            let strip = pass_raster.ok_or("the screen pass has no strips")?;
+            let mut convolution_rasters = Vec::new();
             for q in convolutions.iter().flat_map(|c| &c.draws) {
+                let frame = self.call.frame.as_ref().ok_or("missing convolution frame")?;
+                let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&frame.combiner));
+                let mut grid_raster = None;
                 for _ in 0..q.grid.as_ref().map_or(1, |g| g.strips.len()) {
                     let original = originals.next().ok_or("missing convolution draw")?;
-                    if !matches_colour_state(original.draw, None, wgpu::ColorWrites::ALL, None) {
-                        return Err(format!(
-                            "screen effect {:#010x}: live convolution colour state differs",
-                            self.call.egor.0
-                        ));
+                    let live = post_raster(original.draw, Some(inputs))
+                        .map_err(|why| format!("screen convolution into {}: {why}", q.dest))?;
+                    if grid_raster.replace(live).is_some_and(|first| first != live) {
+                        return Err("screen convolution raster state changed within the grid".into());
                     }
                     for stage in 0..4 {
                         if original.sampled[stage] {
@@ -866,7 +875,9 @@ impl d3d::SwallowPass for ScreenPass {
                         }
                     }
                 }
+                convolution_rasters.push(grid_raster.ok_or("the convolution has no strips")?);
             }
+            raster.push(ScreenRaster { strip, convolutions: convolution_rasters });
             drawn
                 .pass(program, *dest, convolutions)
                 .map_err(|e| format!("{e:?}"))?;
@@ -974,42 +985,115 @@ fn matches_strip(draw: &d3d::ResolvedDraw, strip: &[StripVertex]) -> bool {
 
 // A colour-only recording can omit a bound depth attachment if all fragments
 // pass and neither depth nor stencil can be changed.
-fn post_needs_depth(state: &gfx::RenderState, bound: bool) -> bool {
+fn post_needs_depth(state: &gfx::RenderState, format: Option<wgpu::TextureFormat>) -> bool {
     use gfx::state::{CompareFunc, DepthBufferMode, StencilOp};
+
+    let Some(format) = format else { return false };
+    let depth_active = state.depth_mode != DepthBufferMode::Disabled
+        && (state.depth_write || state.depth_func != CompareFunc::Always);
     let stencil = &state.stencil;
-    bound && ((state.depth_mode != DepthBufferMode::Disabled
-        && (state.depth_write || state.depth_func != CompareFunc::Always))
-        || (stencil.enable && (stencil.func != CompareFunc::Always
-            || (stencil.write_mask != 0 && stencil.pass != StencilOp::Keep))))
+    let stencil_active = format.has_stencil_aspect()
+        && stencil.enable
+        && (stencil.func != CompareFunc::Always
+            || (stencil.write_mask != 0 && stencil.pass != StencilOp::Keep));
+    depth_active || stencil_active
+}
+
+// The ordinary programmable path consumes these same decoded defaults when
+// a render word fails to decode. Only sampled-stage sampler defaults can
+// differ from the native template's static state.
+fn post_sampler_default_is_uncertain(draw: &d3d::ResolvedDraw) -> bool {
+    use d3d::state::BadState;
+    use gfx::state::TextureStageStateType as S;
+    let sampled = draw.sampled_texture_stages();
+    draw.state.bad.iter().any(|bad| match *bad {
+        BadState::Render { .. } => false,
+        BadState::Stage { stage, state, .. } => {
+            sampled.get(stage as usize).copied().unwrap_or(false)
+                && matches!(S::from_index(state),
+                    S::AddressU | S::AddressV | S::AddressW | S::MagFilter
+                    | S::MinFilter | S::MipFilter | S::MipMapLodBias
+                    | S::MaxMipLevel | S::MaxAnisotropy | S::BorderColor)
+        }
+    })
+}
+
+fn check_combiner_raster(
+    state: &gfx::RenderState,
+    two_sided: bool,
+    inputs: CombinerInputs,
+) -> Result<(), &'static str> {
+    if state.fog_enable && inputs.fog {
+        return Err("the post combiner reads live fog");
+    }
+    if inputs.colours {
+        if state.shade_mode == gfx::state::ShadeMode::Flat {
+            return Err("the post combiner reads flat-shaded vertex colours");
+        }
+        if two_sided {
+            return Err("the post combiner reads two-sided vertex colours");
+        }
+    }
+    Ok(())
+}
+
+fn live_combiner_inputs(draw: &d3d::ResolvedDraw) -> CombinerInputs {
+    let Some(def) = draw.shader.pixel_shader.as_deref() else {
+        return CombinerInputs { colours: true, fog: true };
+    };
+    CombinerInputs::read(&d3d::nv2a::guest_def(
+        def,
+        &draw.shader.combiner_state,
+        draw.raw.render[d3d::state::slot::PS_TEXTURE_MODES as usize],
+        draw.shader.final_combiner_latch,
+    ))
 }
 
 /// The template supplies shader code. Colour state can be inherited from
 /// the previous draw or applied by the template wrapper outside that code.
-fn strip_raster(
+fn post_raster(
     draw: &d3d::ResolvedDraw,
-    alpha: Option<(wgpu::CompareFunction, u8)>,
-) -> Result<StripRaster, &'static str> {
+    planned_inputs: Option<CombinerInputs>,
+) -> Result<PostRaster, &'static str> {
     use gfx::state::{CompareFunc, FillMode, ShadeMode};
     let state = &draw.state.render;
-    let live_alpha =
-        (state.alpha_test_enable && state.alpha_func != CompareFunc::Always).then(|| {
-            (
-                gfx::translate::compare_function(state.alpha_func),
-                state.alpha_ref,
-            )
-        });
-    if live_alpha != alpha {
-        return Err("the live alpha test differs from the compiled screen program");
+    let alpha_test = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
+        .then(|| (d3d::nv2a::alpha_func(state.alpha_func), state.alpha_ref));
+    if post_needs_depth(state, draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)) {
+        return Err("the post draw requires its live depth/stencil attachment");
     }
-    if post_needs_depth(state, draw.target.depth_format.is_some())
-        || state.fog_enable
-        || state.fill_mode != FillMode::Solid
-        || state.back_fill_mode != FillMode::Solid
-        || state.shade_mode == ShadeMode::Flat
-        || draw.raw.render[141] != 0
-        || !draw.state.bad.is_empty()
+    // Build 5849's STIPPLEENABLE and TWOSIDEDLIGHTING slots.
+    const STIPPLE_ENABLE: usize = 83;
+    const TWO_SIDED_LIGHTING: usize = 141;
+    let stipple = state.fill_mode == FillMode::Solid
+        && draw.hw.stipple_control.unwrap_or(draw.raw.render[STIPPLE_ENABLE]) != 0;
+    if planned_inputs.is_none() && stipple {
+        return Err("the colour quad requires the polygon stipple mask");
+    }
+    let two_sided = draw.raw.render[TWO_SIDED_LIGHTING] != 0;
+    if let Some(planned) = planned_inputs {
+        check_combiner_raster(state, two_sided, planned)?;
+        if state.fog_enable || two_sided || state.shade_mode == gfx::state::ShadeMode::Flat {
+            check_combiner_raster(state, two_sided, live_combiner_inputs(draw))?;
+        }
+        if post_sampler_default_is_uncertain(draw) {
+            return Err("the post draw has an invalid sampled-stage sampler state");
+        }
+    } else {
+        check_combiner_raster(state, two_sided, CombinerInputs { colours: true, fog: true })?;
+        if !draw.state.bad.is_empty() {
+            return Err("the colour quad requires a rejected guest state");
+        }
+    }
+    // The post pipelines use the host translator's front fill. The other
+    // colour-quad clients build fixed solid pipelines.
+    if planned_inputs.is_none()
+        && (state.fill_mode != FillMode::Solid || state.back_fill_mode != FillMode::Solid)
     {
-        return Err("the live screen raster state requires the D3D pipeline");
+        return Err("the colour quad requires solid front and back fill");
+    }
+    if draw.ui_fit.is_some() || draw.retail_constants.is_some() {
+        return Err("the post draw requires copy-specific projection");
     }
     let clip = draw
         .clip
@@ -1020,13 +1104,19 @@ fn strip_raster(
         wgpu::PrimitiveTopology::TriangleStrip,
         gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
     );
-    Ok(StripRaster {
+    let z_scale = gfx::format::d3dz_max(draw.target.depth_format);
+    Ok(PostRaster {
+        alpha_test,
+        stipple: stipple.then_some(draw.hw.stipple_pattern),
+        z_scale: Some(z_scale),
+        w_clip: d3d::hw::w_buffered(draw).then(|| d3d::hw::w_clip_range(&draw.hw, z_scale)),
         blend: gfx::translate::blend_state(state),
         blend_constant: gfx::translate::blend_constant(state),
         writes: gfx::translate::color_writes(state.color_write),
         front_face: primitive.front_face,
         cull: primitive.cull_mode,
-        depth_clamp: state.depth_clamp,
+        depth_clamp: d3d::hw::draw_clamps_depth(draw),
+        fill: state.fill_mode,
         opaque_view: [false; 4],
         clip: (!clip.is_whole(draw.target.width, draw.target.height)).then_some([
             clip.x,
@@ -1043,7 +1133,10 @@ pub(crate) fn matches_colour_state(
     writes: wgpu::ColorWrites,
     alpha: Option<(wgpu::CompareFunction, u8)>,
 ) -> bool {
-    strip_raster(draw, alpha).is_ok_and(|r| {
+    let state = &draw.state.render;
+    let live_alpha = (state.alpha_test_enable && state.alpha_func != gfx::state::CompareFunc::Always)
+        .then(|| (gfx::translate::compare_function(state.alpha_func), state.alpha_ref));
+    live_alpha == alpha && post_raster(draw, None).is_ok_and(|r| {
         r.blend == blend && r.writes == writes && r.cull.is_none() && r.clip.is_none()
     })
 }
@@ -1084,7 +1177,7 @@ pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
 
 /// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
-    colours: OnceLock<Vec<glow::QuadColour>>,
+    raster: OnceLock<Vec<PostRaster>>,
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
 }
@@ -1133,7 +1226,7 @@ impl GlowPass {
     fn prepare(&self, t: PostCopy<'_>) -> Option<glow::GlowCommands> {
         let view = slot(t.slots, 0)?;
         let intermediates = [1, 2].map(|i| slot(t.slots, i).map(glow::PostSurface::from));
-        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_colours(
+        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_raster(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
@@ -1143,7 +1236,7 @@ impl GlowPass {
                 intermediates,
             },
             &self.plan,
-            Some(self.colours.get()?),
+            Some(self.raster.get()?),
         );
         result
             .map_err(|error| log_rejection(|| format!("glow on live target: {error:?}")))
@@ -1164,17 +1257,11 @@ impl d3d::SwallowPass for GlowPass {
         if originals.len() != self.plan.draws.len() {
             return Err("glow quad count differs from plan".into());
         }
-        let mut colours = Vec::with_capacity(originals.len());
+        let mut rasters = Vec::with_capacity(originals.len());
         for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
-            let raster = strip_raster(original.draw, None)?;
-            if raster.cull.is_some() || raster.clip.is_some() {
-                return Err(format!("glow into {:?}: quad requires culling or clipping", want.dest));
-            }
-            colours.push(glow::QuadColour {
-                blend: raster.blend,
-                constant: raster.blend_constant,
-                writes: raster.writes,
-            });
+            let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&want.combiner));
+            let raster = post_raster(original.draw, Some(inputs))?;
+            rasters.push(raster);
             for stage in 0..4 {
                 if original.sampled[stage] {
                     let source = want.stages[stage];
@@ -1188,7 +1275,7 @@ impl d3d::SwallowPass for GlowPass {
                 }
             }
         }
-        self.colours.set(colours).map_err(|_| "glow colours already captured".to_owned())
+        self.raster.set(rasters).map_err(|_| "glow raster already captured".to_owned())
     }
 }
 
@@ -1310,7 +1397,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let targets = targets(&plan);
         let pass: Box<dyn d3d::SwallowPass> = Box::new(GlowPass {
-            colours: OnceLock::new(),
+            raster: OnceLock::new(),
             plan,
             gpu: Arc::clone(&self.gpu),
         });
@@ -2557,6 +2644,8 @@ mod tests {
             signed: [[false; 4]; 4],
             vertex: Default::default(),
             pixel: Default::default(),
+            combiner_inputs: Default::default(),
+            raster_shader: None,
             inputs: 0x1f,
             constants: Default::default(),
             state: native_render::pass_state::PassState {
@@ -2887,19 +2976,45 @@ mod tests {
     fn colour_only_quads_keep_effective_depth_and_stencil_operations() {
         use gfx::state::{CompareFunc, StencilOp};
         let mut state = gfx::RenderState::default();
-        assert!(!post_needs_depth(&state, false));
-        assert!(post_needs_depth(&state, true));
+        let depth = Some(wgpu::TextureFormat::Depth24PlusStencil8);
+        assert!(!post_needs_depth(&state, None));
+        assert!(post_needs_depth(&state, depth));
         state.depth_write = false;
-        assert!(post_needs_depth(&state, true));
+        assert!(post_needs_depth(&state, depth));
         state.depth_func = CompareFunc::Always;
         state.stencil.enable = true;
-        assert!(!post_needs_depth(&state, true));
+        assert!(!post_needs_depth(&state, depth));
         state.stencil.pass = StencilOp::Replace;
-        assert!(post_needs_depth(&state, true));
+        assert!(post_needs_depth(&state, depth));
         state.stencil.write_mask = 0;
-        assert!(!post_needs_depth(&state, true));
+        assert!(!post_needs_depth(&state, depth));
         state.stencil.func = CompareFunc::Equal;
-        assert!(post_needs_depth(&state, true));
+        assert!(post_needs_depth(&state, depth));
+        assert!(!post_needs_depth(&state, Some(wgpu::TextureFormat::Depth16Unorm)));
+    }
+
+    #[test]
+    fn inherited_shader_raster_state_only_matters_for_inputs_the_combiner_reads() {
+        use gfx::state::ShadeMode;
+        use shaders::PixelShaderDef;
+        use shaders::psh::bits::{REG_FOG, REG_T0, REG_V1R0_SUM, final_efg, inputs};
+
+        let state = gfx::RenderState {
+            fog_enable: true,
+            shade_mode: ShadeMode::Flat,
+            ..Default::default()
+        };
+        let combiner = |source| CombinerInputs::read(&PixelShaderDef {
+            final_inputs_abcd: inputs(0, 0, 0, source),
+            final_inputs_efg: final_efg(0, 0, REG_T0, 0),
+            ..Default::default()
+        });
+        assert_eq!(check_combiner_raster(&state, true, combiner(REG_T0)), Ok(()));
+        assert_eq!(check_combiner_raster(&state, true, combiner(REG_FOG)), Err("the post combiner reads live fog"));
+        assert_eq!(check_combiner_raster(&state, true, combiner(REG_V1R0_SUM)), Err("the post combiner reads flat-shaded vertex colours"));
+        let smooth = gfx::RenderState { shade_mode: ShadeMode::Gouraud, ..state };
+        assert_eq!(check_combiner_raster(&smooth, true, combiner(REG_V1R0_SUM)), Err("the post combiner reads two-sided vertex colours"));
+        assert_eq!(check_combiner_raster(&state, true, CombinerInputs::read(&PixelShaderDef::default())), Err("the post combiner reads live fog"));
     }
 
     #[test]
@@ -2914,7 +3029,7 @@ mod tests {
             draws: vec![],
         };
         let glow = GlowPass {
-            colours: OnceLock::new(),
+            raster: OnceLock::new(),
             plan: plan.clone(),
             gpu: Arc::new(Mutex::new(GpuGlow::new())),
         };

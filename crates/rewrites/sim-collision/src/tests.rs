@@ -694,3 +694,34 @@ fn budget_is_rechecked_after_a_concurrent_first_decode() {
             .is_ok()
     );
 }
+
+#[test]
+fn straight_walk_requires_a_single_leaf_and_no_surface_lookup() {
+    use crate::bsp::segment::{KIND_SOLID, PlaneDistances, StraightWalk};
+
+    let img = image(&wall(0));
+    let bsp = decode(&img);
+    let q = query([-2.0, 0.0, 0.0], [0.5, 0.0, 0.0], 0);
+    let result = run(&img, &bsp, &q).unwrap();
+    assert_eq!(
+        result.straight,
+        Some(StraightWalk {
+            last: Some(PlaneDistances {
+                distance: (-2.0f32).to_bits(),
+                delta: 0.5f32.to_bits(),
+                start: (-2.0f32).to_bits(),
+                end: (-1.5f32).to_bits(),
+            })
+        })
+    );
+    let direct = bsp.vector_test(&img, &q, leaf(0), 0, 1.0f32.to_bits()).unwrap();
+    assert_eq!(direct.straight, Some(StraightWalk { last: None }));
+    // A crossing that ultimately misses still used the recursive stack.
+    let cross = query([-2.0, 0.0, 0.0], [3.0, 0.0, 0.0], 0);
+    assert!(run(&img, &bsp, &cross).unwrap().straight.is_none());
+    // Visiting just one leaf can also run the matcher and then miss.
+    let from_solid = Segment { flags: 2, prev_kind: KIND_SOLID, plane: NONE, ..q };
+    let lookup = run(&img, &bsp, &from_solid).unwrap();
+    assert!(lookup.hit.is_none());
+    assert!(lookup.straight.is_none());
+}

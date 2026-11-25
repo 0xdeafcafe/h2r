@@ -1,30 +1,25 @@
-//! Guest adapters for native point and location queries, the MOPP box
-//! query, the differential BSP segment, cluster flood and object visit
-//! kernels, and the general MOPP ray's parity arm (`mopp_ray`, observers
-//! only). See docs/engine/collision-queries.md.
+//! Guest adapters for the phase two collision world.
+//! See docs/engine/collision-queries.md for the ABI and admission rules.
 //!
-//! Each adapter reads the entry's arguments and the live guest words its
-//! query needs, runs the kernel against the decoded BSP, and only then
-//! writes what the original leaves in guest memory. It returns `Ok(None)`
-//! with nothing written when the kernel bails; the installer then runs the
-//! original from the untouched entry state.
-//!
-//! Point and location also replay the saved stack words, scratch registers
-//! and flags. The vector entries set the result as the original does.
-//! Callee-saved registers, EFLAGS, `esp` and the return are exact. The
-//! remainder of the vector clobber set (scratch GPRs and XMM registers,
-//! x87 condition codes, last-instruction words and the dead stack below
-//! `esp`) is excluded only in the vector differential harness.
-//! The x87 precision flag the original's split divisions raise is set.
+//! An authoritative path checks its inputs and writable spans before it
+//! changes guest state. C, D, G and H replay scratch registers and frame
+//! bytes on selected exits. Their broader kernels feed predictions for
+//! comparison at the lifted return. J uses the same read-only trace for
+//! its return comparison and the agent API.
 mod cluster;
 mod flood;
+pub use flood::spatial_parity;
+pub mod instance;
 pub mod layout;
 mod mopp_box;
 pub mod mopp_ray;
 mod point;
 mod preflight;
+pub mod query;
+pub mod source_audit;
 mod sources;
 mod sphere;
+pub mod straight;
 mod topology;
 pub mod vector_parity;
 pub use flood::{cluster_flood, object_spatial_visit};
@@ -49,7 +44,7 @@ use std::sync::LazyLock;
 pub static EPOCH: Epoch = Epoch::new();
 
 /// The process-wide collision world.
-pub static WORLD: LazyLock<CollisionWorld> = LazyLock::new(|| CollisionWorld::new(&EPOCH));
+pub static WORLD: LazyLock<CollisionWorld> = LazyLock::new(|| CollisionWorld::with_shared_store(&EPOCH));
 
 /// Drop every decoded BSP.
 pub fn invalidate() {
