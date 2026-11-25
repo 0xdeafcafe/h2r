@@ -1,7 +1,7 @@
 # Halo 2 engine films
 
-Status: Design. The film file's tick chunks, the action capture at the simulation update and the stats container are built; the game start, the update's tail, extension blocks and one file for each game are not ([theater-design.md](theater-design.md#slices)).
-Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/tests.rs`.
+Status: Design. The film file's tick chunks, the game start block (written for each game the recorder sees), the action capture at the simulation update and the stats container are built; the update's tail, extension blocks and one file for each game are not, and the file still carries the machine part and a seed ([theater-design.md](theater-design.md#slices)).
+Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/start.rs` (`GameStart`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder), `crates/extensions/game/src/theater/game_start.rs` (the capture). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/start/tests.rs`, `crates/live/film/src/tests.rs`, `crates/extensions/game/src/theater/game_start/tests.rs`.
 Switch: `film-autorecord` (on), listed in [switches.md](../runtime/switches.md).
 
 An `.h2film` is a film of one game: the game options the game started
@@ -176,20 +176,27 @@ film is written; a reader of such a file walks the blocks and takes a
 checkpoint block as its last chunk. Chunk i covers updates 256 i + 1 to
 256 i + 256, so an update's chunk is found without a search.
 
-**The game start** is a list of sections, each a four-byte tag, a u32
-length and that many bytes (`film::start`). A reader refuses a missing
-required section, a repeated one and a length past the frame.
+**The game start** is a u32 section count and that many sections, each a
+four-byte tag, a u32 length and that many bytes (`film::start`), inside
+one zstd frame. A reader refuses a missing required section, a repeated
+or unknown one, a length past the frame, bytes after the last section and
+an options block that is not 0x1118 bytes. The file stores it as a block of
+kind 4 (`FilmWriter::game_start`); a film of a session holds one for each
+game it played, each written just before its first update's tick, and
+`FilmReader::game_start` reads the last, the game the film is of. Until the
+seed and the machine part go (slice 7a) the block sits among the other
+blocks and the header's flag bit 3 says the file has one.
 
 | Section | Holds | Required |
 |---|---|---|
 | `STMP` | JSON: the XBE digest, the simulation contract, the hook digest, the build that recorded | yes |
-| `GAME` | JSON: the film's and the game's ids, the start time, the map's name, origin and SHA-256, the game type and mode, the difficulty, the roster (seat, name, team, kind), the seats local to the recorder, whether a host recorded | yes |
+| `GAME` | JSON: the start time, the film tick of the first update, the engine's tick count there, and the match descriptor the recorder observed (`blam::MatchHeader`: the map's name, origin and SHA-256, the game type and mode, the difficulty, the skulls, the roster with each seat's kind, the host) | yes |
 | `OPTS` | the game options block, as `GAME_ACTIVATE` made it active | yes |
 | `RAND` | the two shared random words at the first update | yes |
 | `HASH` | the arena hash at entry to the first update | yes |
 | `SETS` | JSON: the value of every simulation-scope setting, and the feature switch spec | yes |
-| `VARI` | the portable variant record, with its rules script | when the game has one |
-| `MAPV` | the Forge map variant | when the game has one |
+| `VARI` | the rules script of the variant: its eight-byte prefix, then its blob | when the variant names a rules script |
+| `MAPV` | the Forge map variant | when the game has one; read and written, filled by slice 11 |
 
 The selector reads the header, `STMP` and `GAME` and nothing else. The
 options block carries the game variant and the 16 player entries by
