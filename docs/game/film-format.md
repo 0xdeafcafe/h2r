@@ -197,6 +197,7 @@ blocks and the header's flag bit 3 says the file has one.
 | `SETS` | JSON: the value of every simulation-scope setting, and the feature switch spec | yes |
 | `VARI` | the rules script of the variant: its eight-byte prefix, then its blob | when the variant names a rules script |
 | `MAPV` | the Forge map variant | when the game has one; read and written, filled by slice 11 |
+| `HDET` | what the start hash is made of: the extension records' digest and a hash of each 4 KiB page of the arena | written by the recorder; when a start hash does not reproduce, playback compares it and names the differing pages and extension state |
 
 The selector reads the header, `STMP` and `GAME` and nothing else. The
 options block carries the game variant and the 16 player entries by
