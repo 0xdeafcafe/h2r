@@ -626,6 +626,26 @@ mod tests {
                 .unwrap();
             writer.finish().unwrap();
         }
+        // A film plays from its game start: the current film has the film
+        // file beside its container, holding one.
+        {
+            let start = film::start::GameStart {
+                stamp: Default::default(),
+                game: film::start::Game { first_update: 1, ..Default::default() },
+                options: vec![0; film::start::OPTIONS_BYTES],
+                random: [0, 0],
+                start_hash: 0,
+                settings: Default::default(),
+                variant: None,
+                map_variant: None,
+            };
+            let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
+            let path = film::file::beside(&dir.0.join("current.h2film"));
+            let mut writer =
+                film::file::FilmWriter::new(fs::File::create(path).unwrap(), &seed, 30).unwrap();
+            writer.game_start(&start).unwrap();
+            writer.finish().unwrap();
+        }
 
         let a = agent::Agent::new();
         let (tx, rx) = std::sync::mpsc::sync_channel(8);

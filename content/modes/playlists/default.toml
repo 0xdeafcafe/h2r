@@ -209,7 +209,7 @@ entries_of = 1
 
 [[playlist]]
 id = 10
-title = "Team Slayer"
+title = "Clanker Slayer"
 description = "Ranked Clanker Team Slayer, four against four. Bots fill every seat your party does not."
 rules = { kind = "unranked-teams", teams = 2, team_size = [1, 4], uneven = true }
 base_wait_ms = 30000
@@ -219,7 +219,7 @@ entries_of = 2
 
 [[playlist]]
 id = 11
-title = "Team Skirmish"
+title = "Clanker Doubles"
 description = "Ranked Clanker Team Skirmish, two against two. Bots fill every seat your party does not."
 rules = { kind = "unranked-teams", teams = 2, team_size = [1, 2], uneven = true }
 base_wait_ms = 30000
@@ -229,7 +229,7 @@ entries_of = 3
 
 [[playlist]]
 id = 12
-title = "Team Snipers"
+title = "Clanker Snipers"
 description = "Ranked Clanker Team Snipers, four against four. Bots fill every seat your party does not."
 rules = { kind = "unranked-teams", teams = 2, team_size = [1, 4], uneven = true }
 base_wait_ms = 30000
@@ -239,7 +239,7 @@ entries_of = 4
 
 [[playlist]]
 id = 13
-title = "Big Team Battle"
+title = "Clanker BTB"
 description = "Ranked Clanker Big Team Battle on big maps. Bots fill every seat your party does not."
 rules = { kind = "unranked-teams", teams = 2, team_size = [1, 8], uneven = true }
 base_wait_ms = 45000
