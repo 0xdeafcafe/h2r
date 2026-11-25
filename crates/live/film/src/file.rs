@@ -30,7 +30,9 @@
 use crate::{
     Header, Tag,
     blam::{MatchHeader, SeatInput},
-    columns::{ACTION_BYTES, CHUNK_TICKS, ChunkDecoder, ChunkEncoder, FRAME_CAP, SEATS, WORDS},
+    columns::{
+        ACTION_BYTES, BODY_BYTES, CHUNK_TICKS, ChunkDecoder, ChunkEncoder, FRAME_CAP, SEATS, WORDS,
+    },
     start::GameStart,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -203,6 +205,14 @@ impl<W: Write + Seek> FilmWriter<W> {
         self.ticks += 1;
         self.last_digest = digest;
         Ok(())
+    }
+
+    /// The update's body for the tick just pushed, even the last of a
+    /// chunk: stored as the bytes that differ from the tick before's. A
+    /// tick given none holds the tick before's.
+    pub fn tail(&mut self, body: &[u8]) -> Result<()> {
+        ensure!(!self.closed, "a cut film takes no more tails");
+        self.encoder.tail(body)
     }
 
     /// A seat record on the tick just pushed, even the last of a chunk.
@@ -634,6 +644,9 @@ pub struct TickRow {
     pub digest: Option<u16>,
     /// The whole digest, on the digested tick that closes a chunk.
     pub closing: Option<u64>,
+    /// The update's body between its action block and its stamp
+    /// ([`BODY_BYTES`] long).
+    pub body: Vec<u8>,
 }
 
 type Rows = ([[u32; WORDS]; SEATS], [[u32; WORDS]; SEATS]);
@@ -740,8 +753,14 @@ impl FilmActions {
                 });
             }
         }
+        let mut body = [0u8; BODY_BYTES];
+        ensure!(
+            self.decoder.body(t, &mut body),
+            "film file has no update body for tick {tick}"
+        );
         let digested = self.decoder.flags(t) & TICK_DIGEST != 0;
         Ok(TickRow {
+            body: body.to_vec(),
             inputs,
             digest: digested.then(|| self.decoder.digest(t)),
             closing: (digested && t + 1 == self.decoder.ticks())
@@ -863,6 +882,9 @@ pub fn recover_beside(container: &Path, end_tick: u64) -> Result<()> {
                     u64::from(decoder.digest(t))
                 };
                 out.push_tick(decoder.flags(t), digest, &seats)?;
+                let mut body = [0u8; BODY_BYTES];
+                ensure!(decoder.body(t, &mut body), "film chunk has no body for tick {tick}");
+                out.tail(&body)?;
                 for record in decoder.seat_records().filter(|r| usize::from(r.tick) == t) {
                     out.seat_record(record.seat, record.kind, record.bytes)?;
                 }

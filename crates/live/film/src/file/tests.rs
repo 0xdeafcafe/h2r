@@ -642,3 +642,37 @@ fn a_tick_row_gives_the_actions_the_digest_and_the_chunks_closing_digest() {
     assert!(actions.row(401).is_err() && actions.row(0).is_err());
     fs::remove_dir_all(&dir).unwrap();
 }
+
+fn body_of(tick: u64) -> [u8; BODY_BYTES] {
+    let mut body = [0u8; BODY_BYTES];
+    body[100..104].copy_from_slice(&(tick as u32 / 3).to_le_bytes());
+    body[BODY_BYTES - 4] = u8::from(tick % 50 == 0);
+    body
+}
+
+#[test]
+fn an_update_body_is_read_back_by_tick_across_chunks_a_fork_and_a_checkpoint() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    for tick in 1..=600u64 {
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+        w.tail(&body_of(tick)).unwrap();
+        if tick == 300 {
+            w.checkpoint().unwrap();
+        }
+    }
+    assert!(w.tail(&[0; 3]).is_err(), "a body is the update's whole body");
+    let mut cut_seed = seed();
+    cut_seed.header.meta.id = "a-cut".into();
+    let mut cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap();
+    assert!(cut.tail(&body_of(1)).is_err(), "a cut film takes no more tails");
+    let forked = cut.finish().unwrap().into_inner();
+    let bytes = w.finish().unwrap().into_inner();
+    for bytes in [bytes, forked] {
+        let mut actions = FilmActions::new(Box::new(Cursor::new(bytes))).unwrap();
+        // Out of order, as a seek reads them.
+        for tick in [600, 1, 257, 256, 300, 2, 513] {
+            let row = actions.row(tick).unwrap();
+            assert!(row.body == body_of(tick), "body of tick {tick}");
+        }
+    }
+}
