@@ -12,8 +12,9 @@ The late scene-list passes include the water edge blend (6), planar fog
 (16), active camouflage (18, 19) and holograms (21). They use the layer
 draw (`0x00044550`) and scene list (`0x004c1a48`) also used by layer 3.
 A whole-layer native replacement clears the layer bit for the items it
-draws and restores the bit at the next layer draw. Pool surfaces stay on
-the D3D path at the sorted layer-15 handler. The water passes can read scene-copy and reflection inputs.
+draws and restores the bit at the next layer draw. Pool surfaces draw
+from the sorted layer-15 handler's resolved draw (below), or stay on its
+D3D path under a named refusal. The water passes can read scene-copy and reflection inputs.
 
 ### The census (Code, from the lifted `render_scene_passes` and layer draw ports, `engine::render_loop::scene` and `layer`; pass counts are V on the owner's disc, e3-lighting.md "Pass taxonomy")
 
@@ -193,12 +194,38 @@ the cached pipelines with their own uniforms and sampled textures.
   issuing its indexed range. `native_transparents::pool_issue` checks the
   sorted entry, shader, emitter frame and indexed call. The native
   transparents walk leaves these shaders to the guest handler, and
-  `game::native_residual_glue` refuses the resolved draw
-  (`layer_plan_15_pool_on_d3d`), so the guest's D3D packet draws the pool.
-  `IndexedPass::for_pool` translates the resolved programs, ripple frame,
-  bump matrices, reflection, refraction and Fresnel bindings. Its depth
-  and lens against the scene are unproven (its Delta Towers bay covers the
-  cliffs and terrain), so it is not admitted. Mainmenu's aerial water is an alpha-tested
+  `game::native_residual_glue` offers the resolved draw to
+  `IndexedPass::for_pool`, which translates the resolved programs, ripple
+  frame, bump matrices, reflection, refraction and Fresnel bindings.
+  The pool's inputs against the scene are explicit:
+  - **Depth.** The pass is recorded over the attachments with depth and
+    stencil loaded. It tests the depth the world left and writes none.
+    A draw with no depth buffer (`no_depth`), a disabled or
+    always/never test (`depth_not_tested`) or a depth or stencil write
+    (`writes_depth`) is refused.
+  - **Lens.** The projective 2D stage whose image is a frame-sized 2D
+    texture (`pool_lens_stage`) samples a copy of the bound colour made in
+    each Reference and Display recording, immediately before the pool
+    draws (`IndexedPass::record_pool`: the copy, then a render pass of the
+    pool's packets, as the layer-6 water's `record_encoded` does). It does
+    not sample the guest's own resolve, which can predate the native
+    stages. A draw with no such stage is refused (`no_lens`); a colour
+    that cannot be copied or sampled refuses the recording
+    (`lens_source_cannot_be_copied`, `lens_source_is_unfilterable`).
+  - **Ripples, reflection and fog** stay the guest's bound images and
+    constants, replayed with the packet (`replays_scene`).
+
+  Counters (`render.stats`, layer 15): `layer_plan_15_pool_admitted` per
+  pool draw taken, `layer_plan_15_pool_recorded` per recording made,
+  `layer_plan_15_pool_refused_<cause>` per refusal (admission:
+  `index_count`, `no_depth`, `depth_not_tested`, `writes_depth`,
+  `no_lens`, `geometry`; recording: the causes above and the pass's
+  prepare errors, e.g. `sample_aliases_attachment`), and
+  `layer_plan_15_pool_on_d3d` for every pool draw the admission leaves to
+  the guest. Remaining slices: a pool whose lens is not frame-sized
+  (`no_lens`) needs a scaled copy; a pool that writes depth needs the
+  write proven against the world's depth first.
+  Mainmenu's aerial water is an alpha-tested
   environment material. Lockout has no pool template. Neither requires a
   layer-6 pool pass.
 - **The water edge blend, drawn natively (layer 6).** The skip, the
@@ -228,8 +255,8 @@ the cached pipelines with their own uniforms and sampled textures.
   `scene_water_parts` and `native_water_walk_*`) count only layer 6 and its
   composite, which Old Mombasa and Zanzibar use. They stay zero on a map
   whose water is a sorted pool, such as the Delta Towers bay: the pool is
-  left to the guest on purpose (above), counted as
-  `layer_plan_15_pool_on_d3d`, and counts under no water stage.
+  drawn by the sorted pool pass (above), counted under
+  `layer_plan_15_pool_*`, and counts under no layer-6 water stage.
   Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses
   its own model rows at the rigid program's dynamic uniform offset.
   Each pass must compile the rigid classification and the part must supply
