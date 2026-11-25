@@ -4,6 +4,7 @@ mod actions;
 pub mod autorecord;
 mod camera;
 mod capture;
+mod game_start;
 mod media;
 pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
 pub use media::Media;
@@ -157,6 +158,9 @@ struct Recording {
     /// What the last header appended to the tape said of the game, so a
     /// new game, a join or a leave appends another.
     described: Option<metadata::Described>,
+    /// The game in play's start, from activation to the film file
+    /// ([`game_start`]).
+    starts: game_start::Starts,
 }
 
 struct UploadTarget {
@@ -485,6 +489,7 @@ impl Session {
                     upload,
                     game_started_ms: None,
                     described: None,
+                    starts: Default::default(),
                 }),
                 header,
                 1.,
@@ -1133,6 +1138,7 @@ impl State {
         }
         let Mode::Record(rec) = &mut self.mode else { return };
         rec.meta.next_game();
+        rec.starts.next_game();
         rec.unified.next_game();
         rec.frame.next_game();
         rec.game_started_ms = None;
@@ -1147,6 +1153,7 @@ impl State {
         }
         rec.match_over = false;
         rec.meta.next_game();
+        rec.starts.next_game();
         rec.unified.next_game();
         rec.frame.next_game();
         rec.game_started_ms = None;
@@ -1373,6 +1380,8 @@ impl hooks::Feature for Observer {
                 },
             );
         }
+        let session = self.0.clone();
+        b.game().on_start("film game start", move |o| session.game_activated(&o.guest()));
         let session = self.0.clone();
         b.game().on_end("film scoreboard", move |o| {
             let mut s = session.lock();

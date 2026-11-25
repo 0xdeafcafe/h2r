@@ -1,0 +1,211 @@
+//! The game start a recording writes into the film
+//! (docs/game/theater-design.md, "The start state"; `film::start`).
+//!
+//! The start has two moments. **Activation**: when `GAME_ACTIVATE` returns
+//! success for a game that is not the main menu, the engine's options block
+//! is copied whole ([`Starts::activated`]). **The first update**: at entry
+//! to the game's first `SIM_UPDATE_APPLY` the recorder reads the two shared
+//! random words and the arena hash ([`first_update`]), and holds the start
+//! until the tick's observer has described the game ([`Starts::release`]),
+//! which gives the map's identity and digest, the roster and the mode. The
+//! start is written just before that tick, so the film file's blocks name
+//! the tick of the game's first update.
+use super::{Mode, Session, metadata};
+use anyhow::{Context, Result, ensure};
+use film::start::{Game, GameStart, OPTIONS_BYTES, Settings, Stamp};
+use runtime::Guest;
+
+/// What the recorder holds for the game in play.
+#[derive(Default)]
+pub(super) struct Starts {
+    /// The options block copied at activation, until the game's first
+    /// update takes it.
+    activated: Option<Vec<u8>>,
+    /// The options of the game whose start was taken. The same block
+    /// activating again is the same game (a campaign revert reactivates
+    /// the map), not a new one.
+    taken: Option<Vec<u8>>,
+    /// The start taken at the first update, until the observer has
+    /// described the game.
+    held: Option<GameStart>,
+}
+
+impl Starts {
+    /// A map activated with these options. A different block than the
+    /// game in play's is a new game, whose start the next first update
+    /// takes.
+    pub(super) fn activated(&mut self, options: Vec<u8>) {
+        if self.taken.as_ref() == Some(&options) {
+            return;
+        }
+        self.taken = None;
+        self.held = None;
+        self.activated = Some(options);
+    }
+
+    /// The options of a game waiting for its first update.
+    pub(super) fn waiting(&self) -> bool {
+        self.activated.is_some()
+    }
+
+    /// The first update of the waiting game: its start, taken.
+    pub(super) fn take_options(&mut self) -> Option<Vec<u8>> {
+        let options = self.activated.take()?;
+        self.taken = Some(options.clone());
+        Some(options)
+    }
+
+    pub(super) fn hold(&mut self, start: GameStart) {
+        self.held = Some(start);
+    }
+
+    /// The held start, once the tick's observer has described the game:
+    /// the map's identity (its digest joined), the mode and the roster. A
+    /// game the observer did not take for a match has no start. `None`
+    /// while nothing is held.
+    pub(super) fn release(&mut self, meta: &mut metadata::Capture) -> Result<Option<GameStart>> {
+        let Some(mut start) = self.held.take() else {
+            return Ok(None);
+        };
+        ensure!(
+            !meta.descriptor().map.name.is_empty(),
+            "the game was not described at its first update"
+        );
+        meta.finish_map()?;
+        start.game.started_ms = super::autorecord::now_ms();
+        start.game.descriptor = meta.descriptor().clone();
+        Ok(Some(start))
+    }
+
+    /// The game ended or was left: the next one starts afresh.
+    pub(super) fn next_game(&mut self) {
+        *self = Self::default();
+    }
+}
+
+impl Session {
+    /// A map activated (`GAME_ACTIVATE` returned success): a recording
+    /// copies the options block the game starts from.
+    pub(super) fn game_activated(&self, g: &Guest) {
+        let mut s = self.lock();
+        if s.complete || s.failure.is_some() {
+            return;
+        }
+        if let Mode::Record(rec) = &mut s.mode
+            && let Some(options) = copy_options(g)
+        {
+            rec.starts.activated(options);
+        }
+    }
+}
+
+/// The active game's options block, copied whole; `None` unless a campaign
+/// or multiplayer game is active (the main menu is neither).
+pub(super) fn copy_options(g: &Guest) -> Option<Vec<u8>> {
+    let at = metadata::active_options(g)?;
+    let mut block = vec![0u8; OPTIONS_BYTES];
+    g.read_bytes(at, &mut block, 1).ok()?;
+    Some(block)
+}
+
+/// The shared random words (`sim_glue::RANDOM_SEED_PTR` points at them).
+pub(super) fn random_words(g: &Guest) -> Result<[u32; 2]> {
+    let at = g
+        .u32(crate::sim_glue::RANDOM_SEED_PTR)
+        .ok()
+        .filter(|&p| p != 0)
+        .context("the shared random words are not set")?;
+    Ok([
+        g.u32(at).context("reading the first random word")?,
+        g.u32(at.wrapping_add(4)).context("reading the second random word")?,
+    ])
+}
+
+/// The stamp a build must equal to play the film.
+pub(super) fn stamp(header: &film::Header) -> Stamp {
+    Stamp {
+        xbe_sha256: header.xbe_sha256.clone(),
+        simulation_abi: header.runtime_stamp.clone(),
+        contract_sha256: header
+            .guest_image
+            .as_ref()
+            .and_then(|image| image.contract_sha256.clone()),
+        hooks_sha256: header.simulation_hooks.clone(),
+        build: header.meta.image_stamp.clone(),
+    }
+}
+
+/// Every setting whose scope is `Sim`, by value, and the feature switch
+/// spec. Without a store (a headless recording) no setting is listed.
+pub(super) fn settings(store: Option<&settings::Store>, switches: &str) -> Settings {
+    let mut values = std::collections::BTreeMap::new();
+    if let Some(store) = store {
+        for def in store.defs() {
+            if def.scope != settings::Scope::Sim {
+                continue;
+            }
+            if let Some(value) = store.get(def.key) {
+                let bits = match value {
+                    settings::Value::Bool(b) => i64::from(b),
+                    settings::Value::Int(i) => i,
+                };
+                values.insert(def.key.to_owned(), bits);
+            }
+        }
+    }
+    Settings {
+        values,
+        switches: switches.to_owned(),
+    }
+}
+
+/// The rules script of the active variant, by value: its eight-byte prefix
+/// and then its blob. `None` for a variant that plays as its own game type.
+pub(super) fn script(g: &Guest) -> Option<Vec<u8>> {
+    let block = crate::rules::guest::block(g).ok().flatten()?;
+    let script = variants::ext::Ext::in_effect(&block).script;
+    if script.mode != variants::ext::Mode::Rules {
+        return None;
+    }
+    let blob = crate::rules::feature::local_blob(script.prefix)?;
+    let mut out = script.prefix.to_vec();
+    out.extend_from_slice(&blob);
+    Some(out)
+}
+
+/// What the recorder knows at entry to a game's first update: the options
+/// copied at activation, the random words, the arena hash, the stamp and
+/// the settings. `film_tick` is the tick of the film file the update's
+/// observer will push, 1-based.
+pub(super) fn first_update(
+    g: &Guest,
+    options: Vec<u8>,
+    header: &film::Header,
+    store: Option<&settings::Store>,
+    film_tick: u64,
+) -> Result<GameStart> {
+    ensure!(
+        options.len() == OPTIONS_BYTES,
+        "the options block is {} bytes",
+        options.len()
+    );
+    Ok(GameStart {
+        stamp: stamp(header),
+        game: Game {
+            started_ms: 0,
+            first_update: film_tick,
+            first_game_tick: bots::guest::game_tick(g).map_or(0, u64::from),
+            descriptor: Default::default(),
+        },
+        options,
+        random: random_words(g)?,
+        start_hash: lockstep::hash_sim(g, lockstep::SimRegion::HALO2)
+            .context("the arena has no hash at the game's first update")?,
+        settings: settings(store, &header.features),
+        variant: script(g),
+        map_variant: None,
+    })
+}
+
+#[cfg(test)]
+mod tests;

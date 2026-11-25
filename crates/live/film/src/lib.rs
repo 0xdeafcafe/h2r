@@ -12,6 +12,7 @@ pub mod range;
 pub mod sidecar;
 pub mod share;
 pub mod side;
+pub mod start;
 pub mod tape;
 use anyhow::{Context, Result, ensure};
 pub use library::{Library, LibraryEntry};

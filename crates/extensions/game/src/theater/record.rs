@@ -311,6 +311,16 @@ impl Recording {
             let flags = if post_hash.is_some() { TICK_DIGEST } else { 0 }
                 | if events.is_empty() { 0 } else { TICK_EVENTS };
             let mut film = film.lock().unwrap_or_else(|e| e.into_inner());
+            // A game's start sits just before its first update's tick.
+            match self.starts.release(&mut self.meta) {
+                Ok(Some(start)) => {
+                    if let Err(error) = film.game_start(&start) {
+                        eprintln!("theater: this game has no start in its film: {error:#}");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("theater: this game has no start in its film: {error:#}"),
+            }
             film.push_tick(flags, post_hash.unwrap_or(0), &seats)?;
             for event in &events {
                 match event {

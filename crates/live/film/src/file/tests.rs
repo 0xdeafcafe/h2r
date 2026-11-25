@@ -526,3 +526,91 @@ fn a_killed_recordings_film_file_is_sealed_at_a_tick_its_checkpoint_covers() {
     let records: Vec<_> = decoder.seat_records().map(|r| (r.tick, r.seat, r.kind)).collect();
     assert_eq!(records, [(44, 3, RECORD_JOIN)]);
 }
+
+fn started(first_update: u64) -> crate::start::GameStart {
+    let mut start = crate::start::tests::sample();
+    start.game.first_update = first_update;
+    start.start_hash = first_update * 3;
+    start
+}
+
+fn film_of_two_games() -> Vec<u8> {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    for tick in 1..=400u64 {
+        if tick == 1 || tick == 91 {
+            w.game_start(&started(tick)).unwrap();
+        }
+        w.push_tick(TICK_DIGEST, tick * 77, &seats(tick)).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+#[test]
+fn a_film_holds_a_game_start_for_each_game_at_its_first_update() {
+    let bytes = film_of_two_games();
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    assert!(r.flags & FLAG_GAME_START != 0);
+    assert_eq!((r.game_starts.len(), r.length_ticks), (2, 400));
+    let first = r.game_start_at(&r.game_starts[0].clone()).unwrap();
+    assert_eq!((first.game.first_update, first.start_hash), (1, 3));
+    // The film is the game played last.
+    let last = r.game_start().unwrap().unwrap();
+    assert_eq!(last, started(91));
+    // A film from before game starts has none.
+    let old = film(10);
+    let mut r = FilmReader::open(Cursor::new(&old)).unwrap();
+    assert!(r.game_start().unwrap().is_none() && r.flags & FLAG_GAME_START == 0);
+}
+
+#[test]
+fn a_game_start_must_name_the_tick_the_writer_takes_next() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    assert!(w.game_start(&started(2)).is_err());
+    w.game_start(&started(1)).unwrap();
+    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    assert!(w.game_start(&started(1)).is_err());
+    let mut bad = started(2);
+    bad.options.pop();
+    assert!(w.game_start(&bad).is_err());
+    w.game_start(&started(2)).unwrap();
+}
+
+#[test]
+fn an_unsealed_film_and_a_fork_keep_their_game_starts() {
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed(), 30).unwrap();
+    for tick in 1..=300u64 {
+        if tick == 1 || tick == 91 {
+            w.game_start(&started(tick)).unwrap();
+        }
+        w.push_tick(TICK_DIGEST, tick, &seats(tick)).unwrap();
+    }
+    let mut cut_seed = seed();
+    cut_seed.header.meta.id = "the-second-game".into();
+    let cut = w.fork(Cursor::new(Vec::new()), &cut_seed).unwrap();
+    let bytes = cut.finish().unwrap().into_inner();
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    assert_eq!(r.game_starts.len(), 2);
+    assert_eq!(r.game_start().unwrap().unwrap().game.first_update, 91);
+    // The recording went on untouched; read it as a file still being written.
+    let live = w.out.get_mut().clone();
+    let mut r = FilmReader::open(Cursor::new(&live)).unwrap();
+    assert!(!r.sealed);
+    assert_eq!(r.game_starts.len(), 2);
+    assert_eq!(r.game_start().unwrap().unwrap(), started(91));
+}
+
+#[test]
+fn a_damaged_game_start_block_is_refused_when_read_not_when_listed() {
+    let bytes = film_of_two_games();
+    let r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    let at = r.game_starts[1].offset as usize + 2;
+    let mut bad = bytes.clone();
+    bad[at] ^= 0xff;
+    let mut r = FilmReader::open(Cursor::new(&bad)).unwrap();
+    assert!(r.game_start().is_err());
+    // Every cut of the block's bytes: an error, never a panic.
+    let block = r.game_starts[1];
+    for len in 0..block.len as usize {
+        assert!(crate::start::GameStart::decode(&bytes[block.offset as usize..][..len]).is_err());
+    }
+}

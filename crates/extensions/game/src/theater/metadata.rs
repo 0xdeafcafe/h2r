@@ -477,7 +477,7 @@ pub(super) fn game_ended(g: &Guest) -> bool {
         .is_some_and(|v| v != 0)
 }
 
-fn active_options(g: &Guest) -> Option<u32> {
+pub(super) fn active_options(g: &Guest) -> Option<u32> {
     if !matches!(
         level_boot::active_mode(g),
         Some(level_boot::MODE_CAMPAIGN | level_boot::MODE_MULTIPLAYER)

@@ -10,7 +10,7 @@ use anyhow::{Context, Result, ensure};
 use engine::GuestMemory;
 use film::blam::{MAX_SEATS, SeatInput};
 
-use super::{Mode, Session};
+use super::{Mode, Session, State, game_start};
 
 const MASK: u32 = 8;
 const ACTION_BYTES: usize = 0x5c;
@@ -85,6 +85,36 @@ fn apply(m: &mut dyn GuestMemory, update: u32, inputs: &[SeatInput]) -> Result<(
     Ok(())
 }
 
+/// A game's first update: take the start the activation left waiting, with
+/// the random words and the arena hash as they are at entry to this update,
+/// and hold it until the tick's observer has described the game
+/// ([`game_start::Starts::release`]). A recording with no film file keeps no
+/// start. A start that cannot be read says so and the recording goes on.
+pub(super) fn note_first_update(
+    store: Option<&Arc<settings::Store>>,
+    state: &mut State,
+    memory: &runtime::Guest,
+) {
+    if !matches!(&state.mode, Mode::Record(rec) if rec.starts.waiting()) {
+        return;
+    }
+    let header = state.header.clone();
+    let Mode::Record(rec) = &mut state.mode else {
+        return;
+    };
+    let Some(options) = rec.starts.take_options() else {
+        return;
+    };
+    let Some(film) = &rec.film else {
+        return;
+    };
+    let tick = film.lock().unwrap_or_else(|e| e.into_inner()).ticks() + 1;
+    match game_start::first_update(memory, options, &header, store.map(|s| &**s), tick) {
+        Ok(start) => rec.starts.hold(start),
+        Err(error) => eprintln!("theater: this game has no start in its film: {error:#}"),
+    }
+}
+
 pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
     b.raw().before(
         &engine::points::SIM_UPDATE_APPLY,
@@ -101,6 +131,7 @@ pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
             let result = match update {
                 Err(e) => Err(e),
                 Ok(ptr) if matches!(&state.mode, Mode::Record(_)) => {
+                    note_first_update(session.video_menu.get(), &mut state, &memory);
                     let pads = bots::guest::game_tick(&*memory)
                         .map(|tick| bots::phantom::global().gathered_pads(tick))
                         .unwrap_or([None; MAX_SEATS]);
