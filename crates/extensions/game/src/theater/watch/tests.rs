@@ -307,12 +307,17 @@ fn a_start_route_seek_queues_the_options_again_and_reaches_its_tick() {
     let mut again = machine(&v.options, [5, 6]);
     rec.game_activated(&again);
     assert!(!rec.lock().play.as_ref().unwrap().awaiting());
-    while rec.lock().tick < target {
+    // Bounded, so a seek that never arrives fails instead of hanging.
+    for _ in 0..=(target - v.first + 1) {
+        if rec.lock().tick >= target {
+            break;
+        }
         assert!(tick(rec, &mut again, 0xee));
     }
     let s = rec.lock();
     assert_eq!((s.tick, s.seeking, s.failure.clone()), (target, None, None));
-    assert!(rec.watching());
+    // `watching()` takes the session's lock, which `s` holds.
+    assert!(s.watch.is_some());
 }
 
 #[test]
@@ -332,7 +337,10 @@ fn a_seek_ahead_runs_forward_from_the_tick_shown() {
         assert_eq!(s.demand().run_to, Some(target));
     }
     assert!(v.pending().is_empty(), "no game is queued");
-    while rec.lock().tick < target {
+    for _ in 0..=target {
+        if rec.lock().tick >= target {
+            break;
+        }
         assert!(tick(rec, &mut g, 0xee));
     }
     let s = rec.lock();
