@@ -658,6 +658,7 @@ mod tests {
             dir.0.clone(),
             dir.0.clone(),
             install,
+            None,
         );
         let call = |method: &str, params: Value| {
             a.submit(

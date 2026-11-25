@@ -5497,7 +5497,20 @@ The game agent lists these host methods in `session.methods`
 (`crates/extensions/agent-proto/src/theater.rs`, `crates/extensions/game/src/theater/controls.rs`).
 From a signed-in local multiplayer lobby, `python3 scripts/theater-e2e.py` starts and ends a game, opens its Recent film from Game Setup, exercises both cameras and the transport, and closes the player. Pass the map’s display name if it differs from the recorded map filename.
 
-In an ordinary CLI-hosted game, `theater.play` with a library ID starts an
+A game that records its own games plays a film in itself. `theater.watch`
+queues the film's game options as the next game, as `game.load` queues a
+level, and the game loads the film's map and plays the film's updates; no
+process is started. The transport methods below then answer from that game
+until `theater.end`, and they answer with an unavailable error until the
+film's game has activated. Only one film is watched at a time. The
+session's recording is parked while the film plays and resumes at the next
+game, so a film being watched is not recorded. The film's simulation-scope
+settings are applied when it is queued and the viewer's put back when it
+ends. The film holds its last tick when it ends; `theater.end` queues the
+main menu and the game returns to it. A co-op or networked session refuses
+`theater.watch`, as it refuses `game.load`.
+
+In any other CLI-hosted game, `theater.play` with a library ID starts an
 isolated playback process; subsequent transport requests through that
 game agent go to its player. During startup the caller can retry after a
 temporary unavailable response. The playback process also accepts calls
@@ -5505,6 +5518,8 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 
 | Method | Parameters | Result |
 |---|---|---|
+| `theater.watch` | `{"id":"film-id"}` or `{"path":"/films/a.h2film"}`; optional `tick`, `seat`, `camera` | on a game that records its games: `{id, length_ticks, queued}` once the film's options are queued. The film must be playable (`theater.compat`) and have a game start. `tick` plays unrendered to that tick, `seat` and `camera` choose the first view. Refused while a film is already watched |
+| `theater.end` | `{}` | on a game that watches a film: queues the main menu and leaves the film; the film page opens when the menu loads. Refused with no film |
 | `theater.exit` | `{}` on the library agent | Closes the active playback window. Wait for `theater.state` to return `active:false` on the original game. |
 | `theater.list` | `{}` on the library agent | Local films, newest first, as an array of `{id, map, variant, started_ms, length_ticks, saved}`. Pass the ID to `theater.play`. |
 | `theater.open` | `{"url":"h2recomp://theater/<film>?server=<encoded-origin>"}` | Opens the film detail page in the signed-in game and returns its `ui.screen`. Watch starts playback when pressed. Optional `clip`, `t`, `seat` and `camera` select the initial view. |
@@ -5517,6 +5532,7 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}], monitor_looks?: [{seat, map, reason}]}` |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
+| `theater.seek` | `{"tick":900}` or `{"tick":30,"source":"boot"}` on a film watched in the game | a tick ahead of the one shown runs forward from it (`seek.source` is `forward`); a tick behind, or `"source":"boot"`, queues the film's options again, and the film plays from its game's first update to the target (`seek.source` is `boot`) |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
 | `theater.step` | `{"ticks":1}` | accepts a positive number of ticks while paused and outside a seek. Returns the current state, runs the requested ticks, and holds at the new tick. Read state again to get the completed tick |
 | `theater.camera` | `{"mode":"orbit","seat":3,"look":[0.2,-0.1],"zoom":-1,"fov":85}` | selects the view and returns transport state. An absolute film seat is 0 to 15 |

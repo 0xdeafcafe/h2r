@@ -87,6 +87,11 @@ impl Session {
     /// A map activated (`GAME_ACTIVATE` returned success): a recording
     /// copies the options block the game starts from.
     pub(super) fn game_activated(&self, g: &Guest) {
+        // A film's game, or the end of one, is the watch's boundary: the
+        // recorder is parked while a film plays and sees none of it.
+        if self.watch_boundary(g) {
+            return;
+        }
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {
             return;

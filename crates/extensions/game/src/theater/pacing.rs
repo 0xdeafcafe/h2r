@@ -37,6 +37,22 @@ pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
         "film pacing",
         move |c| {
             let mut state = session.lock();
+            if state.holds_in_game() {
+                // A film watched in the running game that has ended or
+                // stopped holds its tick until the viewer leaves.
+                drop(state);
+                let mut memory = c.ctx.memory();
+                let mut eax = c.cpu.eax;
+                let result = answer(&mut *memory, &mut eax, c.cpu.ebx, 0, 30.0);
+                drop(memory);
+                c.cpu.eax = eax;
+                if let Err(e) = result {
+                    let mut state = session.lock();
+                    let tick = state.tick + 1;
+                    state.fail_at(tick, e.to_string());
+                }
+                return Ok(hooks::Flow::Continue);
+            }
             if state.complete || state.failure.is_some() || !matches!(state.mode, Mode::Replay(..)) {
                 return Ok(hooks::Flow::Continue);
             }

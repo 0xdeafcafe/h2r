@@ -1,7 +1,7 @@
 # Theater: the full in-game player
 
-Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block the recorder writes for each game, start points, the camera rig, the film selector and the Live film routes are built; the film player process plays a film from its game start, one film tick for each application of the update (slices 1b, 2, 3 and 4); playing in the running game and the snapshot ring are not built, and the code still holds the machine film for films that have no game start ("Slices", 7a and 7b list it).
-Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/record.rs` (the recorder's tick), `crates/live/film/src/columns.rs` (the chunk codec), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/live/film/src/file/tests.rs`.
+Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block the recorder writes for each game, start points, the camera rig, the film selector and the Live film routes are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5); the snapshot ring is not built, and the code still holds the machine film for films that have no game start ("Slices", 7a and 7b list it).
+Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/record.rs` (the recorder's tick), `crates/live/film/src/columns.rs` (the chunk codec), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/watch.rs` (watching in the running game), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/extensions/game/src/theater/watch/tests.rs`, `crates/live/film/src/file/tests.rs`.
 Switch: [Theater ring](../runtime/switches.md).
 
 Theater plays a film in the running game: pause, rewind, jump, change
@@ -221,24 +221,43 @@ being watched is not recorded.
 
 ### Starting a film in the running game
 
-Watch does what the game's own menus do to start a game.
+Watch does what the game's own menus do to start a game. The session that
+records the games a player plays also plays films
+(`theater/watch.rs`); a film player process is for verification and clip
+export only.
 
-1. Theater reads the film's stamp and game start and checks compatibility
-   ("Film compatibility") and that the map with the film's digest is
-   mounted.
-2. It applies the film's simulation-scope settings and queues the film's
-   options block through `OPTIONS_QUEUE`, the way `game.load` queues a
-   level from the menu or from a running game
-   (`agent::sim::calls::Call::QueueGame`, `game_load.rs`). The block is
-   the recorded one with its session kind byte set to local (a campaign's, 0, stays 0). The game tears
-   down, loads the map and activates it as it does for any game.
-3. At the first update the player writes the two random words, loads the
-   start point if the film has one, and compares the arena hash with the
-   film's start hash.
-4. Each update after is fed from the film until the last record. The
-   player then holds the last tick with the bar showing the end. **End
-   Film**, or B at the end, queues the main menu's options and reopens the
-   film page.
+1. `theater.watch` and the Theater menu's Watch plan the film
+   (`Session::plan_watch`): the film has a game start, its stamp is this
+   build's XBE and simulation contract ("Film compatibility", checked by
+   the caller), it was recorded with the feature switches this session
+   runs, and the options block names a scenario. One film is watched at a
+   time.
+2. The film's options are queued as the next game through the agent's
+   guest calls (`agent::sim::calls::Call::QueueGame`, the path `game.load`
+   takes), the recorded block with its session kind byte set to local (a
+   campaign's, 0, stays 0). Once the calls have queued them the film is
+   armed (`Session::arm_watch`): its simulation-scope settings are applied
+   by value (`settings::Store::run_as`) and the viewer's running values are
+   kept.
+3. The game tears down, loads the map and activates it as it does for any
+   game. At the activation the session moves from recording to playing at
+   the game boundary (`Session::game_activated`): the recorder's state is
+   parked whole and the player's state takes its place. A game in play is
+   left as it is when its player quits to the menu; no film is made of it.
+   An activation of another game while the film is armed drops the film and
+   puts the settings back.
+4. At the first update the player writes the two random words and compares
+   the arena hash with the film's start hash. Each update after is fed from
+   the film until the last record. The player then holds the last tick
+   (`Session::holds_in_game`, answered as zero ticks at `GAME_UPDATE_TICKS`)
+   with the bar showing the end.
+5. **End Film**, `theater.end`, or B at the end queues the main menu's
+   options (`game.menu`'s calls). The film's game is gone when the main
+   menu activates: the recorder's state returns, the viewer's settings are
+   put back and the film page opens (`Theater::reopen_film`). The next
+   game is recorded from the tick the recording stopped at; none of the
+   film's ticks are in any film file. A session that ends while a film
+   plays drops the film and seals the recorder's own games.
 
 No process is started and nothing is booted to watch a film or to seek in
 one. `h2 theater play FILE`, `h2 theater verify` and the clip export
@@ -280,13 +299,13 @@ A request for tick T takes the cheapest route:
 
 | Route | When | Cost |
 |---|---|---|
-| **Forward** | T is ahead of the tick shown and no ring entry is nearer | simulates on from here, unrendered |
+| **Forward** | T is ahead of the tick shown and no ring entry is nearer | simulates on from here, unrendered (`State::seek_in_game`) |
 | **Ring** | an entry at or before T exists | loads the entry in the running game, then at most 150 ticks |
-| **Start** | T is behind and no entry is at or before it | queues the film's options again: one map load, then every tick to T |
+| **Start** | T is behind and no entry is at or before it, or the caller asked for `source: "boot"` | queues the film's options again (`Session::requeue`): one map load, then every tick to T. Until the queued game activates, the game in play is not the film's and its updates are left alone |
 
 After the restore the player runs forward to T unrendered, checking every
 digest on the way, then holds or plays as asked. `theater.state` reports
-the route, the ticks left and the tick of the first divergence. A jump
+the route (`forward`, `ring` or `boot` for the start route), the ticks left and the tick of the first divergence. A jump
 while a jump is running replaces its target. Cancel returns to the tick
 the jump left. The film file holds no seek point, as Halo 3's does not.
 
@@ -496,11 +515,11 @@ nothing.
 
 | Method | Parameters | Result |
 |---|---|---|
-| `theater.watch` | `{id \| path, tick?, seat?, camera?}` | queues the film in the running game; transport state |
+| `theater.watch` | `{id \| path, tick?, seat?, camera?}` | queues the film in the running game; `{id, length_ticks, queued}`. The transport answers once the film's game has activated |
 | `theater.state` | `{}` | `tick`, `length`, `paused`, `speed`, `speed_reached`, `seek` (`{target, from_tick, source: "forward" \| "ring" \| "start", remaining_ticks, restore_ms}` or null), `verified_through`, `divergence` (`{tick, kind}` or null), `camera_pose`, `hud`, `bar` |
 | `theater.play`, `theater.pause`, `theater.speed`, `theater.step` | `{}`, `{}`, `{speed}`, `{ticks}` | transport state |
 | `theater.seek` | `{tick, source?: "start"}` or `{cancel: true}` | transport state |
-| `theater.end` | `{}` | leaves the film for the film page |
+| `theater.end` | `{}` | queues the main menu; the film page opens when it loads |
 | `theater.keyframes` | `{}` | `{ring: [tick], ring_bytes, ring_cap}` |
 | `theater.verify` | `{id \| path, from?, to?, ring?: true}` | plays the range unrendered in a second game process and returns `{ticks, digests_checked, arena_hashes_checked, first_divergence}`; `ring` takes and loads an entry every 150 ticks on the way |
 | `theater.start_point.capture`, `theater.start_point.load` | a path and a key | a start point of the running game, and its load with `matches` |
