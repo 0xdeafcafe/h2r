@@ -678,6 +678,8 @@ impl<B: Backend> Device<B> {
             // Boot state: CreateDevice built it from the same image and
             // switches, and the loading device keeps its own.
             cfg: _,
+            // A host hook the boot plan installs again.
+            indexed_admission: _,
             translator: _,
             backend: _,
             created: _,
