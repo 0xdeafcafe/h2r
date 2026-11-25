@@ -381,7 +381,7 @@ fn the_cache_keeps_a_graph_until_the_map_or_its_shape_changes() {
 }
 
 #[test]
-fn the_arm_takes_the_rust_sets_only_when_they_equal_the_guests() {
+fn the_arm_takes_the_rust_sets_whenever_it_computes_them() {
     let rust = run(&scene()).unwrap();
     let gather = |visible: Vec<u16>, objects: Vec<u32>| ClusterGather {
         mode: 0,
@@ -401,11 +401,18 @@ fn the_arm_takes_the_rust_sets_only_when_they_equal_the_guests() {
         (vec![0, 1], vec![0x0001_0001, 0x0001_0002])
     );
     assert_eq!(taken.structure, [1], "the structure list stays the guest's");
-    // A deliberate mismatch: the guest saw a cluster Rust did not.
+    // A deliberate mismatch: the guest saw a cluster Rust did not. The
+    // Rust sets stand — the default — and the difference stays counted
+    // and named; a view whose computation declined never reaches the arm.
     let guest_gather = gather(vec![1, 0, 7], vec![0x0001_0002, 0x0001_0001]);
-    let (kept, p) = arm(guest_gather.clone(), rust);
+    let (stood, p) = arm(guest_gather, rust);
     assert_eq!(p.first, Some(Mismatch::ClusterGuestOnly(7)));
-    assert_eq!(kept, guest_gather, "the guest's lists, untouched");
+    assert_eq!(stood.source, VisibilitySource::Rust);
+    assert_eq!(
+        (stood.visible, stood.objects),
+        (vec![0, 1], vec![0x0001_0001, 0x0001_0002])
+    );
+    assert_eq!(stood.structure, [1]);
 }
 
 #[test]

@@ -2100,8 +2100,8 @@ h2 agent render.parity '{"arm": true}'
   For a game view, `visibility_clusters` counts the visible clusters,
   `structure_clusters` the subsequent BSP structure list and
   `visibility_objects` the view's object list; `visibility_source` is
-  `rust` when the Rust visibility equalled the guest's for the view and
-  supplied the clusters and objects, `guest` otherwise
+  `rust` when the Rust visibility supplied the clusters and objects (the
+  default) and `guest` when it declined for the view
   ([native-visibility.md](../graphics/native-visibility.md)). All four
   are absent if extraction cannot read the main gather at layer 3.
   A zero is a successfully read empty list. With `{"dump":true}`, the scene

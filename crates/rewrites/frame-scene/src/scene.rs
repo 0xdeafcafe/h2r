@@ -319,14 +319,15 @@ pub struct ClusterGather {
 }
 
 /// Which visibility a view's [`ClusterGather`] carries. The Rust sets are
-/// taken only for a view whose sets equal the guest's.
+/// the default; the guest's lists are the fallback a declined computation
+/// takes (docs/graphics/native-visibility.md).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VisibilitySource {
     /// The guest's portal flood and object gather, read.
     #[default]
     Guest,
-    /// `scene_extract::visibility`, equal to the guest's for this view.
+    /// `scene_extract::visibility`, computed for this view.
     Rust,
 }
 

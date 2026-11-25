@@ -35,6 +35,10 @@ pub(super) mod unit;
 pub(super) mod value;
 pub(super) mod vehicle;
 pub(super) mod weapon;
+/// The curve evaluator's capture arm, reached by `sim_bridge`.
+pub mod parity;
+#[cfg(test)]
+mod curve_tests;
 
 use super::{Next, Result};
 #[cfg(test)]
