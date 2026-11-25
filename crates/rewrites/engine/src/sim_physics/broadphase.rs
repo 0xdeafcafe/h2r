@@ -252,6 +252,8 @@ mod tests {
     const STACK: u32 = 0x0020_0000;
     const HANDLES: u32 = 0x0035_0000;
     const BOXES: u32 = 0x0036_0000;
+    /// The moved object: the batch lists its address, its first word is the node id.
+    const OBJECT: u32 = 0x0035_1000;
     /// The removed and added pair arrays' data, in `Array::bytes` order.
     const PAIRS: [u32; 2] = [0x0037_1000, 0x0037_0000];
     const ADDED: u32 = 0x0038_1000;
@@ -338,7 +340,8 @@ mod tests {
         g.set_u32(STACK + 12, n).unwrap();
         g.set_u32(STACK + 16, ADDED).unwrap();
         g.set_u32(STACK + 20, REMOVED).unwrap();
-        g.set_u32(HANDLES, 1).unwrap(); // the batch moves node 1
+        g.set_u32(HANDLES, OBJECT).unwrap();
+        g.set_u32(OBJECT, 1).unwrap(); // the batch moves node 1
         vector(g, BOXES, [coord(min[0]), coord(min[1]), coord(min[2]), 0]);
         vector(g, BOXES + 16, [coord(max[0]), coord(max[1]), coord(max[2]), 0]);
         CpuAbi { ecx: WORLD, esp: STACK, ..CpuAbi::default() }
@@ -402,7 +405,7 @@ mod tests {
         assert!(capture(&c, &g).is_none());
         // A node id the sweep does not know.
         g.set_u32(STACK + 8, BOXES).unwrap();
-        g.set_u32(HANDLES, 9).unwrap();
+        g.set_u32(OBJECT, 9).unwrap();
         assert!(capture(&c, &g).is_none());
     }
 }

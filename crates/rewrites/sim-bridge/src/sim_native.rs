@@ -154,10 +154,9 @@ impl Feature for SimNative {
         // the switch says; installs them when it is on.
         crate::sim_effects::install(b);
         // Phase 7: the seats, as the shadow's guest-authoritative arm
-        // first (crate::sim_seats).
-        if crate::sim_seats::on(b.switches()) {
-            crate::sim_seats::install(b);
-        }
+        // first (crate::sim_seats). Registers every seat with the shadow
+        // whatever the switch says; installs them when it is on.
+        crate::sim_seats::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.

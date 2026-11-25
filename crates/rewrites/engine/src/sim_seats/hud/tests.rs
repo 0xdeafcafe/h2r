@@ -98,11 +98,11 @@ fn the_fade_falls_when_the_player_is_not_visible() {
     g.set_u8(STACK - 0x141, 0).unwrap();
     c.ebp = STACK;
     g.set_u32(SEAT + 0x28, 1.0f32.to_bits()).unwrap();
-    update_fade(&mut c, &mut g).unwrap();
-    // The target is 1.0 while visible; make it hidden for the fall.
-    g.set_u8(STACK - 0x141, 0).unwrap();
+    // Hidden, the target is zero: each update falls by 0.5 / 2 frames.
     update_fade(&mut c, &mut g).unwrap();
     assert_eq!(bits(&g, SEAT + 0x28), 0.75);
+    update_fade(&mut c, &mut g).unwrap();
+    assert_eq!(bits(&g, SEAT + 0x28), 0.5);
 }
 
 #[test]
