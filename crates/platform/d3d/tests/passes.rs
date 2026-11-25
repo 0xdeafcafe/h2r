@@ -458,6 +458,119 @@ fn full_frame_quads_span_the_display_in_a_fitted_ui_scope() {
     }
 }
 
+const SCREEN_VAF: u32 = MISC + 0x7800;
+const SCREEN_PROGRAM: u32 = MISC + 0x7A00;
+const SCREEN_CONSTANTS: u32 = MISC + 0x7C00;
+
+/// Selects a vertex program for immediate draws the way Halo does
+/// (SelectVertexShaderDirect, every attribute format NONE): `placed` puts
+/// `v0` on the screen through constant rows (`oPos = v0 * c[96] + c[97]`,
+/// unit coordinates scaled to the 640x480 window); otherwise `oPos = v0`,
+/// the window coordinates as given.
+fn screen_program(d: &mut Device<RecordingBackend>, m: &mut SparseMemory, placed: bool) {
+    use shaders::vsh::encode::{Inst, Operand, program};
+    use shaders::vsh::{MacOp, OutReg};
+    let position = if placed {
+        vec![
+            Inst::mac(MacOp::Mul, Some(Operand::v(0)), Some(Operand::c(96)), None)
+                .to_temp(0, 0xF),
+            Inst::mac(MacOp::Add, Some(Operand::r(0)), None, Some(Operand::c(97)))
+                .to_out(false, OutReg::Pos, 0xF),
+        ]
+    } else {
+        vec![Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xF)]
+    };
+    let mut insts = position;
+    insts.push(Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None).to_out(false, OutReg::D0, 0xF));
+    m.write(SCREEN_PROGRAM, &program(&insts)).unwrap();
+    d.load_vertex_shader_program(m, SCREEN_PROGRAM, 0).unwrap();
+    for (i, v) in [640.0f32, 480.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0].iter().enumerate() {
+        m.write_u32(SCREEN_CONSTANTS + 4 * i as u32, v.to_bits()).unwrap();
+    }
+    d.set_vertex_shader_constant(m, 96, SCREEN_CONSTANTS, 2, true).unwrap();
+    for reg in 0..16u32 {
+        m.write_u32(SCREEN_VAF + 16 * reg + 8, 0x02).unwrap(); // D3DVSDT_NONE
+    }
+    d.select_vertex_shader_direct(m, SCREEN_VAF, 0).unwrap();
+}
+
+/// The title screen's backdrop passes are immediate-mode quads drawn by
+/// vertex programs: inline Begin/End words in the push buffer and
+/// `D3DDevice_End` strips, their positions passed through or placed from
+/// constant rows. Where they land in the window, not their raw `v0`,
+/// decides the fit: a quad over the whole window spans the display at any
+/// shape, and a widget keeps the fit (docs/graphics/high-resolution.md).
+#[test]
+fn immediate_program_quads_over_the_frame_span_the_display_in_a_fitted_ui_scope() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        (p.width, p.height) = (640, 480);
+    });
+    set_states(&mut d, &mut m);
+    for output in [(1920, 1080), (2496, 1662)] {
+        let fit = d3d::backend::UiFit::about(output, [320., 240.]);
+        assert!(fit.is_some_and(|f| f.transform[0] < 1.0), "a pillarbox fit at {output:?}");
+        d.set_ui_fit(&mut m, fit).unwrap();
+        let last = |d: &Device<RecordingBackend>| {
+            let draws = d.backend.draws();
+            let draw = draws.last().unwrap();
+            (draw.entry, draw.ui_fit)
+        };
+
+        // Window coordinates passed through (`no constant rows`).
+        screen_program(&mut d, &mut m, false);
+        inline_quad(&mut m, 0.0, 0.0, 640.0, 480.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", None),
+            "a pass-through inline quad over the frame at {output:?}"
+        );
+        inline_quad(&mut m, 112.0, 64.0, 208.0, 160.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", fit),
+            "a pass-through inline widget at {output:?}"
+        );
+
+        // Unit coordinates the program places through c[96..=97].
+        screen_program(&mut d, &mut m, true);
+        inline_quad(&mut m, 0.0, 0.0, 1.0, 1.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", None),
+            "a constant-placed inline quad over the frame at {output:?}"
+        );
+        inline_quad(&mut m, 112.0 / 640.0, 64.0 / 480.0, 208.0 / 640.0, 160.0 / 480.0, [255; 4]);
+        d.kick_off(&mut m).unwrap();
+        assert_eq!(
+            last(&d),
+            ("inline Begin/End", fit),
+            "a constant-placed inline widget at {output:?}"
+        );
+
+        // The same through D3DDevice_Begin/SetVertexData/End.
+        for (corners, want, what) in [
+            ([0.0, 0.0, 1.0, 1.0], None, "over the frame"),
+            ([0.175, 0.125, 0.325, 0.375], fit, "a widget"),
+        ] {
+            let [x0, y0, x1, y1] = corners;
+            d.begin(&mut m, QUADLIST).unwrap();
+            for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+                d.set_vertex_data(&mut m, 3, [1.0; 4]).unwrap();
+                d.set_vertex_data(&mut m, -1, [x, y, 0.5, 1.0]).unwrap();
+            }
+            d.end(&mut m).unwrap();
+            assert_eq!(
+                last(&d),
+                ("D3DDevice_End", want),
+                "a constant-placed D3DDevice_End quad, {what}, at {output:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn back_and_display_surfaces_are_distinct_and_swap_rotates_their_data() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);

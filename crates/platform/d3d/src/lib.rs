@@ -30,7 +30,9 @@
 //! * [`scene_sink`]: the frame's carried part, filled from the guest's
 //!   work by slot (docs/graphics/framescene.md, slice 6);
 //! * `clip_space`: where a vertex program puts its clip position, which
-//!   the carried draws' camera classification reads.
+//!   the carried draws' camera classification reads;
+//! * [`screen_rect`]: where a small draw's vertices land in the guest
+//!   window, for the UI fit and `render.frame_layout`.
 
 pub mod abi;
 pub mod backend;
@@ -60,6 +62,7 @@ pub mod runtime_glue;
 pub mod scaled;
 pub mod scene_sink;
 pub mod scene_stage;
+pub mod screen_rect;
 pub mod shader;
 pub mod state;
 mod texdesc;

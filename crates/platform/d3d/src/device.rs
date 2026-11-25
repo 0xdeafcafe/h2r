@@ -6304,14 +6304,18 @@ impl<B: Backend> Device<B> {
         // copy, it spans the display, not the fitted safe box. The guest's
         // own quads choose this at their submission sites (`render_aspect`);
         // the strips a screen effect pushes by hand have no site, so the
-        // device reads the draw's vertices.
+        // device reads where the draw's vertices land.
         let spans_frame = match &self.ui_fit {
             Some(fit) if !fit.applies_to_frame_sample() => spans_the_fitted_frame(
                 fit,
-                &parts.layout,
-                streams,
-                parts.indices.is_some(),
-                parts.vertex_count,
+                &crate::screen_rect::DrawVertices {
+                    shader: &shader,
+                    layout: &parts.layout,
+                    streams: streams.as_slice(),
+                    vertex_count: parts.vertex_count,
+                    indexed: parts.indices.is_some(),
+                    tex_coord_index: std::array::from_fn(|s| state.stages[s].tex_coord_index),
+                },
                 (target.width, target.height),
             ),
             _ => false,
@@ -7389,21 +7393,23 @@ pub(crate) fn attribute_value(ty: VertexDataType, b: &[u8]) -> [f32; 4] {
     out
 }
 
-/// Whether an unindexed draw's screen-space positions reach both edges of
-/// the `frame` along an axis `fit` shrinks. A quad that does is a
-/// full-frame pass — a fill, tint, fade, blur or colour pass over the whole
-/// view — and the fit must not shrink it into the safe area
-/// (docs/graphics/high-resolution.md). The positions are read from the
-/// draw's own vertices, so every path that pushes a full-window quad is
-/// covered, whether or not the submission site is one `render_aspect`
-/// reads: the screen effects' hand-pushed strips, the colour pass's quads,
-/// a menu fill the background-art rule missed.
+/// Whether an unindexed draw's window positions reach both edges of the
+/// `frame` along an axis `fit` shrinks. A quad that does is a full-frame
+/// pass (a fill, tint, fade, blur or colour pass over the whole view) and
+/// the fit must not shrink it into the safe area
+/// (docs/graphics/high-resolution.md). The positions are where the draw's
+/// vertices land ([`crate::screen_rect`], the reading `render.frame_layout`
+/// reports as `window_xy`): pre-transformed vertices as given, a program's
+/// vertices through the program, whether they come from a vertex buffer,
+/// inline Begin/End words or `D3DDevice_End`, and whether the program
+/// places them from constant rows or passes them through. Every path that
+/// pushes a full-window quad is covered, whether or not the submission
+/// site is one `render_aspect` reads: the screen effects' hand-pushed
+/// strips, the colour pass's quads, the title screen's backdrop passes, a
+/// menu fill the background-art rule missed.
 fn spans_the_fitted_frame(
     fit: &crate::backend::UiFit,
-    layout: &VertexLayout,
-    streams: &[StreamBytes],
-    indices: bool,
-    vertex_count: u32,
+    vertices: &crate::screen_rect::DrawVertices<'_>,
     frame: (u32, u32),
 ) -> bool {
     let [sx, sy, _, _] = fit.transform;
@@ -7413,40 +7419,12 @@ fn spans_the_fitted_frame(
     }
     // Indexed widgets select their own vertices; the strips, fans and
     // quads of a full-frame pass never use indices. A cap keeps the walk
-    // off geometry submitted inside a fitted scope (a menu's model view).
-    if indices || vertex_count == 0 || vertex_count > 1024 {
+    // off geometry submitted inside a fitted scope (a menu's model view);
+    // a program runs per vertex, so its cap is lower.
+    let cap = if vertices.programmable() { 64 } else { 1024 };
+    let Some([lo, hi]) = vertices.window_rect(cap) else {
         return false;
-    }
-    let mut lo = [f32::INFINITY; 2];
-    let mut hi = [f32::NEG_INFINITY; 2];
-    for (stream, bytes) in layout.streams.iter().zip(streams) {
-        let Some(position) = stream
-            .attributes
-            .iter()
-            .find(|a| a.register == VertexRegister::POSITION)
-        else {
-            continue;
-        };
-        let stride = bytes.stride as usize;
-        let size = position.data_type.byte_size() as usize;
-        if stride < size {
-            return false;
-        }
-        let data: &[u8] = bytes.data.as_ref();
-        for vertex in 0..vertex_count as usize {
-            let base = vertex * stride + position.offset as usize;
-            let Some(b) = data.get(base..base + size) else {
-                return false;
-            };
-            let value = attribute_value(position.data_type, b);
-            for axis in 0..2 {
-                if value[axis].is_finite() {
-                    lo[axis] = lo[axis].min(value[axis]);
-                    hi[axis] = hi[axis].max(value[axis]);
-                }
-            }
-        }
-    }
+    };
     // Pixel-centred corners sit half a pixel in: allow one guest pixel.
     let frame = [frame.0 as f32, frame.1 as f32];
     (0..2).any(|axis| {

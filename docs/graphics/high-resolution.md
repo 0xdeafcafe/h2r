@@ -122,11 +122,20 @@ A screen-space quad whose positions reach both edges of the frame along
 the axis the fit shrinks is a full-frame pass the same way: the screen
 effects' hand-pushed strips (the cutscene tints, the title screen's
 backdrop fill, the wide convolution's grid rows), the colour pass's quads
-and any menu fill a submission site did not read. The device reads the
-positions from the draw's own unindexed vertices and drops the widget
-fit for the draw (`crates/platform/d3d/src/device.rs`,
-`spans_the_fitted_frame`; test
-`full_frame_quads_span_the_display_in_a_fitted_ui_scope`). Without this,
+and any menu fill a submission site did not read. The device takes the
+window position of each of the draw's unindexed vertices and drops the
+widget fit for the draw (`crates/platform/d3d/src/device.rs`,
+`spans_the_fitted_frame`). A vertex program's vertices go through the
+program, so positions placed from constant rows, passed through, or
+written as inline Begin/End words and `D3DDevice_End` strips (the title
+screen's backdrop blur and tint) land where the GPU puts them;
+pre-transformed vertices are read as given. The reading is
+`crates/platform/d3d/src/screen_rect.rs`, the same one
+[`render.frame_layout`](../runtime/agent-api.md#renderframe_layout)
+reports as `window_xy` (tests
+`full_frame_quads_span_the_display_in_a_fitted_ui_scope` and
+`immediate_program_quads_over_the_frame_span_the_display_in_a_fitted_ui_scope`
+in `crates/platform/d3d/tests/passes.rs`). Without this,
 a full-window quad covered only the centred 4:3 box at a wide display
 while the scene under it, drawn with the display lens, spanned the whole
 raster — hard vertical edges at the box. A quad that covers the cinema

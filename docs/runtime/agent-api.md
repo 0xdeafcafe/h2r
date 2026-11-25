@@ -1427,7 +1427,8 @@ and rounds the result to the host allocation's pixel grid. The row gives
 the draw's UI transform, vertex-position classification and horizontal
 projection correction when present. `window_xy` is the min and max vertex
 position before the display fit and subpixel adjustment for supported
-small, unindexed draws.
+small, unindexed draws: the reading the device's UI fit uses to tell a
+full-frame pass from a widget (`crates/platform/d3d/src/screen_rect.rs`).
 
 Each `sampled` entry gives the stage, texture header and texture ID,
 source surface when known, guest and host sizes, and U and V address
