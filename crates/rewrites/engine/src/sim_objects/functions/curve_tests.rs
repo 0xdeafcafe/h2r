@@ -146,8 +146,8 @@ fn the_keyed_curves_read_their_second_set_at_plus_0x50() {
     // Kind 5, blended: the second set's starts, slopes and weights differ,
     // so a wrong base would show at once. First set: starts at +0x24,
     // slopes at +0x34, constant +0x40, weights +0x44..+0x4c; the second
-    // set is the same layout at +0x50.
-    let mut words = [0.0f32; 0x1c];
+    // set is the same layout at +0x50, its weights ending at +0x9c.
+    let mut words = [0.0f32; 0xa0 / 4];
     for (at, v) in [
         (0x24usize, -0.1f32),
         (0x28, 0.3),

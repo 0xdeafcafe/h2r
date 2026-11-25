@@ -428,13 +428,18 @@ mod tests {
     const DATA: u32 = 0x3000;
 
     /// Word-addressed synthetic memory: the two tables' sub-type 1 ramps
-    /// and whatever the test adds.
+    /// and whatever the test adds. A byte read takes its lane of the word
+    /// that holds it, as the blob header's packed bytes need.
     #[derive(Clone, Default)]
     struct Ram(Vec<(u32, u32)>);
 
     impl Ram {
         fn word(&self, at: u32) -> Result<u32, u32> {
             self.0.iter().find(|&&(a, _)| a == at).map(|&(_, v)| v).ok_or(at)
+        }
+
+        fn byte(&self, at: u32) -> Result<u8, u32> {
+            self.word(at & !3).map(|v| (v >> (8 * (at & 3))) as u8)
         }
 
         fn set(&mut self, at: u32, v: u32) {
@@ -468,7 +473,7 @@ mod tests {
                 x.to_bits(),
                 r.to_bits(),
                 |a| self.word(a),
-                |a| self.word(a).map(|v| v as u8),
+                |a| self.byte(a),
             )
             .unwrap()
         }
@@ -526,7 +531,7 @@ mod tests {
             assert_eq!(
                 evaluate(&IMAGE, mxcsr, control, REFERENCE, 0.5f32.to_bits(), 0.5f32.to_bits(), |a| {
                     ram.word(a)
-                }, |a| ram.word(a).map(|v| v as u8))
+                }, |a| ram.byte(a))
                 .unwrap(),
                 Answer::Declined(Decline::Float),
                 "mxcsr {mxcsr:#x} control {control:#x}"

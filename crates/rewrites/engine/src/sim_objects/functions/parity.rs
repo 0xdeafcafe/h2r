@@ -169,6 +169,17 @@ mod tests {
     fn call(mxcsr: u32, control: u16) -> (CpuAbi, Guest) {
         let mut g = Guest::new();
         g.map_zeroed(0x0041_0000, 0x0008_0000, Permissions::RW).unwrap();
+        for (at, v) in [
+            (ONE, 1.0f32),
+            (SHAPE_SCALE, 1023.0),
+            (SHAPE_BIAS, 0.1),
+            (WAVE_SCALE, 1024.0 / 28.0),
+            (BYTE, 1.0 / 255.0),
+            (WRAP_HIGH, 0.75),
+            (WRAP_LOW, 0.25),
+        ] {
+            g.set_u32(at, v.to_bits()).unwrap();
+        }
         let reference = 0x0048_7ff0;
         let data = 0x0048_8000;
         g.set_u32(reference, 1).unwrap();

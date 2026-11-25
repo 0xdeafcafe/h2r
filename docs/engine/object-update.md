@@ -105,7 +105,7 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 | `d1410` | `UNIT_IMPORT_ANIMATION` | `(unit: eax) -> xmm0`; `ret`. Calls `1c6e30` | segment |
 | `be8e0` | `OBJECT_CHANGE_COLORS` | `(object: stack 0) -> al`; `ret 4` | segment, then leaf |
 | `13bb90` | none yet | `(function: eax, stack 0, stack 1)`, input in `xmm0` (clamped), result in `xmm0`; `ret 8`. Calls the evaluator `13b390` | callout |
-| `13b390` | `OBJECT_FUNCTION_CURVE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | capture arm: the guest answers, the kernel `functions/curve.rs` is compared with every call (`functions/parity.rs`); curve kinds 9 and 10 decline |
+| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | capture arm: the guest answers, the kernel `functions/curve.rs` is compared with every call (`functions/parity.rs`); curve kinds 9 and 10 decline |
 
 ### Slice 4: post-update shell
 
