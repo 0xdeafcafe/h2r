@@ -161,6 +161,14 @@ four vertices with no indices. The bridge decides which draws are flares;
 `Site::registers` is the written register set per site, and registers
 outside it come from the carried defaults.
 
+The bridge (`native_flares.rs`) arms each fan at its End call and
+finishes it at the first instruction after End's return
+(`scene_effects::FLARE_*`): a return resumes the caller's generated code
+at the continuation, so no hook runs there. The MaskSample and Composite
+End calls are themselves the return of the last `SetVertexData4f` call.
+No instruction lies between, so the plan refuses their arming observers
+at install and those two fans stay on the guest path.
+
 `FlareGpu::prepare(site, target, draw, frame)` checks that the draw is a
 fan of four vertices with a vertex program, one stride-256 stream 0 of
 `Float4` registers at `16 * register`, a written set that equals the site's
@@ -189,7 +197,11 @@ also match a researched caller; another caller gives `UnownedCaller`.
 | Weather particle points | Same helper, resolved PointList | `WeatherPointRasterization`: point size/expansion is not represented by this renderer |
 
 Boundary pairs (before END / after END) are `0x00048497/0x0004849d`,
-`0x00048ae5/0x00048aeb`, and `0x00038342/0x00038349`. Weather particles
+`0x00048ae5/0x00048aeb`, and `0x00038342/0x00038349`. The weather
+layer's `0x00038342` is the End call and also the return of the last
+`SetVertexData4f` call. A return resumes the caller's generated code
+there, so the plan refuses that observer at install and the weather layer
+stays on the guest path. Weather particles
 write END inline: observe before its put publication at `0x000396f7`, then
 finish at `0x000396f9`. Early-out paths never arm. The saved-caller stack
 offsets are `+0x24` and `+0x30` for the two billboard emitters.
@@ -245,7 +257,8 @@ Lens flares use a separate queue: `0x0002dba0` → `0x000209b0`, populated
 from sky, object attachments, lights and effect parts. Pass `0x0002dd30`
 invokes callback `0x0002e540` through `0x00020bb0` with query work enabled.
 The native flare hook arms one read-only, position-only fan at END
-(`0x0002e9b6`) and disarms on return. The queue helper brackets it with
+(`0x0002e9b6`) and disarms at `0x0002e9c1`, one instruction past End's
+return `0x0002e9bb`: no hook runs at a call's continuation. The queue helper brackets it with
 the guest's existing z-pass clear and report. The ordered fan carries a
 count pipeline using its actual scissor, vertex program and depth/stencil
 state. W-buffered fans use the count entry's W-depth output. The backend

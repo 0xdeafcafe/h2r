@@ -9,7 +9,7 @@ use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
     ANCHOR, ANCHOR_READY, DOC, FLARE_COMPOSITE_DONE, FLARE_COMPOSITE_LOOP, FLARE_QUERY,
     FLARE_QUERY_END, FLARE_REFLECTION, FLARE_REFLECTION_END, GROUPS, MENU_FILL,
-    MENU_FILL_END, VOLUME_DEPTH, VOLUME_DEPTH_END, VOLUME_SPRITE, VOLUME_SPRITE_END,
+    MENU_FILL_END, VOLUME_DEPTH, VOLUME_END, VOLUME_SPRITE,
 };
 use points::scene_effects::{EFFECT_QUAD_READY, HUD_QUAD_READY};
 use points::ui_render::{ITEM_CALL, RECT_SUBMIT_RETURN, SCREEN_QUAD_READY};
@@ -679,8 +679,8 @@ impl Feature for RenderAspect {
         for (begin, end, query) in [
             (&FLARE_QUERY, &FLARE_QUERY_END, true),
             (&FLARE_REFLECTION, &FLARE_REFLECTION_END, false),
-            (&VOLUME_SPRITE, &VOLUME_SPRITE_END, false),
-            (&VOLUME_DEPTH, &VOLUME_DEPTH_END, false),
+            (&VOLUME_SPRITE, &VOLUME_END, false),
+            (&VOLUME_DEPTH, &VOLUME_END, false),
             (&FLARE_COMPOSITE_LOOP, &FLARE_COMPOSITE_DONE, false),
         ] {
             let (layout, size, sink) = (layout.clone(), self.size.clone(), self.sink.clone());
@@ -836,8 +836,7 @@ impl Feature for RenderAspect {
             &MENU_FILL_END,
             &FLARE_QUERY_END,
             &FLARE_REFLECTION_END,
-            &VOLUME_SPRITE_END,
-            &VOLUME_DEPTH_END,
+            &VOLUME_END,
             &FLARE_COMPOSITE_DONE,
         ]) {
             let (layout, sink) = (layout.clone(), self.sink.clone());

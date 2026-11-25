@@ -5,7 +5,7 @@ objects (modes 0, 1 and 2), the run-time-computed visible sets, the
 window frusta objects are tested against, the main view's records and
 the sphere-mode and frustum-mode light views are computed in Rust and compared with the
 guest's. The guest's view setup, portal flood and object gather still
-run and stay the fallback.
+run and are the fallback a decline takes.
 Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `arm`,
 `view`, `light`), the arms in `crates/rewrites/render-bridge/src/scene_step.rs`
 (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests:
@@ -20,9 +20,11 @@ camera, projection, start cluster and mode), which BSP clusters the view
 sees and which objects it lists; at each dynamic light's passes it does
 the same for the light's view. At first-person replay it compares the
 ordered light slots and their records. Each comparison counts differences
-and names the first. The scene uses Rust camera records, main-view sets
-and recorded light handles only on equality. Nothing here writes guest memory, so the sim's
-hashes cannot move.
+and names the first. The scene's gather carries the Rust main-view sets
+by default, the guest's lists the fallback a decline takes, and a view
+whose lists do not read carries no gather; it uses Rust
+camera records and recorded light handles only on equality. Nothing here
+writes guest memory, so the sim's hashes cannot move.
 
 In single-copy play, the Rust comparison uses the horizontal extent set by
 the displayed camera projection hook. In exact mode, the scene step projects the portals
@@ -302,15 +304,23 @@ the view's base layer 3 (the main view) or `light::guest_lists` (a
 light). `parity::compare` walks the two ascending sets and counts what
 only the guest has and what only Rust has, clusters before objects,
 naming the first. `visibility::arm` returns the gather with the Rust sets
-(ascending, `source: rust`) when they are equal, and the guest's
-untouched otherwise. `scene_step::visibility_arm` counts each view and
+(ascending, `source: rust`): they are the default, so a difference keeps
+them and stays counted and named; the scene step keeps the guest's for a
+view whose computation declined, which never reaches the arm. The guest's
+lists remain what the render records were built from. The arm runs for
+every game view, whether or not its lists read: a view whose lists did
+not read is computed and counted, and carries no gather — the gather's
+mode and structure list are the guest's, and the comparison has no other
+side.
+`scene_step::visibility_arm` counts each view and
 keeps the first difference since the map loaded. A light's comparison is
 counted only: no light list is carried into the scene.
 
 ## Interfaces
 
 - Called from `render_bridge::scene_step::open_kind_at_layer` when a game
-  view's base layer 3 is read, after `extract::cluster_gather`
+  view's base layer 3 is read, whether or not `extract::cluster_gather`'s
+  lists read — they are the comparison's other side and the fallback —
   (`view_record_arm`, then `visibility_arm`), and from
   `scene_step::light` at each dynamic light's passes. First-person slot
   collection runs at the dynamic constants call and compares at replay.
@@ -337,8 +347,12 @@ counted only: no light list is carried into the scene.
   `0x00134950` and lists objects in its walk order; the comparison and
   the Rust lists are ascending. A consumer that needs the guest's order
   reads it from a `guest` view.
-- **The guest stays the fallback.** A view whose sets or records differ,
-  or for which the computation declines, keeps the guest's.
+- **The guest is the fallback.** A view for which the computation
+  declines keeps the guest's gather. A difference keeps the Rust sets —
+  the default — and stays counted and named; the render records were
+  still built from the guest's lists. A view whose lists do not read
+  carries no gather: the comparison has no other side. The camera records
+  and the first-person light handles stay taken only on equality.
 - **Declines, by name.** For the sets: memory that does not read
   (`unread`); counts, links or indices past the guest's arrays (more
   than 512 clusters or portals, more than 64 corners a portal, a short
@@ -379,9 +393,11 @@ counted only: no light list is carried into the scene.
   acceptance of R4 is `scene_visibility_differ`,
   `scene_light_visibility_differ`, `scene_first_person_visibility_differ`
   and `scene_view_record_differ` at
-  zero, and `scene_visibility_rust_taken` equal to
-  `scene_visibility_checked`, over the gate corpus, with all four
-  `*_first_mismatch` fields absent.
+  zero, over the gate corpus, with all four
+  `*_first_mismatch` fields absent. `scene_visibility_rust_taken` equals
+  `scene_visibility_checked` by construction: the Rust sets are the
+  default, and the `scene_visibility_declined_*` counters name the views
+  that keep the guest's.
 - That the render camera and projection at layer 3 are the lens the
   gather used: the display copy can change the projection after the
   gather (occlusion-culling.md).

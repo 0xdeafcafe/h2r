@@ -267,7 +267,7 @@ fn the_join_link_and_lab_consent_plan_together_at_ui_update() {
     .unwrap();
     let mut features = hooks::Registry::new(hooks::Switches::defaults());
     install(&mut features, Some(live), false, None).unwrap();
-    crate::lab_takeover::install(&mut features, &agent::Agent::new()).unwrap();
+    crate::lab_takeover::install(&mut features, &agent::Agent::new(), true).unwrap();
     let plan = features.build(&hooks::Base).unwrap().text();
     assert!(
         plan.contains("process a Live join link") && plan.contains("open or expire a lab request"),

@@ -51,7 +51,7 @@ pub use verify::VerificationMode;
 use anyhow::{Context, Result, bail, ensure};
 use rig::ReplayCamera;
 pub use agent_proto::theater::CompatibilityState;
-pub use compatibility::{Installation, image_match};
+pub use compatibility::{Installation, hook_digest, image_match};
 pub use controls::{library_methods, playback_images};
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
