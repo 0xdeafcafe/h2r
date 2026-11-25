@@ -825,6 +825,15 @@ reach the D3D device in their original order, including device references
 and callbacks when a resource loses its last reference. A missing vertex
 input can suppress emission after the binder has already changed state.
 Stencil, fade and transient target operations bracket the actual draw.
+The fade byte the handler feeds the stipple choice is the record's own,
+rescaled to the display's pixel count when these draws render the display
+with no distinct reference copy: a Highest display draws every placement
+fade solid, a multiplier recomputes the placement's fade at that many
+output pixels per guest pixel (`world_walk::placement_display_alpha`), and
+Retail detail, exact and protected runs keep each record's byte
+([occlusion-culling.md](occlusion-culling.md), "Projected size and level
+of detail"). `render.scene`'s `scene_world_stipple_*` counters count the
+records entered with a fade and how the display resolved them.
 The next native or guest entry therefore starts with the outgoing device
 and RAM caches already installed. Applying only the last part's bindings
 would lose writes to earlier descriptors and intermediate resource releases.

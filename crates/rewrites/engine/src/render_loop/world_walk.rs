@@ -185,6 +185,41 @@ fn placement_fade(
     Some((size, fade))
 }
 
+/// The record's fade byte from a fade factor: the walk's extended-precision
+/// multiply by `FADE_RANGE` and rounded conversion, exactly as the placement
+/// arm of `fill` publishes it.
+fn fade_alpha(m: &dyn GuestMemory, fade: f32, mode: Mode) -> Option<u8> {
+    let alpha = x87::mul(
+        F80::from_f32_bits(fade.to_bits()),
+        F80::from_f32_bits(m.f32(FADE_RANGE).ok()?.to_bits()),
+        mode,
+    )
+    .0;
+    u8::try_from(alpha.to_i32(mode, true).0).ok()
+}
+
+/// The fade byte a placement's record would carry if the walk's projected
+/// size counted `factor` guest pixels for each output pixel: the placement's
+/// sphere through the live projection, the same fade window and the same
+/// rounded `FADE_RANGE` multiply. The display paths keep LOD Distance's
+/// promise for placement fades with it; the guest walk never calls it (a
+/// legacy film's recorded multiplier reaches the walk through `PIXEL_SCALE`,
+/// and at 1x the answer is the published record byte). `None` when the
+/// placement or the view globals do not read.
+pub fn placement_display_alpha(m: &dyn GuestMemory, at: u32, factor: f32, cw: u16) -> Option<u8> {
+    let (size, _) = placement_fade(
+        m,
+        at,
+        projection_depth(m)?,
+        m.f32(MIN_DEPTH).ok()?,
+        m.f32(PIXEL_SCALE).ok()?,
+        m.f32(TWO).ok()?,
+    )?;
+    let fade = (size * factor - m.f32(FADE_START).ok()?) * m.f32(FADE_SLOPE).ok()?;
+    let fade = fade.max(0.).min(m.f32(ONE).ok()?);
+    fade_alpha(m, fade, Mode::from_cw(cw))
+}
+
 /// The extra display draw can use the resident rigid material directly
 /// only at full opacity. The ordinary record walk supplies partial fade.
 pub fn fully_visible_placement(m: &dyn GuestMemory, bsp: u32, id: u16) -> Option<bool> {
@@ -338,13 +373,7 @@ fn fill(
                 let section =
                     ptr(m, bsp.checked_add(0x13c)?)?.checked_add(definition.checked_mul(0xc8)?)?;
                 let (size, fade) = placement_fade(m, at, depth, near, scale, double)?;
-                let alpha = x87::mul(
-                    F80::from_f32_bits(fade.to_bits()),
-                    F80::from_f32_bits(m.f32(FADE_RANGE).ok()?.to_bits()),
-                    mode,
-                )
-                .0;
-                let alpha = u8::try_from(alpha.to_i32(mode, true).0).ok()?;
+                let alpha = fade_alpha(m, fade, mode)?;
                 if alpha == 0 {
                     plan.put(m, flag_at, &[(f as u8) | 1])?;
                     continue;
@@ -641,6 +670,30 @@ mod tests {
                 assert_eq!(m.u16(FLAGS).unwrap(), 1);
             }
         }
+    }
+
+    #[test]
+    fn display_fade_rescales_the_projected_size_through_the_same_window() {
+        let mut m = fixture(Walk::Placements);
+        // The same placement as the pixel-scale test: radius equals depth,
+        // the small-object factor halves it, so the projected size in guest
+        // pixels equals the view's scale (192 here).
+        m.set_f32(BSP + 0x1800 + 0x48, 3.).unwrap();
+        m.set_f32(SMALL_RADIUS, 4.).unwrap();
+        m.set_f32(SMALL_SCALE, 0.5).unwrap();
+        m.set_f32(FADE_START, 48.).unwrap();
+        m.set_f32(FADE_SLOPE, 1. / 256.).unwrap();
+        m.set_f32(PIXEL_SCALE, 192.).unwrap();
+        let at = BSP + 0x1800;
+        // The retail byte the walk publishes at this pixel scale.
+        assert_eq!(placement_display_alpha(&m, at, 1., 0x027f), Some(143));
+        // Each output pixel counts: twice the lines fade the placement in.
+        assert_eq!(placement_display_alpha(&m, at, 2., 0x027f), Some(255));
+        // Half the lines fade it most of the way out.
+        assert_eq!(placement_display_alpha(&m, at, 0.5, 0x027f), Some(48));
+        assert_eq!(placement_display_alpha(&m, at, 0.25, 0x027f), Some(0));
+        // A placement that does not read leaves the caller the record byte.
+        assert_eq!(placement_display_alpha(&m, 0x2000_0000, 2., 0x027f), None);
     }
 
     #[test]

@@ -44,12 +44,46 @@ use native_render::skip::{self, Cleared, LIGHTMAP_LAYER, StencilPlan};
 use native_render::world::Owner;
 
 use crate::native_map_work::{self, BSP_LOAD_PENDING, Stage};
+use crate::native_scene_lists::{LodDetail, ViewLodScale};
 use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-world";
 /// Whether the native world is on: the native renderer's master switch.
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
+}
+
+/// How a record's fade byte becomes the display's stipple choice in the
+/// sorted handler. The guest walk always publishes its retail (or recorded)
+/// fade; this is the display-side policy, from the render context's
+/// [`ViewLodScale`] display word.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DisplayFade {
+    /// Each record's own byte: Retail detail, no view, or a run whose draws
+    /// are a distinct reference copy protected readbacks watch.
+    Retail,
+    /// The projected size counts `factor` guest pixels per output pixel.
+    Scaled(f32),
+    /// The finest detail at any distance: every placement fade draws solid.
+    Highest,
+}
+
+impl DisplayFade {
+    /// `mem` the live guest, `lod` the render context's scale (set per view
+    /// by the `lod-distance` feature), `display_draws` whether these draws
+    /// render the display with no distinct reference copy behind them
+    /// (single-copy rendering; an exact or protected run keeps the retail
+    /// fade, like the D3D fallback keeps its retail geometry).
+    pub fn resolve(m: &dyn GuestMemory, lod: Option<ViewLodScale>, display_draws: bool) -> Self {
+        let Some(lod) = lod.filter(|_| display_draws) else {
+            return Self::Retail;
+        };
+        match lod.display(m) {
+            LodDetail::Highest => Self::Highest,
+            LodDetail::Scaled(factor) => Self::Scaled(factor),
+            LodDetail::Retail => Self::Retail,
+        }
+    }
 }
 
 mod layer_build;
@@ -177,6 +211,16 @@ static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
 static STENCIL: AtomicU64 = AtomicU64::new(0);
 static WITHOUT_WORLD: AtomicU64 = AtomicU64::new(0);
+/// Records the sorted handler enters with a fade byte below full.
+static FADE_RECORDS: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones whose display detail draws solid: no stipple.
+static FADE_SOLID: AtomicU64 = AtomicU64::new(0);
+/// Of those, the ones a stipple pattern still draws: the remaining
+/// screen-door.
+static FADE_STIPPLED: AtomicU64 = AtomicU64::new(0);
+/// The display rescale could not read the placement; the record's own byte
+/// drew.
+static FADE_UNREAD: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -202,6 +246,40 @@ pub fn stencil_views() -> u64 {
 /// the host is not asked.
 pub fn views_without_world() -> u64 {
     WITHOUT_WORLD.load(Ordering::Relaxed)
+}
+
+/// Records the sorted handler entered with a fade byte below full: the
+/// retail stipple candidates. Counted once per record, on its enter.
+pub fn fade_record() {
+    FADE_RECORDS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Of those: `solid` when the display detail draws the record solid (no
+/// stipple), else a stipple pattern still draws it.
+pub fn fade_resolved(solid: bool) {
+    if solid {
+        FADE_SOLID.fetch_add(1, Ordering::Relaxed);
+    } else {
+        FADE_STIPPLED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// A stippled record whose display rescale could not read the placement:
+/// the record's own byte drew.
+pub fn fade_unreadable() {
+    FADE_UNREAD.fetch_add(1, Ordering::Relaxed);
+}
+
+/// `scene_world_stipple_*` for `render.scene`'s counters: how many records
+/// the sorted handler saw in a placement fade, and how the display detail
+/// resolved them. Session totals; the delta between two reads is a frame's.
+pub fn stipple_counters() -> [(&'static str, u64); 4] {
+    [
+        ("scene_world_stipple_records", FADE_RECORDS.load(Ordering::Relaxed)),
+        ("scene_world_stipple_solid", FADE_SOLID.load(Ordering::Relaxed)),
+        ("scene_world_stipple_faded", FADE_STIPPLED.load(Ordering::Relaxed)),
+        ("scene_world_stipple_unreadable", FADE_UNREAD.load(Ordering::Relaxed)),
+    ]
 }
 
 /// The guest's memory as `native_render` reads and writes it.
@@ -357,19 +435,32 @@ pub(crate) fn load_active_bsp(mem: &dyn GuestMemory) {
 
 pub struct NativeWorld;
 
-impl Feature for NativeWorld {
+impl NativeWorld {
+    /// The world whose placement fades follow the view's display detail:
+    /// `lod` the render context's scale (the `lod-distance` feature's
+    /// words), `display_draws` whether these draws render the display with
+    /// no distinct reference copy behind them (single-copy rendering).
+    pub fn with_display_fade(lod: Option<ViewLodScale>, display_draws: bool) -> WorldScene {
+        WorldScene(lod, display_draws)
+    }
+}
+
+/// The world feature with its display-fade configuration.
+pub struct WorldScene(Option<ViewLodScale>, bool);
+
+impl Feature for WorldScene {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The static world drawn by the native GPU renderer")
-            .doc("docs/graphics/native-renderer.md")
+        NativeWorld.manifest()
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let fade = (self.0, self.1);
         if !on(b.switches()) {
             b.snapshot(hooks::SnapshotPolicy::Stateless);
             return Ok(());
         }
         scene_walk::install(b);
-        opaque::install(b);
+        opaque::install(b, fade);
         b.snapshot(hooks::SnapshotPolicy::section(Vec::new, |_, _| {
             forget_pending();
             Ok(())
@@ -388,5 +479,41 @@ impl Feature for NativeWorld {
             .after_feature(native_map_work::ID)
             .context_only();
         Ok(())
+    }
+}
+
+impl Feature for NativeWorld {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(ID, "The static world drawn by the native GPU renderer")
+            .doc("docs/graphics/native-renderer.md")
+    }
+
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        WorldScene(None, false).build(b)
+    }
+}
+
+#[cfg(test)]
+mod display_fade_tests {
+    use super::*;
+    use engine::memory::FlatMemory;
+
+    #[test]
+    fn the_display_fade_follows_the_view_word_and_the_reference_policy() {
+        let address = 0x10000;
+        let scale = ViewLodScale::new(address);
+        let mut m = FlatMemory::new(address, 8);
+        // No view scale, or a run whose draws a protected reference copy
+        // watches: the record's own byte.
+        assert_eq!(DisplayFade::resolve(&m, None, true), DisplayFade::Retail);
+        assert_eq!(DisplayFade::resolve(&m, Some(scale), false), DisplayFade::Retail);
+        // The display word: absent (retail), a multiplier, and Highest,
+        // including under a menu model view's marking bit.
+        assert_eq!(DisplayFade::resolve(&m, Some(scale), true), DisplayFade::Retail);
+        m.set_f32(address + 4, 3.5).unwrap();
+        assert_eq!(DisplayFade::resolve(&m, Some(scale), true), DisplayFade::Scaled(3.5));
+        m.set_u32(address + 4, LodDetail::Highest.guest_word() | ViewLodScale::MODEL_VIEW)
+            .unwrap();
+        assert_eq!(DisplayFade::resolve(&m, Some(scale), true), DisplayFade::Highest);
     }
 }
