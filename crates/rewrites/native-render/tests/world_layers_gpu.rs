@@ -838,11 +838,20 @@ fn a_pool_without_its_inputs_is_a_named_refusal() {
     draw.state.render.depth_write = true;
     assert_eq!(refused(&draw), Some("writes_depth"));
 
-    // A lens that is not the frame's size, or no sampled image: no lens.
+    // A lens of another size than the target is still the lens: the
+    // recording copies the bound colour, whatever the guest resolved.
     let mut draw = pool_triangle();
     draw.texture_info[0].as_mut().unwrap().width = SIZE / 2;
-    assert_eq!(pool_lens_stage(&draw), None);
-    assert_eq!(refused(&draw), Some("no_lens"));
+    draw.texture_info[0].as_mut().unwrap().height = SIZE / 2;
+    assert_eq!(pool_lens_stage(&draw), Some(0));
+    assert_eq!(refused(&draw), None);
+    // A display copy larger than the guest's target, with the lens at guest size.
+    let mut draw = pool_triangle();
+    draw.target.width = SIZE * 3;
+    draw.target.height = SIZE * 2;
+    assert_eq!(pool_lens_stage(&draw), Some(0));
+    assert_eq!(refused(&draw), None);
+    // No sampled image: no lens.
     let mut draw = pool_triangle();
     draw.texture_info[0] = None;
     assert_eq!(refused(&draw), Some("no_lens"));

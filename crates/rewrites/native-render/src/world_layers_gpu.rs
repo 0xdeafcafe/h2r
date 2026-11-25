@@ -481,7 +481,13 @@ impl IndexedPass {
         if draw.writes_depth_stencil() {
             return Err("writes_depth");
         }
-        let lens = pool_lens_stage(draw).ok_or("no_lens")?;
+        let Some(lens) = pool_lens_stage(draw) else {
+            static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("native-water: sorted pool has no sampled projective 2D lens stage: {}", pool_lens_report(draw));
+            }
+            return Err("no_lens");
+        };
         let mut pass = Self::new(draw, cache, frame, None).ok_or("geometry")?;
         pass.sorted_pool = true;
         pass.lens = Some(lens);
@@ -905,9 +911,11 @@ pub fn pool_recording_counters() -> Vec<(String, u64)> {
 }
 
 /// The stage of `draw` that samples the frame behind a pool: the first
-/// projective 2D stage whose bound image is a frame-sized 2D texture (the
-/// guest's resolve of the colour target). Its ripple stages are bump
-/// environment maps and never qualify.
+/// sampled projective 2D stage (its ripple stages are bump environment maps
+/// and never qualify). The texture's own size does not matter: its
+/// coordinates are normalised by its header, the recording's copy is of the
+/// bound colour at the recording's size (the display copy's, or the
+/// reference copy's), and the guest's lens can be any resolve size.
 pub fn pool_lens_stage(draw: &ResolvedDraw) -> Option<usize> {
     use shaders::psh::{PixelShaderDef, bits::TEX_PROJECT2D};
     let words = draw.shader.pixel_shader.as_ref()?;
@@ -916,10 +924,22 @@ pub fn pool_lens_stage(draw: &ResolvedDraw) -> Option<usize> {
     (0..4).find(|&n| {
         (modes >> (5 * n)) & 0x1f == TEX_PROJECT2D
             && sampled[n]
-            && draw.texture_info[n].is_some_and(|info| {
-                info.kind == TextureKind::D2 && (info.width, info.height) == (draw.target.width, draw.target.height)
-            })
+            && draw.texture_info[n].is_some_and(|info| info.kind == TextureKind::D2)
     })
+}
+
+/// What each stage of `draw` is, for the one line a refused lens logs:
+/// its texture mode, whether the program samples it, and the bound
+/// image's kind and size, against the guest target's size.
+fn pool_lens_report(draw: &ResolvedDraw) -> String {
+    use shaders::psh::PixelShaderDef;
+    let modes = draw.shader.pixel_shader.as_ref().map_or(0, |w| PixelShaderDef::from_words(w).texture_modes);
+    let sampled = draw.sampled_texture_stages();
+    let stages: Vec<String> = (0..4).map(|n| format!(
+        "t{n}: mode {:#x} sampled {} image {}", (modes >> (5 * n)) & 0x1f, sampled[n],
+        draw.texture_info[n].map_or("none".to_owned(), |i| format!("{:?} {}x{}", i.kind, i.width, i.height)),
+    )).collect();
+    format!("[{}] against the guest target {}x{}", stages.join("; "), draw.target.width, draw.target.height)
 }
 
 /// `copies`' scratch for `target`'s copy, made again when the colour's
