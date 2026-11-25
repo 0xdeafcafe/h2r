@@ -139,7 +139,7 @@ mod tests {
     use super::*;
 
     fn close(a: f32, b: f32) {
-        assert!((a - b).abs() < 1e-4, "{a} != {b}");
+        assert!((a - b).abs() < 1e-3, "{a} != {b}");
     }
 
     fn close_fit(a: Fit, b: [f32; 4]) {

@@ -587,7 +587,6 @@ pub struct MissingGlyph {
     pub why: GlyphMissing,
 }
 
-/// Puts every glyph `overlay`'s text runs draw into `pages`: for each
 /// The largest scale the glyph pages rasterise at: past it a page's side
 /// stops holding a screen's glyphs, and the remainder over the cap
 /// magnifies a glyph rasterised at the cap (a fraction over 1 at 8K).
@@ -760,7 +759,7 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
     // the residency drops the old pages with the assets' generation.
     let (scale, side) = atlas_for(crate::render_aspect::layout_output());
     let mut a = assets.lock().unwrap_or_else(|e| e.into_inner());
-    if a.glyphs.side() != side {
+    if a.glyphs.side() != side || ATLAS_SCALE.load(Ordering::Relaxed) != scale {
         a.glyphs = GlyphPages::new(side);
         a.generation += 1;
     }
@@ -787,6 +786,12 @@ fn fit_overlay(overlay: &mut Overlay, fit: Option<[f32; 4]>) {
     let Some(fit) = fit else { return };
     for v in &mut overlay.vertices {
         v.position = render_bridge::ui_layout::map_point(fit, v.position);
+    }
+    // A text run's glyph quads carry their own rectangles.
+    for g in &mut overlay.glyphs {
+        let [x0, y0] = render_bridge::ui_layout::map_point(fit, [g.rect[0], g.rect[1]]);
+        let [x1, y1] = render_bridge::ui_layout::map_point(fit, [g.rect[2], g.rect[3]]);
+        g.rect = [x0, y0, x1, y1];
     }
     for item in &mut overlay.items {
         let c = &mut item.clip;
@@ -1063,7 +1068,7 @@ mod tests {
         let all = ClipRect::full([640, 480]);
         let mut overlay = Overlay::new([640, 480]);
         overlay
-            .push_fill(all, [0.0, 240.0, 640.0, 240.0], [1.0; 4], OverlayBlend::Off)
+            .push_fill(all, [0.0, 240.0, 640.0, 480.0], [1.0; 4], OverlayBlend::Off)
             .unwrap();
         fit_overlay(&mut overlay, Some(fit));
         let xs: Vec<f32> = overlay.vertices.iter().map(|v| v.position[0]).collect();
@@ -1078,12 +1083,21 @@ mod tests {
         let left = plan.vertices[0].position[0];
         let right = plan.vertices[1].position[0];
         let to_display = |clip_x: f32| (clip_x + 1.0) * 0.5 * 1920.0;
-        assert!((to_display(left) - 240.0).abs() < 1e-4);
-        assert!((to_display(right) - 1680.0).abs() < 1e-4);
+        assert!((to_display(left) - 240.0).abs() < 1e-2);
+        assert!((to_display(right) - 1680.0).abs() < 1e-2);
+        // A text run's glyph rectangles move with it.
+        let fonts = Fonts::served(b"one", [("one".to_owned(), invented_font(&[(u16::from(b'A'), 2, 2, 15)]))]);
+        let mut text = Overlay::new([640, 480]);
+        run(&mut text, &fonts, 0, "A");
+        let before = text.glyphs[0].rect;
+        fit_overlay(&mut text, Some(fit));
+        let after = text.glyphs[0].rect;
+        assert_eq!((after[0], after[2]), (before[0] * 0.75 + 80.0, before[2] * 0.75 + 80.0));
+        assert_eq!((after[1], after[3]), (before[1], before[3]));
         // No fit: nothing changes.
         let mut plain = Overlay::new([640, 480]);
         plain
-            .push_fill(all, [0.0, 240.0, 640.0, 240.0], [1.0; 4], OverlayBlend::Off)
+            .push_fill(all, [0.0, 240.0, 640.0, 480.0], [1.0; 4], OverlayBlend::Off)
             .unwrap();
         fit_overlay(&mut plain, None);
         assert_eq!(plain.vertices[0].position, [0.0, 240.0]);

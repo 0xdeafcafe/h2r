@@ -11,6 +11,7 @@ use points::render_aspect::{
     FLARE_QUERY_END, FLARE_REFLECTION, FLARE_REFLECTION_END, GROUPS, MENU_FILL,
     MENU_FILL_END, VOLUME_DEPTH, VOLUME_END, VOLUME_SPRITE,
 };
+use render_bridge::ui_layout;
 use points::scene_effects::{EFFECT_QUAD_READY, HUD_QUAD_READY};
 use points::ui_render::{ITEM_CALL, RECT_SUBMIT_RETURN, SCREEN_QUAD_READY};
 
@@ -655,6 +656,13 @@ impl Feature for RenderAspect {
                             layout.active.is_some_and(|canvas| canvas.pinned),
                             Ordering::Relaxed,
                         );
+                        // The window the HUD drew in is the UI's window
+                        // too, so `render.stats` reports it in a match
+                        // with no menu scope; the menu's fit is its own.
+                        let mut menu = MENU_LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
+                        if !MENU_SEEN.swap(true, Ordering::Relaxed) || menu.0 != output {
+                            *menu = (output, ui_layout::menu_fit(output, [320.0, 240.0]).unwrap_or(UiFit::IDENTITY.transform));
+                        }
                     } else {
                         MENU_SEEN.store(true, Ordering::Relaxed);
                         *MENU_LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) =
