@@ -108,7 +108,7 @@ const D6660: u32 = 0x000d_6660;
 const D7B80: u32 = 0x000d_7b80;
 const BA7F0: u32 = 0x000b_a7f0;
 const X113E40: u32 = 0x0011_3e40;
-const E6830: u32 = 0x000e_6830;
+const E6830: u32 = points::UNIT_ACTIONS_UPDATE.base;
 const X111650: u32 = 0x0011_1650;
 const B9EF0: u32 = 0x000b_9ef0;
 

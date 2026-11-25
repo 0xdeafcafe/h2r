@@ -57,7 +57,11 @@ impl Feature for NativeWorldLayers {
                 let mem = Mem(&mut *guest);
                 let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n) || (lights && matches!(n, 12 | 13)));
                 LAYER.set(layer.map(|number| {
-                    let caller_return = mem.read_u32(o.cpu.esp).unwrap_or(0);
+                    let caller_return = if matches!(number, 12 | 13) {
+                        engine::render::light_gather::passes::caller(&*mem.0, o.cpu.esp)
+                    } else {
+                        mem.read_u32(o.cpu.esp)
+                    }.unwrap_or(0);
                     Layer {
                         number,
                         view: mem.read_u32(SCENE_VIEW).unwrap_or(u32::MAX),

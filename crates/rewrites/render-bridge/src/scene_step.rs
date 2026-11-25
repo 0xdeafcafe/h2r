@@ -116,6 +116,21 @@ struct Step {
     /// The structure's portal graph for the Rust visibility, decoded once.
     visibility: scene_extract::visibility::GraphCache,
     visibility_lens: VisibilityLens,
+    /// The retail lens's objects for a game view whose guest camera took
+    /// the window's lens, keyed by frame and view index ([`retail_object`]).
+    retail: Option<RetailObjects>,
+}
+
+/// One widened game view's retail object set and the objects its guest
+/// setup left undrawn ([`retail_object`]).
+struct RetailObjects {
+    key: (u32, u32),
+    /// The retail lens's object handles, sorted; `None` when the retail
+    /// visibility declined.
+    objects: Option<Vec<u32>>,
+    /// Gathered by the widened camera, outside the retail set: the display
+    /// supplement draws them ([`take_guest_lens_objects`]).
+    skipped: Vec<u32>,
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
@@ -168,6 +183,24 @@ static VISIBILITY_CLUSTERS_DIFFER: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_OBJECTS_DIFFER: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_TAKEN: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_NS: AtomicU64 = AtomicU64::new(0);
+/// Game views by the lens their visibility used ([`VisibilityLens`]:
+/// retail, the window-fitted guest lens, the display supplement), and the
+/// views, clusters and objects the display supplement added.
+static VISIBILITY_LENS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static VISIBILITY_DISPLAY_VIEWS: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_DISPLAY_CLUSTERS: AtomicU64 = AtomicU64::new(0);
+static VISIBILITY_DISPLAY_OBJECTS: AtomicU64 = AtomicU64::new(0);
+/// Display-only clusters left out because a part draws in a layer the
+/// display supplement has no draw for ([`keep_complete_clusters`]).
+static VISIBILITY_DISPLAY_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
+/// Object setups a widened view left undrawn, outside the retail lens's
+/// set, and the widened views whose retail set declined ([`retail_object`]).
+static GUEST_LENS_OBJECTS_SKIPPED: AtomicU64 = AtomicU64::new(0);
+static GUEST_LENS_RETAIL_DECLINED: AtomicU64 = AtomicU64::new(0);
+/// Calls of the projection-terms fit (`VIEW_PROJECTION_TERMS`) by outcome
+/// ([`GuestFit`]), and the last caller it did not recognise.
+static GUEST_FIT: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static GUEST_FIT_LAST_CALLER: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_DECLINED: [AtomicU64; scene_extract::visibility::Decline::ALL.len()] =
     [const { AtomicU64::new(0) }; scene_extract::visibility::Decline::ALL.len()];
 /// `render.scene`'s counter of each decline, in `Decline::ALL`'s order.
@@ -189,6 +222,9 @@ static VISIBILITY_FIRST_MISMATCH: Mutex<Option<String>> = Mutex::new(None);
 static VIEW_RECORD_CHECKED: AtomicU64 = AtomicU64::new(0);
 static VIEW_RECORD_EQUAL: AtomicU64 = AtomicU64::new(0);
 static VIEW_RECORD_DIFFER: AtomicU64 = AtomicU64::new(0);
+/// Guest-lens views by what the guest's projection holds
+/// ([`GuestLensState`]): the widened scale, the retail one, or neither.
+static VIEW_RECORD_GUEST_LENS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static VIEW_RECORD_DECLINED: [AtomicU64; scene_extract::visibility::view::Decline::ALL.len()] =
     [const { AtomicU64::new(0) }; scene_extract::visibility::view::Decline::ALL.len()];
 /// `render.scene`'s counter of each view record decline, in
@@ -249,10 +285,48 @@ fn with_step<R>(f: impl FnOnce(&mut Step) -> R) -> R {
 pub enum VisibilityLens {
     #[default]
     Retail,
-    /// Bounds applied in the single-copy guest frustum builder.
+    /// Lens the window fit applied to the guest camera projection.
     Guest(f32),
     /// Extra visible space on the exact-mode display copy.
     Display(f32),
+}
+
+impl VisibilityLens {
+    /// The `scene_visibility_lens_*` counter this lens counts under.
+    fn counter(self) -> usize {
+        match self {
+            Self::Retail => 0,
+            Self::Guest(_) => 1,
+            Self::Display(_) => 2,
+        }
+    }
+}
+
+/// What the projection-terms fit did with one call: widened the terms,
+/// kept retail for a game of several machines, kept retail for a caller
+/// that is not a displayed camera (`caller`), or kept retail because the
+/// window is 4:3 or the terms were unusable.
+#[derive(Clone, Copy, Debug)]
+pub enum GuestFit {
+    Applied,
+    Networked,
+    Caller(u32),
+    Unchanged,
+}
+
+/// Counts one call of the projection-terms fit
+/// (`scene_guest_lens_fit_*` in `render.scene`).
+pub fn count_guest_fit(fit: GuestFit) {
+    let slot = match fit {
+        GuestFit::Applied => 0,
+        GuestFit::Networked => 1,
+        GuestFit::Caller(caller) => {
+            GUEST_FIT_LAST_CALLER.store(u64::from(caller), Ordering::Relaxed);
+            2
+        }
+        GuestFit::Unchanged => 3,
+    };
+    GUEST_FIT[slot].fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn set_visibility_lens(lens: VisibilityLens) {
@@ -313,6 +387,18 @@ pub fn view(mem: &dyn GuestMemory) -> Option<Camera> {
     open_view(mem).map(|v| v.camera)
 }
 
+/// Additions from the base layer of this same view. A late-layer hook may
+/// run without a new base view, so check its camera and view index.
+pub(crate) fn late_display_visibility(mem: &dyn GuestMemory, layer: u8) -> Option<Arc<frame_scene::DisplayVisibility>> {
+    with_step(|step| {
+        let view = step.builder.view()?;
+        let extra = view.display_visibility.as_ref()?;
+        (view.key.kind == ViewKind::Game && u32::from(view.key.view) == mem.u32(VIEW_INDEX).ok()?
+            && !extra.whole_clusters.is_empty() && view.camera == extract::camera(&Ro(mem))?
+            && scene_extract::late::layer_items(&Ro(mem), layer)? == 0).then(|| Arc::clone(extra))
+    })
+}
+
 /// [`view`], returning the view itself (a copy: its ranges index the
 /// scene being written).
 pub fn open_view(mem: &dyn GuestMemory) -> Option<View> {
@@ -371,21 +457,37 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                 .set_clusters(clusters)
                 .and_then(|()| step.builder.set_world(extract::world(&m)))
                 .and_then(|()| {
-                    if kind == ViewKind::Game && let Some(gather) = extract::cluster_gather(&m) {
-                        let lens = view_record_arm(&m, &camera, key);
-                        let guest_lens = match step.visibility_lens {
-                            VisibilityLens::Guest(factor) => native_render::camera::display_camera(lens, factor),
-                            _ => lens,
-                        };
+                    if kind == ViewKind::Game {
+                        let guest_lens = view_record_arm(&m, &camera, key, step.visibility_lens);
+                        VISIBILITY_LENS[step.visibility_lens.counter()].fetch_add(1, Ordering::Relaxed);
                         let display_factor = match step.visibility_lens {
                             VisibilityLens::Display(factor) => Some(factor),
                             _ => None,
                         };
-                        let (gather, extra) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, gather, display_factor);
-                        if let Some(extra) = extra {
-                            step.builder.set_display_visibility(extra)?;
+                        // The guest's lists, when they read: the
+                        // comparison's other side and the arm's fallback.
+                        let guest = extract::cluster_gather(&m);
+                        let (gather, mut extra) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, guest, display_factor);
+                        if let Some(gather) = gather {
+                            if let VisibilityLens::Guest(_) = step.visibility_lens
+                                && let (Some(frame), Some(view)) = (m.read_u32(FRAME), m.read_u32(VIEW_INDEX))
+                            {
+                                let objects = take_guest_lens_objects(step, (frame, view));
+                                if !objects.is_empty() {
+                                    extra = Some(frame_scene::DisplayVisibility {
+                                        whole_clusters: Vec::new(), placements: Vec::new(), clusters: Vec::new(),
+                                        objects, guest_lens: true,
+                                    });
+                                }
+                            }
+                            if let Some(extra) = extra {
+                                VISIBILITY_DISPLAY_VIEWS.fetch_add(1, Ordering::Relaxed);
+                                VISIBILITY_DISPLAY_CLUSTERS.fetch_add(extra.clusters.len() as u64, Ordering::Relaxed);
+                                VISIBILITY_DISPLAY_OBJECTS.fetch_add(extra.objects.len() as u64, Ordering::Relaxed);
+                                step.builder.set_display_visibility(extra)?;
+                            }
+                            step.builder.set_cluster_gather(gather)?;
                         }
-                        step.builder.set_cluster_gather(gather)?;
                     }
                     Ok(())
                 });
@@ -1185,23 +1287,98 @@ fn display_additions(
     ).ok()?;
     let placements = windows.as_ref().and_then(|w| cache.display_placements(mem, retail, w)).unwrap_or_default();
     visible.retain_display_additions(baseline, gather);
+    let refused = keep_complete_clusters(&mut visible.clusters, |id| crate::native_world::display_cluster_complete(mem.0, id));
+    VISIBILITY_DISPLAY_INCOMPLETE.fetch_add(refused, Ordering::Relaxed);
+    let whole_clusters = windows.as_ref().map_or_else(Vec::new, |windows| {
+        visible.clusters.iter().copied().filter(|&id| {
+            crate::native_scene_lists::late_cluster_bounds(mem.0, id)
+                .is_some_and(|bounds| windows.contains_cluster(id, bounds))
+        }).collect()
+    });
     (!visible.clusters.is_empty() || !visible.objects.is_empty() || !placements.is_empty()).then_some(frame_scene::DisplayVisibility {
-        clusters: visible.clusters, objects: visible.objects, placements,
+        whole_clusters, clusters: visible.clusters, objects: visible.objects, placements, guest_lens: false,
     })
 }
 
+/// Whether the object `handle` is in the retail lens's gather of the open
+/// game view (docs/graphics/high-resolution.md, "Determinism"). `None`
+/// unless the view's guest camera took the window's lens, or when the
+/// retail visibility declined. The guest's object setup
+/// (`native_scene_lists::setup`) leaves an object outside it undrawn, so
+/// the widened camera never runs the setup's pose evaluation, animation
+/// selection or render-state writes for an object a retail camera would
+/// not have set up; the display supplement draws it instead.
+pub(crate) fn retail_object(mem: &dyn GuestMemory, handle: u32) -> Option<bool> {
+    with_step(|step| {
+        let VisibilityLens::Guest(_) = step.visibility_lens else { return None };
+        let m = Ro(mem);
+        let key = (m.read_u32(FRAME)?, m.read_u32(VIEW_INDEX)?);
+        if step.retail.as_ref().is_none_or(|r| r.key != key) {
+            let objects = retail_objects(&m, &mut step.visibility);
+            if objects.is_none() {
+                GUEST_LENS_RETAIL_DECLINED.fetch_add(1, Ordering::Relaxed);
+            }
+            step.retail = Some(RetailObjects { key, objects, skipped: Vec::new() });
+        }
+        let retail = step.retail.as_mut()?;
+        let inside = retail.objects.as_ref()?.binary_search(&handle).is_ok();
+        if !inside {
+            GUEST_LENS_OBJECTS_SKIPPED.fetch_add(1, Ordering::Relaxed);
+            retail.skipped.push(handle);
+        }
+        Some(inside)
+    })
+}
+
+/// The retail lens's object set of the current game view: the Rust
+/// visibility (docs/graphics/native-visibility.md) at the view record's
+/// retail camera, which depends on the simulation's state and the view
+/// alone, never on the window.
+fn retail_objects(m: &Ro<'_>, cache: &mut scene_extract::visibility::GraphCache) -> Option<Vec<u32>> {
+    let camera = extract::camera(m)?;
+    let (rust, _) = scene_extract::visibility::view::build(m, &camera).ok()?;
+    let mut objects = scene_extract::visibility::compute(m, &rust.camera, cache, crate::native_map_work::generation())
+        .ok()?.objects;
+    objects.sort_unstable();
+    Some(objects)
+}
+
+/// The objects the open widened view's guest setup left undrawn, for the
+/// display supplement: sorted, once.
+fn take_guest_lens_objects(step: &mut Step, key: (u32, u32)) -> Vec<u32> {
+    let Some(retail) = step.retail.as_mut().filter(|r| r.key == key) else { return Vec::new() };
+    let mut objects = std::mem::take(&mut retail.skipped);
+    objects.sort_unstable();
+    objects.dedup();
+    objects
+}
+
+/// Keep the display-only clusters the supplement draws in every layer
+/// they use (`native_world::display_cluster_complete`); a cluster it
+/// cannot complete, or whose parts do not read, is left out whole, with
+/// its water edge and fog. Returns how many were left out.
+fn keep_complete_clusters(clusters: &mut Vec<u16>, complete: impl Fn(u16) -> Option<bool>) -> u64 {
+    let before = clusters.len();
+    clusters.retain(|&id| complete(id) == Some(true));
+    (before - clusters.len()) as u64
+}
+
 /// The Rust visibility beside the guest's for one game view
-/// (docs/graphics/native-visibility.md): computed, compared as sets with
-/// the guest's `gather`, counted, and returned in place of the guest's
-/// lists only when equal. A decline or a difference keeps the guest's.
+/// (docs/graphics/native-visibility.md): computed for every game view,
+/// compared as sets with the guest's `guest` lists when they read, counted,
+/// and returned in their place whenever the computation holds: the default.
+/// A decline keeps the guest's lists — the guest path stays the fallback —
+/// and a difference keeps the Rust sets and stays counted and named. A view
+/// whose lists did not read carries nothing: the gather's mode and
+/// structure list are the guest's, and the comparison has no other side.
 fn visibility_arm(
     m: &Ro<'_>,
     camera: &Camera,
     key: ViewKey,
     cache: &mut scene_extract::visibility::GraphCache,
-    gather: frame_scene::scene::ClusterGather,
+    guest: Option<frame_scene::scene::ClusterGather>,
     display_factor: Option<f32>,
-) -> (frame_scene::scene::ClusterGather, Option<frame_scene::DisplayVisibility>) {
+) -> (Option<frame_scene::scene::ClusterGather>, Option<frame_scene::DisplayVisibility>) {
     use scene_extract::visibility::{self, Decline};
     let start = Instant::now();
     let rust = visibility::compute_with_windows(m, camera, cache, crate::native_map_work::generation());
@@ -1211,14 +1388,20 @@ fn visibility_arm(
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
             VISIBILITY_DECLINED[i].fetch_add(1, Ordering::Relaxed);
-            return (gather, None);
+            return (guest, None);
         }
+    };
+    let Some(guest) = guest else {
+        return (None, None);
     };
     VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
     let extra = display_factor.and_then(|factor| {
-        display_additions(m, &gather, *camera, factor, cache, windows.as_ref()?, &rust)
+        display_additions(m, &guest, *camera, factor, cache, windows.as_ref()?, &rust)
     });
-    let (gather, parity) = visibility::arm(gather, rust);
+    let (gather, parity) = visibility::arm(guest, rust);
+    if gather.source == frame_scene::VisibilitySource::Rust {
+        VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
+    }
     if let Some(first) = parity.first {
         VISIBILITY_DIFFER.fetch_add(1, Ordering::Relaxed);
         if parity.clusters_guest_only + parity.clusters_rust_only != 0 {
@@ -1239,13 +1422,35 @@ fn visibility_arm(
                 parity.objects_rust_only,
             )
         });
-        return (gather, extra);
+        return (Some(gather), extra);
     }
     VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
-    if gather.source == frame_scene::VisibilitySource::Rust {
-        VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
+    (Some(gather), extra)
+}
+
+/// What the guest's horizontal projection scale holds in a view the
+/// window-fit hook reported fitted, against the Rust record's retail
+/// scale: the hook's write reached the camera the guest built
+/// (`Applied`), the guest built the retail lens anyway (`Retail`), or
+/// neither within a thousandth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestLensState {
+    Applied = 0,
+    Retail = 1,
+    Other = 2,
+}
+
+impl GuestLensState {
+    fn of(retail: f32, guest: f32, factor: f32) -> Self {
+        let near = |a: f32, b: f32| b != 0.0 && ((a / b) - 1.0).abs() < 1e-3;
+        if near(guest, retail * factor) {
+            Self::Applied
+        } else if near(guest, retail) {
+            Self::Retail
+        } else {
+            Self::Other
+        }
     }
-    (gather, extra)
 }
 
 /// The main view's records in Rust beside the guest's
@@ -1254,9 +1459,9 @@ fn visibility_arm(
 /// `camera`, the start cluster and the mode, and counted. The visibility
 /// takes the Rust camera only when the whole record is equal; otherwise,
 /// and on a decline, the guest's.
-fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey) -> Camera {
+fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey, lens: VisibilityLens) -> Camera {
     use scene_extract::visibility::view::{self, Decline};
-    let (rust, guest) = match view::build(m, camera) {
+    let (mut rust, guest) = match view::build(m, camera) {
         Ok(pair) => pair,
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
@@ -1265,6 +1470,13 @@ fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey) -> Camera {
         }
     };
     VIEW_RECORD_CHECKED.fetch_add(1, Ordering::Relaxed);
+    if let VisibilityLens::Guest(factor) = lens {
+        if let (Some(retail), Some(guest)) = (rust.camera.projection_xy, guest.camera.projection_xy) {
+            let state = GuestLensState::of(retail[0], guest[0], factor);
+            VIEW_RECORD_GUEST_LENS[state as usize].fetch_add(1, Ordering::Relaxed);
+        }
+        rust.camera = native_render::camera::display_camera(rust.camera, factor);
+    }
     let (lens, parity) = view::arm(&rust, &guest);
     match parity.first {
         None => {
@@ -1575,6 +1787,20 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ),
         ("scene_visibility_rust_taken", VISIBILITY_TAKEN.load(Ordering::Relaxed)),
         ("scene_visibility_ns", VISIBILITY_NS.load(Ordering::Relaxed)),
+        ("scene_visibility_lens_retail", VISIBILITY_LENS[0].load(Ordering::Relaxed)),
+        ("scene_visibility_lens_guest", VISIBILITY_LENS[1].load(Ordering::Relaxed)),
+        ("scene_visibility_lens_display", VISIBILITY_LENS[2].load(Ordering::Relaxed)),
+        ("scene_visibility_display_views", VISIBILITY_DISPLAY_VIEWS.load(Ordering::Relaxed)),
+        ("scene_visibility_display_clusters", VISIBILITY_DISPLAY_CLUSTERS.load(Ordering::Relaxed)),
+        ("scene_visibility_display_objects", VISIBILITY_DISPLAY_OBJECTS.load(Ordering::Relaxed)),
+        ("scene_visibility_display_incomplete", VISIBILITY_DISPLAY_INCOMPLETE.load(Ordering::Relaxed)),
+        ("scene_guest_lens_objects_skipped", GUEST_LENS_OBJECTS_SKIPPED.load(Ordering::Relaxed)),
+        ("scene_guest_lens_retail_declined", GUEST_LENS_RETAIL_DECLINED.load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_applied", GUEST_FIT[0].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_networked", GUEST_FIT[1].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_other_caller", GUEST_FIT[2].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_unchanged", GUEST_FIT[3].load(Ordering::Relaxed)),
+        ("scene_guest_lens_fit_last_caller", GUEST_FIT_LAST_CALLER.load(Ordering::Relaxed)),
     ]
     .into_iter()
     .chain(
@@ -1589,6 +1815,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             ("scene_view_record_checked", VIEW_RECORD_CHECKED.load(Ordering::Relaxed)),
             ("scene_view_record_equal", VIEW_RECORD_EQUAL.load(Ordering::Relaxed)),
             ("scene_view_record_differ", VIEW_RECORD_DIFFER.load(Ordering::Relaxed)),
+            ("scene_view_record_guest_lens_applied", VIEW_RECORD_GUEST_LENS[0].load(Ordering::Relaxed)),
+            ("scene_view_record_guest_lens_retail", VIEW_RECORD_GUEST_LENS[1].load(Ordering::Relaxed)),
+            ("scene_view_record_guest_lens_other", VIEW_RECORD_GUEST_LENS[2].load(Ordering::Relaxed)),
         ]
         .into_iter()
         .chain(
@@ -1753,6 +1982,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_fitted_view_tells_a_widened_guest_scale_from_a_retail_one() {
+        let factor = 0.758;
+        assert_eq!(GuestLensState::of(1.2, 1.2 * factor, factor), GuestLensState::Applied);
+        assert_eq!(GuestLensState::of(1.2, 1.2, factor), GuestLensState::Retail);
+        assert_eq!(GuestLensState::of(1.2, 0.6, factor), GuestLensState::Other);
+        assert_eq!(GuestLensState::of(0.0, 0.0, factor), GuestLensState::Other);
+    }
+
+    #[test]
+    fn a_widened_views_undrawn_objects_reach_the_display_once() {
+        let mut step = Step::default();
+        step.retail = Some(RetailObjects { key: (4, 0), objects: Some(vec![1, 3]), skipped: vec![9, 5, 9] });
+        assert!(take_guest_lens_objects(&mut step, (4, 1)).is_empty(), "another view");
+        assert_eq!(take_guest_lens_objects(&mut step, (4, 0)), [5, 9]);
+        assert!(take_guest_lens_objects(&mut step, (4, 0)).is_empty());
+    }
+
+    #[test]
+    fn the_display_supplement_leaves_out_whole_the_clusters_it_cannot_complete() {
+        let mut clusters = vec![2, 5, 7, 9];
+        let refused = keep_complete_clusters(&mut clusters, |id| match id {
+            5 => Some(false),
+            9 => None,
+            _ => Some(true),
+        });
+        assert_eq!((clusters, refused), (vec![2, 7], 2));
+    }
+
+    #[test]
+    fn each_lens_counts_under_its_own_name() {
+        assert_eq!(
+            [VisibilityLens::Retail, VisibilityLens::Guest(0.75), VisibilityLens::Display(0.75)]
+                .map(VisibilityLens::counter),
+            [0, 1, 2]
+        );
+    }
+
+    #[test]
     fn worker_view_metadata_survives_the_game_thread_scene_seal() {
         use scene_extract::layout::camera::RENDER_CAMERA;
         use scene_extract::testing::{Mem, camera_record};
@@ -1872,5 +2139,117 @@ mod tests {
                 Some(cause.name())
             );
         }
+    }
+
+    /// Guest memory the Rust visibility computes over: the main struct of a
+    /// view whose start cluster is outside the structure (`0xffff`), a
+    /// structure of no clusters and no portals, empty guest lists, and the
+    /// view's player word at none. Its Rust sets are empty and its lists
+    /// read; the lists live at `LISTS`.
+    fn visibility_memory() -> engine::FlatMemory {
+        use engine::render_loop::occlusion::guest::{MAIN_VIS, VIEW_PLAYER, VIS_KIND, VIS_OBJECTS};
+        use scene_extract::visibility::graph::layout as structure;
+        use scene_extract::visibility::guest::{ACTIVE_STRUCTURE, ACTIVE_VIS, vis};
+
+        const LISTS: u32 = 0x0054_8000;
+        const STRUCTURE: u32 = 0x004e_1000;
+        const BSP: u32 = 0x004e_1100;
+        let (regions, structure_list, object_list) = (LISTS, LISTS + 0x1000, LISTS + 0x2000);
+
+        let mut guest = engine::FlatMemory::new(0x004b_0000, (0x0054_b000 - 0x004b_0000) as usize);
+        let mut w = |at: u32, word: u32| guest.set_u32(at, word).unwrap();
+        w(ACTIVE_VIS, MAIN_VIS);
+        w(MAIN_VIS + VIS_KIND, 0);
+        w(MAIN_VIS, regions);
+        w(regions + 0xa6c, 0);
+        w(MAIN_VIS + 0xc, structure_list);
+        w(structure_list, 64);
+        w(structure_list + 4, 0);
+        w(MAIN_VIS + VIS_OBJECTS, object_list);
+        w(object_list, 64);
+        w(object_list + 4, 0);
+        w(MAIN_VIS + vis::START_CLUSTER, 0xffff);
+        w(MAIN_VIS + vis::FLAGS, 0);
+        w(MAIN_VIS + vis::FRUSTA, 1);
+        w(MAIN_VIS + vis::MODE, 0);
+        w(ACTIVE_STRUCTURE, STRUCTURE);
+        w(STRUCTURE + structure::PORTAL_COUNT, 0);
+        w(STRUCTURE + structure::CLUSTER_COUNT, 0);
+        w(STRUCTURE + structure::COLLISION_BSP, BSP);
+        w(BSP + structure::BSP_PLANE_COUNT, 0);
+        w(VIEW_PLAYER, u32::MAX);
+        guest
+    }
+
+    fn visibility_camera() -> Camera {
+        Camera {
+            position: [0.0, 0.0, 0.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: std::f32::consts::FRAC_PI_2,
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.0625,
+            far: 1024.0,
+        }
+    }
+
+    fn guest_lists(visible: Vec<u16>, objects: Vec<u32>) -> frame_scene::scene::ClusterGather {
+        frame_scene::scene::ClusterGather {
+            mode: 0,
+            visible,
+            structure: vec![5],
+            objects,
+            source: frame_scene::VisibilitySource::Guest,
+        }
+    }
+
+    /// The arm runs beside the guest's lists: the Rust sets stand when the
+    /// computation holds, on equal lists and through a counted difference;
+    /// a view whose lists did not read carries nothing, computed or not;
+    /// and a decline keeps the guest's lists, the fallback.
+    #[test]
+    fn the_arm_stands_the_rust_sets_on_every_game_view() {
+        let key = ViewKey { kind: ViewKind::Game, player: 0, view: 0 };
+        let camera = visibility_camera();
+        let mut cache = scene_extract::visibility::GraphCache::default();
+
+        // The computation held and the lists read empty: the Rust sets are
+        // the gather.
+        let guest = visibility_memory();
+        let m = Ro(&guest);
+        let (gather, extra) =
+            visibility_arm(&m, &camera, key, &mut cache, Some(guest_lists(Vec::new(), Vec::new())), None);
+        let gather = gather.unwrap();
+        assert_eq!(gather.source, frame_scene::VisibilitySource::Rust);
+        assert!(gather.visible.is_empty() && gather.objects.is_empty());
+        assert_eq!(gather.structure, [5], "the structure list stays the guest's");
+        assert!(extra.is_none());
+
+        // A difference keeps the Rust sets — the default — and stays
+        // counted: the guest listed an object Rust did not.
+        let (gather, extra) = visibility_arm(
+            &m, &camera, key, &mut cache,
+            Some(guest_lists(Vec::new(), vec![0x0001_0002])), None,
+        );
+        let gather = gather.unwrap();
+        assert_eq!(gather.source, frame_scene::VisibilitySource::Rust);
+        assert!(gather.objects.is_empty(), "the Rust sets stand");
+        assert!(extra.is_none());
+
+        // The computation held and the lists did not read: nothing carries.
+        let (gather, extra) = visibility_arm(&m, &camera, key, &mut cache, None, None);
+        assert!(gather.is_none() && extra.is_none());
+
+        // The struct is not the main view's on empty memory: the decline
+        // keeps the guest's lists, the fallback.
+        let empty = engine::FlatMemory::new(0x004b_0000, 0x100);
+        let m = Ro(&empty);
+        let lists = guest_lists(vec![2], vec![7]);
+        let (gather, extra) = visibility_arm(&m, &camera, key, &mut cache, Some(lists.clone()), None);
+        assert_eq!(gather, Some(lists), "the guest's lists, untouched");
+        assert!(extra.is_none());
+        let (gather, extra) = visibility_arm(&m, &camera, key, &mut cache, None, None);
+        assert!(gather.is_none() && extra.is_none());
     }
 }

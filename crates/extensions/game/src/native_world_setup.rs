@@ -34,6 +34,16 @@ impl MapState {
         }
     }
 
+    pub(super) fn take_stale(&mut self) -> Option<Self> {
+        self.key.as_ref().is_some_and(|key| !key.current()).then(|| std::mem::take(self))
+    }
+
+    pub(super) fn retire(self) {
+        if self.key.is_some() {
+            crate::native_map::retire_owned(timeline::setup::Stage::World, self);
+        }
+    }
+
     pub(super) fn publish(&mut self) {
         let Some(pending) = self.pending.as_ref() else {
             return;
@@ -44,7 +54,13 @@ impl MapState {
         let _handoff = timeline::setup::dispatch();
         if self.ready.is_none() {
             match pending.try_recv() {
-                Ok(StageReady::World(world)) => self.ready = Some(world),
+                Ok(StageReady::World(world)) => {
+                    let key = self.key.as_ref().expect("a pending load has a key");
+                    if let Some(receivers) = world.sun_world.as_ref() {
+                        native_render::sun_casters::set_world(key.generation, Some(receivers));
+                    }
+                    self.ready = Some(world);
+                }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.pending = None;
                     return;
@@ -137,6 +153,31 @@ mod tests {
         assert!(state.ready.is_none());
         state.publish();
         assert!(Arc::ptr_eq(state.ready.as_ref().unwrap(), &world));
+    }
+
+    #[test]
+    fn map_and_bsp_activation_detach_the_world_and_unpublished_mailbox() {
+        let current = key();
+        let old_map = BspKey { generation: current.generation.wrapping_sub(1), ..current.clone() };
+        let old_bsp = BspKey { bsp_generation: current.bsp_generation.wrapping_sub(1), ..current };
+        for old_key in [old_map, old_bsp] {
+            let (send, receive) = mpsc::channel();
+            let mut state = MapState::loading(old_key, receive);
+            let ready = Arc::new(Ready::default());
+            state.ready = Some(Arc::clone(&ready));
+            let published = Arc::downgrade(&ready);
+            let queued = Arc::new(Ready::default());
+            let pending = Arc::downgrade(&queued);
+            assert!(send.send(StageReady::World(queued)).is_ok());
+
+            let retired = state.take_stale().expect("activation detaches the old BSP");
+            assert!(state.key.is_none() && state.ready.is_none() && state.pending.is_none());
+            drop(retired);
+            assert!(send.send(StageReady::World(Arc::new(Ready::default()))).is_err());
+            assert!(pending.upgrade().is_none());
+            drop(ready);
+            assert!(published.upgrade().is_none());
+        }
     }
 
     #[test]

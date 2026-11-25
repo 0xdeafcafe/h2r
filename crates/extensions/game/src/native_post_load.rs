@@ -38,6 +38,7 @@ pub struct EffectPrograms {
 /// Every egor of a map.
 #[derive(Default)]
 pub struct ScreenEffects {
+    pub(crate) screens: std::sync::Mutex<native_render::screen_gpu::ScreenSet>,
     pub effects: HashMap<TagId, EffectPrograms>,
     /// The stage bitmaps (bitmap, image), decoded.
     pub images: HashMap<(TagId, u32), Image>,

@@ -44,6 +44,22 @@ removes only part of the first.
    resource reference counting and busy checks, fences, `KickOff`, the
    gamma ramp, vblank and `Swap`.
 
+### External pass refusals
+
+A device refusal includes the producer's Rust pass type, its issue boundary,
+and the native stage for a typed plan. The first refusal for each producer,
+boundary, stage and reason is logged. Device counters retain every refusal.
+A failed reservation leaves the original guest draws available to its caller.
+A refusal from a pass with no corresponding guest draw can instead omit
+that operation.
+
+`d3d::SceneSink` declines untyped passes and unsealed reservations inside a
+captured scene slot. The display graph needs retained inputs to record the
+operation on its own attachments. A one-shot pass carries no replay command.
+The sink names this case with the producer, so it can be distinguished from a
+binding failure or a backend recording failure. Outside captured slots these
+passes still use their normal backend path.
+
 ### By caller
 
 "Claimed" is what a native stage takes in the default configuration.
@@ -69,8 +85,8 @@ these per caller with every stage on: the column "Count" says what exists.
 | Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including glow quads with live blend and channel masks, mixed A8/X8 framebuffer reads, and a final strip or convolution into a side target | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans | committed fan ranges per copy in `render.scene` |
 | Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse | none |
-| HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | tag-shader and supported generic widget quads through the overlay | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
-| UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | supported inline bitmap and glyph quads through the overlay, the backdrop fans, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
+| HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | tag-shader and supported generic widget quads through the overlay, motion sensor compositing fans | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
+| UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | supported inline bitmap and glyph quads through the overlay, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
 | Fade `0x00040890` | full-screen overlay | all six fade modes through the native overlay | guest state setup and draws refused by the overlay | not measured |
 | Menu rectangles and bars (`0x0004b252` from `0x00052ce7`), outlines `0x0001ed98` | immediate fans, a line strip | the geometry | state setup, the line state | none |
 | Untraced `D3DDevice_Begin` callers `0x00029b00`, `0x0003bf20` | immediate | none | not read (**S**: what they draw) | none |
@@ -356,7 +372,7 @@ classified readers, 73 read run state and 30 start from it.
 | Subsystem | Guest code that stops running | Replacement | State today |
 |---|---|---|---|
 | Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field; the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). Cinematic and override cameras remain guest-owned. The comparison writes nothing |
-| Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; every game view's traversal (portal flood, sphere mode, the visible set and its run-time rows) and object set, tested against the guest's window frusta, built beside the guest's, compared as sets, and carried by the view when equal; the sphere and frustum light views compared ([native-visibility.md](native-visibility.md)); the guest's traversal still runs and owns the source-window overlap records |
+| Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; every game view's traversal (portal flood, sphere mode, the visible set and its run-time rows) and object set, tested against the guest's window frusta, built beside the guest's, compared as sets, and carried by the view — the default, the guest's lists the fallback a decline takes; the sphere and frustum light views compared ([native-visibility.md](native-visibility.md)); the guest's traversal still runs and owns the source-window overlap records |
 | World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items, and objects' items of 1, 5, 7, 8 and 20 |
 | Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; a part the walk cannot read is a named drop, not a guest draw | built, with a remainder |
 | Decorators | builds `0x0004de20`, draw `0x0004e260` | `native_render::decorators` ([native-decorators.md](native-decorators.md)) | built, not verified |
@@ -365,7 +381,7 @@ classified readers, 73 read run state and 30 start from it.
 | Effects and particles | the producers, their property evaluation, ribbon construction, `0x00174420`, the sorted dispatch `0x0001e370` | a Rust effect pass that walks the effect and particle datums, makes the same draws from the effects seed, writes the same stamps and emits instanced quads and ribbons | packet only |
 | Decals | the D3D backend draw when admission succeeds | a native quad packet from the callback's resolved array draw ([native-decals-research.md](native-decals-research.md)) | packet only. The guest walks and maintains the decal pool. |
 | Fog, water, camouflage, hologram | layers 16, 6, 18, 19, 21 | typed late passes sampling the scene's depth and colour on the GPU | fog, water, 18, 19 and 21 partly built |
-| Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | GPU counter and native colour fans built, fade state guest-owned |
+| Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | Native counted and colour fans, fade state guest-owned |
 | Post | `0x00013870`, `0x000214f0`, `0x0002d140`, `0x0002dd30`, `0x0002df00`, layer 17 | typed post from the scenario's screen effects and the camera's parameters | glow and screen effects built |
 | HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | the live shader quad and glyph callbacks emit overlay items with the evaluated widget shader and layer inputs |
 | Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | the walk emits the overlay's items (`scene_extract::ui::draw_list`, from a `UiFrame`); at each sorted list the guest's widgets are read and runs of exact ones drawn from the overlay with their draws skipped ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)). Containers and plain bitmap widgets read exactly; a shader bitmap's quad is drawn from the overlay at the shader quad with its template's combiner; the blur under a dialog is the overlay's `Blur` item, drawn in place of its quads ([native-post-hud.md](native-post-hud.md#the-blur-under-a-dialog)); supported text, lists and buttons draw from the sorted claim. Active model scenes use the model material hooks |

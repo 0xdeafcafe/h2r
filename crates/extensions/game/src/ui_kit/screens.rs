@@ -711,28 +711,28 @@ mod tests {
     use super::*;
     use crate::ui_kit::spec::{Finding, check_fallback};
 
-    /// The GAME MODE picker's sample is the picker X opens: the four modes
+    /// The GAME MODE picker's sample is the picker X opens: the lobby modes
     /// in title case, Custom Games held, over the lobby; its states draw.
     #[test]
-    fn the_mode_picker_lists_the_four_modes_with_custom_games_held() {
+    fn the_mode_picker_lists_the_lobby_modes_with_custom_games_held() {
         use crate::lobby_tabs::Tab;
         let p = lobby_pick_sample(MODE_PICKER).expect("the mode picker has a sample");
         assert_eq!(p.title, "GAME MODE");
-        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge", "Firefight"]);
+        assert_eq!(p.values, ["Multiplayer", "Custom Games", "Forge"]);
         assert_eq!(
             p.values,
-            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge, Tab::Firefight].map(Tab::title_case)
+            [Tab::Multiplayer, Tab::CustomGames, Tab::Forge].map(Tab::title_case)
         );
         assert_eq!(p.values[p.current], "Custom Games");
         assert_eq!(p.opener, crate::ui_kit::view::Opener::LOBBY);
         assert_eq!(p.description, "Choose what this lobby plays.");
         assert!(NAMES.contains(&MODE_PICKER));
         let s = sample(MODE_PICKER).expect("the mode picker opens");
-        assert_eq!(s.rows.len(), 4);
+        assert_eq!(s.rows.len(), 3);
         assert_eq!(s.focus, 1, "it opens on the held value");
         let states = states(MODE_PICKER).unwrap();
         let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["focus-1", "focus-0", "focus-3"], "the held value first");
+        assert_eq!(names, ["focus-1", "focus-0", "focus-2"], "the held value first");
         assert_eq!(states[0].1.focus, p.current);
     }
 

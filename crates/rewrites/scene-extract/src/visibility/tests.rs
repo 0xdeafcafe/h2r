@@ -12,9 +12,12 @@ use frame_scene::scene::ClusterGather;
 use super::flood::tests::camera_at;
 use super::graph::tests::two_rooms;
 use super::guest::{
-    ACTIVE_STRUCTURE, ACTIVE_VIS, CLUSTER_OBJECTS, FRUSTUM_BOUNDS, FRUSTUM_NEGATIVE_UNIT,
-    FRUSTUM_UNIT, MERGE, NORMALIZE_EPSILON, OPEN_PORTALS, PROJECTION_ROWS, SKY_CLUSTER_ENABLED,
-    SPHERE_FLOOD_MIN, STRADDLE, VIS_SPHERE_CENTRE, VIS_SPHERE_RADIUS, WIDEN, view_frustum, vis,
+    ACTIVE_STRUCTURE, ACTIVE_VIS, CAMERA_TEST_ZERO, CLUSTER_OBJECTS, FIRST_PERSON_CAMERA,
+    FRUSTUM_BOUNDS, FRUSTUM_NEGATIVE_UNIT, FRUSTUM_UNIT, LOCAL_PLAYERS, MERGE,
+    NORMALIZE_EPSILON, OPEN_PORTALS, PLAYER_GLOBALS, PLAYER_SIZE, PLAYER_UNIT, PLAYERS,
+    PROJECTION_ROWS, SKY_CLUSTER_ENABLED, SPHERE_FLOOD_MIN, STRADDLE, USER_CAMERA_KIND,
+    USER_CAMERA_TEST, USER_CAMERAS, VIS_SPHERE_CENTRE, VIS_SPHERE_RADIUS, WIDEN, view_frustum,
+    vis,
 };
 use super::sphere::tests::ROWS;
 use super::*;
@@ -210,14 +213,69 @@ fn a_shut_portal_hides_the_room_behind_it_and_its_objects() {
     );
 }
 
+/// Local user 0 (the word at `VIEW_PLAYER`) mapped to player `0x0003_0002`,
+/// whose unit is `unit`, with a camera of `kind`.
+fn local_player(m: &mut Mem, unit: u32, kind: u32) {
+    const GLOBALS: u32 = 0x2_0000;
+    const HEADER: u32 = 0x2_1000;
+    const DATA: u32 = 0x2_2000;
+    m.w(VIEW_PLAYER, 0);
+    m.w(PLAYER_GLOBALS, GLOBALS);
+    m.w(GLOBALS + LOCAL_PLAYERS, 0x0003_0002);
+    for user in 1..4 {
+        m.w(GLOBALS + LOCAL_PLAYERS + 4 * user, NONE);
+    }
+    m.w(PLAYERS, HEADER);
+    m.w(HEADER + 0x44, DATA);
+    m.w(DATA + 2 * PLAYER_SIZE + PLAYER_UNIT, unit);
+    m.w(USER_CAMERAS + USER_CAMERA_KIND, kind);
+    m.f(USER_CAMERAS + USER_CAMERA_TEST, 0.0);
+    m.f(CAMERA_TEST_ZERO, 0.0);
+}
+
 #[test]
 fn the_player_unit_is_listed_even_when_no_cluster_references_it() {
     let mut m = scene();
-    m.w(VIEW_PLAYER, 0x0001_0009);
+    local_player(&mut m, 0x0001_0009, FIRST_PERSON_CAMERA);
     assert_eq!(
         run(&m).unwrap().objects,
         [0x0001_0001, 0x0001_0002, 0x0001_0009]
     );
+}
+
+/// The word at `VIEW_PLAYER` is the view's local user, 0 for the first.
+/// Read as a unit it put object `0x00000000` in every Rust set, and every
+/// main view on 05b_deltatowers differed by that object alone
+/// (`object 0x00000000 rust only`). The guest appends the user's unit, here
+/// already listed through room 0.
+#[test]
+fn the_first_local_user_is_not_listed_as_object_zero() {
+    let mut m = scene();
+    local_player(&mut m, 0x0001_0001, FIRST_PERSON_CAMERA);
+    let rust = run(&m).unwrap();
+    assert_eq!(rust.objects, [0x0001_0001, 0x0001_0002]);
+    let p = compare(&rust, &guest_lists(vec![0, 1], vec![0x0001_0002, 0x0001_0001]));
+    assert!(p.holds(), "{p:?}");
+}
+
+#[test]
+fn only_a_mapped_user_in_the_first_person_camera_appends_a_unit() {
+    let listed = |m: &Mem| run(m).unwrap().objects;
+    let mut m = scene();
+    local_player(&mut m, 0x0001_0009, 0x0023_cbb0);
+    assert_eq!(listed(&m), [0x0001_0001, 0x0001_0002], "another camera kind");
+    local_player(&mut m, 0x0001_0009, FIRST_PERSON_CAMERA);
+    m.f(USER_CAMERAS + USER_CAMERA_TEST, 0.5);
+    assert_eq!(listed(&m), [0x0001_0001, 0x0001_0002], "the camera's test float is not zero");
+    m.f(USER_CAMERAS + USER_CAMERA_TEST, f32::NAN);
+    assert_eq!(listed(&m), [0x0001_0001, 0x0001_0002], "unordered is not equal");
+    local_player(&mut m, NONE, FIRST_PERSON_CAMERA);
+    assert_eq!(listed(&m), [0x0001_0001, 0x0001_0002], "a player without a unit");
+    local_player(&mut m, 0x0001_0009, FIRST_PERSON_CAMERA);
+    m.w(0x2_0000 + LOCAL_PLAYERS, NONE);
+    assert_eq!(listed(&m), [0x0001_0001, 0x0001_0002], "an unmapped user");
+    m.w(VIEW_PLAYER, 4);
+    assert_eq!(run(&m), Err(Decline::Layout), "no fifth local user");
 }
 
 #[test]
@@ -323,7 +381,7 @@ fn the_cache_keeps_a_graph_until_the_map_or_its_shape_changes() {
 }
 
 #[test]
-fn the_arm_takes_the_rust_sets_only_when_they_equal_the_guests() {
+fn the_arm_takes_the_rust_sets_whenever_it_computes_them() {
     let rust = run(&scene()).unwrap();
     let gather = |visible: Vec<u16>, objects: Vec<u32>| ClusterGather {
         mode: 0,
@@ -343,11 +401,18 @@ fn the_arm_takes_the_rust_sets_only_when_they_equal_the_guests() {
         (vec![0, 1], vec![0x0001_0001, 0x0001_0002])
     );
     assert_eq!(taken.structure, [1], "the structure list stays the guest's");
-    // A deliberate mismatch: the guest saw a cluster Rust did not.
+    // A deliberate mismatch: the guest saw a cluster Rust did not. The
+    // Rust sets stand — the default — and the difference stays counted
+    // and named; a view whose computation declined never reaches the arm.
     let guest_gather = gather(vec![1, 0, 7], vec![0x0001_0002, 0x0001_0001]);
-    let (kept, p) = arm(guest_gather.clone(), rust);
+    let (stood, p) = arm(guest_gather, rust);
     assert_eq!(p.first, Some(Mismatch::ClusterGuestOnly(7)));
-    assert_eq!(kept, guest_gather, "the guest's lists, untouched");
+    assert_eq!(stood.source, VisibilitySource::Rust);
+    assert_eq!(
+        (stood.visible, stood.objects),
+        (vec![0, 1], vec![0x0001_0001, 0x0001_0002])
+    );
+    assert_eq!(stood.structure, [1]);
 }
 
 #[test]
@@ -371,4 +436,34 @@ fn the_portal_far_test_is_optional_even_with_a_finite_window_distance() {
     let sets = run(&m).unwrap();
     assert_eq!(sets.clusters, [0, 1]);
     assert_eq!(sets.objects, [0x0001_0001]);
+}
+
+/// The display supplement (`render_bridge::scene_step::display_additions`)
+/// keeps what the wide lens reaches beyond both retail sets, whether or not
+/// the guest-lens sets equal the guest's lists. Here they are equal, the
+/// arm takes the Rust sets, and the side room and its object still come
+/// through as display-only additions.
+#[test]
+fn display_additions_survive_equal_guest_lens_sets() {
+    let mut m = scene();
+    object(&mut m, 2, [10.0, -9.0, 0.0]);
+    local_player(&mut m, 0x0001_0001, FIRST_PERSON_CAMERA);
+    let mut camera = camera_at([0.0, 7.0, 0.0], [1.0, 0.0, 0.0]);
+    let mut cache = GraphCache::default();
+    camera.projection_xy = Some([3.0 / 4.0, 1.0, 0.0, 0.0]);
+    let narrow = compute(&m, &camera, &mut cache, 1).unwrap();
+    let gather = ClusterGather {
+        mode: 0,
+        visible: vec![0],
+        structure: Vec::new(),
+        objects: vec![0x0001_0001],
+        source: VisibilitySource::Guest,
+    };
+    let (taken, parity) = arm(gather.clone(), narrow.clone());
+    assert!(parity.holds(), "{parity:?}");
+    assert_eq!(taken.source, VisibilitySource::Rust);
+    camera.projection_xy = Some([9.0 / 16.0, 1.0, 0.0, 0.0]);
+    let mut wide = compute(&m, &camera, &mut cache, 1).unwrap();
+    wide.retain_display_additions(&narrow, &gather);
+    assert_eq!(wide, VisibilitySets::new(vec![1], vec![0x0001_0002]));
 }

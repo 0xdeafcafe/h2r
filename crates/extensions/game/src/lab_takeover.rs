@@ -655,14 +655,20 @@ impl Feature for Driver {
     }
 }
 
-pub fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> anyhow::Result<()> {
+/// Plans the dialog's hooks, and with `accept` takes the lab's requests
+/// (`session.request_takeover`). Without it no request is ever made, so the
+/// hooks never act: a film's replay plans them as its recording did and
+/// never opens the dialog.
+pub fn install(registry: &mut hooks::Registry, agent: &agent::Agent, accept: bool) -> anyhow::Result<()> {
     let dialog = Arc::new(Dialog::default());
     if registry.add(&dialog.class(&START))? && registry.add(&Driver(Arc::clone(&dialog)))? {
         // With its class switched off, the running question can't open and
         // answers Unavailable; the lab then lets the job finish.
         registry.add(&dialog.class(&ALONGSIDE))?;
         registry.add(&dialog.class(&RUNNING))?;
-        add_consent(agent, &dialog);
+        if accept {
+            add_consent(agent, &dialog);
+        }
     }
     Ok(())
 }

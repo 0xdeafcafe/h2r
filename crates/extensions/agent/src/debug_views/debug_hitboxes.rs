@@ -305,7 +305,7 @@ mod tests {
         descriptor(&mut bytes, 0x70, 1, 0x140);
         descriptor(&mut bytes, 0x148, 2, 0x160);
         bytes[0x165] = 255; // the first rendered permutation has no collision
-        let meta = Metadata { base, bytes };
+        let meta = Metadata { base, bytes: std::sync::Arc::new(bytes) };
         let edges = vec![BspEdge {
             start_vertex: 0,
             end_vertex: 1,

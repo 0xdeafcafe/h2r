@@ -52,6 +52,7 @@ struct DeviceCache {
     bindings: ProgramBindings,
     shaders: HashMap<NativeDrawKey, Option<Program>>,
     pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
+    count_pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
 }
 
 #[derive(Clone)]
@@ -76,6 +77,7 @@ impl UiGpu {
                 bindings: ProgramBindings::new(&target.device),
                 shaders: HashMap::new(),
                 pipelines: HashMap::new(),
+                count_pipelines: HashMap::new(),
             }));
         }
         let (_, cache) = self.0.as_mut().ok_or(Refusal::Target)?;
@@ -146,6 +148,7 @@ impl DeviceCache {
             // that key on them together with their shader modules.
             self.shaders.clear();
             self.pipelines.clear();
+            self.count_pipelines.clear();
         }
         let id = ShaderId(self.shaders.len().try_into().map_err(|_| Refusal::Shader)?);
         let shader = self.shaders.entry(program.key.clone()).or_insert_with(|| {
@@ -156,9 +159,13 @@ impl DeviceCache {
                     source: wgpu::ShaderSource::Wgsl(linked.source.into()),
                 },
             ))?;
+            let mut shader = self.bindings.program(device, module, linked.dims);
+            if program.writes_depth {
+                shader.count_entry = Some(shaders::psh::COUNT_DEPTH_ENTRY.into());
+            }
             Some(Program {
                 id,
-                shader: self.bindings.program(device, module, linked.dims),
+                shader,
                 dims: linked.dims,
                 discards: linked.discards,
             })
@@ -207,6 +214,21 @@ impl DeviceCache {
             return Err(Refusal::State);
         }
 
+        let count_pipeline = if draw.hw.zpass_count_enable {
+            if self.count_pipelines.len() == UI_PIPELINES && !self.count_pipelines.contains_key(&key) {
+                self.count_pipelines.clear();
+            }
+            let count = self.count_pipelines.entry(key.clone()).or_insert_with(|| {
+                Pending::ready(validated_resource(device, || {
+                    gfx::renderer::create_sample_count_pipeline(device, &key, &shader.shader)
+                }))
+            }).clone();
+            count.get().as_ref().ok_or(Refusal::State)?;
+            Some(count)
+        } else {
+            None
+        };
+
         let upload = |bytes: &[u8]| {
             let len = bytes.len() as u64;
             if len == 0 || len.next_power_of_two() > device.limits().max_buffer_size {
@@ -235,6 +257,10 @@ impl DeviceCache {
         let packet = RecordedDraw::prepared_indexed(
             &key, pipeline, streams, indices, count, groups, &state, target.size, first,
         );
+        let packet = match count_pipeline {
+            Some(count) => packet.with_sample_count(count),
+            None => packet,
+        };
         let mut packets = vec![packet];
         for clip in rest {
             packets.push(packets[0].clone().with_scissor(clip, target.size));
@@ -458,6 +484,8 @@ pub struct OverlayGpu {
     blur_group_layout: wgpu::BindGroupLayout,
     blur_layout: wgpu::PipelineLayout,
     blur_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    // The guest and display copies can alternate sizes on every dialog frame.
+    blur_scratch: Vec<[wgpu::TextureView; 2]>,
 }
 
 /// One step of a prepared blur: the scratch it draws into and its bound
@@ -577,6 +605,7 @@ impl OverlayGpu {
             blur_group_layout,
             blur_layout,
             blur_pipelines: HashMap::new(),
+            blur_scratch: Vec::new(),
         }
     }
 
@@ -615,7 +644,7 @@ impl OverlayGpu {
         device: &wgpu::Device,
         target: &wgpu::TextureView,
         plan: &crate::overlay::OverlayPlan,
-    ) -> Option<([wgpu::Texture; 2], Vec<PreparedBlur>)> {
+    ) -> Option<([wgpu::TextureView; 2], Vec<PreparedBlur>)> {
         use wgpu::util::DeviceExt;
         let texture = target.texture();
         let format = texture.format();
@@ -625,21 +654,31 @@ impl OverlayGpu {
         {
             return None;
         }
-        let scratch = [0, 1].map(|_| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("native overlay blur"),
-                size: texture.size(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
+        let views = if let Some(index) = self.blur_scratch.iter().position(|views| {
+            let cached = views[0].texture();
+            cached.size() == texture.size() && cached.format() == format
+        }) {
+            self.blur_scratch.remove(index)
+        } else {
+            if self.blur_scratch.len() == 2 {
+                self.blur_scratch.remove(0);
+            }
+            [0, 1].map(|_| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("native overlay blur"),
+                    size: texture.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                }).create_view(&Default::default())
             })
-        });
-        let views = scratch.each_ref().map(|t| t.create_view(&Default::default()));
+        };
+        self.blur_scratch.push(views.clone());
         // The taps are bilinear and clamp at the edges.
         let taps = self.sampler(device, frame_scene::Sampler { wrap: false, point: false });
         let copy = self.sampler(device, frame_scene::Sampler { wrap: false, point: true });
@@ -675,7 +714,7 @@ impl OverlayGpu {
             });
             blurs.push(PreparedBlur { before: blur.before as usize, steps, result, scissor: blur.scissor });
         }
-        Some((scratch, blurs))
+        Some((views, blurs))
     }
 
     fn pipeline(&mut self, device: &wgpu::Device, key: OverlayPipelineKey, blend: Option<wgpu::BlendState>) -> wgpu::RenderPipeline {
@@ -876,7 +915,6 @@ impl OverlayGpu {
             usage: wgpu::BufferUsages::INDEX,
         });
         let target = target.clone();
-        let scratch_views = scratch.as_ref().map(|s| s.each_ref().map(|t| t.create_view(&Default::default())));
         let (width, height) = (size.width as f32, size.height as f32);
         let steps: usize = blurs.iter().map(|b| b.steps.len()).sum();
         let count = draws.len() + steps + blurs.len();
@@ -919,15 +957,14 @@ impl OverlayGpu {
                         }
                     };
                     for blur in &blurs {
-                        let (Some(views), Some(scratch), Some((copy, step))) =
-                            (scratch_views.as_ref(), scratch.as_ref(), write_back.as_ref())
+                        let (Some(views), Some((copy, step))) = (scratch.as_ref(), write_back.as_ref())
                         else {
                             break;
                         };
                         segment(encoder, blur.before, &mut next);
                         encoder.copy_texture_to_texture(
                             target.texture().as_image_copy(),
-                            scratch[0].as_image_copy(),
+                            views[0].texture().as_image_copy(),
                             target.texture().size(),
                         );
                         for s in &blur.steps {
@@ -1377,6 +1414,7 @@ mod tests {
         let texture = target(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
         let view = texture.create_view(&Default::default());
         let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, &NoTextures).unwrap();
+        let scratch = gpu.blur_scratch[0].clone();
         assert_eq!((stats.batches, stats.blurs, stats.refused_blur), (2, 1, 0));
         assert_eq!((encoded.draws, encoded.passes), (4, 4), "two batches, one step, one write-back");
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
@@ -1411,6 +1449,7 @@ mod tests {
         let texture = target(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
         let view = texture.create_view(&Default::default());
         let (encoded, _) = gpu.prepare(&ctx.device, &view, &plan, &NoTextures).unwrap();
+        assert_eq!(gpu.blur_scratch.as_slice(), &[scratch]);
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         (encoded.commands)(&mut encoder);
         ctx.queue.submit([encoder.finish()]);

@@ -23,7 +23,7 @@ pub fn install<B: d3d::Backend + 'static>(
         return;
     }
     let device = Arc::clone(device);
-    let cache = Arc::new(Cache::default());
+    let cache = crate::native_map::MapIndexedCache::default();
     rt.edit_dispatch(|dispatch| {
         let Some(previous) = dispatch.override_handler(DRAW_INDEXED_VERTICES) else { return };
         let safe = dispatch.is_context_only(DRAW_INDEXED_VERTICES);
@@ -32,7 +32,7 @@ pub fn install<B: d3d::Backend + 'static>(
             "boot: gathered light geometry",
             move |cpu, ctx, selector| {
                 let scoped = if walk::waiting() {
-                    begin_batch(&mut ctx.memory(), cpu.esp, &device, &cache, &shadows)
+                    begin_batch(&mut ctx.memory(), cpu.esp, &device, cache.get(), &shadows)
                 } else {
                     None
                 };
@@ -53,7 +53,7 @@ fn begin_batch<B: d3d::Backend>(
     mem: &mut runtime::Guest,
     esp: u32,
     device: &d3d::abi::SharedDevice<B>,
-    cache: &Arc<Cache>,
+    cache: Arc<Cache>,
     shadows: &Option<Arc<dyn DrawAdmission>>,
 ) -> Option<(d3d::DrawScope, Batch)> {
     let batch = walk::take_batch(mem, esp)?;
@@ -75,7 +75,7 @@ fn begin_batch<B: d3d::Backend>(
         first_count: batch.ranges[0].1,
         siblings: Mutex::new(None),
         shadow: shadows.clone(),
-        cache: Arc::clone(cache),
+        cache,
         frame: crate::d3d_diag::presents() + 1,
     });
     let mut device = device.lock().ok()?;

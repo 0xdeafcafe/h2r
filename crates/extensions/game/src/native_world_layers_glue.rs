@@ -14,7 +14,7 @@ use native_render::camera::GuestRead;
 use native_render::world_layers::{
     DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
 };
-use native_render::world_layers_gpu::{Cache, IndexedPass};
+use native_render::world_layers_gpu::IndexedPass;
 
 struct Memory<'a>(&'a runtime::Guest);
 
@@ -29,12 +29,17 @@ pub struct DrawContext {
     pub layer: Layer,
     pub frame: u64,
     pub geometry: Option<Geometry>,
+    /// The indexed light handler's (pass selector, vertex class).
+    pub light_selection: Option<(u8, u16)>,
     bsp: Option<u32>,
     pub(crate) generation: u64,
     pub index_count: Option<u32>,
+    /// Original index pointer before the D3D device rebases the draw.
+    pub index_address: Option<u32>,
 }
 
 thread_local! {
+    static POOL: Cell<Option<(u32, u32)>> = const { Cell::new(None) };
     static SKY: RefCell<Option<Result<SkyItem, Refusal>>> = const { RefCell::new(None) };
     static DRAW: Cell<Option<DrawContext>> = const { Cell::new(None) };
 }
@@ -102,12 +107,14 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
             index,
             "boot:native world layers indexed",
             move |cpu, ctx, selector| {
+                let mut pool = None;
                 let mut sky = None;
                 let context = (|| {
                     let frame = crate::d3d_diag::presents() + 1;
                     let current = current();
                     let guest = ctx.memory();
                     let mem = Memory(&guest);
+                    pool = render_bridge::native_transparents::pool_issue(&mem, cpu.esp);
                     let return_address = mem.read_u32(cpu.esp)?;
                     let layer = if return_address == SKY_INDEXED_RETURN {
                         sky = Some(SkyItem::read(&mem, cpu.esp, cpu.ebp));
@@ -144,9 +151,20 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                         bsp: mem.read_u32(render_bridge::native_world::ACTIVE_BSP),
                         generation: render_bridge::native_map_work::bsp_generation(),
                         geometry,
+                        light_selection: if matches!(layer.number, 12 | 13) {
+                            geometry.and_then(|g| g.light_selection(&mem, cpu.esp))
+                        } else {
+                            None
+                        },
                         index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
+                        index_address: if matches!(layer.number, 12 | 13) {
+                            cpu.esp.checked_add(12).and_then(|a| mem.read_u32(a))
+                        } else {
+                            None
+                        },
                     })
                 })();
+                let _pool = RestorePool(POOL.replace(pool));
                 let _restore = Restore(DRAW.replace(context));
                 let _sky = sky.map(|item| RestoreSky(SKY.replace(Some(item))));
                 Ok(previous.invoke(cpu, ctx, selector))
@@ -173,11 +191,26 @@ pub fn enter_opaque_range(
         },
     };
     Restore(DRAW.replace(Some(DrawContext {
-        layer, frame, geometry: Some(geometry), index_count: Some(count),
+        layer, frame, geometry: Some(geometry), light_selection: None, index_count: Some(count), index_address: None,
         // The sorted range has no guest memory to read the BSP from here;
         // without it the section cache is bypassed for this range.
         bsp: None, generation: render_bridge::native_map_work::bsp_generation(),
     })))
+}
+
+struct RestorePool(Option<(u32, u32)>);
+
+impl Drop for RestorePool {
+    fn drop(&mut self) { POOL.set(self.0); }
+}
+
+pub(crate) fn pool_issue() -> Option<(u32, u32)> { POOL.get() }
+
+/// Run `f` as if inside the guest's sorted pool issue `(view, index count)`.
+#[cfg(test)]
+pub(crate) fn with_pool_issue<R>(issue: (u32, u32), f: impl FnOnce() -> R) -> R {
+    let _pool = RestorePool(POOL.replace(Some(issue)));
+    f()
 }
 
 struct RestoreSky(Option<Result<SkyItem, Refusal>>);
@@ -216,7 +249,7 @@ pub fn matches_triangle_range(draw: &ResolvedDraw, expected: usize) -> bool {
 
 #[derive(Default)]
 struct Admission {
-    cache: Arc<Cache>,
+    cache: crate::native_map::MapIndexedCache,
 }
 
 pub fn owns_scene_world(switches: &hooks::Switches) -> bool {
@@ -280,7 +313,7 @@ impl DrawAdmission for Admission {
             Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
             Owner::Object { .. } => timeline::native::Stage::Objects,
         };
-        let pass = IndexedPass::for_section(draw, Arc::clone(&self.cache), c.frame, texaccum,
+        let pass = IndexedPass::for_section(draw, self.cache.get(), c.frame, texaccum,
             (c.generation, c.bsp?), geometry, layer.number)?;
         Some((
             ExternalPlan {

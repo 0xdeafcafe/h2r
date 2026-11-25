@@ -110,6 +110,19 @@ fn slots_block<M: Gm>(m: &M) -> Option<(u32, u32)> {
     (count <= MAX_SLOTS && addr != 0).then_some((count, addr))
 }
 
+/// Map ids available to the retail hopper validator in the current menu.
+pub(crate) fn listed_ids<M: Gm>(m: &M) -> Option<std::collections::BTreeSet<u32>> {
+    let (count, base) = slots_block(m)?;
+    let mut ids = std::collections::BTreeSet::new();
+    for i in 0..count {
+        let id = m.u32(base.checked_add(i * SLOT_LEN as u32)?)?;
+        if id != FREE {
+            ids.insert(id);
+        }
+    }
+    Some(ids)
+}
+
 /// A selected level's scenario path in the title's active multiplayer slots.
 pub(crate) fn selected_path<M: Gm>(m: &M, id: u32) -> Option<String> {
     if id == FREE {

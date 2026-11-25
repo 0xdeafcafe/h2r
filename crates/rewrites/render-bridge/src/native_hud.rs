@@ -214,8 +214,8 @@ fn host() -> Option<Arc<dyn Host>> {
 /// A screen's sorted list at [`ui_overlay::LIST_READY`]: its claim, when
 /// the host draws menus, or why the game draws it.
 fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
-    let Some(list) = ui_overlay::at_list(&*mem, ebp, edi) else { return };
-    match host().and_then(|host| host.ui_overlay(mem)) {
+    let Some(host) = host() else { return };
+    match host.ui_overlay(mem) {
         Some(true) => {}
         Some(false) => {
             MenuRefusal::Pass.counter().count();
@@ -223,14 +223,16 @@ fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
         }
         None => return,
     }
-    match ui_overlay::claim_list(&*mem, &list) {
-        Ok(claim) => {
-            Ui::OverlayMenuClaimed.count_n(u64::from(claim.claimed()));
-            // A list at this frame left open is closed (and checked) first.
-            ui_overlay::open(claim);
-        }
-        Err(why) => why.counter().count(),
+    if let Err(why) = ui_overlay::check_frame(mem, edi) {
+        why.counter().count();
+        return;
     }
+    let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
+    let Some(list) = ui_overlay::at_list(&*mem, ebp, edi) else { return };
+    let claim = ui_overlay::claim_list(mem, &list, host.as_ref());
+    Ui::OverlayMenuClaimed.count_n(u64::from(claim.claimed()));
+    // A list at this frame left open is closed (and checked) first.
+    ui_overlay::open(claim);
 }
 
 /// The sorted widget call (`points::ui_render::ITEM_CALL`, the argument
@@ -245,7 +247,11 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
         Item::Game => return None,
         Item::Skip => {}
         Item::Place(run) => {
-            let Some(part) = ui_overlay::run_part(frame, run, mem) else {
+            let part = {
+                let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
+                ui_overlay::run_part(frame, run, mem)
+            };
+            let Some(part) = part else {
                 ui_overlay::placed(frame, run, false);
                 MenuRefusal::Pass.counter().count();
                 return None;

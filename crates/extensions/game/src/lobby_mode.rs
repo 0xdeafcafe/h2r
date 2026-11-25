@@ -87,6 +87,7 @@ pub const FEATURE: &str = "party-lobby";
 /// to 9; the row-chosen jump table has no bounds check, so the press never
 /// reaches the original).
 pub const MAP_VARIANT_ACTION: i16 = 15;
+const THEATER_ACTION: i16 = 16;
 /// Retail's game type row, "Change Rules...".
 pub const CHANGE_RULES: i16 = 1;
 
@@ -95,6 +96,7 @@ pub const IDS: Family = ids::family("lobby mode");
 const MAP_VARIANT_LABEL_SLOT: u32 = 1;
 const CHANGE_PLAYLIST_SLOT: u32 = 2;
 const MAP_VARIANT_HELP_SLOT: u32 = 3;
+const THEATER_LABEL_SLOT: u32 = 4;
 const PANEL_SLOTS: u32 = 5;
 /// The most panel lines a mode has (Firefight's three).
 pub const MAX_PANEL_LINES: usize = 3;
@@ -104,6 +106,7 @@ const GATE_SLOT: u32 = PANEL_SLOTS + MAX_PANEL_LINES as u32 + 1;
 /// The status line's text while the lobby's map variant builds or is
 /// refused ([`variant_text_id`]).
 const VARIANT_SLOT: u32 = GATE_SLOT + 1;
+const THEATER_HELP_SLOT: u32 = VARIANT_SLOT + 1;
 
 pub const MAP_VARIANT_LABEL: &str = "Map Variant...";
 /// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
@@ -538,10 +541,18 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
     if !state.lobby {
         return None;
     }
-    match state.mode {
+    let variant = crate::pause_change_map::lobby_variant(m);
+    let mode = crate::map_select::variant_mode(state.mode, variant.as_ref());
+    match mode {
         Mode::Multiplayer => None,
         Mode::Forge => refusal(state.mode, remote_members(m), KitMaps::default()),
-        Mode::Firefight => refusal(state.mode, Some(0), KitMaps::now(m)),
+        Mode::Firefight => {
+            let catalogue = crate::map_select::current();
+            let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
+            let wave = variant.as_ref().map(|v| v.ext().script)
+                .filter(|s| s.mode == variants::ext::Mode::Firefight).map(|s| s.prefix);
+            refusal(mode, Some(0), KitMaps::for_wave(catalogue.as_deref(), id, wave))
+        }
     }
 }
 
@@ -563,7 +574,10 @@ pub fn variant_hold(m: &dyn GuestMemory) -> Option<String> {
     crate::map_variant::follow_mode(
         lobby_start::mode() == Mode::Forge,
         map,
-        map.and_then(crate::map_select::short_name_of).as_deref(),
+        // The kit builder materialises disc bases by basename. An offer
+        // may share that basename; edit the offer in its own cache slot.
+        map.filter(|&id| crate::map_select::selected_category(id) == Some(crate::map_select::Category::Halo2))
+            .and_then(crate::map_select::short_name_of).as_deref(),
         || crate::skulls::profile_or_default(&crate::layout_glue::ReadGm(m), 0),
     );
     crate::map_variant::hold()
@@ -625,6 +639,7 @@ fn after_rows(h: hooks::HookRef<'_>) {
 /// The Map Variant row, the rows by mode, the header, X's GAME MODE picker,
 /// the start refusal and the leave.
 pub struct LobbyMode {
+    pub theater: Option<crate::theater_ui::Theater>,
     pub offer: Offer,
     /// The settings store Firefight's choices live in.
     pub store: Option<Arc<Store>>,
@@ -646,6 +661,7 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
             .is_ok_and(|actions| actions.contains(&CHANGE_MAP));
         let slot = match action {
             Some(MAP_VARIANT_ACTION) => MAP_VARIANT_LABEL_SLOT,
+            Some(THEATER_ACTION) => THEATER_LABEL_SLOT,
             Some(crate::clankermatch::CHANGE_PLAYLIST) if !custom => CHANGE_PLAYLIST_SLOT,
             _ => return Ok(Flow::Continue),
         };
@@ -684,6 +700,14 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
         let lobby_map = mem.u32(crate::h1_options_row::LOBBY_MAP).ok();
         (action, player, stack, lobby_map)
     };
+    if action == Some(THEATER_ACTION) {
+        if let (Some(theater), Some(player)) = (&me.theater, player) {
+            let profile = crate::skulls_menu::profile_of(&*c.ctx.runtime().memory(), player);
+            theater.open(player, profile);
+        }
+        return h1row::open_from_setup(c, request_at, h1row::SetupPress { action, player, stack },
+            crate::theater_ui::FILMS, "theater");
+    }
     if action != Some(MAP_VARIANT_ACTION) {
         return Ok(Flow::Continue);
     }
@@ -787,6 +811,7 @@ impl hooks::Feature for LobbyMode {
         TEXTS.base.store(base, Ordering::SeqCst);
         TEXTS.set(MAP_VARIANT_LABEL_SLOT, MAP_VARIANT_LABEL);
         TEXTS.set(CHANGE_PLAYLIST_SLOT, CHANGE_PLAYLIST_LABEL);
+        TEXTS.set(THEATER_LABEL_SLOT, "Theater");
         b.locale().source("lobby mode", |id| TEXTS.address(id));
 
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
@@ -799,6 +824,7 @@ impl hooks::Feature for LobbyMode {
         let scratch = b.guest_alloc(0x1000, Permissions::RW)?;
         crate::lobby_tabs::switch::install(scratch);
         let offer = self.offer;
+        let theater = self.theater.is_some();
         let building: Arc<Mutex<Vec<u32>>> = Arc::default();
         let (noted, live) = (Arc::clone(&building), Arc::clone(&building));
         after_rows(b.raw().before(&CTOR, "note the Game Setup list", move |c| {
@@ -820,11 +846,15 @@ impl hooks::Feature for LobbyMode {
                 };
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
-                let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
+                let Ok(actions) = h1row::setup_actions(&*mem, list) else { return Ok(()) };
                 let mode = lobby_start::mode();
-                let Some(rows) = arrange(mode, offer, &actions) else {
+                let mut rows = arrange(mode, offer, &actions).unwrap_or_else(|| actions.clone());
+                if theater && !actions.is_empty() && !rows.contains(&THEATER_ACTION) {
+                    rows.push(THEATER_ACTION);
+                }
+                if rows == actions {
                     return Ok(());
-                };
+                }
                 match h1row::rewrite_rows(&mut *mem, list, &rows) {
                     Ok(n) => {
                         eprintln!("lobby mode: Game Setup list in {} ({n} rows)", mode.label())
@@ -843,6 +873,7 @@ impl hooks::Feature for LobbyMode {
             move |c| row_text(c, &seen),
         ));
         let me = Arc::new(LobbyMode {
+            theater: self.theater.clone(),
             offer: self.offer,
             store: self.store.clone(),
             data: self.data.clone(),
@@ -937,6 +968,17 @@ impl hooks::Feature for LobbyMode {
 
 /// Adds the rows and registers their help lines.
 pub fn install(registry: &mut hooks::Registry, feature: LobbyMode) -> anyhow::Result<()> {
+    if feature.theater.is_some() {
+        crate::game_setup_help::register(
+            THEATER_ACTION,
+            crate::game_setup_help::image::QUICK_OPTIONS,
+            Arc::new(|m| {
+                let id = TEXTS.set(THEATER_HELP_SLOT, "Watch a film of a recent or saved game.");
+                TEXTS.write(m).ok()?;
+                Some(id)
+            }),
+        );
+    }
     crate::game_setup_help::register(
         MAP_VARIANT_ACTION,
         crate::game_setup_help::image::QUICK_OPTIONS,

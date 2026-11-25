@@ -436,6 +436,7 @@ impl DirectSound {
             // Keep: the handle; the mixer's contents are the `audio` section.
             mixer: _,
             clock_only: _,
+            voice_trace: _,
             layout,
             objects,
             root,
@@ -574,6 +575,7 @@ impl DirectSound {
         let DirectSound {
             mixer: _,
             clock_only: _,
+            voice_trace,
             layout: _,
             objects,
             root,
@@ -592,6 +594,9 @@ impl DirectSound {
             voice_rings,
             pad_router: _,
         } = self;
+        if let Some(trace) = voice_trace {
+            *trace = Default::default();
+        }
         *objects = s.objects.into_iter().collect();
         *root = s.root;
         *mix_bin_headroom = s.mix_bin_headroom;

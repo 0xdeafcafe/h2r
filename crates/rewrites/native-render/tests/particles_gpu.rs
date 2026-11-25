@@ -138,10 +138,10 @@ fn admission_refuses_partial_geometry_unknown_depth_and_bad_clip() {
     assert_eq!(s.validate(), Ok(()));
     let mut bad = s.clone();
     bad.indices.to_mut().push(0);
-    assert_eq!(bad.validate(), Err(Refused::Geometry));
+    assert_eq!(bad.validate(), Err(Refused::Geometry("indices")));
     bad = s.clone();
     bad.indices.to_mut()[0] = 4;
-    assert_eq!(bad.validate(), Err(Refused::Geometry));
+    assert_eq!(bad.validate(), Err(Refused::Geometry("indices")));
     bad = s.clone();
     bad.depth.depth_compare = None;
     assert_eq!(bad.validate(), Err(Refused::State));
@@ -163,7 +163,7 @@ fn weather_lines_require_pairs_and_points_remain_unadmitted() {
     s.indices = Cow::Borrowed(&[0, 1, 2, 3]);
     assert_eq!(s.validate(), Ok(()));
     s.indices.to_mut().pop();
-    assert_eq!(s.validate(), Err(Refused::Geometry));
+    assert_eq!(s.validate(), Err(Refused::Geometry("indices")));
     s.indices.to_mut().push(3);
     s.primitive.topology = wgpu::PrimitiveTopology::PointList;
     assert!(s.validate().is_err());

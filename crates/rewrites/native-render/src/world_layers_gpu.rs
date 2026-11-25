@@ -14,7 +14,6 @@ use gfx::compile::{Pending, PendingPipeline};
 use gfx::pipeline::{PipelineKey, ShaderId, TargetFormats};
 use gfx::program::{ProgramBindings, StageDims};
 use gfx::repack::{FetchMode, RepackPlan, StreamPlan};
-use gfx::state::{DepthBufferMode, StencilOp};
 use gfx::texture::TextureKind;
 use gfx::translate::Capabilities;
 use gfx::renderer::VertexBuffers;
@@ -38,13 +37,14 @@ static SECTIONS: mem_watch::Counter = mem_watch::Counter::new("native.world_sect
 static SECTION_PAYLOAD: mem_watch::Counter = mem_watch::Counter::new("native.world_section_payload_bytes");
 
 pub struct Cache {
+    pool_refusals: Mutex<HashMap<&'static str, u64>>,
     device: Mutex<Option<(wgpu::Device, DeviceCache)>>,
     fetch: FetchMode,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        Self { device: Mutex::default(), fetch: FetchMode::Gpu }
+        Self { pool_refusals: Mutex::default(), device: Mutex::default(), fetch: FetchMode::Gpu }
     }
 }
 
@@ -240,12 +240,14 @@ impl DeviceCache {
     fn resolve_shader(
         &mut self, device: &wgpu::Device, draw: &ResolvedDraw, present: [bool; 4],
         plan: &RepackPlan, caps: Capabilities,
-    ) -> Option<(Arc<NativeDrawMaterial>, Program)> {
-        let program = Arc::new(NativeDrawMaterial::resolve_with_plan(draw, present, caps, plan).ok()?);
+    ) -> Result<(Arc<NativeDrawMaterial>, Program), &'static str> {
+        let program = NativeDrawMaterial::resolve_with_plan(draw, present, caps, plan)
+            .map_err(|_| "unresolved indexed material")?;
+        let program = Arc::new(program);
         if self.shaders.len() == DRAW_SHADERS && !self.shaders.contains_key(&program.key) {
             self.shaders.clear();
         }
-        let new_id = ShaderId(self.shaders.len().try_into().ok()?);
+        let new_id = ShaderId(self.shaders.len().try_into().map_err(|_| "shader id overflow")?);
         let shader = self.shaders.entry(program.key.clone()).or_insert_with_key(|key| {
             let key = key.clone();
             let device = device.clone();
@@ -262,7 +264,8 @@ impl DeviceCache {
             Shader::Translating { id: new_id, work }
         });
         if let Shader::Translating { id, work } = shader {
-            let TranslatedShader { linked, module } = work.try_get()?.as_ref()?;
+            let translated = work.try_get().ok_or("shader compiling")?;
+            let TranslatedShader { linked, module } = translated.as_ref().ok_or("shader translation failed")?;
             // These layouts must also own the texture and uniform bindings at draw time.
             let bindings = self.bindings.program(device, module.clone(), linked.dims);
             *shader = Shader::Ready(Program {
@@ -272,8 +275,8 @@ impl DeviceCache {
                 discards: linked.discards,
             });
         }
-        let Shader::Ready(shader) = shader else { return None };
-        Some((program, shader.clone()))
+        let Shader::Ready(shader) = shader else { return Err("shader unavailable") };
+        Ok((program, shader.clone()))
     }
 
     fn upload_section(
@@ -404,8 +407,17 @@ impl SkyRows {
     }
 }
 
+/// A texture backed by an independently pinned colour surface. Both
+/// identities must name the same GPU texture on every target copy.
+#[derive(Clone, Copy)]
+struct SurfaceTexture {
+    header: u32,
+    size: (u32, u32),
+}
+
 /// One indexed range recorded at its original attachments.
 pub struct IndexedPass {
+    sorted_pool: bool,
     sky: Option<SkyRows>,
     draw: Arc<ResolvedDraw>,
     /// The guest quad packet when the native pass expands its topology.
@@ -416,8 +428,8 @@ pub struct IndexedPass {
     // records the candidate after a later swap.
     extracted_frame: u64,
     fetch: FetchMode,
-    texaccum: Option<Texaccum>,
-    texaccum_stages: [bool; 4],
+    pinned: Option<SurfaceTexture>,
+    sorted_layer: bool,
     section: Option<((u64, u32), SectionKey)>,
 }
 
@@ -429,7 +441,24 @@ impl IndexedPass {
         texaccum: Option<Texaccum>,
     ) -> Option<Self> {
         if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) { return None; }
-        Self::candidate(draw, cache, frame, texaccum, None)
+        Self::candidate(draw, cache, frame, texaccum, None, false)
+    }
+
+    /// A standalone sorted-layer range can be recorded on the scene's
+    /// attachments with the exact texture views captured for this packet.
+    pub fn for_sorted_layer(draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        if draw.indices.as_ref()?.iter().any(|&i| i >= draw.vertex_count) {
+            return None;
+        }
+        Self::candidate(draw, cache, frame, None, None, true)
+    }
+
+    /// The sorted handler resolved the ripple frame, bump matrices, reflection,
+    /// refraction sample and fog. Replay rebinds this packet's four stage views.
+    pub fn for_pool(draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64) -> Option<Self> {
+        let mut pass = Self::new(draw, cache, frame, None)?;
+        pass.sorted_pool = true;
+        Some(pass)
     }
 
     /// Expand the indexed water composite using the Xbox quad diagonal.
@@ -482,7 +511,7 @@ impl IndexedPass {
             model: item.model, section: item.section, part: item.part,
             shader: item.shader, pass: item.pass,
         };
-        let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)))
+        let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)), false)
             .ok_or("geometry")?;
         candidate.sky = Some(sky);
         Ok(candidate)
@@ -494,12 +523,13 @@ impl IndexedPass {
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, texaccum: Option<Texaccum>,
         scope: (u64, u32), geometry: Geometry, layer: u32,
     ) -> Option<Self> {
-        Self::candidate(draw, cache, frame, texaccum, Some((scope, SectionKey::new(geometry, layer))))
+        Self::candidate(draw, cache, frame, texaccum, Some((scope, SectionKey::new(geometry, layer))), false)
     }
 
     fn candidate(
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, texaccum: Option<Texaccum>,
         section: Option<((u64, u32), SectionKey)>,
+        sorted_layer: bool,
     ) -> Option<Self> {
         let indices = draw.indices.as_ref()?;
         if indices.len() < 3
@@ -507,13 +537,14 @@ impl IndexedPass {
                 draw.primitive,
                 PrimitiveType::TriangleList | PrimitiveType::TriangleStrip
             )
-            || draw.target.depth_format.is_none()
+            || (!sorted_layer && draw.target.depth_format.is_none())
             || draw.streams.len() != draw.layout.streams.len()
             || draw.hw.zpass_count_enable
         {
             return None;
         }
         Some(Self {
+            sorted_pool: false,
             sky: None,
             draw: Arc::new(draw.clone()),
             original_quad: None,
@@ -522,42 +553,45 @@ impl IndexedPass {
             frame,
             extracted_frame: timeline::frames(),
             section,
-            texaccum,
-            texaccum_stages: draw
-                .textures
-                .map(|header| texaccum.is_some_and(|t| header == Some(t.texture))),
+            sorted_layer,
+            pinned: texaccum.map(|t| SurfaceTexture { header: t.texture, size: t.size }),
         })
+    }
+
+    /// Require the first external slot's surface to back the sampled
+    /// stage. Used by generated lights whose target 13 is per invocation.
+    pub fn pin_sampled_surface(&mut self, header: u32, size: (u32, u32)) {
+        self.pinned = Some(SurfaceTexture { header, size });
     }
 
     fn prepare(
         &self,
         target: &ExternalAttachments,
         guest_size: (u32, u32),
-    ) -> Option<ExternalDraws> {
+    ) -> Result<ExternalDraws, &'static str> {
         let _scope = mem_watch::scope("native.world");
         // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
         let (width, height) = guest_size;
-        if target.targets.0 == target.targets.1 {
-            return None;
+        let depth = draw.target.depth_format.map(|_| target.depth_format);
+        if (target.targets.0 != target.targets.1) != depth.is_some() {
+            return Err("shared color and depth");
         }
-        let scale = d3d::scaled::RenderScale::between(guest_size, target.size)?;
+        let scale = d3d::scaled::RenderScale::between(guest_size, target.size).ok_or("zero raster extent")?;
         if (width, height) != (draw.target.width, draw.target.height)
-            || target.size
-                != (
-                    target.depth.texture().width(),
-                    target.depth.texture().height(),
-                )
-            || (draw.state.render.stencil.enable && !target.depth_format.has_stencil_aspect())
+            || depth.is_some_and(|format| {
+                target.size != (target.depth.texture().width(), target.depth.texture().height())
+                    || (draw.state.render.stencil.enable && !format.has_stencil_aspect())
+            })
         {
-            return None;
+            return Err("incompatible target or stencil");
         }
         let caps = Capabilities::from_features(target.device.features());
-        let mut active = self.cache.device.lock().ok()?;
+        let mut active = self.cache.device.lock().map_err(|_| "device cache poisoned")?;
         if active.as_ref().is_none_or(|(device, _)| device != &target.device) {
             *active = Some((target.device.clone(), DeviceCache::new(&target.device)));
         }
-        let (_, cache) = active.as_mut()?;
+        let (_, cache) = active.as_mut().ok_or("device cache unavailable")?;
         if cache.frame < self.frame {
             cache.frame = self.frame;
             cache.bindings.end_frame();
@@ -586,7 +620,7 @@ impl IndexedPass {
         let material = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|m| m.matches(draw, present));
         let material_hit = material.is_some();
-        let formats = TargetFormats { color: target.color_format, depth: Some(target.depth_format), samples: 1 };
+        let formats = TargetFormats { color: target.color_format, depth, samples: 1 };
         let cached_pipeline = material.and_then(|m| m.pipelines.get(&formats)).cloned();
         let repack = match previous {
             Some((key, i)) => Arc::clone(&cache.sections[&key][i].repack),
@@ -598,47 +632,43 @@ impl IndexedPass {
             cache.resolve_shader(&target.device, draw, present, &repack, caps)?
         };
         let dims = shader.dims;
+        let mut consumed_surface = false;
         for (n, dim) in dims.iter().enumerate() {
             let Some(dim) = dim else { continue };
-            let view = target.stages[n].as_ref()?;
-            let have = match draw.texture_info[n]?.kind {
+            let view = target.stages[n].as_ref().ok_or("sample view missing")?;
+            let have = match draw.texture_info[n].ok_or("sample header missing")?.kind {
                 TextureKind::D2 => wgpu::TextureViewDimension::D2,
                 TextureKind::Volume => wgpu::TextureViewDimension::D3,
                 TextureKind::Cube => wgpu::TextureViewDimension::Cube,
             };
-            if *dim != have
-                || view.texture() == target.color.texture()
-                || view.texture() == target.depth.texture()
-                || !gfx::program::filterable(view.texture().format(), target.device.features())
+            if *dim != have { return Err("sample dimension disagrees with shader"); }
+            if view.texture() == target.color.texture()
+                || (depth.is_some() && view.texture() == target.depth.texture())
             {
-                return None;
+                return Err("sample aliases attachment");
             }
-            if self.texaccum_stages[n] {
-                let accum = self.texaccum?;
-                let info = draw.texture_info[n]?;
-                let sampled = target.sampled.first()?.as_ref()?;
-                let source = target.slots.first()?.as_ref()?;
-                if (info.width, info.height) != accum.size
+            if !gfx::program::filterable(view.texture().format(), target.device.features()) {
+                return Err("sample is unfilterable");
+            }
+            if let Some(pinned) = self.pinned.filter(|p| draw.textures[n] == Some(p.header)) {
+                consumed_surface = true;
+                let info = draw.texture_info[n].ok_or("sample header missing")?;
+                let sampled = target.sampled.first().and_then(Option::as_ref).ok_or("texaccum sample missing")?;
+                let source = target.slots.first().and_then(Option::as_ref).ok_or("texaccum slot missing")?;
+                if (info.width, info.height) != pinned.size
                     || info.format.layout() != gfx::format::Layout::Linear
-                    || source.guest_size != accum.size
+                    || source.guest_size != pinned.size
                     || source.size != sampled.size
                     || source.sample.texture() != sampled.view.texture()
                     || source.sample.texture() != view.texture()
                 {
-                    return None;
+                    return Err("texaccum binding mismatch");
                 }
             }
         }
-        // A header that was bound but unreferenced does not establish
-        // that this is a combined material's texture accumulation pass.
-        if self.texaccum.is_some()
-            && !self
-                .texaccum_stages
-                .iter()
-                .zip(dims)
-                .any(|(&accum, dim)| accum && dim.is_some())
-        {
-            return None;
+        // A bound but unsampled header cannot prove a surface dependency.
+        if self.pinned.is_some() && !consumed_surface {
+            return Err("unused texaccum binding");
         }
         // An unresolved native variant leaves this exact indexed range on D3D.
         // Check it before allocating streams, bind groups or submission uploads.
@@ -667,7 +697,9 @@ impl IndexedPass {
             let pipeline = shader.pipelines.request(&target.device, &key);
             (key, pipeline)
         };
-        pipeline.visible_at_frame(self.extracted_frame)?.as_ref()?;
+        pipeline.visible_at_frame(self.extracted_frame)
+            .ok_or("pipeline unavailable at extraction")?
+            .as_ref().ok_or("pipeline compilation failed")?;
         let views = std::array::from_fn(|n| dims[n].and(target.stages[n].clone()));
         let cached_textures = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|_| material_hit)
@@ -683,11 +715,11 @@ impl IndexedPass {
             [[false; 4]; 4],
         ));
         if textures.is_none() && dims.iter().any(Option::is_some) {
-            return None;
+            return Err("texture group unavailable");
         }
 
-        let indices = draw.indices.as_ref()?;
-        let index_count = indices.len().try_into().ok()?;
+        let indices = draw.indices.as_ref().ok_or("indices missing")?;
+        let index_count = indices.len().try_into().map_err(|_| "index count overflow")?;
         let frame = cache.frame;
         let charged_bytes = section_key.filter(|_| previous.is_none()).and_then(|key| {
             if let std::collections::hash_map::Entry::Occupied(mut entry) = cache.sections.entry(key) {
@@ -712,22 +744,22 @@ impl IndexedPass {
         let resident = previous.is_some() || charged_bytes.is_some();
         let mut fresh;
         let section = if let Some((key, i)) = previous {
-            let section = &mut cache.sections.get_mut(&key)?[i];
+            let section = &mut cache.sections.get_mut(&key).ok_or("resident section missing")?[i];
             section.last_used = frame;
             // Promote the current snapshot IDs after an identical first-use copy.
             section.source = Arc::clone(draw);
             if material_hit {
-                section.material.as_mut()?.source = Arc::clone(draw);
+                section.material.as_mut().ok_or("resident material missing")?.source = Arc::clone(draw);
             }
             section
         } else {
-            fresh = cache.upload_section(target, draw, self.fetch, repack, charged_bytes)?;
+            fresh = cache.upload_section(target, draw, self.fetch, repack, charged_bytes).ok_or("geometry upload failed")?;
             if let Some((key, bytes)) = section_key.zip(charged_bytes) {
                 let windows = cache.sections.entry(key).or_default();
                 windows.push(fresh);
                 cache.section_count.set(cache.section_count.get() + 1);
                 cache.section_bytes.set(cache.section_bytes.get() + bytes);
-                windows.last_mut()?
+                windows.last_mut().ok_or("resident section missing")?
             } else { &mut fresh }
         };
         if resident {
@@ -738,11 +770,11 @@ impl IndexedPass {
                 });
             }
             if !pipeline_hit {
-                section.material.as_mut()?.pipelines.insert(formats, (key.clone(), pipeline.clone()));
+                section.material.as_mut().ok_or("resident material missing")?.pipelines.insert(formats, (key.clone(), pipeline.clone()));
             }
         }
         if resident && !bindings_hit {
-            let groups = &mut section.material.as_mut()?.groups;
+            let groups = &mut section.material.as_mut().ok_or("resident material missing")?.groups;
             if groups.len() == 2 { groups.remove(0); }
             groups.push((views, textures.clone()));
         }
@@ -752,14 +784,14 @@ impl IndexedPass {
         let copy = draw.for_copy(target.copy);
         let draw = copy.as_ref();
         let clip = if draw.clip_rects.is_empty() {
-            std::slice::from_ref(draw.clip.as_ref()?)
+            std::slice::from_ref(draw.clip.as_ref().ok_or("clip unavailable")?)
         } else {
             &draw.clip_rects
         };
         let mut scissors = clip.iter().map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size));
-        let first_scissor = scissors.next()??;
+        let first_scissor = scissors.next().flatten().ok_or("invalid clip rectangle")?;
         if scissors.clone().any(|scissor| scissor.is_none()) {
-            return None;
+            return Err("invalid clip rectangle");
         }
         let streams = section.streams.clone();
         let indices = section.indices.clone();
@@ -776,7 +808,7 @@ impl IndexedPass {
             target.uploads.resident_uniform_run(&target.device, &target.queue, layout, sizes, 1, fill)
         } else {
             target.uploads.uniform_run(&target.device, &target.queue, layout, sizes, 1, fill)
-        }?;
+        }.ok_or("uniform upload failed")?;
         let offsets = params.offsets(0);
         let groups = std::iter::once(BoundGroup { index: 0, group: params.group, offsets: offsets.to_vec() })
             .chain(textures.map(|group| BoundGroup::new(1, group)));
@@ -786,9 +818,9 @@ impl IndexedPass {
         let mut packets = Vec::with_capacity(clip.len());
         packets.push(first);
         for scissor in scissors {
-            packets.push(packets[0].clone().with_scissor(scissor?, target.size));
+            packets.push(packets[0].clone().with_scissor(scissor.ok_or("invalid clip rectangle")?, target.size));
         }
-        Some(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
+        Ok(ExternalDraws { ranges: 1, packets, discards: shader.discards, writes: Vec::new() })
     }
 }
 
@@ -799,7 +831,7 @@ impl ExternalPass for IndexedPass {
         // Section caches and texture-stage bindings are outside this case.
         // Sky material groups match the replay's actual stage views and
         // formats. The immutable per-view palette is owned by this pass.
-        self.sky.is_some() || (self.section.is_none() && self.texaccum.is_none()
+        self.sorted_pool || self.sorted_layer || self.sky.is_some() || (self.section.is_none() && self.pinned.is_none()
             && self.draw.texture_info.iter().all(Option::is_none))
     }
 
@@ -830,6 +862,7 @@ impl ExternalPass for IndexedPass {
             (draw, None)
         };
         Some(Box::new(Self {
+            sorted_pool: self.sorted_pool,
             sky: self.sky.clone(),
             draw,
             original_quad,
@@ -837,27 +870,24 @@ impl ExternalPass for IndexedPass {
             frame: self.frame,
             extracted_frame: self.extracted_frame,
             fetch: self.fetch,
-            texaccum: self.texaccum,
-            texaccum_stages: self.texaccum_stages,
+            pinned: self.pinned,
+            sorted_layer: self.sorted_layer,
             section: self.section,
         }))
     }
 
     fn sampled(&self) -> Vec<u32> {
-        self.texaccum.iter().map(|target| target.texture).collect()
+        self.pinned.iter().map(|target| target.header).collect()
+    }
+
+    fn colour_only(&self) -> bool {
+        self.draw.target.depth_format.is_none()
     }
 
     fn writes(&self) -> ExternalWrites {
-        let r = &self.draw.state.render;
-        let stencil = &r.stencil;
         ExternalWrites {
-            color: !gfx::translate::color_writes(r.color_write).is_empty(),
-            depth_stencil: (r.depth_mode != DepthBufferMode::Disabled && r.depth_write)
-                || (stencil.enable
-                    && stencil.write_mask != 0
-                    && [stencil.fail, stencil.depth_fail, stencil.pass]
-                        .iter()
-                        .any(|&op| op != StencilOp::Keep)),
+            color: self.draw.state.render.color_write.xbox_value() != 0,
+            depth_stencil: self.draw.writes_depth_stencil(),
         }
     }
 
@@ -866,7 +896,16 @@ impl ExternalPass for IndexedPass {
         target: &ExternalAttachments,
         request: ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> {
-        Some(self.prepare(target, request.surface_size).ok_or("opaque draw resources"))
+        let result = self.prepare(target, request.surface_size);
+        if self.sorted_pool && let Err(why) = &result {
+            let mut refusals = self.cache.pool_refusals.lock().unwrap_or_else(|e| e.into_inner());
+            let count = refusals.entry(*why).or_default();
+            *count += 1;
+            if count.is_power_of_two() {
+                eprintln!("native-water: sorted pool recording refusals for this BSP: {refusals:?}");
+            }
+        }
+        Some(result)
     }
 }
 

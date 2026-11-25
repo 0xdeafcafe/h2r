@@ -103,13 +103,17 @@ pub fn item_refusal(
     None
 }
 
+use crate::native_scene_lists::{LodDetail, ViewLodScale};
+
 /// What draws the objects: boot's glue over the GPU models and the device.
 pub trait Host: Send + Sync {
+    fn retire_map(&self) {}
+
     /// Start the tag-index load on map activation or a snapshot's first view.
     fn preload(&self, _mem: &dyn GuestMemory) {}
 
     /// Draw objects reached only by the presentation lens into the display attachments.
-    fn draw_display_objects(&self, _mem: &mut dyn GuestMemory, _view: &View) {}
+    fn draw_display_objects(&self, _mem: &mut dyn GuestMemory, _view: &View, _lod: LodDetail) {}
 
     /// Reserve and commit all of a sorted run (`run`, the walk's entries
     /// from slot `first`). `view` is the frame step's open view with the
@@ -124,6 +128,7 @@ pub trait Host: Send + Sync {
         _view: Option<(&FrameScene, &View)>,
         _first: usize,
         _run: &[Entry],
+        _display_lod: Option<LodDetail>,
         _consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
         Err(ObjectWalk::Reservation)
@@ -138,6 +143,7 @@ struct WalkLayer {
     initialized: bool,
     entries: Vec<Entry>,
     runs: VecDeque<Run>,
+    display_lod: Option<LodDetail>,
 }
 
 thread_local! {
@@ -148,7 +154,7 @@ fn host() -> Option<Arc<dyn Host>> {
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
+fn begin_walk(mem: &mut dyn GuestMemory, ret: u32, lod: Option<ViewLodScale>) {
     WALK_LAYER.with(|state| *state.borrow_mut() = None);
     let kind = match layer_site(3, ret) {
         Site::Scene => ViewKind::Game,
@@ -158,11 +164,12 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
     let Some(host) = host() else { return };
     // Use the same map generation check as activation on snapshot loads.
     host.preload(mem);
+    let display = lod.map_or(LodDetail::Retail, |lod| lod.display(mem));
     if kind == ViewKind::Game
         && let Some(view) = crate::scene_step::open_view(mem)
         && view.display_visibility.as_ref().is_some_and(|v| !v.objects.is_empty())
     {
-        host.draw_display_objects(mem, &view);
+        host.draw_display_objects(mem, &view, display);
     }
     let Some(list) = Mem(mem).read_u32(native_render::skip::CURRENT_LIST) else {
         return;
@@ -176,6 +183,7 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32) {
             initialized: false,
             entries: Vec::new(),
             runs: VecDeque::new(),
+            display_lod: lod.filter(|lod| lod.read(mem) != display).map(|_| display),
         })
     });
 }
@@ -239,7 +247,7 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
             let first = run.slots.start;
             let result = host().ok_or(ObjectWalk::Reservation).and_then(|host| {
                 crate::scene_step::with_open(|view| {
-                    host.draw_walk(&mut *mem, view, first, &layer.entries[run.slots], &mut consume)
+                    host.draw_walk(&mut *mem, view, first, &layer.entries[run.slots], layer.display_lod, &mut consume)
                 })
             });
             match result {
@@ -274,12 +282,34 @@ pub fn forget_pending() {
     WALK_LAYER.with(|state| *state.borrow_mut() = None);
 }
 
+pub(crate) fn retire_map() {
+    if let Some(host) = host() { host.retire_map(); }
+}
+
 pub struct NativeObjects;
+
+impl NativeObjects {
+    pub fn with_lod_scale(lod: Option<ViewLodScale>) -> impl Feature {
+        SceneObjects(lod)
+    }
+}
 
 impl Feature for NativeObjects {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "Objects' render models drawn and skinned by the native GPU renderer")
             .doc("docs/graphics/native-renderer.md")
+    }
+
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        SceneObjects(None).build(b)
+    }
+}
+
+struct SceneObjects(Option<ViewLodScale>);
+
+impl Feature for SceneObjects {
+    fn manifest(&self) -> Manifest {
+        NativeObjects.manifest()
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -302,14 +332,15 @@ impl Feature for NativeObjects {
                 }
             })
             .after_feature(crate::native_map_work::ID);
+        let lod = self.0;
         b.raw()
-            .observe_before(&points::LAYER_DRAW, "native_objects_skip", |o| {
+            .observe_before(&points::LAYER_DRAW, "native_objects_skip", move |o| {
                 if crate::native_map_work::Stage::Objects.standing_down() {
                     return;
                 }
                 let mut g = o.guest();
                 let ret = g.u32(o.cpu.esp).unwrap_or(0);
-                begin_walk(&mut *g, ret);
+                begin_walk(&mut *g, ret, lod);
             })
             .after_feature(crate::render_timing::ID)
             .after_feature(crate::scene_step::ID)

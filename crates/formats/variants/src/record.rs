@@ -465,6 +465,19 @@ impl GameVariant {
         Some(v)
     }
 
+    /// The game record for a Firefight director wave set in a lobby or hopper.
+    pub fn firefight(name: &str, teams: u8, prefix: [u8; 8]) -> Result<Self, RecordError> {
+        let mut record = Self::stock(GameType::Slayer).expect("Slayer has a stock record");
+        record.set_name(name)?;
+        for (setting, value) in [(91, i32::from(teams == 2)), (1, 0), (10, 0), (16, 1)] {
+            record.set(SettingId(setting), value)?;
+        }
+        let mut ext = record.ext();
+        ext.script = crate::ext::Script { mode: crate::ext::Mode::Firefight, prefix, options: 0 };
+        record.set_ext(&ext)?;
+        Ok(record)
+    }
+
     pub fn from_bytes(b: &[u8]) -> Result<Self, RecordError> {
         let raw: [u8; RECORD_SIZE] = b.try_into().map_err(|_| RecordError::Size(b.len()))?;
         Ok(Self { raw })

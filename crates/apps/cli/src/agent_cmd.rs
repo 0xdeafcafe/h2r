@@ -323,6 +323,7 @@ fn looks_like_host(w: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
             && !agent_proto::method::ALL.contains(&w)
             && !agent_proto::sim::method::EDITS.contains(&w)
+            && !agent_proto::collision::method::ALL.contains(&w)
             && !w.starts_with("input.")
             && !w.starts_with("profile.")
             && !w.starts_with("host.")
@@ -1185,6 +1186,7 @@ mod tests {
             "status",
             "press",
             "session.status",
+            "collision.trace",
             "input.pad",
             "-",
             "watch",

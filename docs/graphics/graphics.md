@@ -503,6 +503,46 @@ persisted through wgpu. What is done instead:
   workers and with or without the cache (`d3d/tests/pipeline_cache.rs`).
   The cost of a cold miss is what is left of the compile at encode time,
   and several misses in one pass compile in parallel.
+- **Bounded residency.** Each renderer holds up to 1,536 draw pipelines
+  and 128 count pipelines (`gfx::pipeline::PipelineCache`). A draw miss
+  at the cap evicts the coldest quarter, including entries kept only
+  for prewarming. Prewarming takes available slots. Recorded draws
+  retain their pipelines, and queued compile slots use weak references
+  so eviction can free the inputs of work that has yet to start.
+  `Nv2aShaders::follow_map` drops cached texture groups on map changes.
+- **Frame-buffer copies are a fixed pool.** A draw that samples a frame
+  buffer reads a copy of it, a texture at the target's size (about 19 MB
+  at 2560x1920). The device keeps at most three per surface size and
+  format and eight in all, made once (`Backend::snapshot_surface`) and
+  refilled in place by a GPU copy (`Backend::snapshot_surface_into`), so
+  however many draws sample the frame, writing it in between, the copies
+  held stay the same (docs/graphics/d3d.md, "Frame buffers as textures",
+  for the ordering and the backends).
+- **Frame-buffer copies are destroyed, not just dropped.** A copy for a
+  draw that samples a frame buffer (a pool slot replaced or dropped, or a
+  held post-process draw's own copy) is a
+  `HostTexture` whose handles share one release token. When the last
+  handle drops, the texture goes on its backend's released list, and the
+  backend destroys it at its next present but one
+  (`GfxBackend::destroy_released`, counted in
+  `BatchStats::snapshots_destroyed`). `wgpu::Texture::destroy` frees the
+  memory once the GPU is done with it, even while a cached bind group
+  or view still holds a handle. Dropping alone would keep every copy a
+  cache holds for as long as the cache does. The one-present delay
+  covers the copy's uses: by then this backend's are submitted (its
+  present flushes), and so are a scaled view's uses of a reference copy,
+  since the view presents after the reference. The same present drops
+  the `ProgramBindings` texture groups over the destroyed copies
+  (`forget_textures`). A backend holds at most 64 released copies; more
+  are only dropped.
+- **Every present polls.** `queue.submit` already frees what finished
+  GPU work released. A present also calls
+  `device.poll(PollType::Poll)` without waiting (`GfxBackend::poll`), at
+  the guest's `Swap` (`submit_present`) and at host-only display frames
+  (`show_replay`), so freeing never depends on the next submission. A
+  `D3DSWAP_FINISH` wait polls already.
+  The upload pool keeps up to four idle submissions within 128 MiB of
+  combined CPU staging capacity and GPU buffer size (`gfx::ring::UploadPool`).
 - **Persisted keys, prewarmed.** `d3d::pipeline_store` appends every
   pipeline a draw needed to a JSON-lines file: the NV2A program
   (`ProgramKey`: microcode or the pre-transformed program, the combiner
@@ -536,8 +576,8 @@ persisted through wgpu. What is done instead:
     publishes after the startup scope went out is not a new scope; the
     menu after a level is (`next_scope` in `nv2a.rs`). A scope's programs
     that are registered already have their recorded pipelines queued
-    again, so a dropped prewarm is redone when its map comes back. A
-    dropped pipeline stays in the cache unbuilt: a draw that needs it
+    again, so a dropped prewarm is redone when its map comes back. An
+    unbuilt pipeline still in the cache can be reused: a draw that needs it
     queues it at draw priority. Left queued, a level's thousands of
     guessed pipelines compiled ahead of the menu's, and the menu's draws
     built theirs on the drawing thread meanwhile

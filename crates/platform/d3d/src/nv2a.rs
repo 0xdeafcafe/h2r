@@ -64,7 +64,7 @@ use std::collections::HashMap;
 // untrusted input.
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use gfx::pipeline::ShaderId;
 use gfx::program::{ProgramBindings, StageDims};
@@ -206,7 +206,8 @@ pub struct Nv2aShaders {
     bindings: Option<ProgramBindings>,
     vertex_bytes: [u8; VertexUniforms::SIZE],
     pixel_bytes: [u8; PixelUniforms::SIZE],
-    programs: FxHashMap<ProgramKey, Result<Compiled, String>>,
+    programs: FxHashMap<Arc<ProgramKey>, Result<Compiled, String>>,
+    program_count: mem_watch::Gauge,
     table: RenderStateTable,
     next: u32,
     stats: Nv2aStats,
@@ -230,7 +231,7 @@ pub struct Nv2aShaders {
 struct Persist {
     store: PipelineStore,
     /// The program each registered shader id runs, and its cache id.
-    ids: HashMap<ShaderId, (u64, ProgramKey)>,
+    ids: HashMap<ShaderId, (u64, Arc<ProgramKey>)>,
     /// The map draws are on (`None` before the game loaded one).
     map: Option<String>,
     /// Bumped at each map change, from 1.
@@ -265,14 +266,14 @@ impl Persist {
         let map = self.map.as_deref();
         for id in self.drew.drain(..) {
             if let Some((cache_id, key)) = self.ids.get(&id) {
-                self.store.record_program(*cache_id, key, map);
+                self.store.record_program(*cache_id, key.as_ref(), map);
             }
         }
         for (key, count) in new_pipelines {
             if key.shader == gfx::renderer::SHADER_XYZRHW_DIFFUSE {
                 self.store.record(None, *count, key);
             } else if let Some((cache_id, program)) = self.ids.get(&key.shader) {
-                self.store.record_program(*cache_id, program, map);
+                self.store.record_program(*cache_id, program.as_ref(), map);
                 self.store.record(Some(*cache_id), *count, key);
             }
         }
@@ -297,9 +298,11 @@ struct Warm {
     skip: std::sync::Arc<std::sync::Mutex<FxHashSet<u64>>>,
     /// Recorded programs not registered yet, by cache id.
     keys: HashMap<u64, ProgramKey>,
+    key_count: mem_watch::Gauge,
     /// Recorded pipelines by program cache id, queued once it is
     /// registered and again when a later scope takes it in.
     pipelines: HashMap<u64, Vec<StoredPipeline>>,
+    _pipeline_count: mem_watch::Gauge,
     /// Registered programs with recorded pipelines: cache id to shader id.
     registered: HashMap<u64, ShaderId>,
     /// Where each recorded program drew ([`pipeline_store::select`]).
@@ -396,11 +399,13 @@ impl Default for Nv2aShaders {
 impl Nv2aShaders {
     /// An empty provider.
     pub fn new() -> Self {
+        static PROGRAMS: mem_watch::Counter = mem_watch::Counter::new("d3d.nv2a_program_entries");
         Self {
             bindings: None,
             vertex_bytes: [0; VertexUniforms::SIZE],
             pixel_bytes: [0; PixelUniforms::SIZE],
             programs: FxHashMap::default(),
+            program_count: PROGRAMS.track(0),
             table: RenderStateTable::default(),
             next: 0,
             stats: Nv2aStats::default(),
@@ -475,12 +480,16 @@ impl Nv2aShaders {
         if spawned.is_err() {
             return;
         }
+        static ARCHIVE_KEYS: mem_watch::Counter = mem_watch::Counter::new("d3d.nv2a_archive_pending_keys");
+        static ARCHIVE_PIPELINES: mem_watch::Counter = mem_watch::Counter::new("d3d.nv2a_archive_pipeline_records");
         self.warm = Some(Warm {
             jobs,
             rx,
             waiting: FxHashSet::default(),
             skip,
+            key_count: ARCHIVE_KEYS.track(loaded.programs.len() as u64),
             keys: loaded.programs.into_iter().collect(),
+            _pipeline_count: ARCHIVE_PIPELINES.track(pipelines.values().map(|p| p.len() as u64).sum()),
             pipelines,
             registered: HashMap::new(),
             seen: loaded.seen,
@@ -547,6 +556,9 @@ impl Nv2aShaders {
         }
         let (generation, map) = pipeline_store::current_map();
         self.map_generation = generation;
+        if let Some(bindings) = &mut self.bindings {
+            bindings.clear_texture_groups();
+        }
         let Some(p) = self.persist.as_mut() else { return };
         p.map = map.clone();
         p.epoch = p.epoch.wrapping_add(1).max(1);
@@ -577,9 +589,11 @@ impl Nv2aShaders {
             };
             warm.waiting.remove(&cache_id);
             warm.keys.remove(&cache_id);
+            warm.key_count.set(warm.keys.len() as u64);
             if self.programs.contains_key(&key) {
                 continue;
             }
+            let key = Arc::new(key);
             let r = r.map(|(module, t)| {
                 let Translation { dims, discards, warnings, .. } = t;
                 let id = ShaderId(SHADER_ID_BASE + self.next);
@@ -594,7 +608,7 @@ impl Nv2aShaders {
                 );
                 self.stats.prewarmed += 1;
                 if let Some(p) = self.persist.as_mut() {
-                    p.ids.insert(id, (cache_id, key.clone()));
+                    p.ids.insert(id, (cache_id, Arc::clone(&key)));
                 }
                 if let Some(w) = self.warm.as_mut()
                     && let Some(stored) = w.pipelines.get(&cache_id)
@@ -605,6 +619,7 @@ impl Nv2aShaders {
                 Compiled { id, dims, discards, warnings }
             });
             self.programs.insert(key, r);
+            self.program_count.set(self.programs.len() as u64);
         }
     }
 
@@ -1193,6 +1208,7 @@ impl ShaderProvider for Nv2aShaders {
                 if let (Some(w), Some(id)) = (self.warm.as_mut(), cache_id)
                     && w.keys.remove(&id).is_some()
                 {
+                    w.key_count.set(w.keys.len() as u64);
                     w.waiting.remove(&id);
                     if let Ok(mut skip) = w.skip.lock() {
                         skip.insert(id);
@@ -1205,12 +1221,13 @@ impl ShaderProvider for Nv2aShaders {
                     let _scope = mem_watch::scope("render.translate");
                     compile(ctx, renderer, bindings, &key, SHADER_ID_BASE + self.next)
                 };
+                let shared_key = Arc::new(key.clone());
                 match &r {
                     Ok(c) => {
                         self.next += 1;
                         self.stats.translated += 1;
                         if let (Some(p), Some(id)) = (self.persist.as_mut(), cache_id) {
-                            p.ids.insert(c.id, (id, key.clone()));
+                            p.ids.insert(c.id, (id, Arc::clone(&shared_key)));
                         }
                         if let (Some(w), Some(id)) = (self.warm.as_mut(), cache_id)
                             && let Some(stored) = w.pipelines.get(&id)
@@ -1222,7 +1239,8 @@ impl ShaderProvider for Nv2aShaders {
                     }
                     Err(_) => self.stats.failed += 1,
                 }
-                self.programs.insert(key.clone(), r.clone());
+                self.programs.insert(shared_key, r.clone());
+                self.program_count.set(self.programs.len() as u64);
                 r?
             }
         };
@@ -1291,6 +1309,12 @@ impl ShaderProvider for Nv2aShaders {
     fn end_frame(&mut self) {
         if let Some(b) = &mut self.bindings {
             b.end_frame();
+        }
+    }
+
+    fn forget_textures(&mut self, gone: &[wgpu::Texture]) {
+        if let Some(b) = &mut self.bindings {
+            b.forget_textures(gone);
         }
     }
 

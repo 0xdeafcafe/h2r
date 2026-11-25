@@ -944,8 +944,10 @@ memory. Pending count is zero. Responding peers have COMPLETE, TARGET_CONTACTED
 and, when present, DATA_RECEIVED flags. The actual listener data follows the
 array with guest pointers; no host pointer escapes. RTT is a fixed 5 ms and
 bandwidth defaults to 10 Mbit/s. Disabled listeners report TARGET_DISABLED.
-An unreachable peer completes as uncontacted with no invented data, after at
-most 50 ms per query. This is a compact HLE side protocol, not an implementation
+An unreachable peer completes as uncontacted with no data. The guest caller
+waits while the HLE tries each endpoint in order. A silent endpoint can take
+three 100 ms receive timeouts before the next endpoint is tried
+(`crates/live/live-hle/src/qos.rs`). This is a compact HLE side protocol, not an implementation
 of the encrypted Xbox QoS protocol. Non-null work events and unknown flags
 return WSAEINVAL. Service QoS keeps its sign-in behavior from above.
 

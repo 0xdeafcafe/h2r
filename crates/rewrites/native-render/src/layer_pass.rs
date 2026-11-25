@@ -203,6 +203,8 @@ pub enum LayerRefusal {
     Property { property: usize },
     /// A periodic curve needs a wave table unavailable to the native evaluator.
     Wave { property: usize, wave: u8 },
+    /// A later object can inherit a structure pass's c[18] upload.
+    MaterialConstant18,
     /// The render time did not read.
     NoTime,
 }
@@ -236,6 +238,7 @@ impl LayerRefusal {
             LayerRefusal::Property { .. } => "property",
             LayerRefusal::TextureTransform { .. } => "texture_transform",
             LayerRefusal::Wave { .. } => "wave",
+            LayerRefusal::MaterialConstant18 => "material_c18",
             LayerRefusal::NoTime => "time",
         }
     }
@@ -252,13 +255,37 @@ pub struct LayerPlan {
 /// Plans `pass` of `scene`: every item's draw, or why not.
 pub fn plan(scene: &FrameScene, pass: &LayerPass, materials: &mut dyn Materials) -> LayerPlan {
     let mut out = LayerPlan::default();
+    let mut last_inheritor = None;
     for item in scene.items_of(pass) {
-        match plan_item(pass, item, materials) {
+        let result = plan_item(pass, item, materials);
+        // An unresolved object, or a selected pass without its own row,
+        // can depend on an earlier material's upload.
+        if matches!(pass.layer, 1 | BLOOM_LAYER) && matches!(item.owner, LayerOwner::Object(_))
+            && !result.as_ref().is_ok_and(|d| d.passes.iter().all(|p| d.implementation(p).is_some_and(writes_material_c18)))
+        {
+            last_inheritor = Some(item.slot);
+        }
+        match result {
             Ok(draw) => out.draws.push(draw),
             Err(r) => out.refused.push((item.slot, r)),
         }
     }
+    if let Some(last) = last_inheritor {
+        out.draws.retain(|draw| {
+            if draw.slot < last && !matches!(draw.owner, LayerOwner::Object(_))
+                && draw.passes.iter().any(|p| draw.implementation(p).is_some_and(writes_material_c18))
+            {
+                out.refused.push((draw.slot, LayerRefusal::MaterialConstant18));
+                return false;
+            }
+            true
+        });
+    }
     out
+}
+
+pub(crate) fn writes_material_c18(imp: &ResolvedImplementation) -> bool {
+    imp.vertex_constants.iter().any(|r| r.index == 18 && r.written != 0)
 }
 
 /// One item's draw.
@@ -1181,6 +1208,29 @@ pub(crate) mod tests {
         assert!(item_stencil(1, false, device, true).needs_mode_1, "a marked item's epilogue leaves mode 1");
         for layer in [5, 7, 8, 20] {
             assert_eq!(item_stencil(layer, true, device, true), ItemStencil { stencil: device, needs_mode_1: false }, "layer {layer}");
+        }
+    }
+
+    #[test]
+    fn a_world_write_before_an_inheriting_object_keeps_its_material_upload() {
+        for layer in [1, 17] {
+            let writer = implementation(0, InputReads::default(), vec![]);
+            let mut reader = implementation(1, InputReads::default(), vec![]);
+            reader.vertex_constants.clear();
+            let mut lib = library(material(layer as usize, vec![vec![writer, reader]], own_inputs()));
+            let mut object = item(LayerOwner::Object(InstanceKey(1)), 1, None);
+            object.slot = 5;
+            let world = item(LayerOwner::Cluster(2), 0, None);
+            let after = LayerItem { slot: 6, ..world.clone() };
+            let pass = LayerPass { items: 0..3, ..pass(layer, view_inputs()) };
+            let mut scene = FrameScene { layer_items: vec![world, object, after], ..Default::default() };
+            let got = plan(&scene, &pass, &mut lib);
+            assert_eq!(got.refused, [(4, LayerRefusal::MaterialConstant18)]);
+            assert_eq!(got.draws.iter().map(|d| d.slot).collect::<Vec<_>>(), [5, 6]);
+            scene.layer_items[1].key.implementation = 0;
+            assert!(plan(&scene, &pass, &mut lib).refused.is_empty());
+            scene.layer_items[1].key.shader ^= 1;
+            assert!(plan(&scene, &pass, &mut lib).refused.contains(&(4, LayerRefusal::MaterialConstant18)));
         }
     }
 

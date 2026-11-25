@@ -832,7 +832,7 @@ pub fn install(
                 if name == theater_menu::LIST_NAME || name == custom_games::LIST_NAME {
                     crate::lobby_start::clear();
                     crate::lobby_tabs::cancel_request();
-                    crate::clankermatch::set_active(false);
+                    crate::clankermatch::set_scope(crate::clankermatch::Scope::Players);
                 }
                 if name == custom_games::LIST_NAME {
                     ctx.runtime().memory().set_u32(live.2 + LIVE_SOURCE, 0)?;
@@ -1031,6 +1031,7 @@ pub fn install(
                 let wanted = id == SCREEN_ID
                     || (extra_items > 0 && id == speaker_row::SCREEN_ID)
                     || id == custom_games::SCREEN_ID
+                    || id == custom_games::PLAYLIST_SCREEN
                     || ours;
                 if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
@@ -1059,6 +1060,10 @@ pub fn install(
                             Ok(None) => {}
                             Err(e) => eprintln!("list class: no layout copy ({e:?}); the retail layout stays"),
                         }
+                        return Ok(());
+                    }
+                    if id == custom_games::PLAYLIST_SCREEN {
+                        custom_games::playlist_header(&mut *mem, cpu.eax, crate::clankermatch::scope());
                         return Ok(());
                     }
                     if id == custom_games::SCREEN_ID {
@@ -1418,8 +1423,10 @@ pub fn install(
                 if let Some((shown, retail)) = row
                     .and_then(|row| menu_rows.shifted_retail_row(row).map(|retail| (row, retail)))
                 {
-                    // The main-menu press switches on the low word of its argument.
-                    mem.set_u32(theater_press, retail as u32)?;
+                    let Some(handle) = crate::retail_rows::retail_handle(&*mem, cpu.ecx, retail) else {
+                        return mem.ret(cpu, 8);
+                    };
+                    mem.set_u32(theater_press, handle)?;
                     mem.set_u32(cpu.esp + 8, theater_press)?;
                     drop(mem);
                     return call_then(cpu, ctx, sh, move |_, ctx| {
@@ -1495,6 +1502,7 @@ pub fn install(
                 })
             });
         }
+        // One forwarded press record; 0x10 and up hold the copied Live menu tag.
         let live_press = live.2 + 12;
         if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {
             let seen = AtomicBool::new(false);
@@ -1505,22 +1513,17 @@ pub fn install(
                     (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
                 };
                 let kind = row.map_or(custom_games::Row::Retail, |r| live_menu().row_kind(r));
-                // Resolve the forwarded row before changing any lobby state. Keep
-                // the caller's selected datum intact across retail's transition.
-                let target = kind.retail_press().or_else(|| {
-                    (kind == custom_games::Row::Coop && !crate::coop_live::list_ui())
-                        .then_some(custom_games::RETAIL_CUSTOM_GAME_ROW)
-                });
-                if let Some(target) = target {
-                    let mut mem = ctx.runtime().memory();
-                    // The Live callback takes the display index from its argument.
-                    // Unlike the category picker it never looks up a list in ECX.
-                    mem.set_u32(live_press, target as u32)?;
-                    mem.set_u32(cpu.esp + 8, live_press)?;
-                }
                 // The playlist screen OptiMatch's press opens lists the
                 // clanker hoppers only after the Clankermatch row's press.
-                crate::clankermatch::set_active(kind == custom_games::Row::Clankermatch);
+                use crate::clankermatch::Scope;
+                let quick = row == Some(custom_games::RETAIL_QUICKMATCH_ROW);
+                let optimatch = row == Some(custom_games::RETAIL_OPTIMATCH_ROW);
+                crate::clankermatch::set_scope(match kind {
+                    custom_games::Row::Retail if quick => Scope::QuickMatch,
+                    custom_games::Row::Retail if optimatch => Scope::All,
+                    custom_games::Row::Clankermatch => Scope::Clankers,
+                    _ => Scope::Players,
+                });
                 // Custom Games, Forge and Firefight ask for their mode, which
                 // the custom lobby switches to once it is up
                 // (docs/game/party-lobby.md); any other row drops one asked
@@ -1537,14 +1540,36 @@ pub fn install(
                         lobby.leave();
                     }
                 }
-                if kind == custom_games::Row::Retail {
+                let quick_picker = quick && {
+                    let saved = mask.and_then(|mask| custom_games::quickmatch_selection(
+                        &*ctx.runtime().memory(), mask.trailing_zeros()
+                    ));
+                    saved.is_none_or(crate::lobby_tabs::header::clanker_playlist)
+                };
+                if optimatch || (quick && !quick_picker) {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
                 }
                 // Clankermatch and the mode rows: the retail press of their
                 // retail row, then the cursor row left on ours (the retail
                 // press stored the retail row in it).
-                if let Some(retail) = kind.retail_press() {
+                if kind == custom_games::Row::Retail && !quick_picker {
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
+                if let Some(retail) = kind.retail_press().or(quick_picker.then_some(custom_games::RETAIL_OPTIMATCH_ROW)) {
                     let shown = row.unwrap_or(retail);
+                    {
+                        let rt = Arc::clone(ctx.runtime());
+                        let mut mem = rt.memory();
+                        let player = mask.unwrap_or(1).trailing_zeros();
+                        let Some(handle) = custom_games::press_handle(&mem, cpu.ecx, player, retail) else {
+                            crate::lobby_tabs::cancel_request();
+                            eprintln!("Xbox Live: menu row {shown} could not resolve retail action {retail}");
+                            return mem.ret(cpu, 8);
+                        };
+                        let press = live_press;
+                        mem.set_u32(press, handle)?;
+                        mem.set_u32(cpu.esp + 8, press)?;
+                    }
                     if kind == custom_games::Row::Clankermatch {
                         eprintln!(
                             "clankermatch: Live menu row {shown} runs OptiMatch's press (row {retail})"
@@ -1586,6 +1611,18 @@ pub fn install(
                         eprintln!("coop-live: the co-op hooks are off; nothing opened");
                         return ctx.runtime().memory().ret(cpu, 8);
                     };
+                    let rt = Arc::clone(ctx.runtime());
+                    {
+                        let mut mem = rt.memory();
+                        let player = mask.trailing_zeros();
+                        let Some(handle) = custom_games::press_handle(&mem, cpu.ecx, player, custom_games::RETAIL_CUSTOM_GAME_ROW) else {
+                            eprintln!("Xbox Live: Co-op Campaign could not resolve the custom lobby action");
+                            return mem.ret(cpu, 8);
+                        };
+                        let press = live_press;
+                        mem.set_u32(press, handle)?;
+                        mem.set_u32(cpu.esp + 8, press)?;
+                    }
                     lobby.open_retail();
                     eprintln!(
                         "coop-live: Live menu row {} opens the custom game lobby (row {}) in co-op mode",

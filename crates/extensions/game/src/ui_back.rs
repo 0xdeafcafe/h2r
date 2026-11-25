@@ -260,7 +260,7 @@ impl hooks::Feature for RetailBack {
                 mem.set_u32(request + REQUEST_FOCUS, handle)?;
             }
             Ok(hooks::Flow::Continue)
-        }).after_feature(crate::map_select::FEATURE);
+        });
         let nav = Arc::clone(&self.0);
         b.raw().observe_before(&points::UI_CHANNEL_FREE, "forget the freed screen's opener", move |o| {
             if let Some(screen) = o.arg_u32("screen") {

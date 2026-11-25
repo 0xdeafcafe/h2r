@@ -66,6 +66,7 @@ mod opaque_interleave_tests;
 mod scene_build;
 mod scene_walk;
 mod section;
+pub use section::{DISPLAY_LAYERS, display_cluster_complete, display_late_shader};
 
 fn claimed_entries(layer: u32) -> bool {
     match layer {
@@ -118,6 +119,9 @@ pub trait OpaqueView: Send + Sync {
 
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
+    /// Release the displaced BSP before any stage asks for new resources.
+    fn retire_bsp(&self) {}
+
     /// Publish completed worker resources before the frame draws its views.
     fn begin_frame(&self) {}
 
@@ -312,6 +316,11 @@ pub fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
+pub(crate) fn retire_bsp() {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(host) = host { host.retire_bsp(); }
+}
+
 pub(crate) fn begin_frame() {
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(host) = host { host.begin_frame(); }
@@ -322,6 +331,15 @@ pub(crate) fn load_bsp(mem: &dyn GuestMemory, esp: u32) {
     if mem.u32(skip::CURRENT_LAYER).ok() != Some(LIGHTMAP_LAYER)
         || mem.u32(esp).ok().is_none_or(|ret| layer_site(LIGHTMAP_LAYER, ret) == Site::FirstPerson)
     {
+        return;
+    }
+    load_active_bsp(mem);
+}
+
+/// Both a scene base layer and the dynamic light pass can be the first
+/// consumer in a BSP. They share the activation's single pending load.
+pub(crate) fn load_active_bsp(mem: &dyn GuestMemory) {
+    if !BSP_LOAD_PENDING.load(Ordering::Acquire) {
         return;
     }
     let Ok(bsp) = mem.u32(ACTIVE_BSP) else {

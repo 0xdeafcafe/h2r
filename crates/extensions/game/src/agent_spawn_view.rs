@@ -7,14 +7,14 @@ use std::sync::{
 };
 
 use agent_proto::{
-    CaptureCamera, RpcError, SpawnViewParams, ViewParams, ViewRequest, code, method,
+    CaptureCamera, CurrentView, CurrentViewParams, RpcError, SpawnViewParams, ViewParams, ViewRequest, code, method,
 };
 use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
 use hooks::{Builder, Flow};
 use serde_json::{Value, json};
 
 use crate::coop_players::layout::SCENARIO_STARTS;
-use crate::spectator_view::{Pose, draw_world_view};
+use crate::spectator_view::{Pose, draw_world_view, drawn_view};
 
 /// Where a selected camera came from, for its reply.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,6 +97,37 @@ fn eye(m: &dyn GuestMemory, request: ViewRequest) -> Result<View, RpcError> {
         },
         fov,
         drawn: AtomicBool::new(false),
+    })
+}
+
+/// The view being drawn for `seat`: the private camera while it is selected
+/// and its scenario is loaded, else the game's own view record. A private
+/// view without a lens of its own keeps the lens the game draws.
+fn current(
+    m: &dyn GuestMemory,
+    seat: u8,
+    private: Option<&View>,
+) -> Result<CurrentView, RpcError> {
+    let drawn = drawn_view(m, seat);
+    if let Some((pose, fov)) = private.and_then(|view| view.resolve(m)) {
+        let fov = fov.or(drawn.map(|view| view.fov)).ok_or_else(|| {
+            RpcError::new(code::UNAVAILABLE, "no drawn view to take the lens from")
+        })?;
+        let view = CurrentView::looking(pose.position, pose.axes().0, fov)
+            .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "the private view is not finite"))?;
+        // Keep the heading and pitch the private view was given.
+        return Ok(CurrentView {
+            yaw: pose.yaw,
+            pitch: pose.pitch,
+            private: true,
+            ..view
+        });
+    }
+    drawn.ok_or_else(|| {
+        RpcError::new(
+            code::UNAVAILABLE,
+            format!("no view is drawn for seat {seat} (no world, or a cinematic)"),
+        )
     })
 }
 
@@ -218,6 +249,7 @@ impl SpawnViews {
     }
 
     pub(crate) fn install_method(self: &Arc<Self>, agent: &agent::Agent) {
+        self.install_current(agent);
         let views = self.clone();
         agent.add_game_method(
             method::RENDER_SPAWN_VIEW,
@@ -257,6 +289,31 @@ impl SpawnViews {
                 let view = ctx.read_guest(|m| eye(m, request))??;
                 views.answer_when_drawn(view, ctx);
                 Ok(Value::Null)
+            },
+        );
+    }
+
+    /// `render.view.current`: read-only, at the tick boundary.
+    pub(crate) fn install_current(self: &Arc<Self>, agent: &agent::Agent) {
+        let views = self.clone();
+        agent.add_game_method(
+            method::RENDER_VIEW_CURRENT,
+            agent::Access::Read,
+            move |params, ctx| {
+                let request = if params.is_null() {
+                    CurrentViewParams::default()
+                } else {
+                    serde_json::from_value::<CurrentViewParams>(params)
+                        .map_err(|err| invalid(err.to_string()))?
+                };
+                let seat = request.check().map_err(invalid)?;
+                let private = views
+                    .selected
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let view = ctx.read_guest(|m| current(m, seat, private.as_deref()))??;
+                serde_json::to_value(view).map_err(|err| RpcError::new(code::UNAVAILABLE, err.to_string()))
             },
         );
     }
@@ -506,5 +563,72 @@ mod tests {
         drop(pending);
         assert!(!views.active.load(Ordering::Acquire));
         assert!(views.selected.lock().unwrap().is_none());
+    }
+
+    /// The game draws seat 0 from a record at (1, 2, 3) facing +y with a
+    /// 90 degree lens, in scenario `0x1000`.
+    fn drawn() -> FakeGuest {
+        const RECORD: u32 = 0x0047_f210;
+        let mut m = scenario();
+        let camera = RECORD + 0x0c;
+        m.put_u32(RECORD, 0)
+            .put_u32(RECORD + 8, 0)
+            .put_f32(camera, 1.0)
+            .put_f32(camera + 4, 2.0)
+            .put_f32(camera + 8, 3.0)
+            .put_f32(camera + 0x0c, 0.0)
+            .put_f32(camera + 0x10, 1.0)
+            .put_f32(camera + 0x14, 0.0)
+            .put_f32(camera + 0x28, crate::spectator_view::vertical_fov(90.0));
+        m
+    }
+
+    #[test]
+    fn the_current_view_is_the_game_record_without_a_private_camera() {
+        let m = drawn();
+        let view = current(&m, 0, None).unwrap();
+        assert_eq!(view.eye, [1.0, 2.0, 3.0]);
+        assert!(!view.private);
+        assert!((view.fov - 90.0).abs() < 1e-3);
+        assert_eq!(current(&m, 1, None).unwrap_err().code, code::UNAVAILABLE);
+        assert_eq!(
+            current(&FakeGuest::new(), 0, None).unwrap_err().code,
+            code::UNAVAILABLE
+        );
+        // It replays: the pose passes `render.view`'s check.
+        assert!(matches!(
+            view.view_params().check(),
+            Ok(ViewRequest::Pose { fov: Some(_), .. })
+        ));
+    }
+
+    #[test]
+    fn the_current_view_reports_the_private_camera_while_it_is_loaded() {
+        let m = drawn();
+        let private = eye(&m, pose_request(Some(60.0))).unwrap();
+        let view = current(&m, 0, Some(&private)).unwrap();
+        assert!(view.private);
+        assert_eq!(view.eye, [4.0, -6.0, 2.5]);
+        assert_eq!((view.yaw, view.pitch), (std::f32::consts::FRAC_PI_2, -0.3));
+        assert_eq!(view.fov, 60.0);
+        // `render.view(render.view.current())` selects the same pose.
+        let Ok(ViewRequest::Pose { eye, yaw, pitch, fov }) = view.view_params().check() else {
+            panic!("not a pose");
+        };
+        assert_eq!((eye, yaw, pitch, fov), (view.eye, view.yaw, view.pitch, Some(60.0)));
+        // Without a lens of its own it keeps the drawn view's.
+        let keep = eye_view(&m, pose_request(None));
+        let view = current(&m, 0, Some(&keep)).unwrap();
+        assert!(view.private && (view.fov - 90.0).abs() < 1e-3);
+        // Another scenario loaded: the private camera is not drawn.
+        let mut other = drawn();
+        other.put_u32(points::SCENARIO.base, 0x1100);
+        let view = current(&other, 0, Some(&private)).unwrap();
+        assert!(!view.private);
+        assert_eq!(view.eye, [1.0, 2.0, 3.0]);
+    }
+
+    fn eye_view(m: &FakeGuest, request: ViewRequest) -> View {
+        eye(m, request).unwrap()
     }
 }

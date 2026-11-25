@@ -97,7 +97,7 @@ command line and starts nothing.
 --clankermatch (or --playlist NAME, which implies it): Clankermatch
 instead of a custom game. Clankers is Off (`--set clankers.enabled=false`);
 the server's built-in lineup has the clanker playlists (--playlist picks
-slayer for Rumble Pit, teams for Team Slayer or doubles for Team Skirmish;
+slayer for Clanker Rumble, teams for Clanker Slayer or doubles for Clanker Doubles;
 slayer by default), and the run stops at once if the server does not mark the one
 asked for. The drive goes Xbox Live, row 2 (Clankermatch), the
 playlist's row, A, then waits: the search, the lobby this console hosts,

@@ -94,11 +94,12 @@ are under [Reviews](#reviews).
 - [Shader animation writes at draw time](graphics/notes/2026-11-24-shader-constant-animation.md) traces the pixel and vertex constant bindings.
 - [HUD shader selection and constant upload](graphics/notes/2026-11-24-hud-shader-setup.md) traces bitmap and glyph shader setup.
 - [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
-- [native-visibility.md](graphics/native-visibility.md): visibility and the main view's records in Rust (retire-d3d R4): every mode's clusters and objects, the window frusta, the light views, compared with the guest's and taken when equal
+- [native-visibility.md](graphics/native-visibility.md): visibility and the main view's records in Rust (retire-d3d R4): every mode's clusters and objects, the window frusta, the light views, compared with the guest's and carried by default
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
 - [native-decorators.md](graphics/native-decorators.md): native decorators: the BSP's model decorators typed into the scene and drawn instanced
 - [native-transparents.md](graphics/native-transparents.md): native renderer stage 3: transparents
+- [Map-load memory](graphics/notes/2026-11-24-map-load-memory.md): menu and multiplayer load measurements
 - [Campaign frame time and retained render state](graphics/notes/2026-11-24-campaign-frame-time.md): play-run observations and source audit
 - [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
 - [native-light-gather.md](graphics/native-light-gather.md): the light gather, the first-person lights, the object shadows and the light passes as Rust bodies (design, retire-d3d R3): the model, the guest state per step, the slices and their checks
@@ -179,6 +180,7 @@ are under [Reviews](#reviews).
 - [animation-manager.md](engine/animation-manager.md): channel advance, graph lookup, preload and selector fallback
 - [unit-pose.md](engine/unit-pose.md): the unit pose entry, aim channels, angle projection, overlay callouts and return-site fallback
 - [first-person-filters.md](engine/first-person-filters.md): the first-person seat and weapon-slot update `166d75`, including the inline axis filter `11eed0`
+- [sim-effects.md](engine/sim-effects.md): phase 6 effects, particles, contrails and decals ports behind `impl.sim.native.effects`, and their parity arm
 - [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
 - [sim-review.md](engine/sim-review.md): typed simulation state and the experimental leaf compiler contract
 - [sim-tier-experiment.md](engine/sim-tier-experiment.md): the sim-tier experiment: the tick's leaves compiled under a looser contract (`emit::sim`), checked against the interpreter and timed against the hand ports

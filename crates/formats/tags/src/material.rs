@@ -378,12 +378,14 @@ impl ShaderLibrary {
     /// Loads the metadata region and tag table of a map.
     pub fn read<R: std::io::Read + std::io::Seek>(map: &mut map::Map<R>) -> Result<Self> {
         let meta = Metadata::read(map)?;
-        let tags: Vec<_> = map
+        Ok(Self::with_metadata(map, meta))
+    }
+    pub fn with_metadata<R: std::io::Read + std::io::Seek>(map: &map::Map<R>, meta: Metadata) -> Self {
+        let tags = map
             .tags()
             .iter()
-            .filter_map(|t| t.location.map(|l| (t.id, t.group, l.address)))
-            .collect();
-        Ok(Self::new(meta, tags))
+            .filter_map(|t| t.location.map(|l| (t.id, t.group, l.address)));
+        Self::new(meta, tags)
     }
     pub fn metadata(&self) -> &Metadata {
         &self.meta

@@ -16,8 +16,9 @@ focused. From the categories, **B** or **Back** closes the picker.
 | Map Pack | Maps installed by `h2 import-mappack` | The game's order |
 | Mods | Community packages, including mods based on disc and Map Pack maps | Name, then list ID |
 | Halo: CE | Converted Halo 1 maps | Name, then list ID |
+| Firefight | Installed kit maps | Name, then list ID |
 
-With a single category, Change Map opens the regular map list. A full
+The pregame picker opens the catalogue even with a single category. A full
 Mods category can show an overflow notice even when no mod fits.
 
 GAME MENU's **Game Setup** offers the same categories and maps to the
@@ -32,14 +33,14 @@ menu ([settings-menu.md](settings-menu.md#game-setup-from-the-pause-menu),
 | Mode | Change Map opens |
 |---|---|
 | Multiplayer | the categories above |
-| Forge | the **Halo 2** maps |
+| Forge | the same installed categories as Custom Games |
 | Firefight | the **Firefight** category: installed packages that carry the Firefight kit (`Firefight – <map>`, `lobby_start::is_kit_map`) |
 
-In Forge and Firefight the list opens on that category's maps, with no
-category dialog, and **B** or **Back** returns to Game Setup. Kit
-packages are listed only in the Firefight category. When the mode's
-category is empty, Change Map opens the regular map list and the log
-names the category.
+Selecting a Firefight variant opens its compatible kit maps directly.
+B or Back returns to Game Setup. A wave set with no compatible installed
+map has an empty list. Script variants with label or tag requirements
+filter the catalogue using the map census. The remaining maps retain
+their catalogue order.
 
 ## Separate slots for mods
 
@@ -54,14 +55,15 @@ A fully installed Live pack appears as a folder under **Mods**. The
 folder lists its base maps. Pick one to play that member and use the
 pack for later map choices. In **Halo 2** and **Map Pack**, a covered
 base shows its name followed by the pack name. Its row selects the
-member's exact offer and keeps the base's lock flag. Uncovered maps
+member's exact offer. Uncovered maps
 keep their original slots. Choose **Mods** → **Use original maps**
 to clear the pack for subsequent selections. A member can still be
 played individually when only part of its pack is installed.
 
 `crates/extensions/game/src/map_select/packs.rs` keeps the pack IDs,
 base names and member content IDs in `<data>/live-mod-packs.json` so
-folders work offline. Each content rescan matches them to the offers'
+folders work offline. In the pause menu the value picker expands each pack in place
+and labels each member with its pack and map name. Each content rescan matches them to the offers'
 package markers. Only packs whose members all have usable slots become
 folders. The active selection lasts for the game session.
 
@@ -109,29 +111,27 @@ Both steps are the retail Select Map dialog (screen `0xce`, loader
 instance lists an array of ours, and the row texts and presses are hooked
 for those instances only (`map_select::MapSelect`, feature `map-select`).
 
-- **Arming.** Game Setup's Change Map row (`0x2bb8ac`) asks `0x149f49`
-  for loader `0x2bb2db` (window 3, slot 4), returning to `0x2bb8d7`. An
-  observer there (`SCREEN_REQUEST`) arms the next Select Map for the
-  categories. It only observes, so the campaign picker's `before` on the
-  same point needs no order with it.
+- **Opening.** The multiplayer Select Map constructor snapshots the catalogue
+  and the selected variant on entry from any lobby. An explicit child or Back
+  request reuses the snapshot and chooses its category or pack.
+
 - **The list's array** (`MP_LEVEL_ARRAY`, `0x19c6a0`). The Select Map list's
   constructor (`0x2c9928`, handler in ESI) asks it for `[0x4ee4e4]` at
   `0x2c9980`, then copies every element into its own list (handler
   `+0x70`): the lock byte at `+2` (it skips a locked map unless the
   profiles' progress allows it, `0x2c99cc`) and the map id at `+4`, then
-  the map's picture. Called from `0x2c9985` while armed, it returns an
+  the map's picture. Called from `0x2c9985`, it returns an
   array of ours instead (`write_list`: a data array in our memory with the
   retail array's shape, 8-byte elements, filled as `0x19c7e0` fills the
   retail one) and records the handler's mode:
   - **categories**: one element per category, its first map's id, so
     the dialog shows that map's picture and description;
-  - **maps**: the category's maps in its order with the retail lock bytes.
+  - **maps**: the compatible maps in catalogue order, with the lock byte clear.
     The Mods list groups complete packs. When a pack is selected the
     Halo 2 and Map Pack rows resolve matching bases to member slots.
   - **pack**: the selected folder's installed member slots, ordered by base.
 
-  Two things lose a row the array holds. The constructor skips a locked
-  one (above), and a map id no slot of the loaded list holds has no name
+  A map id no slot of the loaded list holds has no name
   (the row text below names it from its slot; the constructor only skips
   its picture). Our catalogue comes from the disc and the packages on the
   host, the game's slots from its own content scan, so they can differ.
@@ -177,8 +177,7 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
 - **The retail list's own build**, for reference: `0x19c7e0(array)`
   (stdcall, `ret 4`) collects every used slot's id, sorts them by
   `+0xc4c` (`0x321460` with comparator `0x19c9a0`) and fills `[0x4ee4e4]`.
-  The main-menu refresh calls it after the content scan. The categorized
-  lists read the retail array for its lock bytes.
+  The main-menu refresh calls it after the content scan.
 
 ## Game verification
 

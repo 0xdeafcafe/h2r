@@ -769,3 +769,66 @@ fn a_shared_arena_page_is_mapped_once() {
     assert_eq!(mapped, [(PAGE, Permissions::RW)]);
     assert!(mem.u8(ARENA_START + PAGE).is_err());
 }
+
+/// A site on a call's continuation, in a page of its own.
+static CONTINUATION: Point = Point::new(
+    "TEST_CONTINUATION",
+    0x0050_0105,
+    points::Sig::Site,
+    "docs/engine/feature-engine.md",
+);
+
+/// An image (its header's magic mapped) where a `call rel32` ends at
+/// [`CONTINUATION`], which has a generated original; `resume` also makes
+/// it a resume of the image, as every call's continuation is.
+fn continuation_runtime(resume: bool) -> Arc<Runtime> {
+    let site = CONTINUATION.base;
+    let owner = site - 0x105;
+    let mut d = Dispatch::default();
+    for pc in [owner, site] {
+        d.register_generated_rust(pc, |_, _, pc| Ok(TransferAbi::jump(pc))).unwrap();
+    }
+    if resume {
+        d.register_resume(site, owner, site).unwrap();
+    }
+    let mut g = Guest::new();
+    g.map_zeroed(0x1_0000, 0x1000, Permissions::RW).unwrap();
+    g.write_bytes(0x1_0000, b"XBEH", 1).unwrap();
+    g.map_zeroed(owner, 0x1000, Permissions::RW).unwrap();
+    g.write_bytes(site - 5, &[0xe8, 0x00, 0x01, 0x00, 0x00, 0x8b], 1).unwrap();
+    Runtime::new(g, d)
+}
+
+fn hook_the_continuation(rt: &Arc<Runtime>) -> hooks::Installed {
+    let mut r = Registry::new(Switches::defaults());
+    r.add(&from_fn("cont", |b| {
+        b.raw().observe_before(&CONTINUATION, "never runs", |_| {}).optional();
+        Ok(())
+    }))
+    .unwrap();
+    r.build(&hooks::Base).unwrap().install(rt).unwrap()
+}
+
+/// A return is routed to the resume table before any override, so a hook
+/// on a call's continuation would never run: install refuses it with the
+/// point's name. A site a call ends at that is not a resume of the image
+/// (bytes that only look like a call) keeps its hook.
+#[test]
+fn a_site_on_a_calls_continuation_is_refused_at_install() {
+    let rt = continuation_runtime(true);
+    let installed = hook_the_continuation(&rt);
+    assert!(
+        installed
+            .notes
+            .iter()
+            .any(|n| n.contains("TEST_CONTINUATION (0x00500105) is a call's continuation")),
+        "{:?}",
+        installed.notes
+    );
+    assert!(rt.read_dispatch(|d| d.override_name(CONTINUATION.base).is_none()));
+
+    let rt = continuation_runtime(false);
+    let installed = hook_the_continuation(&rt);
+    assert!(installed.notes.is_empty(), "{:?}", installed.notes);
+    assert!(rt.read_dispatch(|d| d.override_name(CONTINUATION.base).is_some()));
+}

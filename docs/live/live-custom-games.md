@@ -5,8 +5,8 @@ coverage. Section 7 lists the in-game acceptance checks.
 
 What it adds:
 
-- Xbox Live menu rows for the custom lobby's modes: **Custom Games**,
-  **Forge** and **Firefight** each open the custom game lobby in that
+- Xbox Live menu rows for the custom lobby's modes: **Custom Games** and
+  **Forge** each open the custom game lobby in that
   mode ([party-lobby.md](../game/party-lobby.md), "The modes").
 - An Xbox Live menu row, **Custom Game Browser**, directly above Mods. It
   opens Halo 2's own System Link game browser in the Live mode the title
@@ -293,23 +293,25 @@ Quickmatch, OptiMatch, Custom Game and Content Download. Content Download
 asks to leave for the dashboard (`0x19b5af`, error `0xa3`, then
 `0x230e98`).
 
-The list hook makes it nine rows (eight without the co-op row), and the
+The list hook makes it eight rows (seven without the co-op row), and the
 row hooks show them in this order (`custom_games::Menu::layout`):
 
 | Row | Shows | Text | Press | Pane |
 |---:|---|---|---|---|
-| 0–1 | Quickmatch, OptiMatch | retail | retail | retail 0–1 |
+| 0 | Quickmatch | retail | Search the saved human playlist, or open the playlist picker without a usable selection | retail 0 |
+| 1 | OptiMatch | retail | Open the full playlist picker | retail 1 |
 | 2 | Clankermatch | ours | OptiMatch's ([bots.md](../game/bots.md) §8.3) | 4 |
 | 3 | Co-op Campaign (with Live) | ours | co-op ([live-coop.md](live-coop.md) §10) | 6 |
 | 4 | Custom Games | ours | retail row 2's, CUSTOM GAMES asked for | 7 |
 | 5 | Forge (with `forge`) | ours | retail row 2's, FORGE asked for | 8 |
-| 6 | Firefight (with `firefight`) | ours | retail row 2's, FIREFIGHT asked for | 9 |
-| 7 | Custom Game Browser | ours | Live browser (§2) | 5 |
-| 8 | Mods | ours, or the mod repository's | Mods screen, else Map Pack dialog | 3 |
+| 6 | Custom Game Browser | ours | Live browser (§2) | 5 |
+| 7 | Mods | ours, or the mod repository's | Mods screen, else Map Pack dialog | 3 |
+
+The playlist picker (screen `0xdb`) takes its header from the opening action: Quickmatch, OptiMatch or Clankermatch.
 
 A row that is off leaves the list and the rows under it close up. Rows
-past 1 never reach the retail row text. Custom Games, Forge and
-Firefight pass retail row 2 in a private press record and run retail's
+past 1 never reach the retail row text. Custom Games and Forge pass the
+menu list’s handle for retail row 2 to retail’s
 Custom Game press (a Live squad session, then the custom lobby), then
 ask for their mode (`lobby_tabs::request`), which the lobby switches to
 at its first panel update. The retail press remembers rows 0 to 2 for
@@ -363,7 +365,7 @@ rows stand closer together:
 - The screen-tag hook (`0x22f871`) gives the tag copies of its panes
   (`custom_games::extend_tag`). They move nothing. They raise the list's
   visible count to seven, and add a pane per row of ours whichever rows
-  are on (ten panes, `custom_games::ALL_PANES`): a copy of the Custom
+  are on (nine panes, `custom_games::ALL_PANES`): a copy of the Custom
   Game pane, its picture included, with our help text in place of the
   one text that differs between panes. The Content Download pane, which
   Mods shows, gets our help the same way.
@@ -375,7 +377,7 @@ item. If they overlap visibly, raise `custom_games::MIN_PITCH` or the
 pitch rule towards 32 (the last row then ends level with the hint block's
 top).
 
-The copies (a private screen header and at most `custom_games::TAG_SPACE`, 8 KB, of pane data) live in our data page. The retail arrays are not
+The copies (at most `custom_games::TAG_SPACE`, 8 KB) live in our data page. The retail arrays are not
 written, and the copies are reused when a map load brings the tag back.
 `0x230427` (pane = base + row, no bounds check) is how the list shows a
 row's pane when its focus moves (`0x24c50a`). The pane hook hands it each
@@ -472,15 +474,15 @@ Nothing here ran in the game. With two consoles (or two instances, per the
 friends. Then check:
 
 1. **The rows.** Xbox Live menu: Quickmatch, OptiMatch, Clankermatch,
-   Co-op Campaign, Custom Games, Forge, Firefight, Custom Game Browser,
+   Co-op Campaign, Custom Games, Forge, Custom Game Browser,
    Mods. Seven show; Down past the seventh scrolls to the rest.
    - The rows are evenly spaced, 24 apart; the first row and the hint
      text and Y callout under the list are where retail has them, and
      the last row shown ends above the hint text. Nothing overlaps.
    - Retail's scroll arrows show while the list scrolls, and the down
      arrow is not over the hint text.
-   - Custom Games, Forge and Firefight each open the custom game lobby,
-     its header CUSTOM GAMES, FORGE and FIREFIGHT; B back lands on the
+   - Custom Games and Forge each open the custom game lobby,
+     its header CUSTOM GAMES or FORGE; B back lands on the
      row pressed.
    - "Custom Game Browser" fits on its row without being cut off.
    - Moving onto Custom Game Browser shows the Custom Game picture with our
@@ -489,8 +491,8 @@ friends. Then check:
      picture with our help.
    - Leaving the menu and coming back (and after playing a game, which
      reloads the main menu) still shows the same rows.
-   - stderr says `custom games: xbox live menu tag has 10 panes and shows
-     7 of 9 rows`, `custom games: xbox live menu rows 24 apart (7 rows, 6
+   - stderr says `custom games: xbox live menu tag has 9 panes and shows
+     7 of 8 rows`, `custom games: xbox live menu rows 24 apart (7 rows, 6
      moved)`, `speaker row: add items active` and `custom games: row text`
      the first time.
    - If only four rows show and the list scrolls, the added item widgets

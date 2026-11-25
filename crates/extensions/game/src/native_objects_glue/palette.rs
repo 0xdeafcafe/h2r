@@ -253,10 +253,10 @@ mod tests {
             bytes[offset..offset + 4].copy_from_slice(&group.as_u32().to_le_bytes());
             bytes[offset + 4..offset + 8].copy_from_slice(&key.0.to_le_bytes());
         }
-        let mut meta = Metadata { base: 0x1000, bytes };
+        let mut meta = Metadata::new(0x1000, bytes);
         assert_eq!(manifest(&meta, &meta.bytes[..0x400], |k| (k == id).then_some(group)).unwrap(), [id]);
         assert!(manifest(&meta, &meta.bytes[..0x400], |_| None).is_err());
-        meta.bytes[field + 4..field + 8].copy_from_slice(&0xffff_ff00u32.to_le_bytes());
+        Arc::make_mut(&mut meta.bytes)[field + 4..field + 8].copy_from_slice(&0xffff_ff00u32.to_le_bytes());
         assert!(manifest(&meta, &meta.bytes[..0x400], |_| Some(group)).is_err());
     }
 }

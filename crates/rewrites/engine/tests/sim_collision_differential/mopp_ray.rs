@@ -109,8 +109,13 @@ fn simulate(image: &[u8], case: &Case) -> Result<Vec<u32>, Bail> {
 }
 
 fn setup<'a>(image: &'a [u8], rng: &mut Rng, case: &Case) -> (CpuAbi, Ram<'a>) {
+    let (cpu, mut ram) = setup_at(image, rng, case, CODE);
+    ram.store(CODE, &case.code.to_block());
+    (cpu, ram)
+}
+
+fn setup_at<'a>(image: &'a [u8], rng: &mut Rng, case: &Case, code_ptr: u32) -> (CpuAbi, Ram<'a>) {
     let mut m = fresh(image);
-    m.store(CODE, &case.code.to_block());
     m.store(VM, &[0xab; 0x70]);
     for k in 0..4u32 {
         m.float(INPUT + 4 * k, case.from[k as usize]);
@@ -135,7 +140,7 @@ fn setup<'a>(image: &'a [u8], rng: &mut Rng, case: &Case) -> (CpuAbi, Ram<'a>) {
     m.word(VTABLES + 0x100 + 0x24, FAKE_SHAPE_RAY);
     m.word(FILTER, VTABLES + 0x200);
     m.word(VTABLES + 0x200, FAKE_FILTER);
-    for (k, arg) in [COLLECTION, CODE, INPUT, PARENT, COLLECTOR]
+    for (k, arg) in [COLLECTION, code_ptr, INPUT, PARENT, COLLECTOR]
         .into_iter()
         .enumerate()
     {
@@ -169,51 +174,136 @@ struct Run {
     enters: u32,
 }
 
-/// The guest query with the arm's observers where the installer puts them
-/// and the invented callees answered here.
+#[derive(Debug, PartialEq, Eq)]
+struct Callback {
+    target: u32,
+    this: u32,
+    sp: u32,
+    args: Vec<u32>,
+    /// All words of the temporary body as the child sees it.
+    body: Option<[u32; 4]>,
+}
+
+impl Callback {
+    fn new(target: u32, this: u32, sp: u32, args: Vec<u32>, m: &Ram<'_>) -> Self {
+        let body = (target == FAKE_SHAPE_RAY)
+            .then(|| std::array::from_fn(|i| word(m, args[1] + i as u32 * 4)));
+        Self {
+            target,
+            this,
+            sp,
+            args,
+            body,
+        }
+    }
+
+    fn argc(target: u32) -> Option<u32> {
+        match target {
+            l::INSTANCE_CHILD | FAKE_COLLECTION_CHILD => Some(2),
+            FAKE_SHAPE_RAY => Some(3),
+            FAKE_FILTER => Some(4),
+            _ => None,
+        }
+    }
+
+    fn answer(&self, m: &mut Ram<'_>, keys: &mut Vec<u32>, change_inputs: bool) -> u32 {
+        match self.target {
+            l::INSTANCE_CHILD | FAKE_COLLECTION_CHILD => {
+                assert_eq!(self.this, COLLECTION);
+                keys.push(self.args[0]);
+                if change_inputs {
+                    // The lookup can change the body metadata before the VM
+                    // builds its temporary collision body.
+                    m.word(PARENT + 8, self.args[0].wrapping_add(17));
+                }
+                CHILD
+            }
+            FAKE_SHAPE_RAY => {
+                assert_eq!(self.this, CHILD);
+                assert_eq!(self.args[0], VM + 0x20);
+                let [shape, key, info, parent] = self.body.unwrap();
+                assert_eq!((shape, info, parent), (CHILD, word(m, PARENT + 8), PARENT));
+                let mut collector = self.args[2];
+                if change_inputs {
+                    // The interpreter re-loads the collector pointer after
+                    // dispatch. Leave the old collector's fraction intact.
+                    let saved = word(m, collector + l::COLLECTOR_FRACTION);
+                    collector = COLLECTOR + 0x40;
+                    m.word(VM + l::COLLECTOR, collector);
+                    m.word(collector + l::COLLECTOR_FRACTION, saved);
+                }
+                let found = hit(key, word(m, collector + l::COLLECTOR_FRACTION));
+                if let Some(f) = found {
+                    m.word(collector + l::COLLECTOR_FRACTION, f);
+                }
+                u32::from(found.is_some())
+            }
+            FAKE_FILTER => {
+                assert_eq!(self.this, FILTER);
+                assert_eq!(&self.args[1..3], &[VM + 0x20, COLLECTION]);
+                // Check that the VM reads EAX, which need not be its stack
+                // result pointer.
+                let result = if change_inputs {
+                    FILTER + 0x10
+                } else {
+                    self.args[0]
+                };
+                m.store(result, &[u8::from(accepted(self.args[3]))]);
+                result
+            }
+            _ => panic!("unexpected callback {:#x}", self.target),
+        }
+    }
+}
+
+/// The guest query with the arm's observers where the installer puts them.
 fn run(oracle: &mut Oracle<'_>, c: &CpuAbi, m: &mut Ram<'_>, world: &CollisionWorld) -> Run {
+    run_callbacks(oracle, c, m, world, None, false)
+}
+
+fn run_callbacks(
+    oracle: &mut Oracle<'_>,
+    c: &CpuAbi,
+    m: &mut Ram<'_>,
+    world: &CollisionWorld,
+    mut trace: Option<&mut Vec<(Callback, CpuAbi)>>,
+    change_inputs: bool,
+) -> Run {
     let mut cpu = ir_cpu(c);
     let mut pc = c.eip;
     let mut out = Run::default();
-    let arg = |cpu: &Cpu, m: &Ram<'_>, k: u32| word(m, cpu.gpr[4] + 4 + 4 * k);
+    let mut observation: Option<arm::RayObservation> = None;
     for _ in 0..4_000_000 {
         cpu.eip = pc;
         if pc == HARNESS_EXIT {
-            arm::end(&*m, world);
+            observation
+                .take()
+                .expect("missing ray entry")
+                .finish(&*m, world);
             return out;
         }
         if pc == points::COLLISION_MOPP_RAY.base {
-            arm::begin(&lifted::cpu::from_interp(&cpu), &mut *m, world);
+            observation = Some(arm::begin_observed(
+                1,
+                &lifted::cpu::from_interp(&cpu),
+                &mut *m,
+                world,
+            ));
         } else if pc == points::SIM_MOPP_RAY.base {
             out.enters += 1;
-            arm::enter(&lifted::cpu::from_interp(&cpu), &*m);
-        } else if pc == l::INSTANCE_CHILD || pc == FAKE_COLLECTION_CHILD {
-            // `this` the collection; stack: key, buffer; `ret 8`.
+            arm::enter(1, &lifted::cpu::from_interp(&cpu), &*m);
+        } else if let Some(argc) = Callback::argc(pc) {
             if pc == l::INSTANCE_CHILD {
-                arm::key(&lifted::cpu::from_interp(&cpu), &*m);
+                arm::key(1, &lifted::cpu::from_interp(&cpu), &*m);
             }
-            assert_eq!(cpu.gpr[1], COLLECTION, "the collection's `this`");
-            out.keys.push(arg(&cpu, &*m, 0));
-            pc = ret(&mut cpu, m, 8, CHILD);
-            continue;
-        } else if pc == FAKE_SHAPE_RAY {
-            // `this` the child; stack: input, body, collector; `ret 0xc`.
-            assert_eq!(cpu.gpr[1], CHILD, "the child shape's `this`");
-            let (body, collector) = (arg(&cpu, &*m, 1), arg(&cpu, &*m, 2));
-            assert_eq!(word(m, body), CHILD, "the body's shape");
-            assert_eq!(word(m, body + 12), PARENT, "the body's parent");
-            let fraction = word(m, collector + l::COLLECTOR_FRACTION);
-            let found = hit(word(m, body + 4), fraction);
-            if let Some(f) = found {
-                m.word(collector + l::COLLECTOR_FRACTION, f);
+            let sp = cpu.gpr[4];
+            let args = (0..argc).map(|i| word(m, sp + 4 + i * 4)).collect();
+            let call = Callback::new(pc, cpu.gpr[1], sp, args, m);
+            let eax = call.answer(m, &mut out.keys, change_inputs);
+            if let Some(t) = &mut trace {
+                t.push((call, lifted::cpu::from_interp(&cpu)));
             }
-            pc = ret(&mut cpu, m, 12, u32::from(found.is_some()));
-            continue;
-        } else if pc == FAKE_FILTER {
-            // stack: out, input, collection, key; `ret 0x10`, `eax` = out.
-            let (result, key) = (arg(&cpu, &*m, 0), arg(&cpu, &*m, 3));
-            m.store(result, &[u8::from(accepted(key))]);
-            pc = ret(&mut cpu, m, 16, result);
+            pc = ret(&mut cpu, m, argc * 4, eax);
             continue;
         }
         oracle.prime(pc);
@@ -252,8 +342,10 @@ fn check_case(
     assert_eq!(
         r.mismatched,
         0,
-        "{label}: {}\n{case:?}",
-        r.first_mismatch.as_deref().unwrap_or("")
+        "{label}: {}, control {:#x}, {} program bytes",
+        r.first_mismatch.as_deref().unwrap_or(""),
+        case.control,
+        case.code.bytecode.len()
     );
     assert!(got.enters > 0, "{label}: the interpreter never ran");
     let unverified: u64 = r.unverified.iter().sum();
@@ -264,7 +356,11 @@ fn check_case(
     );
     match expected {
         Ok(keys) => {
-            assert_eq!(got.keys, keys, "{label}: keys\n{case:?}");
+            assert_eq!(
+                got.keys, keys,
+                "{label}: keys, from {:?}, to {:?}",
+                case.from, case.to
+            );
             if case.instanced && !case.filter {
                 assert_eq!(r.matched, 1, "{label}: observed keys, not matched: {r:?}");
             }
@@ -472,3 +568,123 @@ fn mopp_ray_reports_a_deliberate_mismatch() {
         assert_eq!(arm::open_queries(), 0);
     });
 }
+
+/// Compare the full sequence, including rejected terminals, arbitrary
+/// collection methods, the guest scratch addresses, and every visible VM
+/// byte. Both trials start with their own copy of the fixture.
+#[test]
+fn native_collector_callbacks_match_the_guest() {
+    with_oracle("general ray collector callbacks", |oracle, image| {
+        static EPOCH: Epoch = Epoch::new();
+        let mut compared = 0;
+        let mut rejected = 0;
+        let mut rays = 0;
+        let mut nested = false;
+        let mut rng = Rng(0x6134_9875);
+        for n in 0..120 {
+            let mut case = random_case(image, &mut rng, n);
+            case.control = if n % 2 == 0 { 0x027f } else { 0x007f };
+            if n < 8 {
+                // Cross a split that calls both terminals. Key 1 is
+                // rejected by the filter and key 3 can shorten the ray.
+                case.code = Code {
+                    offset: [0.; 3],
+                    scale: 1.,
+                    info: mopp::code::RETAIL_INFO,
+                    bytecode: vec![0x10, 10, 20, 1, 0x31, 0x33],
+                };
+                case.from = world_point(image, &case.code, [0., 0., 0.], 0.);
+                case.to = world_point(image, &case.code, [30., 0., 0.], 0.);
+                case.filter = n & 1 != 0;
+                case.instanced = n & 2 != 0;
+                case.fraction = 1.;
+            }
+            if simulate(image, &case).is_err() {
+                continue;
+            }
+            let change_inputs = n % 3 != 0;
+            let world = CollisionWorld::new(&EPOCH);
+            let (cpu, mut guest) = setup(image, &mut rng, &case);
+            let mut native = guest.clone();
+            let mut trace = Vec::new();
+            let observed = run_callbacks(
+                oracle,
+                &cpu,
+                &mut guest,
+                &world,
+                Some(&mut trace),
+                change_inputs,
+            );
+            let mut cast = arm::CollectorCast::begin(&cpu, &mut native, &world).unwrap();
+            let (mut returned, mut keys) = (cpu, Vec::new());
+            for (want, regs) in trace {
+                let call = cast
+                    .next(&mut native, &returned)
+                    .unwrap()
+                    .expect("missing guest callback");
+                let sp = call.esp(cpu.esp);
+                assert_eq!(call.eax, Some(regs.eax), "callback EAX");
+                assert_eq!(call.edx, Some(regs.edx), "callback vtable");
+                assert_eq!(call.edi, Some(regs.edi), "callback key");
+                if let Some(esi) = call.esi {
+                    assert_eq!(esi, regs.esi, "callback context");
+                }
+                let got = Callback::new(call.target, call.ecx.unwrap(), sp, call.args, &native);
+                assert_eq!(want, got, "callback in case {n}");
+                if got.target == FAKE_FILTER && !accepted(got.args[3]) {
+                    rejected += 1;
+                }
+                rays += u32::from(got.target == FAKE_SHAPE_RAY);
+                nested |= observed.enters > 1;
+                returned.eax = got.answer(&mut native, &mut keys, change_inputs);
+            }
+            assert!(
+                cast.next(&mut native, &returned).unwrap().is_none(),
+                "extra callback"
+            );
+            assert_eq!(keys, observed.keys);
+            for addr in guest.touched(&native, cpu.esp, (0, cpu.esp)) {
+                assert_eq!(
+                    native.get(addr),
+                    guest.get(addr),
+                    "case {n}: memory {addr:#x}"
+                );
+            }
+            compared += 1;
+        }
+        assert!(compared >= 8 && rejected > 0 && rays > 0 && nested);
+    });
+}
+
+#[test]
+fn collector_declines_a_callback_edit_to_its_cached_ray() {
+    with_oracle("general ray callback changes an endpoint", |_, image| {
+        static EPOCH: Epoch = Epoch::new();
+        let world = CollisionWorld::new(&EPOCH);
+        let case = Case {
+            code: Code {
+                offset: [0.; 3],
+                scale: 1.,
+                info: mopp::code::RETAIL_INFO,
+                bytecode: vec![0x31],
+            },
+            from: [0.; 4],
+            to: [1.; 4],
+            filter: true,
+            instanced: true,
+            fraction: 1.,
+            control: 0x027f,
+        };
+        let (mut cpu, mut ram) = setup(image, &mut Rng(37), &case);
+        let mut cast = arm::CollectorCast::begin(&cpu, &mut ram, &world).unwrap();
+        let call = cast.next(&mut ram, &cpu).unwrap().unwrap();
+        assert_eq!(call.target, FAKE_FILTER);
+        cpu.eax = call.args[0];
+        ram.store(cpu.eax, &[0]);
+        ram.float(VM + 0x20, 12.);
+        assert_eq!(cast.next(&mut ram, &cpu), Err(Bail::Data));
+    });
+}
+
+#[path = "mopp_ray/disc_rays.rs"]
+mod disc_rays;

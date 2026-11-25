@@ -51,7 +51,9 @@ fn dispatches(confirm: bool, writable: bool, caller: u32) -> Vec<u32> {
                 if first {
                     first = false;
                     let plan = sorted_at(&Read(&m), list, r.ebx, esp, r.esi, caller).unwrap();
-                    let prefix = plan.entries.iter().take_while(|e| e.geometry.is_some()).count();
+                    // This fixture's second item requires its own handler.
+                    let suffix = table + 2 * layer::RECORD_SIZE;
+                    let prefix = plan.entries.iter().take_while(|e| e.handler_item != suffix).count();
                     assert_eq!(prefix, 2);
                     if confirm {
                         skip = plan.consume(prefix, &mut r.esi, |a, v| writable && m.set_u32(a, v).is_ok());

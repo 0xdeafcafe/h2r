@@ -18,6 +18,7 @@
 
 use gfx::state::{CompareFunc, DepthBufferMode, FillMode, RenderState, RenderStateType as R, StencilState};
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
+use tags::material::{EngineInputs, EngineState, EngineStateSource, InputReads, ResolvedImplementation};
 use tags::shader::RenderStateValue;
 
 /// The fields read at the layer-3 call: every one a draw's pipeline, its
@@ -92,6 +93,76 @@ impl EntryStates {
     }
 }
 
+/// Xbox BLENDCOLOR in the shader pass render-state lists.
+const BLEND_COLOR_SLOT: u8 = 75;
+
+/// Ordered RGB and alpha writes applied by the guest after its static list.
+/// Keeping the static colour here lets the skip compare the *final* word
+/// to the device, even when the intermediate static write differs.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LayerBlendColor {
+    base: Option<u32>,
+    writes: Vec<EngineState>,
+    reads: InputReads,
+}
+
+impl LayerBlendColor {
+    pub(crate) fn take(imp: &mut ResolvedImplementation) -> Result<Option<Self>, String> {
+        let mut blend = Self::default();
+        imp.engine_render_states.retain(|&raw| {
+            if let Some(binding) = EngineState::render(raw).filter(|s| s.state == BLEND_COLOR_SLOT) {
+                blend.writes.push(binding);
+                false
+            } else {
+                true
+            }
+        });
+        if blend.writes.is_empty() {
+            return Ok(None);
+        }
+        for binding in &blend.writes {
+            let (n, given, reads) = match binding.source {
+                EngineStateSource::Scalar(n) => (n, imp.input_reads.scalars, &mut blend.reads.scalars),
+                EngineStateSource::Colour(n) => (n, imp.input_reads.vectors, &mut blend.reads.vectors),
+            };
+            if n >= 64 || given >> n & 1 == 0 {
+                return Err(format!("BLENDCOLOR reads unevaluated input {:?}", binding.source));
+            }
+            *reads |= 1 << n;
+        }
+        imp.render_states.retain(|s| {
+            if s.state == BLEND_COLOR_SLOT {
+                blend.base = Some(s.value);
+                false
+            } else {
+                true
+            }
+        });
+        Ok(Some(blend))
+    }
+
+    pub(crate) fn resolve(
+        &self, imp: &ResolvedImplementation, entry: &EntryStates, view: &frame_scene::LayerInputs,
+        lighting: Option<&frame_scene::Lighting>, shader: crate::object_lighting::ShaderValues,
+    ) -> Result<RenderStateValue, String> {
+        let held = entry.get(R::BlendColor).ok_or("BLENDCOLOR does not read")?;
+        let mut value = self.base.unwrap_or(held);
+        let mut inputs = EngineInputs::default();
+        inputs.scalars[21] = f32::from_bits(shader.scalar_21);
+        crate::layer_pass::give(&mut inputs, self.reads, view, lighting, shader)
+            .map_err(|input| format!("BLENDCOLOR input {input:?} is unavailable"))?;
+        for binding in &self.writes {
+            value = binding.value(&inputs, value).ok_or("BLENDCOLOR input is outside the engine slots")?;
+        }
+        // The prefix skips the guest state change too. The regular skip
+        // check verifies that each restore already holds on the device.
+        if value != held && !imp.restore_states.iter().any(|s| s.state == BLEND_COLOR_SLOT && s.value == held) {
+            return Err("BLENDCOLOR would leave the device changed".into());
+        }
+        Ok(RenderStateValue { state: BLEND_COLOR_SLOT, value })
+    }
+}
+
 /// What one draw is issued with: its pipeline's primitive, depth and
 /// colour writes, its W clip's clamp (`D3DRS_DEPTHCLIPCONTROL`), and its
 /// alpha test (checked against the program's).
@@ -112,6 +183,11 @@ pub struct DrawState {
 }
 
 impl DrawState {
+    /// The blend constant is issued dynamically and is absent from the pipeline descriptor.
+    pub(crate) fn pipeline_state(self) -> Self {
+        Self { blend_constant: [0; 4], ..self }
+    }
+
     /// [`Self::blend_constant`] as the packet sets it.
     pub fn blend_color(&self) -> wgpu::Color {
         let [r, g, b, a] = self.blend_constant.map(f64::from_bits);
@@ -335,6 +411,28 @@ mod tests {
                 _ => 0,
             })
         })
+    }
+
+    #[test]
+    fn partial_blend_writes_inherit_the_other_channels_and_apply_in_order() {
+        use tags::shader::ExternalBinding;
+        let mut imp = crate::engine_states::tests::implementation(vec![], 0);
+        imp.input_reads.scalars = 1 << 21 | 1 << 37;
+        imp.engine_render_states = vec![
+            ExternalBinding { bytes: [0, 1, 0, 21] },
+            ExternalBinding { bytes: [0, 1, 0, 37] },
+        ];
+        let held = 0x1203_4567;
+        imp.restore_states = own(&[(R::BlendColor, held)]);
+        let writes = LayerBlendColor::take(&mut imp).unwrap().unwrap();
+        let entry = EntryStates(vec![(R::BlendColor, held)]);
+        let view = frame_scene::LayerInputs::default();
+        let lighting = frame_scene::Lighting { words: [0; 30], root: Some(0.25f32.to_bits()) };
+        let shader = crate::object_lighting::ShaderValues { scalar_21: 0.5f32.to_bits(), ..Default::default() };
+        assert_eq!(writes.resolve(&imp, &entry, &view, Some(&lighting), shader).unwrap().value, 0x4003_4567);
+        assert!(writes.resolve(&imp, &entry, &view, None, shader).unwrap_err().contains("Scalar(37)"));
+        imp.engine_render_states.push(ExternalBinding { bytes: [0, 1, 0, 1] });
+        assert!(LayerBlendColor::take(&mut imp).unwrap_err().contains("unevaluated"));
     }
 
     #[test]

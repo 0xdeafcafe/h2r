@@ -319,8 +319,11 @@ fn target_map<B: Backend>(
             }
         };
         match (op, command) {
-            (ReplayOp::Sample { of, id, how }, Cmd::Sample(sample)) if how == &sample.how => {
+            (ReplayOp::Sample { of, id, how, into }, Cmd::Sample(sample)) if how == &sample.how => {
                 bind(&mut targets, *of, Some(sample.surface))?;
+                // A refill names the sample whose texture it reuses: the
+                // same proxy, refilled in place on the device's side.
+                if into.is_some_and(|prev| samples.get(&prev) != Some(&sample.proxy)) { return None; }
                 if samples.insert(*id, sample.proxy).is_some() { return None; }
             }
             (ReplayOp::Stage(kept), Cmd::Render(
@@ -399,7 +402,11 @@ impl<B: Backend> Worker<B> {
             for (_, ticket) in outputs.tickets { self.inner.drop_pixel_count(ticket); }
             return Err("native sampled targets do not match the submitted textures".into());
         }
-        for (id, handle) in outputs.samples {
+        // A pooled frame-buffer copy is one proxy sampled several times
+        // (`Backend::snapshot_surface_into`): it keeps its last sample.
+        let mut outputs_by_id: Vec<_> = outputs.samples.into_iter().collect();
+        outputs_by_id.sort_unstable_by_key(|&(id, _)| id);
+        for (id, handle) in outputs_by_id {
             self.textures.insert(samples[&id], handle);
         }
         self.tickets.extend(outputs.tickets);

@@ -1,5 +1,6 @@
 //! Graph elements, resource preloads, sampling views and named graph blocks.
 use super::*;
+use ::sim_anim::graph_resolve::{CLIP_BYTES, Preload};
 use crate::points::TAG_ENTRIES;
 use crate::sim_native::{graph::ENABLED, sub_flags};
 use crate::sim_physics::{arithmetic, byte, logic};
@@ -14,7 +15,6 @@ pub(super) const BODIES: &[Body] = &[
 ];
 
 /// Clip entries contain the resource and its alias/chain indices.
-const CLIP_BYTES: u32 = 108;
 const CLIPS: u32 = 0x30;
 const NO_INDEX: u16 = u16::MAX;
 
@@ -23,7 +23,7 @@ fn signed_word(value: u32) -> u32 {
 }
 
 fn clip_addr(c: &mut CpuAbi, base: u32, index: u32) -> u32 {
-    arithmetic(c, index.wrapping_mul(CLIP_BYTES), base, false)
+    arithmetic(c, index.wrapping_mul(CLIP_BYTES as u32), base, false)
 }
 
 fn element(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
@@ -128,6 +128,9 @@ fn preload(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
     }
 
     let mut reload_link = pc == 0x1dda8d;
+    if let Some(boundary) = preload_table(c, g, reload_link) {
+        return boundary;
+    }
     // A malformed uncached cycle belongs to the lifted loop.
     for _ in 0..=u16::MAX {
         if reload_link {
@@ -144,9 +147,7 @@ fn preload(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
         let next = g.u16(at(c.esi, 50))?;
         sub_flags(c, u32::from(next), u32::from(NO_INDEX), 16);
         if next == NO_INDEX {
-            c.edi = pop(c, g)?;
-            c.esi = pop(c, g)?;
-            return g.ret(c, 4);
+            return preload_return(c, g);
         }
         c.ecx = g.u32(at(c.edi, CLIPS))?;
         c.eax = clip_addr(c, c.ecx, signed_word(u32::from(next)));
@@ -166,6 +167,44 @@ fn preload(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
         reload_link = true;
     }
     Err(bad(pc))
+}
+
+/// Compute one span between guest callbacks from the graph's decoded links.
+/// Populate the crossing registers and flags only after the walk succeeds,
+/// so an ineligible block can take the ordered path from the same frame.
+fn preload_table(
+    c: &mut CpuAbi, g: &mut Bus<'_>, reload: bool,
+) -> Option<sim_native::Result> {
+    let (base, start, table) = lookup::dependencies(g, c.edi, c.esi)?;
+    let clip_address = |index: usize| base + (index * CLIP_BYTES) as u32;
+    let mut resources = 0;
+    let boundary = table.preload(start, reload, |index| {
+        resources = g.u32(at(c.edi, 176)).ok()?;
+        g.u8(at(at(resources, index.wrapping_mul(20)), 16)).ok()
+    })?;
+    Some(match boundary {
+        Preload::End { clip } => {
+            if reload || clip != start {
+                c.eax = clip_address(clip);
+                c.ecx = c.eax;
+            }
+            sub_flags(c, u32::from(NO_INDEX), u32::from(NO_INDEX), 16);
+            preload_return(c, g)
+        }
+        Preload::Request { from, resource, active } => {
+            c.esi = clip_address(from);
+            c.eax = at(resources, resource.wrapping_mul(20));
+            c.ecx = byte(resources, 1);
+            logic(c, u32::from(active), 0x80);
+            g.call(c, 0x1236f0, 0x1dda8d)
+        }
+    })
+}
+
+fn preload_return(c: &mut CpuAbi, g: &mut Bus<'_>) -> sim_native::Result {
+    c.edi = pop(c, g)?;
+    c.esi = pop(c, g)?;
+    g.ret(c, 4)
 }
 
 fn sample_view(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
@@ -284,3 +323,6 @@ fn find_record(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
     c.ebx = pop(c, g)?;
     g.ret(c, 12)
 }
+
+#[cfg(test)]
+mod preload_tests;

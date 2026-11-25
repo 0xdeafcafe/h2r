@@ -309,6 +309,59 @@ fn gpu_depth_aliases_draw_what_the_readback_draws() {
     assert_same("render thread, GPU aliases off", &threaded_old, &want);
 }
 
+/// A feedback shader samples a 2x2 window in a rendered level using a
+/// different channel order. Each camera has a different second texel.
+#[test]
+fn partial_frame_alias_reads_the_same_guest_texels_from_each_camera_at_both_rasters() {
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let guest = (16, 12);
+    let source = gfx::D3DFormat::LinA8R8G8B8;
+    let mut desc = gfx::TextureDesc::new(
+        gfx::D3DFormat::LinA8B8G8R8, gfx::texture::TextureKind::D2, 2, 2, 1, 1,
+    );
+    desc.pitch = guest.0 * 4;
+    let offset = ((3 * guest.0 + 5) * 4) as usize;
+
+    // A 64x48 drawable at full and three-quarter resolution.
+    for output in [(64, 48), (48, 36)] {
+        let grid = d3d::scaled::RenderScale::between(guest, output).unwrap();
+        let mut backend = d3d::ScaledBackend::with_resolution(
+            GfxBackend::new(ctx.clone()), GfxBackend::new(ctx.clone()), grid, false,
+        ).unwrap();
+        assert!(backend.handles_surface_aliases());
+        backend.create_surface(source, guest.0, guest.1, false).unwrap();
+        let frame = backend.create_texture_target(source, guest.0, guest.1).unwrap();
+        backend.clear(frame, None, gfx::Clear::all([1.0, 0.0, 0.0, 1.0])).unwrap();
+        let display = backend.view_surface(&frame).unwrap();
+        backend.view_mut().clear_rects(display, None, &d3d::RectClear {
+            rects: vec![d3d::PixelRect { x: 6, y: 3, width: 1, height: 1 }],
+            color: Some(([0.0, 1.0, 0.0, 1.0], d3d::ChannelMask::from_flags(0xf0))),
+            depth: None,
+            stencil: None,
+        }).unwrap();
+        let alias = backend.depth_alias_texture(
+            frame, source, guest.0, guest.1, guest.0 * 4, 1, offset, &desc, Default::default(),
+        ).unwrap().unwrap();
+        backend.reference_mut().flush().unwrap();
+        backend.view_mut().flush().unwrap();
+
+        let read = |t: &wgpu::Texture, size| {
+            assert_eq!((t.width(), t.height()), size);
+            gfx::readback::read_texture(&ctx, t, wgpu::TextureAspect::All, 4, size)
+        };
+        let blue = [0, 0, 255, 255]; // red source decoded with R and B exchanged
+        let green = [0, 255, 0, 255];
+        assert!(read(&alias.reference.texture, (2, 2)).chunks_exact(4).all(|p| p == blue));
+        let (w, h) = grid.size(2, 2);
+        let display_pixels = read(&alias.view.unwrap().texture, (w, h));
+        for (i, pixel) in display_pixels.chunks_exact(4).enumerate() {
+            let (x, y) = (i as u32 % w, i as u32 / w);
+            let expected = if x >= w / 2 && y < h / 2 { green } else { blue };
+            assert_eq!(pixel, expected, "display alias at ({x}, {y}), raster {output:?}");
+        }
+    }
+}
+
 /// Depth-alias passes recorded into the open encoder (the default,
 /// `GfxBackend::set_defer_side_passes`) draw what a submission of their own
 /// per alias draws, with fewer submissions.

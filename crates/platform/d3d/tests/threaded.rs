@@ -271,6 +271,40 @@ fn reads_wait_for_the_work_before_them_and_textures_are_freed() {
     assert_eq!(t.misses(), 0);
 }
 
+/// A frame-buffer copy refilled through the render thread is a refill, in
+/// queue order, of the texture the proxy's first copy made: nothing new is
+/// made on the render thread.
+#[test]
+fn a_frame_copy_refill_reaches_the_texture_the_proxy_made() {
+    use d3d::Recorded;
+    let mut t = ThreadedBackend::new(RecordingBackend::new()).unwrap();
+    let s = t
+        .create_surface(gfx::D3DFormat::A8R8G8B8, 4, 4, false)
+        .unwrap();
+    let mut copy = t.snapshot_surface(s, false).unwrap().unwrap();
+    t.clear(s, None, gfx::Clear::NONE).unwrap();
+    for _ in 0..3 {
+        assert!(t.snapshot_surface_into(s, true, &mut copy).unwrap());
+    }
+    let calls = t.with_inner(|r| r.calls.clone()).unwrap();
+    let made: Vec<u32> = calls
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::Snapshot { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(made.len(), 1, "{calls:?}");
+    let refills = &calls[calls.len() - 3..];
+    assert!(
+        refills.iter().all(|c| matches!(c, Recorded::SnapshotInto { id, opaque: true, .. } if *id == made[0])),
+        "{calls:?}"
+    );
+    drop(copy);
+    t.finish().unwrap();
+    assert_eq!(t.misses(), 0);
+}
+
 /// The render thread's timing changes nothing the guest sees: with it
 /// lagging by random amounts (three seeds) every observed value, the
 /// backend calls and guest memory match the synchronous backend.

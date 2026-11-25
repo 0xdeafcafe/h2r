@@ -302,9 +302,20 @@ fn the_lobbys_mode_keeps_the_kit_start_or_drops_it() {
         .unwrap();
     let held = kit_start();
     assert!(held.is_some());
+    let built = package().expect("the kit package is ready");
     // Forge mode on the same map keeps it, and asks nothing of the author.
     follow_mode(true, Some(7), Some("fixture"), || panic!("no new pick"));
     assert_eq!(kit_start(), held);
+    // An installed offer opens in its own cache slot, with no disc kit.
+    follow_mode(true, Some(8), None, || panic!("offer keeps its own slot"));
+    assert_eq!(package(), None);
+    assert_eq!(picked(), None);
+    assert!(
+        pick_kit("fixture", Some(7), "Builder", &maps).is_none(),
+        "returning to the disc map reuses the cached kit"
+    );
+    assert_eq!(kit_start(), held);
+    assert_eq!(package(), Some(built));
     // Leaving Forge mode drops it.
     follow_mode(false, Some(7), Some("fixture"), || panic!("no new pick"));
     assert_eq!(kit_start(), None);

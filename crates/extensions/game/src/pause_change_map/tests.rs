@@ -110,7 +110,7 @@ fn kit_map() -> Map {
 fn change_map_opens_what_game_setups_change_map_opens() {
     let cat = map_select::sample();
     assert_eq!(opening(Mode::Multiplayer, &cat), Some(Opening::Categories));
-    assert_eq!(opening(Mode::Forge, &cat), Some(Opening::Maps(Category::Halo2)));
+    assert_eq!(opening(Mode::Forge, &cat), opening(Mode::Multiplayer, &cat));
     assert_eq!(opening(Mode::Firefight, &cat), None, "no kit map installed");
     assert_eq!(
         categories(&cat),
@@ -123,7 +123,7 @@ fn change_map_opens_what_game_setups_change_map_opens() {
     with_kit.push(kit_map());
     let cat = Catalogue::new(with_kit);
     assert_eq!(opening(Mode::Firefight, &cat), Some(Opening::Maps(Category::Firefight)));
-    assert!(!categories(&cat).contains(&Category::Firefight), "only a Firefight lobby's");
+    assert!(categories(&cat).contains(&Category::Firefight), "installed kit maps are playable maps");
 
     // One category: its maps straight away; none: no row.
     let one = Catalogue::new(cat.maps(Category::Halo2).to_vec());
@@ -613,4 +613,31 @@ fn the_switch_turns_the_row_and_its_screens_off() {
     assert!(!install(&mut registry, None).unwrap());
     let plan = registry.build(&hooks::Base).unwrap().text();
     assert!(!plan.contains("pause-change-map"), "{plan}");
+}
+
+#[test]
+fn a_change_rules_press_limits_the_map_rows_to_the_chosen_wave_set() {
+    let visit = Arc::new(Visit::default());
+    let basin = crate::community_variants::listed_named("Basin").unwrap();
+    let variant = game_types::listed(basin.record.clone()).unwrap();
+    visit.open(0, ALL_ROWS, vec![variant], None);
+    let pick = setup::rules_pick(&visit, Group::Row(Row::Firefight)).unwrap();
+    assert_eq!(pick.values, ["Basin"]);
+    (pick.set)(0);
+    let draft = visit.draft();
+    let chosen = draft.variant.as_ref();
+    let creek = Map {
+        id: 73,
+        name: "Firefight – Beaver Creek".into(),
+        path: r"t:\$C\4d53006400020011\beavercreek".into(),
+        ..Map::default()
+    };
+    let cat = Arc::new(Catalogue::new(map_select::sample().all().cloned()
+        .chain([kit_map(), creek.clone()])));
+    let mode = map_select::variant_mode(Mode::Multiplayer, chosen);
+    let maps = cat.for_variant(mode, chosen);
+    assert_eq!(opening(mode, &maps), Some(Opening::Maps(Category::Firefight)));
+    assert_eq!(maps.maps(Category::Firefight), [creek]);
+    assert_eq!(maps.all().count(), 1);
+    assert_eq!(cat.for_variant(Mode::Forge, chosen).categories(), cat.categories());
 }

@@ -477,23 +477,25 @@ fn run_configured(
     let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
     let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     #[cfg(feature = "gpu")]
-    let native_size: run_opts::NativeSize = host.gfx_view.as_ref().map(|view| view.native_size.clone())
-        .unwrap_or_else(|| Arc::new(|| setting_defs::GUEST_FRAME));
+    let native_target: run_opts::NativeTarget = host.gfx_view.as_ref().map(|view| view.native_target.clone())
+        .unwrap_or_else(|| Arc::new(|| settings::NativeTarget::windowed(setting_defs::GUEST_FRAME)));
     #[cfg(not(feature = "gpu"))]
-    let native_size: run_opts::NativeSize = Arc::new(|| setting_defs::GUEST_FRAME);
+    let native_target: run_opts::NativeTarget = Arc::new(|| settings::NativeTarget::windowed(setting_defs::GUEST_FRAME));
     #[cfg(feature = "gpu")]
     let output_size = if opts.d3d && ((!host_light && sim_mode.is_none()) || rendered_replay)
         && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
     {
         match host.gfx_view.as_ref().and_then(|v| v.viewer_output.clone()) {
             Some(output) => Some(output),
-            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?),
+            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_target.clone())?),
         }
     } else {
         None
     };
     #[cfg(feature = "gpu")]
     let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
+    #[cfg(feature = "gpu")]
+    let viewer_lod = host.gfx_view.as_ref().and_then(|view| view.viewer_lod.clone());
     #[cfg(feature = "gpu")]
     let mut active_size = output_size.as_ref().map(|output| {
         let initial = output();
@@ -563,22 +565,17 @@ fn run_configured(
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
     // The pogo stick is the `pogo` package (content/pogo), on while the
     // `pogo` feature is.
-    // The set alone here (no kit inputs yet): the maps it names. The mount
-    // below reads it again with the kits' inputs.
-    let map_packages = {
+    // Read the set before preparing its maps. The mount gives the same set
+    // the kits' inputs once the campaigns and fonts are ready.
+    let content_set = {
         let switches = features.switches();
-        packages::at_boot(
-            &opts.data_root,
-            &|name| switches.feature(name, true),
-            workspace::KitInputs::default(),
-            None,
-        )
+        packages::read_set(&opts.data_root, &|name| switches.feature(name, true))
     };
     // The maps those packages build (`map` and `map-patch` items) are written
     // as map packages under <data>/maps before the content library reads
     // that folder: a map built for the same inputs is left alone
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
-    packages::prepare_maps(&opts.data_root, &opts.disc, &map_packages.set.loaded());
+    packages::prepare_maps(&opts.data_root, &opts.disc, &content_set.loaded);
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
@@ -656,18 +653,15 @@ fn run_configured(
         .map(|i| Box::new(i.font_rewrite()) as Box<dyn vfs::Rewrite>);
     #[cfg(not(feature = "desktop-runtime"))]
     let font_icons: Option<Box<dyn vfs::Rewrite>> = None;
-    let content_packages = {
-        let switches = features.switches();
-        packages::at_boot(
-            &opts.data_root,
-            &|name| switches.feature(name, true),
-            workspace::KitInputs {
-                cards,
-                icons: font_icons,
-            },
-            cfg.store_maps.as_deref(),
-        )
-    };
+    let content_packages = packages::at_boot(
+        &opts.data_root,
+        content_set,
+        workspace::KitInputs {
+            cards,
+            icons: font_icons,
+        },
+        cfg.store_maps.as_deref(),
+    );
     // With `store-maps`, a level the set lays items over is served from its
     // image under <data>/store/images (docs/engine/asset-store.md,
     // "Runtime assembly").
@@ -752,10 +746,10 @@ fn run_configured(
             // The guest draws the picker's labels. Replay those observations
             // independently of the viewer's presentation size.
             let menu_size = match &film {
-                Some(session) => session.video_menu_size(native_size, &store)?,
-                None => native_size,
+                Some(session) => session.video_menu_size(native_target.clone(), &store)?,
+                None => native_target.clone(),
             };
-            Some(Arc::new(video_screen::model_with_native_size(
+            Some(Arc::new(video_screen::model_with_native_target(
                 store, video_screen::Switches::PLATFORM, menu_size,
             ).map_err(anyhow::Error::msg)?))
         }
@@ -809,10 +803,6 @@ fn run_configured(
         // Resume queued uploads on sign-in, including a session which acquired
         // its account in the game after launch.
         let _ = theater.sync();
-        if let Some(recording) = &film {
-            let controller = theater.clone();
-            recording.sync_library(move || controller.sync());
-        }
         Some(theater)
     } else {
         None
@@ -956,10 +946,22 @@ fn run_configured(
     let single = opts.d3d && host.gfx_view.is_some()
         && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
     #[cfg(feature = "gpu")]
+    // A legacy film's recorded geometry multiplier. The guest walk is retail
+    // otherwise, whatever the local display choice (lod_distance), so no
+    // run forces retail for the network, film or lockstep of it.
+    let reference_lod = legacy_lod;
+    #[cfg(feature = "gpu")]
+    // The display can draw different geometry than the copy the guest
+    // readbacks read: every non-single-copy drawing view.
+    let display_split = !single && host.gfx_view.is_some();
+    #[cfg(feature = "gpu")]
     if single && d3d_glue::locked_retail_target(host.settings.as_deref())
         && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
         && let Some(display) = view.backend.take()
     {
+        let (width, height) = setting_defs::GUEST_FRAME;
+        let (dw, dh) = native_target().drawable;
+        eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
         host.gfx = Some(display.as_only_display());
     }
     #[cfg(feature = "gpu")]
@@ -991,7 +993,11 @@ fn run_configured(
                 let (width, height) = output();
                 let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {width}x{height}; single copy {single}");
+                if display_split && hooks::switches::native_render_on(features.switches()) {
+                    b.keep_display_copy();
+                }
+                let (dw, dh) = native_target().drawable;
+                eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (docs/graphics/e3-lighting-setting.md)
@@ -1059,7 +1065,15 @@ fn run_configured(
                 Arc::new(move || position)
             }
         };
-        render_aspect::install(&mut features, projected_size, single, hud, device.ui_layout.clone())?;
+        render_aspect::install(&mut features, projected_size, !lockstep_on, hud, device.ui_layout.clone())?;
+    }
+    // Every world frame of a one-machine game renders on its own random
+    // stream, so what the view draws (a wider guest camera, Theater's free
+    // camera) never chooses the simulation's random numbers
+    // (docs/graphics/high-resolution.md, "Determinism"). The same on the
+    // recording and its replay, whatever window either had.
+    if opts.d3d && !lockstep_on && !host_light {
+        render_rng::install(&mut features)?;
     }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
@@ -1268,7 +1282,11 @@ fn run_configured(
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
-            fixed_lod: protected_readbacks.then(|| legacy_lod.unwrap_or(1.0)),
+            reference_lod,
+            #[cfg(feature = "gpu")]
+            d3d_display: single,
+            #[cfg(feature = "gpu")]
+            viewer_lod,
             #[cfg(feature = "gpu")]
             world_line_present,
             rt: &loaded.runtime,
@@ -1313,13 +1331,19 @@ fn run_configured(
         )));
     }
     if let Some(a) = &mut agent {
-        a.configure_takeover(
-            &mut features,
-            !headless || observer_window,
-            !headless && opts.d3d && xa.is_some() && !replaying && !lockstep_on && !host_light
-                && sim_mode.is_none(),
-        )
-        .context("installing lab takeover consent")?;
+        // A film's replay plans the dialog as its recording did, window or
+        // none (theater::compatibility's hook digest), and takes no request.
+        let takeover = registration::lab_takeover(registration::TakeoverInputs {
+            window: !headless,
+            d3d: opts.d3d,
+            xapi: xa.is_some(),
+            lockstep: lockstep_on,
+            host_light,
+            sim: sim_mode.is_some(),
+            replaying,
+        });
+        a.configure_takeover(&mut features, !headless || observer_window, takeover.plan, takeover.accept)
+            .context("installing lab takeover consent")?;
     }
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
@@ -1376,6 +1400,10 @@ fn run_configured(
         // render.markers: the Forge game type markers the last present drew
         // (forge_glue/markers_world.rs).
         forge_glue::markers_world::add_method(&a.agent);
+        // render.particles.refusals: the native particle path's geometry
+        // refusals and a sample draw for each (native_particles_admission.rs).
+        #[cfg(feature = "gpu")]
+        game::native_particles_admission::add_refusals_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
@@ -1413,11 +1441,7 @@ fn run_configured(
     }
     // packages.list: the content set and each map read (packages.rs).
     if let Some(a) = &agent {
-        packages::install(
-            &a.agent,
-            Arc::clone(&content_packages.set),
-            content_packages.served.clone(),
-        );
+        packages::install(&a.agent, content_packages.summary, content_packages.served);
     }
     // store.status: the tag store and whether its maps are served
     // (store_status.rs).
@@ -1504,7 +1528,7 @@ fn run_configured(
     // Sim match metrics and match.* on the agent.
     if let Some(s) = &sim_mode {
         let playback = film.as_ref().filter(|f| f.has_engine_track()).map(|_| replaying);
-        s.install_with_film(&mut features, playback)?;
+        s.install_with_audio(&mut features, playback, ds.as_ref().map(|a| Arc::clone(&a.hle)))?;
         if let Some(a) = &agent {
             s.add_methods(&a.agent);
         }

@@ -27,7 +27,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 struct OnePart(bool);
 
 impl Host for OnePart {
-    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, _display_clusters: &[u16]) -> Option<Cleared> {
         if !self.0 {
             return None;
         }

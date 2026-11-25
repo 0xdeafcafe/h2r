@@ -146,6 +146,13 @@ impl<'a> Harness<'a> {
         let pc = regs.eip;
         let body = self.bodies[&entry];
         assert!(pc == entry || body.sites.contains(&pc), "undeclared selector {pc:#x} for {entry:#x}");
+        let prediction = manager::arm::ENTRIES.contains(&entry).then(|| {
+            let prediction = manager::arm::predict(regs, &mut self.native, pc)
+                .unwrap_or_else(|| panic!("arm declined {entry:#x}/{pc:#x}, seed {seed}"));
+            let live = &self.native.physical_ram()[self.physical..self.physical + RAM];
+            assert!(live == mem.bytes, "arm wrote RAM at {entry:#x}/{pc:#x}, seed {seed}");
+            prediction
+        });
         self.code.prime(entry);
         let mut original = to_interp(regs);
         let expected = original_boundary(&mut self.code, body, &mut original, mem);
@@ -155,13 +162,19 @@ impl<'a> Harness<'a> {
         let label = || format!("{entry:#x} from {pc:#x}, seed {seed}, target {:#x}", expected.target_pc);
         assert_eq!(actual, expected, "transfer {}", label());
         regs.eip = actual.target_pc;
-        assert_eq!(*regs, from_interp(&original), "CPU {}", label());
+        let guest_cpu = from_interp(&original);
+        assert_eq!(*regs, guest_cpu, "CPU {}", label());
         let bytes = &self.native.physical_ram()[self.physical..self.physical + RAM];
         if bytes != mem.bytes {
             let at = bytes.iter().zip(&mem.bytes).position(|(a, b)| a != b).unwrap();
             panic!("RAM {} at {at:#x}: native {:#04x}, original {:#04x}", label(), bytes[at], mem.bytes[at]);
         }
         self.seen.insert((entry, pc));
+        // The full RAM check above established that the native mapping holds
+        // the interpreter's bytes. Check the same comparison used by the hook.
+        if let Some(prediction) = prediction {
+            assert_eq!(prediction.difference(&guest_cpu, &self.native, expected), None, "arm {}", label());
+        }
         actual
     }
 

@@ -42,6 +42,7 @@ pub mod recording;
 pub mod quit;
 pub mod shot;
 pub mod state;
+pub mod window;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -234,6 +235,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     pause::install(agent, agent_proto::host_pause::hub());
     quit::install(agent, agent_proto::host_quit::hub());
     shot::install(agent, agent_proto::host_shot::hub());
+    window::install(agent, agent_proto::host_window::hub());
     h
 }
 

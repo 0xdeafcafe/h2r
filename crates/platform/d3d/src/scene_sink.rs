@@ -38,6 +38,8 @@ use frame_types::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, SlotAt,
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
+use crate::device::ExternalOrigin;
+
 #[cfg(feature = "gpu")]
 use crate::backend::ExternalCopies;
 use crate::backend::{
@@ -52,6 +54,12 @@ pub type FlareTickets = Vec<(u64, u64)>;
 
 /// Where the frame step is, or `None` while the sink records nothing.
 pub type SlotSource = fn() -> Option<SlotAt>;
+
+pub(crate) fn retains_draw_stage(stage: timeline::native::Stage) -> bool {
+    use timeline::native::Stage;
+    matches!(stage, Stage::Flares | Stage::Sky | Stage::Water | Stage::Transparents | Stage::Particles)
+}
+
 /// The scene's object shadow the guest is drawing, by index into the
 /// sealed scene's `object_shadows`; `None` outside one.
 pub type ShadowSource = fn() -> Option<u32>;
@@ -270,7 +278,7 @@ impl<B: Backend> SceneSink<B> {
             || !attachments
             || !s.sampled.is_empty() || !s.slots.is_empty() || !s.slot_sizes.is_empty()
             || !known(&s.color) || !known(&s.depth) || !room
-            || !matches!(admission.plan.stage, Stage::Flares | Stage::Sky)
+            || !retains_draw_stage(admission.plan.stage)
             || (admission.plan.stage == Stage::Flares && draw.writes_depth_stencil())
             || !(Arc::ptr_eq(&admission.packet, draw) || *admission.packet == **draw)
             || !admission.pass.lock().is_ok_and(|p| p.replays_scene())
@@ -466,21 +474,28 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn sample_texture(&mut self, inner: B::Texture, surface: B::Surface, how: TargetSample, kind: impl FnOnce() -> ReplaySample) -> SinkTexture<B::Texture> {
+        let origin = self.sample_origin(surface, how, kind, None);
+        SinkTexture { inner, origin }
+    }
+
+    /// Records a sample of `surface` and gives the origin of the texture
+    /// that holds it. `into`: the earlier sample of this frame whose
+    /// texture the sample refills.
+    fn sample_origin(&mut self, surface: B::Surface, how: TargetSample, kind: impl FnOnce() -> ReplaySample, into: Option<u32>) -> Option<Origin> {
         self.record_sample(surface, how);
         let at = self.at();
-        let origin = self.replay.as_mut().map(|replay| {
+        self.replay.as_mut().map(|replay| {
             let how = kind();
             let view = (matches!(how, ReplaySample::InPlace)
                 && self.surfaces.iter().any(|(s, desc)| *s == surface && !desc.depth))
                 .then(|| replay.view_identity(surface));
             if let Some(at) = at {
                 let of = replay.target(surface, &self.surfaces);
-                replay.sample(at, of, how, view)
+                replay.sample(at, of, how, view, into)
             } else {
                 Origin::sample(replay.seq, None, &how, view)
             }
-        });
-        SinkTexture { inner, origin }
+        })
     }
 
     fn record_readback(&mut self, kind: Readback) {
@@ -758,6 +773,21 @@ impl<B: Backend> Backend for SceneSink<B> {
         let r = self.inner.snapshot_surface(surface, opaque)?;
         Ok(r.map(|inner| self.sample_texture(inner, surface, TargetSample::Snapshot, || ReplaySample::Snapshot { opaque })))
     }
+    /// A refill is a new sample of `surface` in `into`'s texture: draws
+    /// after it bind the new sample, and when the texture's last sample was
+    /// in this frame, replay refills that sample's texture
+    /// ([`ReplayOp::Sample`]'s `into`) rather than make one.
+    fn snapshot_surface_into(&mut self, surface: Self::Surface, opaque: bool, into: &mut Self::Texture) -> Result<bool, String> {
+        if !self.inner.snapshot_surface_into(surface, opaque, &mut into.inner)? {
+            return Ok(false);
+        }
+        let previous = self.replay.as_ref().and_then(|replay| match &into.origin {
+            Some(Origin::Sample { seq, id: Some(id), immutable: true, .. }) if *seq == replay.seq => Some(*id),
+            _ => None,
+        });
+        into.origin = self.sample_origin(surface, TargetSample::Snapshot, || ReplaySample::Snapshot { opaque }, previous);
+        Ok(true)
+    }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.inner.clear_pixel_count()?;
         if let Some(at) = self.at() {
@@ -776,7 +806,12 @@ impl<B: Backend> Backend for SceneSink<B> {
         &mut self, surfaces: ExternalSurfaces<Self::Surface>, request: ExternalPassRequest, textures: [Option<&Self::Texture>; 4],
         plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
     ) -> Result<Option<Vec<ExternalRecording>>, String> {
-        if self.replaying() { return Ok(None); }
+        if self.replaying() {
+            let pass = pass.lock().unwrap_or_else(|err| err.into_inner());
+            ExternalOrigin::new(&**pass, "scene capture reservation", Some(plan.stage))
+                .refused("the scene recorder cannot retain an unsealed reservation", None);
+            return Ok(None);
+        }
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
     }
     fn can_commit_carried(&self) -> bool {
@@ -871,7 +906,11 @@ impl<B: Backend> Backend for SceneSink<B> {
         &mut self, color: Self::Surface, depth: Self::Surface, sampled: Vec<Option<Self::Surface>>, request: ExternalPassRequest,
         pass: Box<dyn ExternalPass>,
     ) -> Result<bool, String> {
-        if self.replaying() { return Ok(false); }
+        if self.replaying() {
+            ExternalOrigin::new(&*pass, "scene capture issue", None)
+                .refused("the scene recorder cannot retain an untyped pass", None);
+            return Ok(false);
+        }
         self.untracked_write();
         self.inner.external_pass(color, depth, sampled, request, pass)
     }

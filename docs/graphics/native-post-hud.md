@@ -1,6 +1,6 @@
 # Native renderer stage 5: post and HUD
 
-Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items, lens-flare colour fans and the UI and HUD draw natively. The visibility test retains its counted draw. Pixel parity with D3D needs a live check.
+Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items, lens-flare colour and visibility fans, and the UI and HUD draw natively. Pixel parity with D3D needs a live check.
 Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -191,7 +191,7 @@ make that was followed ends in one of three:
 |---|---|---|
 | Screen quads: begin `0x00035b90` (record of `0x98` bytes), quad `0x000363a0`, end `0x00036560` (`points::SCREEN_QUADS_BEGIN`, `SCREEN_QUAD`, `SCREEN_QUADS_END`) | The begin sets up to three bitmaps (`0x00012310`, address mode wrap or clamp per stage, point or linear filter), colour writes without alpha (`SET_COLOR_MASK`), depth test off, the blend by mode (`0x000142f0`: mode 10 off, else three 12-entry tables of source factor, destination factor and equation), two vertex constant blocks (a pixel-centred screen transform over the rectangle at `0x00485648`, and a second block from the record's flips and pairs), and, with stage 0 bound and `+0x97` clear, a fixed combiner written into the PSDEF at `0x00484f68` with the record's colours packed in (`0x00131e50`). Each quad commits the state (`0x0001cf50`) and pushes one inline `Begin(7)`, four vertices of diffuse (`SET_VERTEX_DATA4UB`), coordinate and position (`SET_VERTEX_DATA2F`), and `End`: no D3D entry. | Text: `0x0001f070` (from `0x0001fa50`, 22 call sites, and `0x0001fb10`, the HUD's `0x0022aca8`), over the glyph cache `[0x004b62ac]`, one quad per glyph through the layout `0x0013f0e0`, its callback `0x0001f490` and `0x0001f3a0`. A full-screen bitmap at `0x00156960`. |
 | HUD shader quad `0x0022a664` (`points::HUD_SHADER_QUAD`) | The HUD's bitmap into `0x004e6978`/`0x004e697c` (datum, index: the shader's engine texture), the shader draw `0x0001bbf0` (EDI the shader), then `D3DDevice_Begin(7)`, per corner `SetVertexData2f(3, u, v)` and `SetVertexData4f(-1, x, y, z, w)` (z and w the float at `0x0045dd40`), `D3DDevice_End`. The coordinates are the rectangle at EAX `(u0, u1, v0, v1)`, times the bitmap's size when it is linear. | The HUD widgets (`0x0022b397` to `0x0022bca4`), the UI's shader bitmaps (`0x002b12ae`), `0x001e936a` to `0x001e95b6`, `0x0020077f`, `0x0024eca0` to `0x0024f556`. |
-| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: S, the menus' blurred backdrop), the fade's `0x00040d86`, and `0x00029b00`, `0x0003bf20`. | |
+| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: the motion sensor calls it at `0x001a295b`), the fade's `0x00040d86`, and `0x00029b00`, `0x0003bf20`. | |
 
 So text is one batch per string with a quad per glyph, each a separate
 D3D draw; that is the work a native batch removes (one draw per run of
@@ -231,7 +231,7 @@ paths. The fade and solid rectangle helpers own their separate scopes.
 | Full-screen fade | The two signed-short extents at `0x00040d86`, with the fade's selected combiner and blend already set. | Begin, four position setters and End. The fade epilogue runs at `0x00040db8`. |
 | Menu fade rectangles, cinematic bars and split-screen dividers | The completed quad copy at the `0x0004b252` uploader with return address `0x00052ce7`. The callback, mode, topology and copy length must agree. | The copy callback and inline packet publication. The common uploader's caller runs its original state tail. |
 | Loading spinners and background/sweep bitmaps | The spinner's two sets of completed UVs at `0x0002a1f4`. The bitmap at `0x0002ae60` supplies its two rectangles and UV divisors and Rust evaluates the multiplications with the live MXCSR. | The immediate-mode submission of each fan. The loading animation, clears, target binds and presentation remain in guest order. |
-| Menu backdrop wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the active title's immediate operands. The composite at `0x00255083` reads the selected center and half extent. | Each fan's geometry builder through End. Material and target changes keep their original order. |
+| Motion sensor wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the loaded executable's immediate operands. The composite at `0x00255083` reads the selected center and half extent. | Each fan's geometry builder through End. Material and target changes keep their original order. |
 | Model widgets | At the sorted call, Rust checks the selector and definition. For an active view it verifies the selected object and light handles, camera scale, animated offsets, field of view and viewport against the camera arguments. It walks the live mesh section, material group and visibility mask at `0x0004d621`. | The entire virtual draw for an inactive widget or an empty name list. An accepted material group skips the indexed geometry builder at `0x0004daa0` and resumes at `0x0004d626`. |
 | Debug/widget outlines | Five signed-short points and the converted colour at `0x0001ed98`, with the caller and the open line-strip Begin verified. | The packed colour and vertex loop. The guest End closes the empty stream and restores line state. |
 | Host-drawn widgets | At the sorted call, the host is asked whether it draws the validated widget itself (`native_hud::Host::replace_widget`). The Skulls page's model picture is the one such widget: the noted picture widget, its block and its alpha at `+0x64` ([skulls.md](../game/skulls.md#the-model-picture)). | The entire virtual draw, resuming at `0x00235448` as an idle model widget does. The host's pass is queued at that point in the walk (`Device::external_pass_now`). |
@@ -434,18 +434,18 @@ widget lists exactly. One list is one call of `0x002353a5` on one screen
 order is the guest's whatever the port does.
 
 At `0x00235428` (`points::ui_render::LIST_READY`, after the window is
-taken), `render_bridge::native_hud::ui_overlay` reads the list from the
-frame and asks the host whether it draws menus now (`Host::ui_overlay`;
-the game's answer is the UI scope's order). It claims nothing unless the
-screen quads' viewport (`0x00485648`, top, left, bottom, right) is 0, 0,
-480, 640, both floating-point units round to nearest, and the screen has
-no earlier mismatch on this map. Each drawn
-entry's widget is read (`scene_extract::ui::read_widget`: the header, and
-what its draw makes by the function its vtable's `+0x10` names) and listed
-alone (`draw_list`). Consecutive drawn entries that list are a run; an
-entry outside the window does not end one, a refused entry does. After a
-guest draw, the next run rereads its entries at placement so guest changes
-to focus, colours or resource state reach that pass.
+taken), `render_bridge::native_hud::ui_overlay` asks whether the host draws
+menus and checks the viewport and screen before it reads the list. The
+host checks the UI scope's order (`Host::ui_overlay`). The screen quads'
+viewport (`0x00485648`, top, left, bottom, right) must cover the full
+canvas, both floating-point units must round to nearest, and the screen
+must have no earlier mismatch on this map. Each drawn widget is read
+(`scene_extract::ui::read_widget`) and listed on its own (`draw_list`).
+Consecutive drawn entries that list form a run. An entry outside the
+window leaves the run open and a refused entry ends it. After a guest
+draw, each run refreshes only its own entries at placement so changes to
+focus, colours or resource state reach the pass. List planning and run
+refresh time count toward `native_ui_extract_ns`.
 
 At the sorted call of a run's first entry, the host places one overlay
 pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`,
@@ -640,7 +640,9 @@ wrapper's return (`Host::finish_modal_blur`) the quads are checked
 (unblended, every channel written, each sampling the target the plan
 names, whole; targets 0 and 1 the same size). The overlay's blur is then
 drawn into target 0 by `OverlayGpu` in their place: the copy, the steps
-in scratch targets, the result written back into every channel. The
+in scratch targets, the result written back into every channel. The renderer
+reuses the scratch pair for each of the two most recent target sizes and
+formats so the guest and display copies can alternate each frame. The
 item joins `FrameScene::overlay`. A quad off the plan, a check that
 fails or a pass that does not record gives the game's quads back in
 order (`overlay_modal_blur_replayed`).
@@ -662,13 +664,31 @@ uses D3D for that call.
 
 | Effect | Native admission |
 |---|---|
-| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant and channel write mask. A colour-only draw accepts inherited depth and stencil settings when they have no effect. |
+| Colour pass glow | The plan reads the view size and each blur target’s dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant, channel write mask, winding, cull, front fill and scissor. A colour-only draw accepts inherited depth and stencil settings when they have no effect. |
 | Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. Framebuffer stages may read stored alpha and X8 alpha in the same pass. A resolved side-target input needs no framebuffer copy. |
 | Kept convolution | It emits no draws. Its result names the pass's target. |
-| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
+| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments. Each quad or grid uses the live raster state. |
 | Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
 | Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`). |
 | `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts. The fade, UI and HUD are the native UI, above. |
+
+Post admission uses the packet's decoded raster state. Inherited fog,
+flat shading and two-sided lighting can be omitted when both the planned
+and live combiners are independent of their inputs. A combiner with an
+implicit final stage can depend on inherited fog and specular state.
+Rejected state words in unused texture stages and fixed-function texture
+operations do not affect a programmable post draw. A live depth or
+stencil operation requires the original depth attachment.
+
+The glow and screen effects use the same pipeline translation for
+colour writes, blending, facing, culling, front fill and depth clamp.
+A quad strip preserves the guest fan's winding and diagonal. Each
+scissor is scaled from the destination's guest size to its physical
+copy. A convolution grid uses the raster shared by its strips. The
+combiner translator generates variants for the live alpha comparison
+and polygon stipple. The reference byte and mask rows are per-draw
+uniforms. Stipple uses guest pixel cells on each physical copy. Screen
+strips also carry the live W clip range and window-depth scale.
 
 ### The post hooks
 
@@ -993,7 +1013,7 @@ Its numbers are ported: `engine::colour_pass`
      (below).
    - **The GPU pass** (`native_render::screen_gpu`). It translates
      the layer-15 program at the target's guest size with the
-     device's depth scale. Engine stages read the view, target 1 or
+     live draw's depth scale. Engine stages read the view, target 1 or
      a convolution result. A stage reading the view takes an
      ordered copy before the pass. Each attachment uses its live
      format and loads existing contents. Partial strips, colour
@@ -1096,7 +1116,7 @@ Its numbers are ported: `engine::colour_pass`
   follows the active device and caps its shader and pipeline variants.
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
-- `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour fans. The visibility draw is carried. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). A typed test would need a counted native draw inside the guest's test: the external pass draws into no visibility counter. Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The frame tail draws supported copy and composite fans through the native screen-space pass. State commit (`0x00013cd0`) and present (`0x00013f10`) use D3D.
+- `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour and counted visibility fans. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6). Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The frame tail draws supported copy and composite fans through the native screen-space pass. State commit (`0x00013cd0`) and present (`0x00013f10`) use D3D.
 
 ## Not verified
 

@@ -86,7 +86,7 @@ fn close_list(visit: &Arc<Visit>) -> Action {
 /// The picker over category `c`'s maps; `from_list` when the categories
 /// list is under it, to close once a map is picked.
 pub fn map_pick(visit: &Arc<Visit>, c: Category, from_list: bool) -> Option<Pick> {
-    let maps = super::maps(&catalogue(), c);
+    let maps = visit.with(|s| super::maps(&s.maps, c));
     if maps.is_empty() {
         return None;
     }
@@ -124,7 +124,14 @@ pub fn rules_pick(visit: &Arc<Visit>, group: Group) -> Option<Pick> {
     let v = Arc::clone(visit);
     let set = Arc::new(move |i: usize| match list.get(i) {
         Some(l) => {
-            v.with(|s| s.draft.pick_rules(l));
+            let mode = crate::lobby_start::mode();
+            let maps = catalogue().for_variant(mode, Some(&l.variant));
+            let map = super::opening(crate::map_select::variant_mode(mode, Some(&l.variant)), &maps);
+            v.with(|s| {
+                s.draft.pick_rules(l);
+                s.maps = maps;
+                s.avail.map = map;
+            });
             format!("pause game setup: the next game plays {}", l.name)
         }
         None => format!("pause game setup: no variant {i}"),
@@ -281,17 +288,17 @@ impl Rows for CategoryRows {
     }
     fn count(&self) -> usize {
         TEXTS.set(CATEGORIES_TITLE_SLOT, CATEGORIES_TITLE);
-        categories(&catalogue()).len()
+        self.0.with(|s| categories(&s.maps)).len()
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
-        let cats = categories(&catalogue());
+        let cats = self.0.with(|s| categories(&s.maps));
         match usize::try_from(row).ok().and_then(|r| cats.get(r)) {
             Some(c) => vec![(0, TEXTS.set(category_slot(*c), c.label()))],
             None => Vec::new(),
         }
     }
     fn press(&self, row: i16) -> Chosen {
-        let cats = categories(&catalogue());
+        let cats = self.0.with(|s| categories(&s.maps));
         match usize::try_from(row).ok().and_then(|r| cats.get(r)) {
             Some(&c) => offer(map_pick(&self.0, c, true)),
             None => Chosen::Nothing,
@@ -301,7 +308,7 @@ impl Rows for CategoryRows {
         TEXTS.write(m)
     }
     fn describe(&self, count: usize) -> Option<String> {
-        let labels: Vec<&str> = categories(&catalogue()).iter().map(|c| c.label()).collect();
+        let labels: Vec<&str> = self.0.with(|s| categories(&s.maps)).iter().map(|c| c.label()).collect();
         Some(format!("{CATEGORIES_TITLE}: {count} rows ({})", labels.join(", ")))
     }
 }

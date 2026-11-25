@@ -599,7 +599,7 @@ pub fn trim(images: &Path, cap: u64, keep: &BTreeSet<LevelId>) -> Vec<LevelId> {
 pub struct StoreLevels {
     store: PathBuf,
     images: PathBuf,
-    packages: Vec<Loaded>,
+    packages: Arc<[Loaded]>,
     served: Served,
     /// The packages that are ours: one of them refused stops a level's
     /// build instead of being left out ([`assemble_strict`]).
@@ -610,11 +610,16 @@ pub struct StoreLevels {
 impl StoreLevels {
     /// The levels of the store at `store` under `packages` (load order),
     /// images under `images`, recorded in `served`.
-    pub fn new(store: PathBuf, images: PathBuf, packages: Vec<Loaded>, served: Served) -> Self {
+    pub fn new(
+        store: PathBuf,
+        images: PathBuf,
+        packages: impl Into<Arc<[Loaded]>>,
+        served: Served,
+    ) -> Self {
         Self {
             store,
             images,
-            packages,
+            packages: packages.into(),
             served,
             strict: BTreeSet::new(),
             done: BTreeMap::new(),

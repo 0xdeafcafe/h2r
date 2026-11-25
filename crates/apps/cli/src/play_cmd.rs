@@ -348,10 +348,10 @@ fn hosted(
             None => gfx,
         }
     };
-    let native_size: boot::run_opts::NativeSize = Arc::new(host.native_size());
+    let native_target: boot::run_opts::NativeTarget = Arc::new(host.native_target());
     let (gfx, view) = boot::d3d_glue::window_targets(
         &store,
-        native_size, host.display_size(),
+        native_target, host.display_size(),
         || configure(d3d::GfxBackend::new(host.gfx_context())),
         || {
             let present = host
@@ -578,7 +578,7 @@ pub(crate) fn run_with_theater(
         // consumes the unused `GuestHost::mixer`).
         audio: false,
         title: "Halo 2".into(),
-        aspect: app::DisplayAspect::Source,
+        aspect: app::DisplayAspect::Drawable,
         window_matches_monitor_aspect: true,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.

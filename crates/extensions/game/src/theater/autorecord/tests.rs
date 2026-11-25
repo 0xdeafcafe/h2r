@@ -370,12 +370,40 @@ fn a_session_names_the_game_on_its_tape_when_it_starts_and_clears_it_when_it_end
 }
 
 #[test]
-fn a_cut_plays_back_with_the_recordings_player_features() {
+fn a_long_game_with_fragmented_calls_is_listed_saved_and_replayed() {
+    use film::tape::{Call, Tap};
+
     let dir = Temp::new("replay");
     let auto = local(&dir, &dir.0.join("auto-tape.h2film"), true);
-    ticks(&auto, &crate::theater::tests::arena(), 40);
-    end_game(&auto, 10, 80);
-    let (cut, _) = cut_films(&dir.0).pop().expect("the game's film");
+    let guest = crate::theater::tests::arena();
+    let call = |tick: u32| Call {
+        index: 0,
+        op: "Service".into(),
+        args: vec![tick; 40],
+        thread: 1,
+        result: Ok(tick),
+        outputs: if tick % 724 == 0 { vec![vec![17; 65536]; 17] } else { vec![] },
+    };
+    for tick in 1..=2100 {
+        auto.record(call(tick));
+        auto.checkpoint(&guest);
+    }
+    end_game(&auto, 10, 4200);
+    let library = film::Library::open(&dir.0).unwrap();
+    let rows = library.list().unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!((row.map.as_str(), row.variant.as_str(), row.length_ticks), ("zanzibar", "Slayer", 2100));
+    library.save(&row.id).unwrap();
+    let saved = library.get(&row.id).unwrap();
+    assert!(saved.saved);
+    let cut = saved.path;
+    let mut track = film::blam::TrackReader::open_with_film(&cut).unwrap();
+    assert_eq!(track.descriptor.match_start_tick, Some(10));
+    for tick in 1..=2100 {
+        assert_eq!(track.step().unwrap().unwrap().tick, tick);
+    }
+    assert!(track.step().unwrap().is_none());
     let replay = Session::open(
         None,
         Some(crate::theater::Replay {
@@ -401,6 +429,17 @@ fn a_cut_plays_back_with_the_recordings_player_features() {
     )
     .unwrap()
     .unwrap();
+    for tick in 1..=2100 {
+        let expected = call(tick);
+        let actual = replay.next(&expected.op, &expected.args, expected.thread).unwrap();
+        assert_eq!(actual.index, u64::from(tick - 1));
+        assert_eq!(actual.outputs, expected.outputs);
+        assert_eq!(actual.result, expected.result);
+        if tick < 10 {
+            replay.checkpoint(&guest);
+            assert!(replay.status().failure.is_none());
+        }
+    }
     assert!(replay.plays_back());
     assert!(replay.player_features(), "the replay plans the recording's player features");
 }
@@ -511,7 +550,14 @@ fn a_failed_recording_keeps_the_game_in_play() {
         let mut s = auto.lock();
         let Mode::Record(rec) = &mut s.mode else { panic!("a recording") };
         rec.meta.start_for_test(12, "zanzibar", film::blam::Mode::Custom);
-        s.fail("a synthetic failure".into());
+        drop(s);
+        use film::tape::{Call, Tap};
+        let mut call = Call { index: 0, op: "Random".into(), args: vec![],
+            outputs: vec![], result: Ok(0), thread: 0 };
+        auto.record(call.clone());
+        call.op = "x".repeat(65);
+        auto.record(call);
+        assert!(auto.status().failure.is_some());
     }
     auto.finish(80, true).unwrap();
     assert_eq!(cut_films(&dir.0).len(), 1, "what was recorded is kept");

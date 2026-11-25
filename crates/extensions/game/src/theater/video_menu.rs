@@ -1,26 +1,33 @@
 //! The guest draws the Video row and its picker on the reference surface.
 //! Record each size the menu observes independently of the viewer's raster.
 use super::{Mode, Session, Startup};
-use crate::run_opts::NativeSize;
+use crate::run_opts::NativeTarget as ReadTarget;
 use crate::setting_defs::{GUEST_FRAME, RESOLUTION};
 use anyhow::{Result, ensure};
 use film::tape::{Call, Tap, VIDEO_MENU_SIZE};
-use settings::{Resolution, Store};
+use settings::{NativeTarget, Resolution, Store};
 use std::sync::Arc;
 
-fn pack((w, h): (u32, u32)) -> Option<u32> {
-    Resolution::fixed(w, h).map(|_| w << 16 | h)
+// The picker only observes the viewport. A spare bit marks windowed
+// observations, so size-only tapes retain their original budgeted labels.
+const WINDOWED: u32 = 1 << 31;
+
+fn pack(target: NativeTarget) -> Option<u32> {
+    let (w, h) = target.viewport;
+    let mode = if target.fullscreen { 0 } else { WINDOWED };
+    Resolution::fixed(w, h).map(|_| mode | (w << 16) | h)
 }
 
-fn unpack(bits: u32) -> Option<(u32, u32)> {
-    let size = (bits >> 16, bits & 0xffff);
-    pack(size).map(|_| size)
+fn unpack(bits: u32) -> Option<NativeTarget> {
+    let size = ((bits & !WINDOWED) >> 16, bits & 0xffff);
+    Resolution::fixed(size.0, size.1)?;
+    Some(NativeTarget { fullscreen: bits & WINDOWED == 0, ..NativeTarget::windowed(size) })
 }
 
-fn observe(tap: &dyn Tap, native: &NativeSize) -> (u32, u32) {
+fn observe(tap: &dyn Tap, native: &ReadTarget) -> NativeTarget {
     if tap.replaying() {
         let Some(call) = tap.next(VIDEO_MENU_SIZE, &[], 0) else {
-            return GUEST_FRAME;
+            return NativeTarget::windowed(GUEST_FRAME);
         };
         if call.outputs.is_empty()
             && let Some(size) = call.result.ok().and_then(unpack)
@@ -28,7 +35,7 @@ fn observe(tap: &dyn Tap, native: &NativeSize) -> (u32, u32) {
             return size;
         }
         tap.fault("invalid taped Video menu size".into());
-        return GUEST_FRAME;
+        return NativeTarget::windowed(GUEST_FRAME);
     }
     let size = native();
     if let Some(bits) = pack(size) {
@@ -43,7 +50,8 @@ fn observe(tap: &dyn Tap, native: &NativeSize) -> (u32, u32) {
             },
         );
     } else {
-        tap.fault(format!("invalid Video menu size {}x{}", size.0, size.1));
+        let (w, h) = size.viewport;
+        tap.fault(format!("invalid Video menu size {w}x{h}"));
     }
     size
 }
@@ -51,9 +59,9 @@ fn observe(tap: &dyn Tap, native: &NativeSize) -> (u32, u32) {
 impl Session {
     pub fn video_menu_size(
         self: &Arc<Self>,
-        native: NativeSize,
+        native: ReadTarget,
         store: &Arc<Store>,
-    ) -> Result<NativeSize> {
+    ) -> Result<ReadTarget> {
         let mut state = self.lock();
         if state.header.version < 2 || state.header.meta.source != film::Source::Local {
             return Ok(native);
@@ -177,19 +185,22 @@ mod tests {
     #[test]
     fn replay_follows_recorded_resizes_and_rejects_invalid_dimensions() {
         let mut tape = Tape::default();
-        let recorded = [(5120, 2880), (3440, 1440)];
+        let large = NativeTarget::windowed((5120, 2880));
+        let recorded = [
+            large,
+            NativeTarget { fullscreen: true, ..large },
+            NativeTarget::windowed((2784, 1728)),
+        ];
         for size in recorded {
-            assert_eq!(
-                observe(&tape, &(Arc::new(move || size) as NativeSize)),
-                size
-            );
+            let native: ReadTarget = Arc::new(move || size);
+            assert_eq!(observe(&tape, &native), size);
         }
-        let viewer: NativeSize = Arc::new(|| panic!("reading the viewer in an exact replay"));
+        let viewer: ReadTarget = Arc::new(|| panic!("reading the viewer in an exact replay"));
         tape.replay = true;
         for size in recorded {
             assert_eq!(observe(&tape, &viewer), size);
         }
-        for bits in [0, 640 << 16, (8193 << 16) | 480] {
+        for bits in [0, WINDOWED, 640 << 16, (8193 << 16) | 480] {
             tape.calls.lock().unwrap().push_back(Call {
                 index: 0,
                 op: VIDEO_MENU_SIZE.into(),
@@ -198,9 +209,9 @@ mod tests {
                 result: Ok(bits),
                 outputs: vec![],
             });
-            assert_eq!(observe(&tape, &viewer), GUEST_FRAME);
+            assert_eq!(observe(&tape, &viewer), NativeTarget::windowed(GUEST_FRAME));
         }
-        assert_eq!(tape.failures.lock().unwrap().len(), 3);
+        assert_eq!(tape.failures.lock().unwrap().len(), 4);
     }
 
     #[test]

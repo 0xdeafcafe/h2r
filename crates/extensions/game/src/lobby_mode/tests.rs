@@ -697,6 +697,7 @@ fn the_header_has_its_own_panel_hook_inside_lobby_options() {
         ))
         .unwrap();
         r.add(&LobbyMode {
+            theater: None,
             offer: ALL,
             store: Some(store),
             data: std::env::temp_dir(),
@@ -736,6 +737,7 @@ fn the_rows_go_after_the_other_rows_on_the_plan() {
     r.add(&page.class()).unwrap();
     r.add(&ff::SetupRow { page }).unwrap();
     r.add(&LobbyMode {
+        theater: None,
         offer: ALL,
         store: Some(ff_store),
         data: std::env::temp_dir(),
@@ -787,6 +789,7 @@ fn the_arrangement_runs_after_every_row_is_added() {
     r.add(&page.class()).unwrap();
     r.add(&ff::SetupRow { page }).unwrap();
     r.add(&LobbyMode {
+        theater: None,
         offer: ALL,
         store: Some(ff_store),
         data: std::env::temp_dir(),
@@ -984,6 +987,23 @@ mod gate {
         g::clear();
         if let Some(mode) = mode {
             lobby_start::set_mode(mode);
+        }
+    }
+
+    #[test]
+    fn siege_picker_and_start_check_the_same_selected_record_and_objectives() {
+        let siege = crate::community_variants::listed_named("Siege").unwrap();
+        let blob = crate::rules::feature::local_blob(siege.ext().script.prefix).unwrap();
+        let (ir, _) = ::rules::verify::load(&blob).unwrap();
+        let mut guest = lobby(MAP, siege.ext().script.prefix, true);
+        guest.put(VARIANT, siege.record.bytes());
+        let input = g::read(&guest, VARIANT).unwrap();
+
+        for (census, supported) in [(Census::default(), false), (territory_map(), true)] {
+            let sources = Fake::new(census, &ir);
+            let offers = g::map_filter_using(&siege.record, &sources).unwrap();
+            assert_eq!(offers(MAP), supported);
+            assert_eq!(g::check(&input.key, &sources) == Verdict::Clear, supported);
         }
     }
 

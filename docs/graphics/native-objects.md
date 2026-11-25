@@ -1,6 +1,6 @@
 # Native renderer stage 2: objects and skinning
 
-Status: Built. Objects draw natively in the default configuration; the first-person lights' layers 12 and 13 draw from the scene ([native-lights.md](native-lights.md)), their layers 11 and 14 on D3D.
+Status: Built. Resident object passes and authenticated indexed ranges draw natively in the default configuration; the first-person lights' layers 12 and 13 draw from the scene ([native-lights.md](native-lights.md)), their layers 11 and 14 on D3D.
 Code: `crates/rewrites/native-render/src/{model,model_load,model_gpu,objects,instances,object_*}.rs`, `crates/rewrites/render-bridge/src/{native_objects,native_edits}.rs`, `crates/extensions/game/src/native_objects_glue.rs`. Tests: `crates/rewrites/native-render/tests/models_gpu.rs`, `crates/rewrites/render-bridge/tests/native_objects.rs`, `crates/rewrites/native-render/tests/object_lighting_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -35,7 +35,23 @@ and the first-person owner are suppressed. `native_objects_glue/display.rs`
 submits resident opaque parts only to the display attachments. An object
 whose setup needs an animation update, effect overlay or attachment walk,
 or whose selected section has an unsupported material, can still be
-absent at the sides in protected sessions.
+absent at the sides in protected sessions. When the unit pose tail
+(`0x000bd934`) can adjust either of its selected nodes, the shared
+object setup leaves palette construction to the guest. This also
+applies when both earlier actor pose overlays are idle.
+
+When the native pass leaves a run to the guest and the guest's D3D draws
+are the display — single-copy rendering, so no distinct reference copy
+takes the readbacks — the Highest choice swaps the record's section,
+palette block and part index range at the sorted geometry handler itself
+(`native_scene_lists/display_swap.rs`, after the native objects walk has
+taken its runs): the substituted section must classify and material
+identically, its geometry must be resident, and its remap rows must
+already be in the palette, or the retail draw stands. No pose step runs
+for the substituted tier; the walk and every resource request stay
+retail. In every other configuration the guest's D3D draws are the
+reference and keep the retail geometry
+([projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail)).
 
 The stack holds the remaining entry count at handler ESP + `0x28`, with
 the array immediately after it. The entry contains its item index, the
@@ -86,8 +102,8 @@ followed by the remaining object tags. It decodes each distinct render
 model once, creates its GPU resources and submits its texture uploads.
 It publishes the completed definition index and resident models
 together. The first swap after publication makes them eligible for
-native draws. Later spawns share those models. D3D draws each run until
-its models, bindings and target pipelines are ready. Map activation and
+native draws. Later spawns share those models. The indexed emitter handles resident-plan misses while the
+models, bindings and target pipelines warm. Map activation and
 snapshot reload invalidate the previous load's work. A pass that already
 committed holds its models until recording ends. The last reference sends
 their GPU resources to the shared map retirement worker for destruction.
@@ -187,7 +203,7 @@ The method for comparing the walk with `impl.render.native=off` is in
 | mode node `+0x28` (`0x34` bytes) | The node's inverse rest frame in the same layout (scale, then the inverse's three columns, then its position; `crates/tools/h1-assets/src/models/tests.rs`, `node_inverse_frames_are_stored_as_columns`, and the retail check `retail_h2_mode_layouts`). A retail hlmt node is its mode node's first `0x5c` bytes (V, `crates/formats/tags/src/defs/hlmt.txt`), so object node `i` is mode node `i`. |
 | skinning | Vertex world position `Σ wₖ · N[nₖ] · I[nₖ] · p`, with `N` the object's node matrix, `I` the mode node's inverse rest frame, `nₖ` the section's node map applied to the vertex's node index (S: that the game composes the same `N·I` for its node constants; "rest frame times inverse is the identity" is Test in h1models, the draw side is checked by the A/B). Sections without vertex nodes (classification 1) are bound to the first node of their node map, else node 0 (S). |
 | `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` its second stack argument, the render model (mode) tag datum (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0x10` its fifth, the object's lighting (below), `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state built under `0x00133ab0` (`+0` the object handle, count `+0x166`, per-section words from `+0x48` with stride 4: the lighting pointer at `+0x48 + 4i`, the mode datum at `+0x5c + 4i`, both filled by `0x0003d4f0` and `0x0004b5d0`). **The record does not hold the object handle**. |
-| record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails stays on D3D. Code; Test on synthetic memory. |
+| record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails uses the geometry handler. Code; Test on synthetic memory. |
 | `0x000badc0` | The object lookup: slot `handle & 0xffff` below `[H+0x38]`, element `[H+0x24]·slot + [H+0x44]` (12 bytes; `0x0003ddd0` uses a fixed 12), live when its `u16` salt is non-zero and equals `handle >> 16`, body at `+8`. `objects::body` follows it. |
 | `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
 | `0x00040136` | The return address of the other layer-3 caller: `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. With the native renderer on, `feature::native_first_person` owns this caller's eligible items with the device's first-person view constants; the objects observer leaves it alone. |
@@ -214,16 +230,11 @@ pass per view carrying, per drawn object, the definition and the node
 matrices copied out of the body (`0x34 · count` bytes) and the bounding
 sphere.
 
-Only layer 3 is replaced (`native_render::objects::REPLACED_LAYERS`): the
-objects' layer 1, 5, 7, 8 and 20 entries and their dynamic-light layers (10
-to 13) keep drawing through D3D, so self-illumination, environment maps,
-specular, change colour and dynamic lights still come from the game's own
-passes on top of the native base. Those passes depth-test `LessEqual`
-against the depth the native pass wrote; skinned on the GPU in float, the
-native positions match the translated vertex programs to within an ulp or
-two, not bit for bit, so an equal-depth pass can lose pixels on curved
-surfaces (S: how many). Adding a layer is a mask change plus the shading
-that layer did.
+The base walk owns layer 3. The scene layer planner handles object layers
+1, 2, 5, 7, 8, 17 and 20. The sorted camouflage and hologram handlers
+select layers 18, 19 and 21. Each layer retains its own pass order,
+depth test and blending. Dynamic lighting has a separate planner.
+See [native-lights.md](native-lights.md).
 
 What the native pass draws is exactly the set of objects whose layer-3
 items it skipped. The game's own visibility, object list, attachment
@@ -345,9 +356,7 @@ Opaque parts are drawn with the game's own vertex program and pixel shader
 (see "Object programs"). `model_gpu::GpuModels` and `models.wgsl` draw the
 base map times a fixed ambient plus one directional term
 (`ambient + diffuse · max(n·l, 0)`); only the theater viewer uses that pass
-(`crates/extensions/game/src/theater/host_view.rs`). Materials without a decodable
-base map keep their D3D draws (the skip leaves their items alone). Transparent
-parts (kind 4) are not in layer 3 and are left out.
+(`crates/extensions/game/src/theater/host_view.rs`). The sorted handler submits transparent parts (kind 4) at its indexed emitter. See [native-transparents.md](native-transparents.md).
 
 Base maps go through the world's stage decoder (`StageDecoder`, one per
 map's model worker): a palettized one (P8, P8 bump) is expanded through
@@ -404,33 +413,45 @@ own inputs. How the game lights an object's layer-3 pass (Code, `h2 disasm`;
   bytes and the inputs' defaults into its `ObjectFrame`
   (`objects::object_lighting`: body `+0xcc`, the record still its own),
   so the pass has the frame's values whatever the cache does next.
-- **The refusal.** The native models pass does not apply them: its
-  program is ours, not the game's `lightmap_dynamic`/`sh_dynamic`. So no
-  opaque material is drawn by it (below): one none of whose layer-3
-  implementations reads only what the object path gives is refused at
-  load and keeps its D3D draws (`object_program::program_refusal`, which
-  names what each implementation reads that the path cannot give, or says
-  it has no layer-3 pass).
 
 ### Object programs
 
-Every opaque object material, whether or not its layer-3 pass reads the
-object's lighting, is drawn with the game's own vertex program and pixel
-shader (`native_render::object_program`, `object_program_gpu`), or left
-to D3D, each piece with synthetic tests. The base-map
-stand-in is not used for opaque parts: it would light them flat and pose
-them from the object's node matrices rather than the rows their records
-upload. Draw admission looks up each object's definition in the
-resident model index and checks the part, shader and implementation
-of that model. Other models using the same material can require
-different programs and keep their D3D draws.
+The map worker compiles each material's base and scene-layer passes
+independently. Models with only overlay or sorted passes can supply those
+draws. For a shader substituted by a render record, the worker compiles
+its layers 18, 19 and 21 over the model's drawn parts. The layer lookup
+uses the shader, section and part selected by the record. Its base-layer
+coverage and display-only section list still require matching base passes.
 
-A material with no layer-3 pass ("it has no layer-3 pass" in the load
-log) is not drawn at layer 3 at all: its items sit in other layers, which
-the objects stage does not touch, so they keep their D3D draws while the
-definition's layer-3 materials go native. On 03a masterchief
-(0xf40a1293) and 0xe703058e each have one, beside a material whose every
-implementation samples engine texture 3.
+A transparent-only model needs no base program. Its layer-15 draw uses
+the shader bindings and index range at the sorted emitter. A model made
+only of part kinds 0 and 5 has no drawable range. Both definitions can
+finish loading with an empty base-part list.
+
+If a scene or sorted object misses the resident plan, the standard
+geometry handler sets up the material and streams. At the indexed
+emitter, `render_bridge::native_transparents` checks the layer caller,
+the handler's saved render-record pointer, the live record index and
+its model datum. An accepted full-part or subpart range submits through
+`world_layers_gpu::IndexedPass` with the bound state and counts under
+the objects stage. The handler continues with its ordinary draw when
+the indexed reservation fails.
+
+In layers 1 and 17 an unbound direct read of `c[18]` inherits the
+hardware register. At layer entry the objects glue reads its four words
+after draining the device, together with row 0 and its dirty bit in
+shader material bank 1. A pending upload or a material write that changes
+the row runs through the binder and indexed emitter. If an earlier
+structure pass can write the row before an object that may inherit it,
+the layer planner preserves that upload in list order.
+
+Layer 18 evaluates the pass's Xbox `BLENDCOLOR` writes in order. The
+pass can supply the starting colour or inherit it. A binding can change
+RGB while preserving alpha, or change alpha while preserving RGB.
+When the write must persist for later guest work, the handler performs
+it before native indexed submission. Layer 19 takes fog vector 41 and
+scalar 39 from the view captured at layer begin. Object vertex and pixel
+bindings use the same values, including the view's disabled-fog defaults.
 
 - **The texture accumulation target** (engine texture 3, Code). The
   binding `0x00019530` takes for 3 (`0x000195b2`) binds render target 1
@@ -525,10 +546,8 @@ implementation samples engine texture 3.
   the port (`object_vertex_uniforms`: the vector inputs through
   `ResolvedImplementation::vector_bindings`, the scalar ones through `scalar_bindings`, both keeping only what later bindings leave);
   `c[50..]` the node rows; `c[170..173]` the decompression.
-  `inputs_supported` refuses an implementation that reads any other
-  per-draw input (time, the camera, object functions) or puts a lighting
-  input into a combiner constant (that would need a per-object pixel
-  block).
+  Layer passes also resolve bound view inputs. A binding that targets a
+  pixel combiner writes the per-object pixel block.
 - **The node rows** (`node_rows`, Code): a record with a matrix at
   `+0x1c` uploads it transposed, without its scale, as three registers at
   hardware `c[50]` (`0x0004d830`). Otherwise `0x0004d8e0` reads the
@@ -583,9 +602,8 @@ implementation samples engine texture 3.
   section's implementation with its rows. Per material each implementation
   of its layer-3 pass that compiles for every section it is in, with its
   stage bitmaps decoded (linear textures refused, as the world programs
-  do), is drawn; one that does not is left out with its reason, and a
-  material with none stays on D3D whole. An object whose records pick an
-  implementation some lit part of its definition lacks stays on D3D.
+  do), is available to the resident walk. The emitter can submit a range
+  whose selected implementation could not be preloaded.
 - **The normalization cube.** A stage sampling engine texture 1 is bound
   to the vector normalization cube the lights load
   (`native_lights_glue::light_textures`, the globals' rasterizer data),
@@ -630,7 +648,8 @@ implementation samples engine texture 3.
   the observer does (below): the node blocks at `0x00487b1c..` are guest
   RAM, so they are frame `k`'s. An object of a definition with lit parts
   is drawn only where its implementation's lighting inputs (and the
-  root value inputs 40 and 37) read; else that item stays on D3D.
+  root value inputs 40 and 37) read. An unavailable input leaves setup to
+  the geometry handler.
 - **The draw** (`LitObjects::encode`). One render pass over the same
   targets: per planned item, in the list's order, its vertex
   block (`object_vertex_uniforms` over the view's `c[0..18]`) and pixel
@@ -695,10 +714,9 @@ vertex and no matrix work on the CPU.
 - **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`).
   The map worker owns the definition scan and GPU upload, palette
   definitions first. A validated model contributes its supported parts to
-  draw admission. Materials whose base map cannot decode keep their D3D
-  draws. The worker logs readiness after submitting the uploads and
-  publishing its result as
-  `native-objects: <map>: N definitions ready, M left to D3D`.
+  draw admission. The worker reports how many definitions it indexed and
+  how many failed to preload. Actual native submissions are counted at
+  the scene walk or the indexed emitter.
 - **Diagnostics.** Every layer-3 call of the observer ends in one counted
   `Stop`: first person (`[esp]` is `0x00040136`, left to D3D), wrong caller
   (`[esp]` is neither that nor `0x0002bed5`), no host, no camera, no map, no

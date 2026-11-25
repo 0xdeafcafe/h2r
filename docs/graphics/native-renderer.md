@@ -65,6 +65,31 @@ Shared modules: `native-render`: `program`, `look`, `pass_state`, `instances`. S
 Stage 1: the static world, Stage 2: objects and skinning, Stage 3:
   transparents, Stage 4: lights and shadows, Stage 4b: water, fog and
   camouflage, Stage 5: post and HUD are the table rows above.
+## Map resource lifetime
+
+`render_bridge::native_map_work::reset` invalidates the prior generation and
+detaches its BSP, object, light-model, viewmodel, screen-effect and indexed
+draw caches before requesting the next BSP. A same-map BSP switch or revert
+also detaches the old BSP and its indexed and packed draw caches through
+`reload_bsp`. Object and screen data for the map remain available. The packed
+transparent binding cache holds up to 4,096 bindings and 16 MiB of payload
+(`game::native_transparents_glue::Cache`). A queued draw can retain its own resources
+until it finishes. A late loader can publish only to its own generation
+and mailbox.
+
+The native map loader workers serialize their bulk decode and upload work
+through `game::native_map::begin_load`. They wait for queued retirement on
+the worker thread. First-person loading opens the map for a batch of model
+requests and releases its map readers and decoded images when the batch
+ends. Material images share their backing allocation across passes. Object
+and shader readers share ordinary tag metadata within a model load. Sun
+caster and receiver lookup holds weak references to the owning map state.
+
+Memory probes and loader scopes are listed in
+[Explain memory growth](../runtime/agent-api.md#explain-memory-growth).
+The play-run measurements are in
+[Map-load memory](notes/2026-11-24-map-load-memory.md).
+
 ## Admission
 
 World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry
@@ -178,7 +203,9 @@ and indirect arguments. Its upload arena reserves a fresh source range for
 each write and records a copy immediately before the consuming draw. Target
 copies and multiple runs may share a submission. The queue completion callback
 returns the leased storage to its pool after the last submission using it.
-World placement transforms are initialized once at map load.
+World placement transforms and layer-3 lighting implementations are resolved
+at map load. The accumulation texture sampled by combined materials is
+resolved on each target copy at the draw. See [the static world](native-world.md).
 
 ## Frame counters
 
@@ -291,8 +318,12 @@ needs a matching A/B. See [render-loop.md](render-loop.md).
 
 The world stands down when its BSP loads yield no drawable native parts.
 The lights stand down when the native world is disabled or its BSPs yield
-no native lit parts. Fog and water stand down when their translated passes
-yield no drawable parts. A BSP-backed stage stays eligible while any BSP
+no native lit parts. Fog and the layer-6 water edge blend stand down when their
+translated passes yield no drawable parts. This applies to whole-list
+replacement. Indexed fog ranges stay eligible at
+their indexed draws, using the live shader and geometry after the guest
+handler sets them up. Planar world passes sample the current view’s combiner
+colour and fade weights. A BSP-backed stage stays eligible while any BSP
 has work or has yet to be checked.
 
 Objects stand down only when the map's tag index contains no object
@@ -430,7 +461,7 @@ grid used for object culling.
 
 **Lens-flare colour draws.** At each researched End call the bridge checks the saved caller and admits one fan. The guest supplies the projected corners, visibility fade, shader state and target order. The native pass uses the resolved stream and bindings for that draw, including the alternating filter targets. A failed preparation leaves the original packet available. There is no separate scene-list extraction. The [retail trace](notes/2026-11-24-lens-flares.md) identifies the six colour draw sites and the visibility callback.
 
-With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The original GPU query supplies visibility feedback.
+With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The same stage also submits the position-only visibility fan to the GPU sample counter inside the guest's query.
 
 **Alternate scene.** The layer planner draws admitted structure and object items in layers 1, 5 and 2. Layer 3 uses the BSP mask reservation and the sorted object walk with an alternate view key and the current render camera. First-person calls use their own camera and models. View setup, target selection, composition and finish still run in guest order.
 
@@ -490,8 +521,6 @@ through the common adapter.
   stages other than the indexed world, object and transparent passes are
   drawn at their tick's camera (`render.stats`' `display_rate.held_stages`).
 - Split screen: one native pass per view with the view's camera.
-- Which 03a templates have a layer-1 texaccum pass that layer 3 samples in
-  screen space; those need the texaccum target bound to the native pass.
 - All-stage runtime counts of the residual callers
   ([retire-d3d.md](retire-d3d.md), "Measurement plan").
 

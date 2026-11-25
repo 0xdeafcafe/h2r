@@ -10,10 +10,14 @@ fn the_switch_off_and_no_parent_update_skip() {
     let mut r = Registry::new(Switches::defaults());
     r.add(&NativeParticles).unwrap();
     let plan = r.build(&Base).unwrap();
-    assert_eq!(plan.chains.len(), 29);
+    assert_eq!(plan.chains.len(), 31);
     use engine::points::scene_effects::{EFFECT_LAYERED_A, EFFECT_LAYERED_B, EFFECT_QUERY};
-    for point in [EFFECT_QUERY, EFFECT_LAYERED_A, EFFECT_LAYERED_B] {
-        assert!(!plan.chains.contains_key(&point.base), "static refusal at {}", point.name);
+    use engine::points::render_aspect::FLARE_QUERY_END;
+    for point in [EFFECT_LAYERED_A, EFFECT_LAYERED_B] {
+        assert!(!plan.chains.contains_key(&point.base), "layered geometry belongs to transparents");
+    }
+    for point in [EFFECT_QUERY, FLARE_QUERY_END] {
+        assert!(plan.chains.contains_key(&point.base), "missing query boundary at {}", point.name);
     }
     assert!(plan.chains.contains_key(&EMIT_READY.base));
     assert!(!plan.chains.contains_key(&native_render::particles::EMIT_QUAD), "the walk replaces the emit observer");

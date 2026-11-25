@@ -231,8 +231,9 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
             },
         )
         // The rows are posed before any view of the frame is drawn,
-        // including the agent spawn view's.
+        // including the agent spawn view's and Theater's camera.
         .after_feature("agent-frames")
+        .after_feature("theater-camera")
         .context_only();
     b.raw()
         .after(

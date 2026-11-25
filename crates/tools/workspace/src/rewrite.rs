@@ -135,7 +135,7 @@ pub type FontObserver = Box<dyn Fn(&str, &[u8]) + Send>;
 
 /// The one rewrite of the game's set.
 pub struct PackageRewrite {
-    packages: Vec<Loaded>,
+    packages: Arc<[Loaded]>,
     cache: Option<PathBuf>,
     /// Whether an item names a map by its class (every map may be for it).
     by_class: bool,
@@ -166,7 +166,8 @@ pub struct PackageRewrite {
 
 impl PackageRewrite {
     /// The rewrite of `packages`, on, in load order ([`crate::GameSet::loaded`]).
-    pub fn new(packages: Vec<Loaded>) -> Self {
+    pub fn new(packages: impl Into<Arc<[Loaded]>>) -> Self {
+        let packages = packages.into();
         let mut by_class = false;
         let mut names = HashSet::new();
         for i in packages

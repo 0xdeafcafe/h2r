@@ -190,16 +190,9 @@ impl Tab {
     }
 }
 
-/// Our mode as a member's console reads it: the leader's own, else
-/// Firefight when the custom lobby's map carries the kit, else
-/// Multiplayer. A member cannot tell Forge from retail's data
-/// (docs/game/party-lobby.md, "Other machines").
-pub fn seen_mode(leader: bool, own: Mode, kit_map: bool) -> Mode {
-    match (leader, kit_map) {
-        (true, _) => own,
-        (false, true) => Mode::Firefight,
-        (false, false) => Mode::Multiplayer,
-    }
+/// Forge is a local lobby choice. A guest in a custom lobby sees Custom Games.
+pub fn seen_mode(leader: bool, own: Mode) -> Mode {
+    if leader && own == Mode::Forge { Mode::Forge } else { Mode::Multiplayer }
 }
 
 // ---- which tabs there are ----
@@ -231,7 +224,7 @@ impl Present {
 
     /// The modes present, in [`Tab::ALL`]'s order.
     pub fn tabs(self) -> Vec<Tab> {
-        Tab::ALL.into_iter().filter(|&t| self.has(t)).collect()
+        Tab::ALL.into_iter().filter(|&t| t != Tab::Firefight && self.has(t)).collect()
     }
 }
 

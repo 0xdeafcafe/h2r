@@ -10,7 +10,8 @@
 #   MAP     a multiplayer map (default lockout)
 #   TICKS   game ticks of gameplay to check (default 900: 30 s)
 #   PORTS   port switch names (sim.native_unit_pose), groups (sim.native,
-#           sim.physics) or all (the default)
+#           sim.physics, sim.native.objects, sim.seats), object point names,
+#           or all (the default standalone port set)
 #
 # Environment:
 #   H2            the h2 binary (default h2; reinstall it from this tree)
@@ -42,37 +43,55 @@ sim_native=(
   sim.native_transform_compose
   sim.native_pose_matrix
   sim.native_rotation_codec
-  sim.native_point_to_leaf
-  sim.native_geometry_test
   sim.native_unit_pose
   sim.native_animation_stream
-  sim.native_graph_resolve
   sim.native_marker_transforms
-  sim.native_bsp_segment
-  sim.native_collision_query
-  sim.native_mopp_box
-  sim.native_mopp_ray
 )
 sim_physics=(
-  sim.native_havok_solver
-  sim.native_havok_support_vertices
-  sim.native_havok_weld
-  sim.native_spatial_visit
-  sim.native_spatial_portal
   sim.native_unit_aim
   sim.native_first_person_pose
   sim.native_first_person_filters
-  sim.native_observer_camera
+)
+# Phase 7's seats share one switch; with their checks on they run as the
+# guest-authoritative arm (docs/engine/shadow-exec.md), so the match
+# answers exactly as retail and the bodies are the ones checked.
+sim_seats=(
+  sim.seats.player_look_curve
+  sim.seats.player_control_update
+  sim.seats.player_action_control
+  sim.seats.player_neutral_control
+  sim.seats.unit_apply_control
+  sim.seats.hud_seat_update
+  sim.seats.aim_target_update
+  sim.seats.aim_target_search
+  sim.seats.aim_target_compare
+  sim.seats.shot_aim
+  sim.seats.aim_assist_params
+  sim.seats.observer_camera
+  sim.seats.predict_resources
+)
+
+# The object bodies replace some standalone ports (including unit aim).
+# Select this group separately from the standalone "all" profile.
+sim_objects=(
+  OBJECTS_PRE_PHYSICS
+  OBJECTS_POST_PHYSICS
+  OBJECT_FUNCTION_VALUE
+  LIGHT_RECORD_UPDATE
+  UNIT_CLAMP_DIRECTION
+  UNIT_ACTIONS_UPDATE
 )
 
 ports=()
 for name in "${selected[@]}"; do
   case "$name" in
-    all) ports+=("${sim_native[@]}" "${sim_physics[@]}") ;;
+    all) ports+=("${sim_native[@]}" "${sim_physics[@]}" "${sim_seats[@]}") ;;
     sim.native) ports+=("${sim_native[@]}") ;;
     sim.physics) ports+=("${sim_physics[@]}") ;;
+    sim.native.objects) ports+=("${sim_objects[@]}") ;;
+    sim.seats) ports+=("${sim_seats[@]}") ;;
     *)
-      if [[ " ${sim_native[*]} ${sim_physics[*]} " != *" $name "* ]]; then
+      if [[ " ${sim_native[*]} ${sim_physics[*]} ${sim_objects[*]} ${sim_seats[*]} " != *" $name "* ]]; then
         echo "shadow-gate: no port or group named $name" >&2
         exit 2
       fi
@@ -83,8 +102,21 @@ done
 
 features="${H2_FEATURES:-}"
 json_ports=""
+seats_flagged=0
 for p in "${ports[@]}"; do
-  features="${features:+$features,}impl.$p"
+  if [[ " ${sim_objects[*]} " == *" $p "* ]]; then
+    if [[ ",$features," != *",impl.sim.native.objects,"* ]]; then
+      features="${features:+$features,}impl.sim.native.objects"
+    fi
+  elif [[ $p == sim.seats.* ]]; then
+    # Every seat sits behind the one phase switch; name it once.
+    if (( seats_flagged == 0 )); then
+      features="${features:+$features,}impl.sim.native.seats"
+      seats_flagged=1
+    fi
+  else
+    features="${features:+$features,}impl.$p"
+  fi
   json_ports="${json_ports:+$json_ports,}\"$p\""
 done
 

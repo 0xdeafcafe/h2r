@@ -356,6 +356,7 @@ fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
             of: aux,
             id: 0,
             how: ReplaySample::InPlace,
+            into: None,
         },
     );
     // The later shader reads the captured red on the copied black field.
@@ -691,7 +692,8 @@ fn e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged() {
     const EPOCH: u64 = 0x5e3_0001;
     let mut backend = GfxBackend::new(ctx);
     let scene = sun_scene(EPOCH, 0xe500_0001);
-    set_models(EPOCH, Some(Arc::new(SunModels(sun_model()))));
+    let casters: native_render::sun_casters::SharedModels = Arc::new(SunModels(sun_model()));
+    set_models(EPOCH, Some(&casters));
     // The mask's draw, magenta at (19, 5), inside shadow 0's marks.
     let build = |marks: bool| {
         let mut frame = replay();
@@ -772,7 +774,8 @@ fn e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world() {
     const EPOCH: u64 = 0x5e3_0002;
     let mut backend = GfxBackend::new(ctx);
     let scene = sun_scene_on(EPOCH, 0xe500_0001, frame_scene::LayerOwner::Cluster(0));
-    set_models(EPOCH, Some(Arc::new(SunModels(sun_model()))));
+    let casters: native_render::sun_casters::SharedModels = Arc::new(SunModels(sun_model()));
+    set_models(EPOCH, Some(&casters));
     // Cluster 0's part 0: the ground under the caster.
     let mut built = WorldBuilder::new();
     let ground = SectionInput {
@@ -820,7 +823,8 @@ fn e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world() {
     );
     assert_eq!(unloaded.report.e3.unwrap().sun_tiles, 0);
 
-    set_world(EPOCH, Some(Arc::new(world)));
+    let receivers: native_render::sun_casters::SharedWorld = Arc::new(world);
+    set_world(EPOCH, Some(&receivers));
     let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
     let report = e3.report.e3.unwrap();
     assert_eq!(report.sun_tiles, 1);
@@ -1149,7 +1153,8 @@ fn a_caster_behind_the_camera_shadows_the_ground_in_view() {
     {
         v.position = p;
     }
-    set_models(EPOCH, Some(Arc::new(SunModels(model))));
+    let casters: native_render::sun_casters::SharedModels = Arc::new(SunModels(model));
+    set_models(EPOCH, Some(&casters));
     let mut world = WorldBuilder::new();
     let floor = SectionInput {
         positions: vec![[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [-1., 1., 0.]],
@@ -1163,7 +1168,8 @@ fn a_caster_behind_the_camera_shadows_the_ground_in_view() {
         ..Default::default()
     };
     world.add_section(Owner::Cluster(0), &floor, &Placement::IDENTITY, None);
-    set_world(EPOCH, Some(Arc::new(SunWorld::new(&world.finish()))));
+    let receivers: native_render::sun_casters::SharedWorld = Arc::new(SunWorld::new(&world.finish()));
+    set_world(EPOCH, Some(&receivers));
     let mut backend = GfxBackend::new(ctx);
     let mut frame = replay();
     op(&mut frame, Slot::Opaque, bind());
@@ -1376,7 +1382,8 @@ fn a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail() {
         ..Default::default()
     };
     world.add_section(Owner::Cluster(0), &floor_and_board, &Placement::IDENTITY, None);
-    set_world(EPOCH, Some(Arc::new(SunWorld::new(&world.finish()))));
+    let receivers: native_render::sun_casters::SharedWorld = Arc::new(SunWorld::new(&world.finish()));
+    set_world(EPOCH, Some(&receivers));
     let frame_naming = |handle: u32| {
         let mut frame = replay();
         op(&mut frame, Slot::Opaque, bind());

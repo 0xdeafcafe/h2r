@@ -103,3 +103,68 @@ pub enum Event {
         value: u32,
     },
 }
+
+/// The events a device keeps until a caller drains them
+/// ([`crate::Device::take_events`]). Draws record events every frame and the
+/// product drains them only for the run report at exit, so the log keeps
+/// the first [`EventLog::LIMIT`] and counts the rest: a long session or a
+/// heavy effect load cannot grow it past a fixed size.
+#[derive(Debug, Default)]
+pub(crate) struct EventLog {
+    kept: Vec<Event>,
+    dropped: u64,
+}
+
+impl EventLog {
+    /// Events kept between drains.
+    pub(crate) const LIMIT: usize = 4096;
+
+    pub(crate) fn push(&mut self, event: Event) {
+        if self.kept.len() < Self::LIMIT {
+            self.kept.push(event);
+        } else {
+            self.dropped += 1;
+        }
+    }
+
+    /// The kept events and how many were counted past the limit since the
+    /// last drain.
+    pub(crate) fn take(&mut self) -> (Vec<Event>, u64) {
+        (
+            std::mem::take(&mut self.kept),
+            std::mem::take(&mut self.dropped),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skipped(n: usize) -> Event {
+        Event::DrawSkipped {
+            entry: "draw",
+            reason: format!("draw {n}: a reason long enough to cost a heap allocation"),
+        }
+    }
+
+    #[test]
+    fn a_long_session_keeps_a_fixed_number_of_events() {
+        let mut log = EventLog::default();
+        // A frame's worth of skipped draws, for many frames, never drained.
+        for frame in 0..500 {
+            for draw in 0..2000 {
+                log.push(skipped(frame * 2000 + draw));
+            }
+            assert!(log.kept.len() <= EventLog::LIMIT);
+            assert!(log.kept.capacity() <= 2 * EventLog::LIMIT);
+        }
+        let (kept, dropped) = log.take();
+        assert_eq!(kept.len(), EventLog::LIMIT);
+        assert_eq!(kept[0], skipped(0));
+        assert_eq!(dropped, 500 * 2000 - EventLog::LIMIT as u64);
+        // A drain starts the window again.
+        log.push(skipped(1));
+        assert_eq!(log.take(), (vec![skipped(1)], 0));
+    }
+}

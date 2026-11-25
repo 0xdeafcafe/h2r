@@ -874,6 +874,29 @@ impl<B: Backend> Backend for DiagBackend<B> {
             Tracked { id, inner, source: TextureSource::Surface("snapshot of", surface) }
         }))
     }
+    fn snapshot_surface_into(
+        &mut self,
+        surface: Self::Surface,
+        opaque: bool,
+        into: &mut Self::Texture,
+    ) -> Result<bool, String> {
+        let r = self.inner.snapshot_surface_into(surface, opaque, &mut into.inner)?;
+        self.line(format_args!(
+            "snapshot_surface_into {surface:?} opaque={opaque} tex {} -> {}",
+            into.id,
+            if r { "ok" } else { "unsupported" }
+        ));
+        if r {
+            into.source = TextureSource::Surface("snapshot of", surface);
+            if let Some(c) = self.capturing() {
+                c.append(
+                    "frame.txt",
+                    &format!("snapshot_surface_into {surface:?} opaque={opaque} -> tex {}", into.id),
+                );
+            }
+        }
+        Ok(r)
+    }
     fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
         self.inner.judge()
     }
@@ -1303,6 +1326,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
                 eprintln!("present {n}: last 100 at {fps:.2} fps");
             }
             times.push(now);
+        }
+        #[cfg(feature = "gpu")]
+        if n.is_multiple_of(100) {
+            crate::native_particles_admission::report_refusals();
+            crate::native_gels_glue::report_refusals();
         }
         // H2_HOST_PERF: where the frame time went (host_perf.rs), on the
         // game thread before the backend presents.

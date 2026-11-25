@@ -634,6 +634,7 @@ fn a_deliberate_mismatch_is_reported_with_where_it_happened() {
         guest,
         native,
         what,
+        ..
     } = &outcome
     else {
         panic!("{outcome:?}")

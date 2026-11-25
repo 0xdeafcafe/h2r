@@ -40,7 +40,9 @@ pub const BODY_SPHERE_RADIUS: u32 = 0x3c;
 pub const CAMERA: u32 = 0x004b_9da0;
 /// The view index `render_game_view` stores (`[view+4]`).
 pub const VIEW_INDEX: u32 = 0x004b_a050;
-/// The view's player unit (S: the argument `render_view_scene` keeps).
+/// The view's local user index, `-1` for none: the argument
+/// `render_view_scene` (`0x0002ba10`) keeps. Not a unit: `0x0002b990` maps
+/// it to the unit it appends (`scene_extract::visibility::guest::view_player_unit`).
 pub const VIEW_PLAYER: u32 = 0x004b_9ed8;
 /// The frame counter `render_views` increments.
 pub const FRAME: u32 = 0x004b_a034;

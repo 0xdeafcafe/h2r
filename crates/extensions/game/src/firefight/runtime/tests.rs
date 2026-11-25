@@ -643,6 +643,18 @@ fn the_pages_choices_start_the_match() {
     assert_eq!(director.cap, 24, "Last Stand's cap for one player");
 }
 
+#[test]
+fn the_custom_game_wave_record_starts_its_director_on_a_kit_map() {
+    crate::lobby_start::set_mode(crate::lobby_start::Mode::Multiplayer);
+    let wave = crate::community_variants::listed_named("Last Stand").unwrap();
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut guest, _) = guest(true, 1);
+    guest.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, wave.record.bytes());
+    it.lock().start(&mut guest, false);
+    assert_eq!(it.lock().state().director.expect("Last Stand starts").cap, 24);
+}
+
 /// With nothing chosen the match is the settings' defaults: Holdout.
 #[test]
 fn a_run_with_no_page_plays_the_defaults() {
@@ -995,4 +1007,24 @@ fn the_kit_director_announces_its_type_only_for_its_own_record() {
         m.put(GAME_GLOBALS + crate::variant_ext::BLOCK, &ext.encode());
         assert_eq!(director_owns_line(&m), owns, "{engine}, {mode:?}");
     }
+}
+
+#[test]
+fn change_rules_crossfire_starts_its_director_with_the_stored_setting_off() {
+    use crate::pause_change_map::{Draft, game_types};
+
+    let listed = crate::community_variants::listed_named("Crossfire").unwrap();
+    let row = game_types::listed(listed.record.clone()).unwrap();
+    let mut draft = Draft::default();
+    draft.pick_rules(&row);
+    let variant = draft.variant.unwrap();
+    let (shared, _) = shared(false);
+    shared.lock().set_options(Box::new(|| Ok(Options { enabled: false, ..Options::default() })));
+    let (mut m, _) = guest(true, 1);
+    two_team_map(&mut m, true);
+    m.put(GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, variant.bytes());
+    shared.lock().start(&mut m, false);
+    let state = shared.lock().state();
+    assert!(state.running, "{:?}", state.refused);
+    assert_eq!(state.director.unwrap().teams, 2);
 }

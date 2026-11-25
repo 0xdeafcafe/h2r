@@ -222,6 +222,16 @@ fn library_keeps_25_recent_plus_pins_by_header_id() {
     reopened.unsave("0").unwrap();
     assert_eq!(reopened.list().unwrap().len(), 25);
     reopened.save("26").unwrap();
+    let mut menus = header(100);
+    menus.meta.source = Source::Local;
+    menus.meta.map.clear();
+    menus.meta.players.clear();
+    Writer::new(File::create(dir.0.join("menus.h2film")).unwrap(), &menus)
+        .unwrap().finish().unwrap();
+    let rows = reopened.list().unwrap();
+    assert_eq!(rows.len(), 26, "25 recent games plus the pin");
+    assert!(rows.iter().all(LibraryEntry::is_game));
+    assert_eq!(rows.last().unwrap().meta.id, "1");
     reopened.delete("26").unwrap();
     assert_eq!(reopened.list().unwrap()[0].meta.id, "25");
     assert!(!dir.0.join("other-26.h2film.saved").exists());

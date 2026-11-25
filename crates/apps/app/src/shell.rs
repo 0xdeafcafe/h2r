@@ -45,6 +45,9 @@ enum UserEvent {
     HostPause,
     /// `host.quit` asked to close the window ([`agent_proto::host_quit`]).
     Quit,
+    /// `host.window.resize` asked for a size or fullscreen
+    /// ([`agent_proto::host_window`]).
+    HostWindow,
 }
 
 struct Gpu {
@@ -132,6 +135,10 @@ struct Shell {
     shot_parts: Arc<Mutex<Option<(GfxContext, FrameSource)>>>,
     /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
     display: DisplaySchedule,
+    /// `host.window.resize`'s size not yet taken, asked again on each
+    /// resize (leaving fullscreen animates, and the window keeps its
+    /// windowed size until it has), with the asks left.
+    window_size: Option<((u32, u32), u8)>,
 }
 
 /// Keep an expired or changed overlay dirty until a replacement presents.
@@ -197,6 +204,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         user_paused: false,
         focus_paused: false,
         closing: false,
+        window_size: None,
         status: Status {
             last: now,
             guest: WindowedRate::new(STATUS_WINDOW),
@@ -267,6 +275,19 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         let _ = proxy.send_event(UserEvent::Quit);
     }));
     let _host_quit = HostQuitAttached;
+    // host.window.resize sizes the window or changes its fullscreen
+    // (aspect and field-of-view checks, docs/runtime/agent-api.md).
+    struct HostWindowAttached;
+    impl Drop for HostWindowAttached {
+        fn drop(&mut self) {
+            agent_proto::host_window::hub().detach();
+        }
+    }
+    let proxy = shell.proxy.clone();
+    agent_proto::host_window::hub().attach(Box::new(move || {
+        let _ = proxy.send_event(UserEvent::HostWindow);
+    }));
+    let _host_window = HostWindowAttached;
     event_loop.run_app(&mut shell)?;
     if let Some(e) = shell.init_error.take() {
         return Err(e);
@@ -369,13 +390,14 @@ impl Shell {
         let size = metal_resize
             .as_ref()
             .map_or(size, |metal| metal.drawable_size());
-        let surface = WindowSurface::new(
+        let mut surface = WindowSurface::new(
             &ctx,
             surface,
             (size.width, size.height),
             &self.config,
             SurfaceKind::Window,
         )?;
+        surface.resize((size.width, size.height), window.fullscreen().is_some());
         eprintln!(
             "app: {} ({:?}), surface {:?}",
             info.name, info.backend, surface.config.format
@@ -481,12 +503,11 @@ impl Shell {
             .as_ref()
             .map(|metal| metal.drawable_size())
             .or(size);
-        if let Some(size) = size {
-            if size.width == 0 || size.height == 0 {
-                return;
-            }
-            g.surface.resize((size.width, size.height));
+        let size = size.unwrap_or_else(|| g.window.inner_size());
+        if size.width == 0 || size.height == 0 {
+            return;
         }
+        g.surface.resize((size.width, size.height), g.window.fullscreen().is_some());
         let size = g.surface.size();
         #[cfg(target_os = "macos")]
         let transaction = g
@@ -599,6 +620,12 @@ impl Shell {
             }
             if let Some(t) = &self.watermark_text {
                 let mut panels = t.panels.clone();
+                if let Some(f) = &frame {
+                    let (rw, rh) = f.size;
+                    let (dw, dh) = size;
+                    panels.live.push(format!("raster {rw}x{rh}"));
+                    panels.live.push(format!("drawable {dw}x{dh}"));
+                }
                 if menu_open {
                     panels.cheats.clear();
                 }
@@ -829,6 +856,50 @@ impl Shell {
         }
     }
 
+    /// `host.window.resize`'s request, applied to the window: fullscreen
+    /// first, then the inner size in physical pixels.
+    fn take_host_window(&mut self) {
+        let Some(r) = agent_proto::host_window::hub().take_request() else {
+            return;
+        };
+        if let Some(g) = &self.gpu {
+            if g.window.fullscreen().is_some() != r.fullscreen {
+                g.window.set_fullscreen(r.fullscreen.then_some(Fullscreen::Borderless(None)));
+            }
+            if let Some((w, h)) = r.size {
+                let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+            }
+            g.window.request_redraw();
+        }
+        self.window_size = r.size.map(|size| (size, 3));
+        self.window_resized();
+    }
+
+    /// The window's shape after a request or a resize, for
+    /// `host.window.resize`; a size asked for and not yet taken is asked
+    /// again once the window is out of fullscreen.
+    fn window_resized(&mut self) {
+        let Some(g) = &self.gpu else {
+            return;
+        };
+        let size = g.window.inner_size();
+        let fullscreen = g.window.fullscreen().is_some();
+        if let Some(((w, h), left)) = self.window_size {
+            if (size.width, size.height) == (w, h) || left == 0 {
+                self.window_size = None;
+            } else if !fullscreen {
+                let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+                self.window_size = Some(((w, h), left - 1));
+            }
+        }
+        agent_proto::host_window::hub().observe(agent_proto::host_window::WindowState {
+            width: size.width,
+            height: size.height,
+            fullscreen,
+            scale: g.window.scale_factor(),
+        });
+    }
+
     fn toggle_fullscreen(&self) {
         if let Some(g) = &self.gpu {
             let next = match g.window.fullscreen() {
@@ -836,6 +907,7 @@ impl Shell {
                 None => Some(Fullscreen::Borderless(None)),
             };
             g.window.set_fullscreen(next);
+            g.window.request_redraw();
         }
     }
 
@@ -919,6 +991,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             UserEvent::Close => self.close(event_loop, "close requested"),
             UserEvent::HostPause => self.take_host_pause(),
             UserEvent::Quit => self.close(event_loop, "host.quit"),
+            UserEvent::HostWindow => self.take_host_window(),
             UserEvent::GuestExited => {
                 if let Some(e) = self.worker.as_mut().and_then(|w| w.try_finish()).cloned() {
                     eprintln!("app: guest thread exited: {e:?}");
@@ -946,8 +1019,16 @@ impl ApplicationHandler<UserEvent> for Shell {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.close(event_loop, "window closed"),
-            WindowEvent::Resized(size) => self.redraw(Some(size)),
+            WindowEvent::Resized(size) => {
+                self.redraw(Some(size));
+                self.window_resized();
+            }
             WindowEvent::RedrawRequested | WindowEvent::Occluded(false) => self.redraw(None),
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(g) = &self.gpu {
+                    g.window.request_redraw();
+                }
+            }
             WindowEvent::Focused(focused) => {
                 if !focused && let Some(theater) = &self.config.theater {
                     theater.0.release_keys();
@@ -1297,7 +1378,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             self.display.retarget(target);
             if let Some(g) = self.gpu.as_mut() {
                 if let Some(v) = vsync {
-                    g.surface.set_vsync(v);
+                    g.surface.set_vsync(&g.ctx, v);
                 }
                 // A publish just before the switch may still be waiting.
                 g.window.request_redraw();

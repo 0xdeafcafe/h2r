@@ -68,12 +68,41 @@ pub fn map_sets(map: &str) -> Vec<Def> {
         .collect()
 }
 
+/// Named game variants, including sets authored for a particular kit map.
+/// The value is the settings value on that map, as accepted by `resolve`.
+pub struct Variant {
+    pub map: Option<&'static str>,
+    pub value: usize,
+    pub prefix: [u8; 8],
+    pub def: Def,
+}
+
+pub fn variants() -> &'static [Variant] {
+    static ALL: std::sync::OnceLock<Vec<Variant>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let generic = definitions().into_iter().enumerate().map(|(i, def)| (None, i, def));
+        let specific = MAP_SETS.iter().enumerate().map(|(i, &(map, path, json))| {
+            let offset = MAP_SETS[..i].iter().filter(|(other, _, _)| *other == map).count();
+            let def = serde_json::from_str(json).unwrap_or_else(|e| panic!("{path}: {e}"));
+            (Some(map), SETS.len() + offset, def)
+        });
+        generic.chain(specific).map(|(map, value, def)| Variant {
+            map,
+            value,
+            prefix: def.id().expect("valid packaged wave set").0[..8].try_into().unwrap(),
+            def,
+        }).collect()
+    })
+}
+
+pub fn variant(prefix: [u8; 8]) -> Option<&'static Variant> {
+    variants().iter().find(|v| v.prefix == prefix)
+}
+
 /// The built-in definition whose id ([`Def::id`]) starts with `prefix`:
 /// what a mode-1 variant extension names (docs/game/firefight.md, "Live").
 pub fn by_prefix(prefix: [u8; 8]) -> Option<Def> {
-    definitions()
-        .into_iter()
-        .find(|d| d.id().is_ok_and(|id| id.0[..8] == prefix))
+    variant(prefix).map(|v| v.def.clone())
 }
 
 /// The lobby's Wave set row on `map` (`None`: no map known): `map`'s own

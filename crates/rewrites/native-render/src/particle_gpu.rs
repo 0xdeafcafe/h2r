@@ -128,7 +128,7 @@ impl RawVertices {
             || !(bytes.len() as u64).is_multiple_of(stride)
             || attributes.len() != formats.len()
         {
-            return Err(Refused::Geometry);
+            return Err(Refused::Geometry("raw_bytes"));
         }
         attributes.sort_by_key(|a| a.offset);
         let mut provided = 0u16;
@@ -138,7 +138,7 @@ impl RawVertices {
                 || a.shader_location >= 16
                 || provided & (1u16 << a.shader_location) != 0
             {
-                return Err(Refused::Geometry);
+                return Err(Refused::Geometry("raw_attributes"));
             }
             provided |= 1u16 << a.shader_location;
         }
@@ -147,7 +147,7 @@ impl RawVertices {
             Kind::Contrail => count < 4 || !count.is_multiple_of(2),
             Kind::EffectQuad => count != 4,
         } {
-            return Err(Refused::Geometry);
+            return Err(Refused::Geometry("raw_vertex_count"));
         }
         Ok(Self {
             kind,
@@ -173,7 +173,9 @@ pub enum Refused {
     Identity,
     Target,
     Scissor,
-    Geometry,
+    /// The named geometry check that failed; the particle admission
+    /// counts and samples each name apart.
+    Geometry(&'static str),
     Effect(&'static str),
     State,
     Texture(usize),
@@ -222,7 +224,7 @@ impl ImmediateDrawSnapshot<'_> {
             }
             || self.indices.iter().any(|&i| i as usize >= vertex_count)
         {
-            return Err(Refused::Geometry);
+            return Err(Refused::Geometry("indices"));
         }
         if (!strip && !lines && self.primitive.topology != wgpu::PrimitiveTopology::TriangleList)
             || self.primitive.strip_index_format != strip.then_some(wgpu::IndexFormat::Uint32)

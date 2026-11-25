@@ -13,6 +13,11 @@ pub const DEFINITION: u32 = 0x0048_58c4;
 pub const TARGETS: u32 = 0x004b_4b58;
 pub const TARGET_STRIDE: u32 = 0x98;
 
+const FIRST_SURFACE: u32 = 0x18;
+const SURFACE_STRIDE: u32 = 0x18;
+const LEVEL_COUNT: u32 = 0x78;
+const MAX_LEVELS: u32 = (LEVEL_COUNT - FIRST_SURFACE) / SURFACE_STRIDE;
+
 /// Exact call made by `0x0003a550`, after uploading the light constants.
 pub fn is_producer(args: [u32; 6], ret: u32, building: u8) -> bool {
     ret == TEMPLATE_RETURN
@@ -22,10 +27,17 @@ pub fn is_producer(args: [u32; 6], ret: u32, building: u8) -> bool {
         && args[1..] == [LAYER, u32::MAX, 0, TARGET, 1]
 }
 
-/// The single-level target this first producer can reproduce. Mip chains
-/// need one draw per level and remain on D3D until all levels are planned.
+/// The enabled target and its embedded level-zero surface header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
+    pub surface: u32,
+    pub size: (u32, u32),
+    levels: u32,
+}
+
+/// One attachment selected by the guest quad helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Level {
     pub surface: u32,
     pub size: (u32, u32),
 }
@@ -33,21 +45,33 @@ pub struct Target {
 impl Target {
     pub fn read(mem: &dyn GuestRead) -> Option<Self> {
         let at = TARGETS + TARGET_STRIDE * TARGET;
-        let surface = mem.read_u32(at + 0x88)?;
+        let available = mem.read_u32(at + 0x88)? != 0;
+        let hidden = mem.read_u32(at + 0x94)? & 0xff00 != 0;
         let width = mem.read_u32(at + 0x80)?;
         let height = mem.read_u32(at + 0x84)?;
-        let flags = mem.read_u32(at + 0x94)?;
-        if surface == 0
-            || flags & 0xff00 != 0
-            || mem.read_u32(at + 0x78)? != 1
+        let levels = mem.read_u32(at + LEVEL_COUNT)?;
+        let max_size_levels = u32::BITS - width.max(height).leading_zeros();
+        if !available
+            || hidden
             || width == 0
             || height == 0
+            || !(1..=MAX_LEVELS.min(max_size_levels)).contains(&levels)
         {
             return None;
         }
+        // The table's presence word is not the D3D surface header.
+        // The level resolver (0x0001dcf0) selects the embedded header.
         Some(Self {
-            surface,
+            surface: at + FIRST_SURFACE,
             size: (width, height),
+            levels,
+        })
+    }
+
+    pub fn level(self, index: u32) -> Option<Level> {
+        (index < self.levels).then(|| Level {
+            surface: self.surface + index * SURFACE_STRIDE,
+            size: ((self.size.0 >> index).max(1), (self.size.1 >> index).max(1)),
         })
     }
 }
@@ -88,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn targets_must_be_readable_visible_and_single_level() {
+    fn targets_must_be_readable_enabled_and_fit_the_surface_table() {
         use std::collections::HashMap;
         struct Mem(HashMap<u32, u32>);
         impl GuestRead for Mem {
@@ -108,15 +132,39 @@ mod tests {
         assert_eq!(
             Target::read(&mem),
             Some(Target {
-                surface: 0x1234,
-                size: (32, 16)
+                surface: at + 0x18,
+                size: (32, 16),
+                levels: 1,
             })
         );
-        for (offset, bad) in [(0x78, 2), (0x80, 0), (0x84, 0), (0x88, 0), (0x94, 0x100)] {
+        for (offset, bad) in [
+            (0x78, 0),
+            (0x78, 5),
+            (0x78, u32::MAX),
+            (0x80, 0),
+            (0x84, 0),
+            (0x88, 0),
+            (0x94, 0x100),
+        ] {
             let old = mem.0.insert(at + offset, bad).unwrap();
             assert!(Target::read(&mem).is_none());
             mem.0.insert(at + offset, old);
         }
+        mem.0.insert(at + 0x78, 4);
+        mem.0.insert(at + 0x84, 1);
+        let target = Target::read(&mem).unwrap();
+        assert_eq!(
+            (0..5).map(|index| target.level(index)).collect::<Vec<_>>(),
+            [
+                Some(Level { surface: at + 0x18, size: (32, 1) }),
+                Some(Level { surface: at + 0x30, size: (16, 1) }),
+                Some(Level { surface: at + 0x48, size: (8, 1) }),
+                Some(Level { surface: at + 0x60, size: (4, 1) }),
+                None,
+            ],
+        );
+        mem.0.insert(at + 0x80, 4);
+        assert!(Target::read(&mem).is_none());
         mem.0.remove(&(at + 0x88));
         assert!(Target::read(&mem).is_none());
     }

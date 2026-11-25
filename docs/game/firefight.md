@@ -73,7 +73,7 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## What the player gets
 
-- A Firefight mode in the custom game lobby ([the
+- A Firefight game type in the custom game lobby ([the
   lobby](#the-lobby)), a **Firefight Options...** row in a custom game's
   Game Setup, and a Firefight entry in matchmaking (FF9): pick a map, a
   wave set, a difficulty, the starting lives and whether rounds switch on
@@ -211,19 +211,12 @@ actors, gaps of 450 ticks, ten lives with three back a round, Catch,
 Angry and Ghost. Squads still drop at the edges, away from both bases;
 a map set carries the map's tuning, not its own drop zones.
 
-The lobby's Wave set row offers `builtin::menu(map)`: the map's own
-sets first, then the built-ins — a map with none of its own offers the
-built-ins alone, as does any map the build has no sets for. The store's
-`firefight.waveset` names a set, not a row position: a built-in by its
-position (0 Holdout to 3 Crossfire), a map set by
-`builtin::MAP_SET_BASE` (4) plus its place in the map's list. What a
-value plays is `builtin::resolve(value, map)`: a map-set value on a map
-that does not carry it — another map, or no map known — falls back to
-the built-ins, Holdout first. The page's row reads the lobby's kit map
-(`lobby_start::kit_map_name`, kept from the lobby panel's read of the
-map list), the runtime resolves the match on the map it starts on
-(`map_name`), and a value no set the build ships names is refused with
-the setting named. Hoppers keep naming built-in sets only ([Live](#live)).
+Change Rules → Firefight lists the built-in sets and each map-specific
+variant. The record identifies its wave set by hash. Change Map filters by
+that record, so Basin offers the Beaver Creek kit. At start the director
+resolves the same hash. The direct-boot setting `firefight.waveset` uses
+the built-in index (0 to 3), or `builtin::MAP_SET_BASE` plus the map-specific
+index. See [Live](#live) for hopper records.
 
 ### The director
 
@@ -831,17 +824,12 @@ its own page: the definition and difficulty reach it in the session data
 
 ### The lobby
 
-Firefight is a mode of the party lobby
-([party-lobby.md](party-lobby.md), [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)),
-in the GAME MODE picker and on the Xbox Live menu's Firefight row while
-the `firefight` feature is on and a settings store holds the choices,
-whatever maps are installed. Switching to it sets the page's
-Firefight choice on and puts the lobby on a kit map; Game Setup then
-lists the Firefight rows, and the variant panel shows the wave set, the
-difficulty and the starting lives in place of Quick Options' lines (the
-first reads "{set} waves, 2 teams" with two teams). Two teams play as a
-team game whatever the lobby's variant says: the game's start turns the
-variant's team play on ([The host runtime](#the-host-runtime)).
+In Custom Games, choose **Game Setup → Change Rules → Firefight** and
+select a wave set. The variant record carries its definition hash. Both
+activation and the director read that record, including its team count.
+**Change Map** offers installed kit packages that support the wave set.
+A map-specific set requires its own base map. Start Game checks the
+selected map before starting the countdown.
 
 Clankers sit only on player teams (`clankers::firefight_seat_teams`,
 which tells the bots the team count with
@@ -849,23 +837,8 @@ which tells the bots the team count with
 Firefight): with one team every Clanker is on team 0; with two each new
 Clanker joins the team with fewer players, team 0 on a tie. The AI's
 team is never a seat.
-With no kit map installed the mode still opens and the lobby keeps its
-map: the panel says "No installed map supports Firefight yet" and "Make
-one with h2 firefight kit", and Start Game is held with "No installed
-map supports Firefight yet." on the status line
-(`lobby_mode::start_refusal`). A Firefight lobby on a map without the
-kit while one is installed is held the same way, with "This map does
-not support Firefight."
-
-| Row | A does |
-|---|---|
-| **Change Map** | Opens the map select's Firefight category ([map-select.md](map-select.md)): the installed maps that carry the kit. The catalogue lists a kit package as `Firefight – <map>` (what `firefight-kit` names it, `lobby_start::is_kit_map`); the probe's `Firefight Probe – <map>` is not offered. With none installed the retail map list opens, and the log says why. |
-| **Firefight Options...** | Opens the Firefight page ([Game Setup](#game-setup)), the row after Change Map. |
-| **Quick Options**, **Clanker Options** | As in a Multiplayer lobby. |
-
-The game type row is hidden: the runtime starts the mode from the page's
-choices on a kit map ([The host runtime](#the-host-runtime)), and the
-game itself starts as the lobby's Start Game starts any custom game.
+With no compatible kit installed, the map picker is empty and Start
+Game reports the missing kit. Change Rules remains available.
 
 ### The HUD
 

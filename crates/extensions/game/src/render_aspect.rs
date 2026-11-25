@@ -1,6 +1,6 @@
 //! Display aspect on captured GPU constants and the retail callbacks
 //! that own on-screen UI packets. All guest coordinates remain 640 × 480.
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{PixelRect, UiFit};
@@ -8,8 +8,8 @@ use engine::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
     ANCHOR, ANCHOR_READY, DOC, FLARE_COMPOSITE_DONE, FLARE_COMPOSITE_LOOP, FLARE_QUERY,
-    FLARE_QUERY_END, FLARE_REFLECTION, FLARE_REFLECTION_END, GROUPS, MENU_BACKDROP, MENU_FILL,
-    MENU_FILL_END, VOLUME_DEPTH, VOLUME_DEPTH_END, VOLUME_SPRITE, VOLUME_SPRITE_END,
+    FLARE_QUERY_END, FLARE_REFLECTION, FLARE_REFLECTION_END, GROUPS, MENU_FILL,
+    MENU_FILL_END, VOLUME_DEPTH, VOLUME_END, VOLUME_SPRITE,
 };
 use points::scene_effects::{EFFECT_QUAD_READY, HUD_QUAD_READY};
 use points::ui_render::{ITEM_CALL, RECT_SUBMIT_RETURN, SCREEN_QUAD_READY};
@@ -21,6 +21,7 @@ type Position = Arc<dyn Fn() -> u32 + Send + Sync>;
 /// before its packet moves to the GPU thread or becomes a native UI pass.
 pub trait UiLayoutSink: Send + Sync {
     fn set_projection_factor(&self, factor: f32);
+    fn set_camera_projection_factor(&self, _: f32) { self.set_projection_factor(1.0); }
     fn set_fit(&self, guest: &mut runtime::Guest, fit: Option<UiFit>);
 }
 
@@ -29,6 +30,9 @@ impl<B: d3d::Backend + Send> UiLayoutSink for Mutex<d3d::Device<B>> {
         self.lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_projection_factor(factor);
+    }
+    fn set_camera_projection_factor(&self, factor: f32) {
+        self.lock().unwrap_or_else(|e| e.into_inner()).set_camera_projection_factor(factor);
     }
     fn set_fit(&self, guest: &mut runtime::Guest, fit: Option<UiFit>) {
         if let Err(err) = self
@@ -43,7 +47,11 @@ impl<B: d3d::Backend + Send> UiLayoutSink for Mutex<d3d::Device<B>> {
 
 struct RenderAspect {
     size: Size,
-    single_copy: bool,
+    /// Fit the guest camera to the window at `VIEW_PROJECTION_TERMS`
+    /// (docs/graphics/high-resolution.md, "Widescreen projection"): every
+    /// session but lockstep and input tapes. A game of several machines
+    /// keeps the retail terms at the hook (`render_rng::networked`).
+    guest_lens: bool,
     position: Position,
     sink: Arc<dyn UiLayoutSink>,
 }
@@ -51,14 +59,14 @@ struct RenderAspect {
 pub fn install(
     registry: &mut hooks::Registry,
     size: Size,
-    single_copy: bool,
+    guest_lens: bool,
     position: Position,
     sink: Arc<dyn UiLayoutSink>,
 ) -> anyhow::Result<()> {
     registry
         .add(&RenderAspect {
             size,
-            single_copy,
+            guest_lens,
             position,
             sink,
         })
@@ -73,8 +81,7 @@ fn pixel_aspect((w, h): (u32, u32)) -> Option<f32> {
 
 // The width term selected by the retail projection at 0x2fc45..0x2fc90.
 // Reading it here allows machines already in dashboard widescreen mode to
-// use the display aspect exactly once. The FOV and all guest matrices stay
-// in the game's coordinate system for the visibility walk and the tick.
+// use the display aspect exactly once. The display lens changes only X.
 fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
     let Some(pixel) = pixel_aspect(output) else {
         return 1.0;
@@ -100,48 +107,110 @@ fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
     retail / pixel
 }
 
-// 0x441b0 copies the projection's tangent rectangle into the root polygon
-// and builds its bounds and planes from the same rectangle. Feed both uses
-// the local copy at +0xa0, the rectangle field of the output frustum. The
-// portal flood and its per-window sphere tests inherit these side planes.
-fn display_frustum_rect(
-    mem: &mut impl GuestMemory,
-    source: u32,
-    frustum: u32,
-    factor: f32,
-) -> Option<u32> {
-    if factor == 1.0 || !factor.is_finite() || factor <= 0.0 {
-        return None;
+// The lens a game view's visibility starts with: the display supplement
+// whenever the presentation is wider than the guest's 4:3.
+// `VIEW_PROJECTION_TERMS` replaces it with the guest lens once it has
+// widened the view's own projection; a view the hook does not fit keeps
+// the supplement, so its edges are gathered either way.
+#[cfg(feature = "desktop-runtime")]
+fn starting_lens(factor: f32) -> render_bridge::scene_step::VisibilityLens {
+    use render_bridge::scene_step::VisibilityLens;
+    if factor < 1.0 && factor.is_finite() && factor > 0.0 {
+        VisibilityLens::Display(factor)
+    } else {
+        VisibilityLens::Retail
     }
-    let mut rect = [0; 16];
-    mem.read(source, &mut rect).ok()?;
-    let left = f32::from_le_bytes(rect[..4].try_into().ok()?);
-    let right = f32::from_le_bytes(rect[4..8].try_into().ok()?);
+}
+
+// 0x2fd90 reserves 0x74 stack bytes. After its call to 0x2fb70 (the hook
+// runs at 0x2fda3, whose stack is the continuation's), +0x54 holds the X/Y biases, X/Y scales and four tangent bounds.
+// All three consumers (matrix, CPU pixel scale and frustum) use these
+// terms. Keep the vertical lens and the centre of an off-axis window.
+/// What [`fit_view_projection`] did with one call of the projection terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fit {
+    Applied,
+    /// A game of several machines keeps the retail terms.
+    Networked,
+    /// The terms were built for a caller that is not the displayed camera.
+    Caller(u32),
+    /// A 4:3 window, or terms the fit cannot use.
+    Unchanged,
+}
+
+fn fit_view_projection(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Fit {
+    if factor == 1.0 || !factor.is_finite() || factor <= 0.0 {
+        return Fit::Unchanged;
+    }
+    let Some(caller) = esp.checked_add(0x74).and_then(|at| mem.u32(at).ok()) else {
+        return Fit::Unchanged;
+    };
+    match caller {
+        // Active and saved camera of render_view_scene and render_alternate_view.
+        0x0002_badc | 0x0002_bb21 | 0x0002_c7cc | 0x0002_c7ff => {}
+        // Popping the last nested view rebuilds the displayed camera.
+        0x0001_3cc0 if mem.u32(0x0046_701c).ok() == Some(0) => {}
+        _ => return Fit::Caller(caller),
+    }
+    widen_terms(mem, esp, factor).map_or(Fit::Unchanged, |()| Fit::Applied)
+}
+
+fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Option<()> {
+    let at = esp.checked_add(0x54)?;
+    let mut words = [0u8; 24];
+    mem.read(at, &mut words).ok()?;
+    let get = |i: usize| f32::from_le_bytes(words[i..i + 4].try_into().unwrap());
+    let (bias, scale, left, right) = (get(0), get(8), get(16), get(20));
     let centre = (left + right) * 0.5;
     let half = (right - left) * 0.5 / factor;
-    let (left, right) = (centre - half, centre + half);
-    if !left.is_finite() || !right.is_finite() || left >= right {
+    let terms = [bias * factor, scale * factor, centre - half, centre + half];
+    if !terms.iter().all(|v| v.is_finite()) || terms[1] <= 0.0 || terms[2] >= terms[3] {
         return None;
     }
-    rect[..4].copy_from_slice(&left.to_le_bytes());
-    rect[4..8].copy_from_slice(&right.to_le_bytes());
-    let local = frustum.checked_add(0xa0)?;
-    mem.write(local, &rect).ok()?;
-    Some(local)
+    for (i, value) in [0, 8, 16, 20].into_iter().zip(terms) {
+        words[i..i + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    mem.write(at, &words).ok()
 }
 
 fn viewport(mem: &impl GuestMemory, address: u32) -> Option<PixelRect> {
-    let mut edges = [0; 4];
-    for (i, edge) in edges.iter_mut().enumerate() {
-        *edge = u32::try_from(mem.u16(address.checked_add(i as u32 * 2)?).ok()? as i16).ok()?;
-    }
-    let [top, left, bottom, right] = edges;
+    let mut bytes = [0; 8];
+    mem.read(address, &mut bytes).ok()?;
+    let [top, left, bottom, right] = std::array::from_fn(|i| {
+        u32::from(u16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]))
+    });
     (top < bottom && bottom <= 480 && left < right && right <= 640).then(|| PixelRect {
         x: left,
         y: top,
         width: right - left,
         height: bottom - top,
     })
+}
+
+// These callers fade the whole view: the two fades in UI_RENDER_LAYERS,
+// the start-screen transition, and the modal dim in the window stack.
+// MENU_FILL rebases their bounds to (0, 0). The rectangle shader then
+// projects those local pixels over the active raster rectangle.
+const LAYERS_DIM_RETURN: u32 = 0x0014_7b54;
+const LAYERS_FADE_RETURN: u32 = 0x0014_7c66;
+const START_SCREEN_FADE_RETURN: u32 = 0x0023_3782;
+const MODAL_FILL_RETURN: u32 = 0x0023_511d;
+const RASTER_RECT: u32 = 0x0048_5648;
+
+fn fill_bounds(mem: &impl GuestMemory, esp: u32, bounds: u32) -> u32 {
+    let view_fill = matches!(
+        mem.u32(esp).ok(),
+        Some(LAYERS_DIM_RETURN | LAYERS_FADE_RETURN | START_SCREEN_FADE_RETURN | MODAL_FILL_RETURN)
+    );
+    if view_fill && viewport(mem, RASTER_RECT).is_some() {
+        RASTER_RECT
+    } else {
+        bounds
+    }
+}
+
+fn local_raster(mem: &impl GuestMemory) -> Option<PixelRect> {
+    viewport(mem, RASTER_RECT).map(|rect| PixelRect { x: 0, y: 0, ..rect })
 }
 
 // 0x48b00 maps clip X to guest pixel centres. Query edges at the
@@ -180,6 +249,7 @@ struct Canvas {
     hud: bool,
     pinned: bool,
     projection_factor: f32,
+    projected_points_fitted: bool,
 }
 
 impl Canvas {
@@ -227,7 +297,7 @@ impl Canvas {
             fit.transform[2] += edge_x * self.rect.width as f32 * (safe_x - fit.transform[0]);
             fit.transform[3] += edge_y * self.rect.height as f32 * (safe_y - fit.transform[1]);
         }
-        if anchor.is_some_and(|(id, _)| id >= 4) && self.hud {
+        if anchor.is_some_and(|(id, _)| id >= 4) && self.hud && !self.projected_points_fitted {
             // The guest's tracked point is in the retail lens. Move its
             // centre with the world, then fit the artwork about that point.
             fit.transform[2] += (pivot[0] - self.centre()[0]) * (self.projection_factor - 1.0);
@@ -365,26 +435,24 @@ fn read_corners(mem: &impl GuestMemory, first: u32, stride: u32, at: u32) -> Opt
     Some(out)
 }
 
-/// The shader quad at `HUD_QUAD_READY` (`0x0022a7f6`): four `0x1c`-byte
-/// vertices `0x70` bytes below EBP, the projective texture coordinate
-/// (s, t, r, q) first and the position at `+0x10`
-/// (`render_bridge::native_hud`).
+/// The shader quad at HUD_QUAD_READY: four 0x1c-byte vertices at
+/// EBP - 0x70. The float4 position comes first, then the UV for register 3
+/// (render_bridge::native_hud).
 fn shader_quad(mem: &impl GuestMemory, ebp: u32) -> Option<Quad> {
     let first = ebp.checked_sub(0x70)?;
     Some(Quad {
-        xy: read_corners(mem, first, 0x1c, 0x10)?,
+        xy: read_corners(mem, first, 0x1c, 0)?,
         uv: None,
     })
 }
 
-/// The screen quad at `UI_SCREEN_QUAD_READY` (`0x000363c4`): the pointer
-/// at ESP + 0x18, above the return address, to four `0x14`-byte vertices,
-/// texture coordinate first and the position at `+8`
-/// (`render_bridge::native_hud::ui`).
+/// The screen quad at UI_SCREEN_QUAD_READY: the pointer at ESP + 0x18
+/// gives four 0x14-byte vertices in (x, y, u, v, colour) order
+/// (render_bridge::native_hud::ui).
 fn screen_quad(mem: &impl GuestMemory, esp: u32) -> Option<Quad> {
     let first = mem.u32(esp.checked_add(0x18)?).ok()?;
     Some(Quad {
-        xy: read_corners(mem, first, 0x14, 8)?,
+        xy: read_corners(mem, first, 0x14, 0)?,
         uv: None,
     })
 }
@@ -416,17 +484,6 @@ struct Layout {
 }
 
 impl Layout {
-    /// A full-view pass over the menu (`owner`: the backdrop compositor)
-    /// starts. Returns whether the fit changes.
-    fn begin_menu_composite(&mut self, owner: u32) -> bool {
-        if self.active.is_none_or(|canvas| canvas.hud) {
-            return false;
-        }
-        let was_fitted = self.current().is_some();
-        self.groups.push((owner, None));
-        was_fitted
-    }
-
     fn end_group(&mut self, owner: u32) -> bool {
         let Some(index) = self.groups.iter().rposition(|&(end, _)| end == owner) else {
             return false;
@@ -438,14 +495,15 @@ impl Layout {
     /// A menu quad is about to draw. Returns the fit to set when it differs
     /// from the previous quad's: the full view for a quad that spans the
     /// fitted axis, else the enclosing fit.
-    fn place_quad(&mut self, quad: Option<Quad>) -> Option<Option<UiFit>> {
+    fn place_quad(&mut self, raster: Option<PixelRect>, quad: Option<Quad>) -> Option<Option<UiFit>> {
         let canvas = self.active.filter(|canvas| !canvas.hud)?;
+        let rect = raster.unwrap_or(canvas.rect);
         let was_filled = self.groups.last().is_some_and(|&(id, _)| id == FILL);
         if was_filled {
             self.groups.pop();
         }
         let fill = match (self.current(), quad) {
-            (Some(fit), Some(quad)) => is_background(canvas.rect, fit, &quad),
+            (Some(fit), Some(quad)) => is_background(rect, fit, &quad),
             _ => false,
         };
         if fill {
@@ -478,23 +536,19 @@ impl Feature for RenderAspect {
 
     fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
         let view_lens = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-        let single_copy = self.single_copy;
+        let guest_lens = self.guest_lens;
+        let projected = Arc::new(AtomicBool::new(false));
         for point in [&points::RENDER_GAME_VIEW, &points::RENDER_ALTERNATE_VIEW] {
             let (size, sink, lens) = (self.size.clone(), self.sink.clone(), view_lens.clone());
+            let projected = projected.clone();
             b.raw()
                 .observe_before(point, "select the GPU projection", move |o| {
                     let factor = projection_factor(&*o.guest(), size());
+                    projected.store(false, Ordering::Relaxed);
                     lens.store(factor.to_bits(), Ordering::Relaxed);
                     sink.set_projection_factor(factor);
                     #[cfg(feature = "desktop-runtime")]
-                    {
-                        use render_bridge::scene_step::{VisibilityLens, set_visibility_lens};
-                        set_visibility_lens(if !single_copy && factor < 1.0 {
-                            VisibilityLens::Display(factor)
-                        } else {
-                            VisibilityLens::Retail
-                        });
-                    }
+                    render_bridge::scene_step::set_visibility_lens(starting_lens(factor));
                 })
                 // Reads this view's guest memory and tells the sink, as the
                 // UI-fit hooks below do (all context-only).
@@ -502,21 +556,33 @@ impl Feature for RenderAspect {
                 .optional();
         }
 
-        if single_copy {
+        if guest_lens {
+            let projected = projected.clone();
+            let sink = self.sink.clone();
             b.raw()
-                .before(&points::render_aspect::VIEW_FRUSTUM_RECT, "fit the main visibility frustum", move |c| {
+                .before(&points::render_aspect::VIEW_PROJECTION_TERMS, "fit the displayed camera projection", move |c| {
+                    let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
                     let mut mem = c.ctx.memory();
-                    let caller = c.cpu.esp.checked_add(8).and_then(|sp| GuestMemory::u32(&*mem, sp).ok());
-                    if caller == Some(points::render_aspect::VIEW_FRUSTUM_CALL_RETURN) {
-                        let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
-                        if let Some(rect) = display_frustum_rect(&mut *mem, c.cpu.ecx, c.cpu.esi, factor) {
-                            c.cpu.ecx = rect;
-                            #[cfg(feature = "desktop-runtime")]
-                            render_bridge::scene_step::set_visibility_lens(
-                                render_bridge::scene_step::VisibilityLens::Guest(factor),
-                            );
-                        }
+                    let fit = if crate::render_rng::networked(&*mem) {
+                        Fit::Networked
+                    } else {
+                        fit_view_projection(&mut *mem, c.cpu.esp, factor)
+                    };
+                    if let Fit::Applied = fit {
+                        projected.store(true, Ordering::Relaxed);
+                        sink.set_camera_projection_factor(factor);
+                        #[cfg(feature = "desktop-runtime")]
+                        render_bridge::scene_step::set_visibility_lens(
+                            render_bridge::scene_step::VisibilityLens::Guest(factor),
+                        );
                     }
+                    #[cfg(feature = "desktop-runtime")]
+                    render_bridge::scene_step::count_guest_fit(match fit {
+                        Fit::Applied => render_bridge::scene_step::GuestFit::Applied,
+                        Fit::Networked => render_bridge::scene_step::GuestFit::Networked,
+                        Fit::Caller(caller) => render_bridge::scene_step::GuestFit::Caller(caller),
+                        Fit::Unchanged => render_bridge::scene_step::GuestFit::Unchanged,
+                    });
                     Ok(Flow::Continue)
                 })
                 .context_only()
@@ -534,6 +600,7 @@ impl Feature for RenderAspect {
                 self.position.clone(),
                 self.sink.clone(),
             );
+            let projected = projected.clone();
             b.raw()
                 .before(point, "fit this view's UI", move |c| {
                     let output = size();
@@ -572,6 +639,7 @@ impl Feature for RenderAspect {
                         layout.active = Some(Canvas {
                             output,
                             projection_factor: projection_factor(&*mem, output),
+                            projected_points_fitted: projected.load(Ordering::Relaxed),
                             rect,
                             hud,
                             pinned: hud && position() == crate::setting_defs::HUD_PINNED,
@@ -611,17 +679,18 @@ impl Feature for RenderAspect {
         for (begin, end, query) in [
             (&FLARE_QUERY, &FLARE_QUERY_END, true),
             (&FLARE_REFLECTION, &FLARE_REFLECTION_END, false),
-            (&VOLUME_SPRITE, &VOLUME_SPRITE_END, false),
-            (&VOLUME_DEPTH, &VOLUME_DEPTH_END, false),
+            (&VOLUME_SPRITE, &VOLUME_END, false),
+            (&VOLUME_DEPTH, &VOLUME_END, false),
             (&FLARE_COMPOSITE_LOOP, &FLARE_COMPOSITE_DONE, false),
         ] {
             let (layout, size, sink) = (layout.clone(), self.size.clone(), self.sink.clone());
+            let projected = projected.clone();
             b.raw()
                 .before(
                     begin,
                     "align the CPU-projected effect with the display lens",
                     move |c| {
-                        if !c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
+                        if projected.load(Ordering::Relaxed) || !c.ctx.runtime().read_dispatch(|d| d.has_generated(end.base)) {
                             return Ok(Flow::Continue);
                         }
                         let mut l = layout.lock().unwrap_or_else(|e| e.into_inner());
@@ -682,32 +751,6 @@ impl Feature for RenderAspect {
             })
             .context_only()
             .optional();
-        // The backdrop processes the scene underneath the widget layers.
-        // Drain at the helper's boundaries so guest and native fans use
-        // the same full-viewport mapping throughout the target chain. (The
-        // blur under a dialog copies whole frames inside the widget fit;
-        // the device draws frame copies unfitted, `Device` draw resolution.)
-        let (on_begin, sink) = (layout.clone(), self.sink.clone());
-        b.raw()
-            .observe_before(&MENU_BACKDROP, "begin the full-view menu backdrop", move |o| {
-                let mut l = on_begin.lock().unwrap_or_else(|e| e.into_inner());
-                if l.begin_menu_composite(MENU_BACKDROP.base) {
-                    sink.set_fit(&mut o.guest(), None);
-                }
-            })
-            .context_only()
-            .optional();
-        let (on_end, sink) = (layout.clone(), self.sink.clone());
-        b.raw()
-            .observe_after(&MENU_BACKDROP, "restore the menu widget fit", move |o| {
-                let mut l = on_end.lock().unwrap_or_else(|e| e.into_inner());
-                if l.end_group(MENU_BACKDROP.base) {
-                    sink.set_fit(&mut o.guest(), l.current());
-                }
-            })
-            .context_only()
-            .optional();
-
         // Menu background art keeps the full view. The fit is chosen per
         // quad, before its Begin, on the guest and the native path alike,
         // and holds until the next quad or widget.
@@ -740,7 +783,17 @@ impl Feature for RenderAspect {
                             None => return,
                         },
                     };
-                    if let Some(fit) = l.place_quad(quad) {
+                    // Screen and rectangle positions are local to the
+                    // rectangle their shaders use. Shader quads use the
+                    // menu's window coordinates.
+                    let (rect, quad) = match site {
+                        Site::Shader => (None, quad),
+                        Site::Screen | Site::Rect => {
+                            let rect = local_raster(&*mem);
+                            (rect, rect.and(quad))
+                        }
+                    };
+                    if let Some(fit) = l.place_quad(rect, quad) {
                         sink.set_fit(&mut mem, fit);
                     }
                 })
@@ -770,6 +823,7 @@ impl Feature for RenderAspect {
                             .runtime()
                             .read_dispatch(|d| d.has_generated(MENU_FILL_END.base))
                     {
+                        c.cpu.ecx = fill_bounds(&*c.ctx.memory(), c.cpu.esp, c.cpu.ecx);
                         l.groups.push((MENU_FILL_END.base, None));
                         sink.set_fit(&mut c.ctx.memory(), None);
                     }
@@ -782,8 +836,7 @@ impl Feature for RenderAspect {
             &MENU_FILL_END,
             &FLARE_QUERY_END,
             &FLARE_REFLECTION_END,
-            &VOLUME_SPRITE_END,
-            &VOLUME_DEPTH_END,
+            &VOLUME_END,
             &FLARE_COMPOSITE_DONE,
         ]) {
             let (layout, sink) = (layout.clone(), self.sink.clone());
@@ -827,6 +880,7 @@ mod tests {
             hud: true,
             pinned,
             projection_factor: 0.75,
+            projected_points_fitted: false,
         };
         // Pinned at 16:9: squeezed about the view's bottom-left corner.
         publish_hud_corner(Some(canvas(FULL, true)));
@@ -906,25 +960,45 @@ mod tests {
     }
 
     #[test]
-    fn main_gather_uses_the_display_edges_and_keeps_the_off_centre_lens() {
+    fn displayed_camera_maps_the_side_rays_to_the_full_viewport() {
         let mut mem = FakeGuest::new();
-        let src = 0x1000;
-        let frustum = 0x2000;
-        mem.map(frustum, 0x1bc);
-        for (i, bound) in [-0.75, 1.25, -0.6, 0.5].into_iter().enumerate() {
-            mem.put_f32(src + 4 * i as u32, bound);
+        let esp = 0x1000;
+        let at = esp + 0x54;
+        let terms = [0.25, -0.125, 1.0, 2.0, -1.25, 0.75, -0.5, 0.5];
+        for (i, value) in terms.into_iter().enumerate() {
+            mem.put_f32(at + i as u32 * 4, value);
         }
-        for output in [(1920, 1080), (3440, 1440), (900, 1200)] {
-            let factor = projection_factor(&mem, output);
-            let rect = display_frustum_rect(&mut mem, src, frustum, factor).unwrap();
-            for (offset, ndc) in [(0, -1.0), (4, 1.0)] {
-                close((mem.f32(rect + offset).unwrap() - 0.25) * factor, ndc);
+        mem.put_u32(0x0046_701c, 0);
+        for caller in [0x0002_badc, 0x0002_bb21, 0x0002_c7cc, 0x0002_c7ff, 0x0001_3cc0] {
+            let mut camera = mem.clone();
+            camera.put_u32(esp + 0x74, caller);
+            assert_eq!(fit_view_projection(&mut camera, esp, 0.75), Fit::Applied);
+            let bias = camera.f32(at).unwrap();
+            let scale = camera.f32(at + 8).unwrap();
+            for (offset, pixel) in [(16, 0.), (20, 5120.)] {
+                let ray = camera.f32(at + offset).unwrap();
+                close((ray * scale + bias + 1.) * 2560., pixel);
             }
-            assert_eq!(mem.f32(rect + 8), mem.f32(src + 8));
-            assert_eq!(mem.f32(rect + 12), mem.f32(src + 12));
+            for i in [1, 3, 6, 7] {
+                assert_eq!(camera.f32(at + 4 * i).unwrap(), terms[i as usize]);
+            }
         }
-        assert_eq!(mem.f32(src).unwrap(), -0.75);
-        assert_eq!(display_frustum_rect(&mut mem, src, frustum, 1.0), None);
+        mem.put_u32(0x0046_701c, 1);
+        for caller in [0x0003_f794, 0x0001_3cc0] {
+            mem.put_u32(esp + 0x74, caller);
+            assert_eq!(fit_view_projection(&mut mem, esp, 0.75), Fit::Caller(caller));
+            assert_eq!(mem.f32(at + 8).unwrap(), terms[2]);
+        }
+    }
+
+    #[cfg(feature = "desktop-runtime")]
+    #[test]
+    fn a_wide_view_starts_with_the_display_supplement_in_either_readback_mode() {
+        use render_bridge::scene_step::VisibilityLens;
+        assert!(matches!(starting_lens(0.758), VisibilityLens::Display(f) if f == 0.758));
+        for factor in [1.0, 1.25, 0.0, f32::NAN] {
+            assert!(matches!(starting_lens(factor), VisibilityLens::Retail), "{factor}");
+        }
     }
 
     fn physical(fit: Option<UiFit>, output: (u32, u32), xy: [f32; 2]) -> [f32; 2] {
@@ -936,57 +1010,41 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_backdrop_uses_the_scene_raster_and_restores_the_widget_fit() {
-        for output in [(2768, 1342), (2560, 1920), (1200, 1600)] {
-            let guest = FakeGuest::new();
-            let lens = projection_factor(&guest, output);
-            let canvas = Canvas {
-                output,
-                rect: FULL,
-                hud: false,
-                pinned: false,
-                projection_factor: lens,
-            };
-            let mut layout = Layout {
-                active: pixel_aspect(output).map(|_| canvas),
-                ..Default::default()
-            };
-            let widget_fit = layout.current();
-            assert_eq!(
-                layout.begin_menu_composite(MENU_BACKDROP.base),
-                widget_fit.is_some()
-            );
-            let backdrop_fit = layout.current();
-            let origin = physical(backdrop_fit, output, [0., 0.]);
-            let bounds = physical(backdrop_fit, output, [640., 480.]);
-            assert_eq!(origin, [0., 0.]);
-            close(bounds[0], output.0 as f32);
-            close(bounds[1], output.1 as f32);
-
-            // A full-frame copy with 0–1 UVs covers the first and last
-            // output pixel centres on both axes.
-            for (axis, extent) in [output.0, output.1].into_iter().enumerate() {
-                let uv = |pixel| (pixel - origin[axis]) / (bounds[axis] - origin[axis]);
-                assert!(uv(0.5) > 0.0);
-                assert!(uv(extent as f32 - 0.5) < 1.0);
+    fn menu_view_fades_use_the_rectangle_their_shader_projects_over() {
+        let mut mem = FakeGuest::new();
+        let esp = 0x1000;
+        let bounds = 0x2000;
+        let output = (2560, 1600);
+        for (top, height) in [(0u16, 480u16), (240, 240)] {
+            for (at, width) in [(bounds, 480), (RASTER_RECT, 640)] {
+                mem.put_u16(at, top)
+                    .put_u16(at + 2, 0)
+                    .put_u16(at + 4, top + height)
+                    .put_u16(at + 6, width);
             }
-
-            // A scene with the display lens has equal physical units
-            // around the centre along both axes.
-            let x = physical(None, output, [320. + 20. * lens, 240.]);
-            let y = physical(None, output, [320., 260.]);
-            close(x[0] - y[0], y[1] - x[1]);
-
-            assert_eq!(layout.end_group(MENU_BACKDROP.base), widget_fit.is_some());
-            assert_eq!(layout.current(), widget_fit);
-            let origin = physical(widget_fit, output, [0., 0.]);
-            let bounds = physical(widget_fit, output, [640., 480.]);
-            let unit = (output.0 as f32 / 640.).min(output.1 as f32 / 480.);
-            close(bounds[0] - origin[0], 640. * unit);
-            close(bounds[1] - origin[1], 480. * unit);
-            close(bounds[0] + origin[0], output.0 as f32);
-            close(bounds[1] + origin[1], output.1 as f32);
+            for caller in [
+                LAYERS_DIM_RETURN,
+                LAYERS_FADE_RETURN,
+                START_SCREEN_FADE_RETURN,
+                MODAL_FILL_RETURN,
+            ] {
+                mem.put_u32(esp, caller);
+                let rect = viewport(&mem, fill_bounds(&mem, esp, bounds)).unwrap();
+                let origin = physical(None, output, [rect.x as f32, rect.y as f32]);
+                let edge = physical(
+                    None,
+                    output,
+                    [(rect.x + rect.width) as f32, (rect.y + rect.height) as f32],
+                );
+                assert_eq!(origin, [0.0, if top == 0 { 0.0 } else { 800.0 }]);
+                assert_eq!(edge, [2560.0, 1600.0]);
+                assert_eq!(rect.y, u32::from(top));
+            }
         }
+        mem.put_u32(esp, 0x3000);
+        assert_eq!(fill_bounds(&mem, esp, bounds), bounds);
+        mem.put_u32(esp, MODAL_FILL_RETURN).put_u16(RASTER_RECT + 6, 0);
+        assert_eq!(fill_bounds(&mem, esp, bounds), bounds);
     }
 
     fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Corners {
@@ -1016,6 +1074,7 @@ mod tests {
                 hud: false,
                 pinned: true,
                 projection_factor: projection_factor(&FakeGuest::new(), output),
+                projected_points_fitted: false,
             }),
             ..Default::default()
         }
@@ -1031,21 +1090,21 @@ mod tests {
             // A full-width panel or scrolling strip, wider than the view
             // as a scrolling strip is, reaches both display edges.
             for strip in [quad(0.0, 300.0, 640.0, 330.0), quad(-160.5, 12.0, 800.0, 20.0)] {
-                assert_eq!(layout.place_quad(strip), Some(None));
+                assert_eq!(layout.place_quad(None, strip), Some(None));
                 let fit = layout.current();
                 close(physical(fit, output, [strip.unwrap().xy[0][0].max(0.0), 0.0])[0], 0.0);
                 close(physical(fit, output, [640.0, 0.0])[0], output.0 as f32);
                 // The next background quad keeps the full view.
-                assert_eq!(layout.place_quad(quad(0.5, 0.0, 639.5, 480.0)), None);
+                assert_eq!(layout.place_quad(None, quad(0.5, 0.0, 639.5, 480.0)), None);
                 // A list row or a glyph goes back to the 4:3 box.
-                assert_eq!(layout.place_quad(quad(80.0, 120.0, 560.0, 150.0)), Some(widget));
-                assert_eq!(layout.place_quad(quad(90.0, 120.0, 99.0, 140.0)), None);
+                assert_eq!(layout.place_quad(None, quad(80.0, 120.0, 560.0, 150.0)), Some(widget));
+                assert_eq!(layout.place_quad(None, quad(90.0, 120.0, 99.0, 140.0)), None);
                 // An unreadable quad keeps the widget fit.
-                layout.place_quad(strip);
-                assert_eq!(layout.place_quad(None), Some(widget));
+                layout.place_quad(None, strip);
+                assert_eq!(layout.place_quad(None, None), Some(widget));
             }
             // The next widget ends a background's full view.
-            layout.place_quad(quad(0.0, 0.0, 640.0, 480.0));
+            layout.place_quad(None, quad(0.0, 0.0, 640.0, 480.0));
             assert_eq!(layout.end_fill(), Some(widget));
             assert_eq!(layout.end_fill(), None);
             let [left, right] = [0.0, 640.0].map(|x| physical(widget, output, [x, 0.0])[0]);
@@ -1059,30 +1118,24 @@ mod tests {
     fn background_fill_follows_the_fitted_axis_and_view_and_skips_the_hud() {
         // Taller than 4:3 the fit shrinks y: a full-height quad fills.
         let mut tall = menu((1200, 1600), FULL);
-        assert_eq!(tall.place_quad(quad(100.0, 0.0, 200.0, 480.0)), Some(None));
+        assert_eq!(tall.place_quad(None, quad(100.0, 0.0, 200.0, 480.0)), Some(None));
         assert_eq!(tall.end_fill(), Some(tall.current()));
-        assert_eq!(tall.place_quad(quad(0.0, 100.0, 640.0, 200.0)), None);
+        assert_eq!(tall.place_quad(None, quad(0.0, 100.0, 640.0, 200.0)), None);
 
         // A split-screen menu fills its own view, not the frame.
         let lower = PixelRect { x: 0, y: 240, width: 640, height: 240 };
         let mut split = menu((1920, 1080), lower);
-        assert_eq!(split.place_quad(quad(0.0, 240.0, 640.0, 480.0)), Some(None));
+        assert_eq!(split.place_quad(None, quad(0.0, 240.0, 640.0, 480.0)), Some(None));
         let mut split = menu((1920, 1080), PixelRect { x: 320, y: 0, width: 320, height: 480 });
-        assert_eq!(split.place_quad(quad(0.0, 0.0, 320.0, 480.0)), None);
-        assert_eq!(split.place_quad(quad(320.0, 0.0, 640.0, 480.0)), Some(None));
+        assert_eq!(split.place_quad(None, quad(0.0, 0.0, 320.0, 480.0)), None);
+        assert_eq!(split.place_quad(None, quad(320.0, 0.0, 640.0, 480.0)), Some(None));
 
         // The HUD keeps its anchored groups; 4:3 has no fit to leave.
         let mut hud = menu((1920, 1080), FULL);
         hud.active = hud.active.map(|c| Canvas { hud: true, ..c });
-        assert_eq!(hud.place_quad(quad(0.0, 0.0, 640.0, 480.0)), None);
+        assert_eq!(hud.place_quad(None, quad(0.0, 0.0, 640.0, 480.0)), None);
         let mut square = Layout::default();
-        assert_eq!(square.place_quad(quad(0.0, 0.0, 640.0, 480.0)), None);
-
-        // Inside the backdrop compositor the view is already full.
-        let mut backdrop = menu((1920, 1080), FULL);
-        backdrop.begin_menu_composite(MENU_BACKDROP.base);
-        assert_eq!(backdrop.place_quad(quad(0.0, 0.0, 640.0, 480.0)), None);
-        assert_eq!(backdrop.current(), None);
+        assert_eq!(square.place_quad(None, quad(0.0, 0.0, 640.0, 480.0)), None);
     }
 
     #[test]
@@ -1096,23 +1149,38 @@ mod tests {
         assert!(widget.is_some());
         let wrap = 414.847_9_f32;
         let u = 1.0 - wrap / 1024.0;
-        assert_eq!(layout.place_quad(textured(0.0, 172.0, wrap, 180.0, u, 1.0)), Some(None));
-        assert_eq!(layout.place_quad(textured(wrap, 172.0, 1024.0, 180.0, 0.0, u)), None);
+        assert_eq!(layout.place_quad(None, textured(0.0, 172.0, wrap, 180.0, u, 1.0)), Some(None));
+        assert_eq!(layout.place_quad(None, textured(wrap, 172.0, 1024.0, 180.0, 0.0, u)), None);
         // A sliver at the wrap.
-        assert_eq!(layout.place_quad(textured(0.0, 420.0, 9.94, 428.0, 0.990_29, 1.0)), None);
+        assert_eq!(layout.place_quad(None, textured(0.0, 420.0, 9.94, 428.0, 0.990_29, 1.0)), None);
         // The menu's 1024x512 background bitmap reaches both edges.
-        assert_eq!(layout.place_quad(textured(0.0, 0.0, 1024.0, 512.0, 0.0, 1.0)), None);
+        assert_eq!(layout.place_quad(None, textured(0.0, 0.0, 1024.0, 512.0, 0.0, 1.0)), None);
 
         // A tab at the left edge whose whole bitmap is on screen, a panel
         // sliding in from off the view and a flat fill keep the 4:3 box.
-        assert_eq!(layout.place_quad(textured(0.0, 400.0, 220.0, 480.0, 0.0, 1.0)), Some(widget));
-        assert_eq!(layout.place_quad(textured(-100.0, 100.0, 200.0, 300.0, 0.0, 1.0)), None);
-        assert_eq!(layout.place_quad(textured(0.0, 100.0, 300.0, 300.0, 0.5, 0.5)), None);
+        assert_eq!(layout.place_quad(None, textured(0.0, 400.0, 220.0, 480.0, 0.0, 1.0)), Some(widget));
+        assert_eq!(layout.place_quad(None, textured(-100.0, 100.0, 200.0, 300.0, 0.0, 1.0)), None);
+        assert_eq!(layout.place_quad(None, textured(0.0, 100.0, 300.0, 300.0, 0.5, 0.5)), None);
         // Without texture coordinates one edge is not enough.
-        assert_eq!(layout.place_quad(quad(0.0, 172.0, wrap, 180.0)), None);
+        assert_eq!(layout.place_quad(None, quad(0.0, 172.0, wrap, 180.0)), None);
         // An emblem's unit quad at the shader site keeps the fit.
-        assert_eq!(layout.place_quad(quad(0.0, 0.0, 1.0, 1.0)), None);
+        assert_eq!(layout.place_quad(None, quad(0.0, 0.0, 1.0, 1.0)), None);
         assert_eq!(layout.current(), widget);
+    }
+
+    #[test]
+    fn screen_art_uses_raster_local_bounds_in_the_right_hand_view() {
+        let mut mem = FakeGuest::new();
+        mem.put_u16(RASTER_RECT, 0)
+            .put_u16(RASTER_RECT + 2, 320)
+            .put_u16(RASTER_RECT + 4, 480)
+            .put_u16(RASTER_RECT + 6, 640);
+        let view = viewport(&mem, RASTER_RECT).unwrap();
+        let raster = local_raster(&mem);
+        let mut layout = menu((2560, 1600), view);
+        let widget = layout.current();
+        assert_eq!(layout.place_quad(raster, quad(0.5, 0.0, 319.5, 480.0)), Some(None));
+        assert_eq!(layout.place_quad(raster, quad(0.0, 0.0, 240.0, 480.0)), Some(widget));
     }
 
     #[test]
@@ -1121,32 +1189,32 @@ mod tests {
         let corners = rect(-2.0, 10.0, 642.0, 40.0);
         let uv = rect(0.25, 0.0, 0.75, 1.0);
 
-        // Shader quad: (s, t, r, q) then the position, 0x1c bytes apart.
+        // Shader quad: float4 position, then UV, 0x1c bytes apart.
         let ebp = 0x2000;
         for i in 0..4 {
             let at = ebp - 0x70 + 0x1c * i as u32;
-            mem.put_f32(at, uv[i][0] * 2.0)
-                .put_f32(at + 4, uv[i][1] * 2.0)
+            mem.put_f32(at, corners[i][0])
+                .put_f32(at + 4, corners[i][1])
                 .put_f32(at + 8, 0.0)
                 .put_f32(at + 0xc, 2.0)
-                .put_f32(at + 0x10, corners[i][0])
-                .put_f32(at + 0x14, corners[i][1]);
+                .put_f32(at + 0x10, uv[i][0])
+                .put_f32(at + 0x14, uv[i][1]);
         }
         assert_eq!(shader_quad(&mem, ebp), Some(Quad { xy: corners, uv: None }));
 
-        // Screen quad: (u, v), the position, then the colour.
+        // Screen quad: (x, y), (u, v), then colour.
         let (esp, first) = (0x3000, 0x4000);
         mem.put_u32(esp + 0x18, first);
         for i in 0..4 {
             let at = first + 0x14 * i as u32;
-            mem.put_f32(at, uv[i][0])
-                .put_f32(at + 4, uv[i][1])
-                .put_f32(at + 8, corners[i][0])
-                .put_f32(at + 12, corners[i][1])
+            mem.put_f32(at, corners[i][0])
+                .put_f32(at + 4, corners[i][1])
+                .put_f32(at + 8, uv[i][0])
+                .put_f32(at + 12, uv[i][1])
                 .put_u32(at + 16, 0xffff_ffff);
         }
         assert_eq!(screen_quad(&mem, esp), Some(Quad { xy: corners, uv: None }));
-        mem.put_f32(first + 0x14 + 8, f32::NAN);
+        mem.put_f32(first + 0x14, f32::NAN);
         assert_eq!(screen_quad(&mem, esp), None);
 
         // The UI rectangle at the upload helper: (x, y) then (u, v).
@@ -1186,6 +1254,7 @@ mod tests {
                 hud: true,
                 pinned: true,
                 projection_factor: projection_factor(&FakeGuest::new(), output),
+                projected_points_fitted: false,
             };
             for (id, point) in [
                 (0, [605., 20.]),
@@ -1256,6 +1325,7 @@ mod tests {
                 hud: true,
                 pinned: true,
                 projection_factor: projection_factor(&guest, output),
+                projected_points_fitted: false,
             };
             // An authored square is 12 × 16 guest pixels on this source.
             let p = [24., 18.];
@@ -1333,6 +1403,7 @@ mod tests {
         let canvas = Canvas {
             output: (1920, 1080),
             projection_factor: 0.75,
+            projected_points_fitted: false,
             rect,
             hud: true,
             pinned: false,

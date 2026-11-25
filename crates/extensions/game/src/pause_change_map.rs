@@ -268,7 +268,7 @@ pub fn opening(mode: lobby_start::Mode, cat: &Catalogue) -> Option<Opening> {
 
 /// The maps a category's picker shows, in the catalogue's order.
 pub fn maps(cat: &Catalogue, c: Category) -> Vec<Map> {
-    cat.maps(c).to_vec()
+    cat.playable_maps(c)
 }
 
 fn catalogue() -> Arc<Catalogue> {
@@ -297,7 +297,7 @@ pub fn avail(
     clankers: bool,
 ) -> Avail {
     Avail {
-        map: opening(mode, cat),
+        map: opening(map_select::variant_mode(mode, base), cat),
         rules: !matches!(mode, lobby_start::Mode::Firefight) && !variants.is_empty(),
         quick: base.is_some(),
         clankers,
@@ -513,6 +513,7 @@ impl Confirm {
 /// the pickers close.
 #[derive(Clone, Debug, Default)]
 pub struct VisitState {
+    maps: Arc<Catalogue>,
     pub avail: Avail,
     pub rules: Vec<game_types::Listed>,
     /// The lobby's variant when Game Setup opened.
@@ -534,9 +535,15 @@ pub struct Visit {
 
 impl Visit {
     /// A new visit for controller `port`: the draft starts empty.
-    pub fn open(&self, port: u32, avail: Avail, rules: Vec<game_types::Listed>, base: Option<GameVariant>) {
+    pub fn open(&self, port: u32, mut avail: Avail, rules: Vec<game_types::Listed>, base: Option<GameVariant>) {
+        let mode = map_select::variant_mode(lobby_start::mode(), base.as_ref());
+        let maps = catalogue().for_variant(mode, base.as_ref());
+        if base.is_some() && avail.map.is_some() {
+            avail.map = opening(mode, &maps);
+        }
         self.port.store(port, Ordering::SeqCst);
         *lock(&self.state) = VisitState {
+            maps,
             avail,
             rules,
             base,
