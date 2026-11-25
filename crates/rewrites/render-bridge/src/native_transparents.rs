@@ -19,7 +19,7 @@ use timeline::native::{Metric, Stage};
 pub const ID: &str = "native-transparents";
 
 use points::scene_effects::{
-    GEOMETRY_RANGE_READY, SCENE_TRANSPARENTS_END, SUBPART_DRAWS, WATER_INDEX_END, WATER_INDEX_READY,
+    GEOMETRY_RANGE_READY, SCENE_TRANSPARENTS_END, SUBPART_DRAWS, WATER_INDEX_ARG_BYTES, WATER_INDEX_READY,
 };
 const GEOMETRY_RANGE_TAIL: u32 = 0x0004_dae0;
 const GEOMETRY_EMITTER_CALLER: u32 = 0x0004_d626;
@@ -257,6 +257,15 @@ fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> boo
     drawn
 }
 
+/// What the indexed wrapper's tail (`mov al, 1; ret 0xc`, after its
+/// `DrawIndexedVertices` call) leaves, for a draw the native stage has
+/// made: AL set, the return address and the wrapper's three arguments
+/// popped, and a transfer to the return address. The wrapper's caller is a
+/// call continuation, so this needs no resume point inside the wrapper.
+fn return_from_water_wrapper(eax: u32, esp: u32, return_to: u32) -> (u32, u32, TransferAbi) {
+    ((eax & !0xff) | 1, esp.wrapping_add(4 + WATER_INDEX_ARG_BYTES), TransferAbi::ret(return_to))
+}
+
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
@@ -444,7 +453,6 @@ impl Feature for NativeTransparents {
         }
         b.raw().before(&WATER_INDEX_READY, "native_water_composite", |c| {
             let rt = Arc::clone(c.ctx.runtime());
-            let can_resume = rt.read_dispatch(|dispatch| dispatch.has_resume(WATER_INDEX_END));
             let mut mem = rt.memory();
             if mem.u32(c.cpu.esp).ok() != Some(scene_extract::late::WATER_COMPOSITE_RETURN) {
                 return Ok(Flow::Continue);
@@ -454,21 +462,21 @@ impl Feature for NativeTransparents {
                 Stage::Water.count(Metric::WalkRefusedInputs, 1);
                 return Ok(Flow::Continue);
             };
-            if !can_resume {
-                Stage::Water.count(Metric::WalkExamined, 1);
-                Stage::Water.count(Metric::WalkRefusedReservation, 1);
-                return Ok(Flow::Continue);
-            }
             let Some(geometry) = crate::scene_step::water_composite(&*mem, indices, count) else {
                 Stage::Water.count(Metric::WalkExamined, 1);
                 Stage::Water.count(Metric::WalkRefusedInputs, 1);
                 return Ok(Flow::Continue);
             };
             let range = IndexRange { indices, count, topology: IndexTopology::Water(geometry) };
-            if walk_range(&mut *mem, Stage::Water, range) {
-                return Ok(Flow::Return(TransferAbi::resume(WATER_INDEX_END)));
+            if !walk_range(&mut *mem, Stage::Water, range) {
+                return Ok(Flow::Continue);
             }
-            Ok(Flow::Continue)
+            // The native draw replaces the wrapper's indexed call and its
+            // `mov al, 1; ret 0xc`: return to the wrapper's caller here.
+            let (eax, esp, transfer) = return_from_water_wrapper(c.cpu.eax, c.cpu.esp, scene_extract::late::WATER_COMPOSITE_RETURN);
+            c.cpu.eax = eax;
+            c.cpu.esp = esp;
+            Ok(Flow::Return(transfer))
         }).context_only().optional();
         for (site, resume) in SUBPART_DRAWS {
             b.raw().before(site, "native_late_subpart_draw", move |c| {
@@ -486,7 +494,7 @@ impl Feature for NativeTransparents {
                 };
                 if !can_resume {
                     stage.count(Metric::WalkExamined, 1);
-                    stage.count(Metric::WalkRefusedReservation, 1);
+                    stage.count(Metric::WalkRefusedResume, 1);
                     return Ok(Flow::Continue);
                 }
                 let Some(range) = subpart_range(&read, c.cpu.esp) else {
@@ -510,7 +518,7 @@ impl Feature for NativeTransparents {
             };
             if !can_resume {
                 stage.count(Metric::WalkExamined, 1);
-                stage.count(Metric::WalkRefusedReservation, 1);
+                stage.count(Metric::WalkRefusedResume, 1);
                 return Ok(Flow::Continue);
             }
             let strip = c.cpu.ebx as u8 != 0;
@@ -566,6 +574,16 @@ mod walk_tests {
     use super::*;
     use engine::memory::FlatMemory;
     use native_render::skip::CURRENT_LIST;
+
+    #[test]
+    fn a_native_water_draw_returns_from_the_wrapper_as_its_tail_does() {
+        let (eax, esp, transfer) = return_from_water_wrapper(0x1234_5600, 0x0060_0000, 0x0002_c545);
+        assert_eq!(eax, 0x1234_5601);
+        assert_eq!(esp, 0x0060_0010);
+        assert_eq!(transfer, TransferAbi::ret(0x0002_c545));
+        // AL is replaced, not or-ed.
+        assert_eq!(return_from_water_wrapper(0xffff_ffff, 0, 0).0, 0xffff_ff01);
+    }
 
     #[test]
     fn transparent_lists_keep_the_partial_final_triangle_in_the_snapshot() {
