@@ -1116,7 +1116,10 @@ impl ExternalPass for IndexedPass {
         request: ExternalPassRequest,
     ) -> Option<Result<ExternalDraws, &'static str>> {
         // A pool needs its lens copy first: it records as commands.
-        if self.sorted_pool { return None; }
+        if self.sorted_pool {
+            count_pool_recording("layer_plan_15_pool_record_draws_declined".to_owned());
+            return None;
+        }
         Some(self.prepare(target, request.surface_size))
     }
 
@@ -1126,6 +1129,7 @@ impl ExternalPass for IndexedPass {
         request: ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
         if !self.sorted_pool { return None; }
+        count_pool_recording("layer_plan_15_pool_record_encoded_called".to_owned());
         let result = self.record_pool(target, request);
         count_pool_recording(match &result {
             Ok(_) => {

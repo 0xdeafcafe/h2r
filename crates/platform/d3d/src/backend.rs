@@ -843,18 +843,21 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     let check_recording = !pass.uses_validated_resources();
     let counted = pass.counts_samples();
     let mut failure = None;
+    let mut detail = String::new();
     let mut prepared = [None, None];
     for (slot, target) in prepared.iter_mut().zip(targets) {
         if pass.display_only() && target.copy == TargetCopy::Reference {
             continue;
         }
+        let mut cause = String::new();
         let result = if let Some(draws) = pass.record_draws(target, request) {
-            draws.map(Prepared::Draws).map_err(|_| Metric::RefusedInputs)
+            draws.map(Prepared::Draws).map_err(|e| { cause = format!("record_draws: {e}"); Metric::RefusedInputs })
         } else if counted {
             // Only ordered draw packets can contribute to the backend's report.
+            cause = "a counted pass recorded no draw packets".into();
             Err(Metric::RefusedInputs)
         } else if let Some(encoded) = pass.record_encoded(target, request) {
-            encoded.map_err(|_| Metric::RefusedInputs).and_then(|encoded| {
+            encoded.map_err(|e| { cause = format!("record_encoded: {e}"); Metric::RefusedInputs }).and_then(|encoded| {
                 if check_recording {
                     let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
                     let mut scratch = target.device.create_command_encoder(&Default::default());
@@ -868,19 +871,25 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
             let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));
             let mut encoder = target.device.create_command_encoder(&Default::default());
             let ready = pass.prepare_copy(&target.target(request, &mut encoder, None)).is_ok();
-            if !scope.is_none_or(|scope| validated(scope.pop())) { Err(Metric::RefusedValidation) }
-            else if !ready { Err(Metric::RefusedInputs) }
+            if !scope.is_none_or(|scope| validated(scope.pop())) { cause = "prepare_copy validation".into(); Err(Metric::RefusedValidation) }
+            else if !ready { cause = "prepare_copy refused".into(); Err(Metric::RefusedInputs) }
             else { Ok(Prepared::Commands(encoder)) }
         };
         match result {
             Ok(copy) => *slot = Some((target, copy)),
             Err(why) => {
                 plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
+                if failure.is_none() {
+                    detail = format!("{:?} copy: {cause}", target.copy);
+                }
                 failure.get_or_insert(why);
             }
         }
     }
-    if let Some(why) = failure { return refuse(why, line!()); }
+    if let Some(why) = failure {
+        note_declined(plan.stage, "backend.rs", line!(), &detail);
+        return refuse(why, line!());
+    }
     drop(preparing);
 
     let _encode = Timer::start(plan.stage, Metric::EncodeNs);
