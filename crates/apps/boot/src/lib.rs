@@ -495,6 +495,8 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
     #[cfg(feature = "gpu")]
+    let viewer_lod = host.gfx_view.as_ref().and_then(|view| view.viewer_lod.clone());
+    #[cfg(feature = "gpu")]
     let mut active_size = output_size.as_ref().map(|output| {
         let initial = output();
         Arc::new(move || initial) as run_opts::NativeSize
@@ -944,6 +946,15 @@ fn run_configured(
     let single = opts.d3d && host.gfx_view.is_some()
         && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
     #[cfg(feature = "gpu")]
+    // A legacy film's recorded geometry multiplier. The guest walk is retail
+    // otherwise, whatever the local display choice (lod_distance), so no
+    // run forces retail for the network, film or lockstep of it.
+    let reference_lod = legacy_lod;
+    #[cfg(feature = "gpu")]
+    // The display can draw different geometry than the copy the guest
+    // readbacks read: every non-single-copy drawing view.
+    let display_split = !single && host.gfx_view.is_some();
+    #[cfg(feature = "gpu")]
     if single && d3d_glue::locked_retail_target(host.settings.as_deref())
         && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
         && let Some(display) = view.backend.take()
@@ -982,6 +993,9 @@ fn run_configured(
                 let (width, height) = output();
                 let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                if display_split && hooks::switches::native_render_on(features.switches()) {
+                    b.keep_display_copy();
+                }
                 let (dw, dh) = native_target().drawable;
                 eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
@@ -1260,7 +1274,11 @@ fn run_configured(
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
-            fixed_lod: protected_readbacks.then(|| legacy_lod.unwrap_or(1.0)),
+            reference_lod,
+            #[cfg(feature = "gpu")]
+            d3d_display: single,
+            #[cfg(feature = "gpu")]
+            viewer_lod,
             #[cfg(feature = "gpu")]
             world_line_present,
             rt: &loaded.runtime,
@@ -1492,7 +1510,7 @@ fn run_configured(
     // Sim match metrics and match.* on the agent.
     if let Some(s) = &sim_mode {
         let playback = film.as_ref().filter(|f| f.has_engine_track()).map(|_| replaying);
-        s.install_with_film(&mut features, playback)?;
+        s.install_with_audio(&mut features, playback, ds.as_ref().map(|a| Arc::clone(&a.hle)))?;
         if let Some(a) = &agent {
             s.add_methods(&a.agent);
         }

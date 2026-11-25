@@ -29,6 +29,9 @@ pub struct LoadedWorld {
     pub shaders: Vec<TagId>,
     /// The lightmap group's bitmap and palettes, when the BSP is lit.
     pub lightmap_bitmap: Option<TagId>,
+    /// Placement lighting mode at +0x56. With a matching lightmap group,
+    /// the BSP record builder selects implementation 1 for a nonzero mode.
+    pub per_vertex_placements: Vec<bool>,
     /// A damaged lightmap tag makes the lighting selector unknown.
     /// Geometry remains available to other passes.
     pub lightmap_error: Option<String>,
@@ -101,6 +104,7 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
                 },
             })
             .collect(),
+        source: None,
         positions: v.positions,
         uvs: v.texcoords,
         lightmap_uvs: v.lightmap_texcoords,
@@ -108,7 +112,27 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         binormals: v.binormals,
         tangents: v.tangents,
         lighting: lighting_vectors(s),
+        bucket_colors: false,
+        baked_colors: s.vertex_buffers.iter().rev().find_map(|vb|
+            baked_colors(vb.type_id, vb.stride, s.data(vb))).unwrap_or_default(),
     })
+}
+
+/// D3DCOLOR carries alpha; PBYTE3 supplies 1. Both fetches use UNORM8.
+fn baked_colors(kind: u8, stride: u8, bytes: &[u8]) -> Option<Vec<[u8; 4]>> {
+    match (kind, stride) {
+        (0x2e, 4) if bytes.len().is_multiple_of(4) =>
+            Some(bytes.as_chunks::<4>().0.iter().map(|&[b, g, r, a]| [r, g, b, a]).collect()),
+        (0x2f, 3) if bytes.len().is_multiple_of(3) =>
+            Some(bytes.as_chunks::<3>().0.iter().map(|&[r, g, b]| [r, g, b, 255]).collect()),
+        _ => None,
+    }
+}
+
+fn map_section(s: &Section, section: u32) -> Option<SectionInput> {
+    let mut input = section_input(s)?;
+    input.source = Some(world::light_parts::SourceSection::from_section(u16::try_from(section).ok()?, s));
+    Some(input)
 }
 
 /// A section's signed lighting vectors (stream `30`, found by
@@ -177,7 +201,7 @@ pub fn load_world<R: Read + Seek>(
     let mut b = WorldBuilder::new();
     for (ci, c) in bsp.clusters.iter().enumerate() {
         match c.geometry.load(raw, materials) {
-            Ok(Some(s)) => match section_input(&s) {
+            Ok(Some(s)) => match map_section(&s, ci as u32) {
                 Some(input) => b.add_section(Owner::Cluster(ci as u32), &input, &Placement::IDENTITY, key(clusters.get(ci))),
                 None => failed += 1,
             },
@@ -188,8 +212,9 @@ pub fn load_world<R: Read + Seek>(
     let defs: Vec<Option<SectionInput>> = bsp
         .instance_definitions
         .iter()
-        .map(|d| match d.geometry.load(raw, materials) {
-            Ok(Some(s)) => section_input(&s).or_else(|| {
+        .enumerate()
+        .map(|(i, d)| match d.geometry.load(raw, materials) {
+            Ok(Some(s)) => map_section(&s, i as u32).or_else(|| {
                 failed += 1;
                 None
             }),
@@ -215,6 +240,11 @@ pub fn load_world<R: Read + Seek>(
                 let lightmap_uvs = bucket_slice(&b.lightmap_uvs, first, n).map(<[_]>::to_vec);
                 let lighting = bucket_slice(&b.lighting, first, n).map(<[_]>::to_vec);
                 with_own = SectionInput {
+                    bucket_colors: b.colors.is_some(),
+                    baked_colors: match &b.colors {
+                        Some(colors) => bucket_slice(colors, first, n).unwrap_or_default().to_vec(),
+                        None => def.baked_colors.clone(),
+                    },
                     lightmap_uvs: lightmap_uvs.unwrap_or_else(|| def.lightmap_uvs.clone()),
                     lighting: lighting.unwrap_or_else(|| def.lighting.clone()),
                     ..def.clone()
@@ -249,6 +279,9 @@ pub fn load_world<R: Read + Seek>(
         shaders,
         lightmap_bitmap: group.as_ref().and_then(|g| g.bitmap),
         lightmap_error,
+        per_vertex_placements: bsp.instances.iter().map(|inst| {
+            u16::from_le_bytes([inst.raw[0x56], inst.raw[0x57]]) != 0
+        }).collect(),
         palettes: group.map(|g| g.palettes).unwrap_or_default(),
         failed_sections: failed,
     })
@@ -298,7 +331,8 @@ pub fn load_sections<R: Read + Seek>(
             }
         };
         let section = geometry.load(raw, materials)?.ok_or("the section has no geometry")?;
-        let input = section_input(&section).ok_or("the section's vertices do not decode")?;
+        let index = match owner { SectionOwner::Cluster(i) | SectionOwner::InstanceDefinition(i) => i };
+        let input = map_section(&section, index).ok_or("the section's vertices do not decode")?;
         out.extend(owners.into_iter().map(|o| (o, input.clone())));
     }
     Ok(out)
@@ -311,24 +345,32 @@ pub struct BucketStreams {
     pub lightmap_uvs: Vec<[f32; 2]>,
     /// Stream `30`.
     pub lighting: Vec<[f32; 3]>,
+    /// Second descriptor when the colour flag is set. An unreadable
+    /// bound stream stays empty, so a part requiring it fails admission.
+    pub colors: Option<Vec<[u8; 4]>>,
 }
 
-/// Each of `group`'s buckets' streams, loaded once; empty for a bucket the
-/// engine does not patch (flag bit 0), or one that does not load.
+/// Each bucket's streams, loaded once. Flag bit 0 enables the first
+/// descriptor and bit 1 the baked colour descriptor.
 pub fn bucket_streams(group: &LightmapGroup, raw: &mut dyn RawSource) -> Vec<BucketStreams> {
     group
         .buckets
         .iter()
         .map(|b| {
-            if !b.is_patched() {
+            let color_bound = b.flags & 2 != 0;
+            if !b.is_patched() && !color_bound {
                 return BucketStreams::default();
             }
             match load_bucket(b, raw) {
                 Ok(Some(s)) => BucketStreams {
-                    lightmap_uvs: s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default(),
-                    lighting: lighting_vectors(&s),
+                    lightmap_uvs: if b.is_patched() {
+                        s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default()
+                    } else { Vec::new() },
+                    lighting: if b.is_patched() { lighting_vectors(&s) } else { Vec::new() },
+                    colors: color_bound.then(|| s.vertex_buffers.iter().find(|v| v.slot == 1)
+                        .and_then(|v| baked_colors(v.type_id, v.stride, s.data(v))).unwrap_or_default()),
                 },
-                _ => BucketStreams::default(),
+                _ => BucketStreams { colors: color_bound.then(Vec::new), ..Default::default() },
             }
         })
         .collect()
@@ -503,6 +545,16 @@ mod tests {
         assert_eq!(image.rgba, [0x10, 0x20, 0x30, 0x80].repeat(4));
         assert_eq!(image.mips, vec![vec![0x40, 0x50, 0x60, 0xff]]);
         assert!(expand_levels(vec![level(0, 2, 1, 1)], &palette).is_none(), "no first face");
+    }
+
+    #[test]
+    fn baked_color_streams_preserve_channels_and_the_placement_offset() {
+        let packed = baked_colors(0x2e, 4, &[1, 3, 5, 7, 19, 23, 29, 31]).unwrap();
+        assert_eq!(bucket_slice(&packed, Some(1), 1), Some(&[[29, 23, 19, 31]][..]));
+        let rgb = baked_colors(0x2f, 3, &[29, 23, 19]).unwrap();
+        assert_eq!(rgb, [[29, 23, 19, 255]]);
+        assert!(baked_colors(0x2f, 4, &[0; 4]).is_none());
+        assert!(baked_colors(0x2e, 4, &[0; 3]).is_none());
     }
 
     #[test]

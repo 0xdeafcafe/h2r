@@ -11,7 +11,35 @@ use super::{
     Binding, EXTERNAL_GLOBALS, Engine, EngineCall, Native, ScenarioGlobals, VmError, VmResult,
     convert,
 };
-use crate::Datum;
+use crate::{Datum, Node};
+
+/// One entry of a fixed-signature builtin's argument evaluator. A child
+/// runs alone, leaving the next expression for the following entry.
+pub enum ArgumentStep {
+    Ready,
+    Invalid,
+    Evaluate { node: Node },
+}
+
+pub fn argument_step<E>(
+    parameters: &[u16],
+    position: usize,
+    expression: Datum,
+    node: impl FnOnce(Datum) -> Result<Node, E>,
+) -> Result<ArgumentStep, E> {
+    let Some(&parameter) = parameters.get(position) else {
+        return Ok(ArgumentStep::Ready);
+    };
+    if expression == Datum::NULL {
+        return Ok(ArgumentStep::Invalid);
+    }
+    let node = node(expression)?;
+    Ok(if node.value_type() == parameter {
+        ArgumentStep::Evaluate { node }
+    } else {
+        ArgumentStep::Invalid
+    })
+}
 
 /// The shared engine LCG (`imul 0x19660d; add 0x3c6ef35f`).
 fn lcg(e: &mut dyn Engine) -> u32 {
@@ -153,21 +181,17 @@ impl super::Vm<'_> {
             self.set(t, n + 1, Cell(a.0));
         }
         let i = self.local(t, n).0 as usize;
-        if i < n {
-            let current = Datum(self.local(t, n + 1).0);
-            let ty = (current != Datum::NULL)
-                .then(|| self.node(current).map(|a| a.value_type))
-                .transpose()?;
-            if ty != Some(parameters[i]) {
-                return Err(VmError::Argument { index, position: i });
+        let current = Datum(self.local(t, n + 1).0);
+        match argument_step(parameters, i, current, |d| self.node(d))? {
+            ArgumentStep::Ready => Ok(Some((0..n).map(|i| self.local(t, i)).collect())),
+            ArgumentStep::Invalid => Err(VmError::Argument { index, position: i }),
+            ArgumentStep::Evaluate { node } => {
+                self.eval(e, t, current, Dest::Local(i))?;
+                self.set(t, n + 1, Cell(node.next().0));
+                self.set(t, n, Cell(i as u32 + 1));
+                Ok(None)
             }
-            self.eval(e, t, current, Dest::Local(i))?;
-            let next = self.next(current)?;
-            self.set(t, n + 1, Cell(next.0));
-            self.set(t, n, Cell(i as u32 + 1));
-            return Ok(None);
         }
-        Ok(Some((0..n).map(|i| self.local(t, i)).collect()))
     }
 
     fn native(

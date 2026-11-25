@@ -111,6 +111,62 @@ pub struct FogPass {
     pub look: PassLook,
     pub state: PassState,
     pub fog: FogWords,
+    pub planar: Option<PlanarBindings>,
+}
+
+/// Pixel registers written by the planar implementation's engine externals.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanarBindings {
+    vectors: Vec<tags::material::VectorBinding>,
+    scalars: Vec<tags::material::VectorBinding>,
+}
+
+impl PlanarBindings {
+    fn from_implementation(imp: &ResolvedImplementation) -> Option<Self> {
+        use tags::material::VectorTarget;
+        let reads = imp.input_reads;
+        if reads.ints != 0 || reads.vectors & !(1u64 << 31) != 0
+            || reads.scalars & !((1u64 << 35) | (1u64 << 36)) != 0
+            || imp.variant || !imp.pixel_constants_from_engine
+            || !imp.vector_bindings.iter().all(|b| b.source == 31)
+            || !imp.scalar_bindings.iter().all(|b| matches!(b.source, 35 | 36))
+            || !imp.vector_bindings.iter().chain(&imp.scalar_bindings)
+                .all(|b| matches!(b.target, VectorTarget::Pixel { slot: 0..=8, .. }))
+        {
+            return None;
+        }
+        Some(Self { vectors: imp.vector_bindings.clone(), scalars: imp.scalar_bindings.clone() })
+    }
+
+    pub fn sample(&self, base: &psh::PixelUniforms, inputs: &PlanarInputs) -> LayerConstants {
+        use tags::material::{VectorTarget, engine_scalar, pack_engine_colour};
+        let mut pixel = *base;
+        for (bindings, vector) in [(&self.vectors, true), (&self.scalars, false)] {
+            for b in bindings {
+                let VectorTarget::Pixel { c1, slot, mask, half, transform } = b.target else { unreachable!() };
+                let value = if vector {
+                    [inputs.colour[0], inputs.colour[1], inputs.colour[2], 0.0]
+                } else {
+                    [engine_scalar(inputs.weights[usize::from(b.source - 35)], usize::from(transform)); 4]
+                };
+                crate::object_program::put_packed(&mut pixel, c1, slot, mask, pack_engine_colour(value, half));
+            }
+        }
+        LayerConstants { vertex: Vec::new(), defaults: Vec::new(), c0: pixel.c0, c1: pixel.c1 }
+    }
+}
+
+/// The two fade weights and colour in the current view's render context.
+pub struct PlanarInputs {
+    colour: [f32; 3],
+    weights: [f32; 2],
+}
+
+impl PlanarInputs {
+    pub fn read(mem: &dyn crate::camera::GuestRead) -> Option<Self> {
+        use scene_extract::layout::layer_inputs::{scalar, vector};
+        Some(Self { colour: vector(mem, 31, None)?, weights: [scalar(mem, 35)?, scalar(mem, 36)?] })
+    }
 }
 
 /// Why a material's layer stays on the D3D path.
@@ -397,6 +453,16 @@ fn passes_of(
             .map_err(|r| FogRefusal::Look { pass: n, refusal: Refusal::EngineStates(r) })?;
         look.stage_states = applied.stage_states;
         let states = applied.render_states;
+        // Input masks also request evaluations whose result is never bound.
+        // The states above are resolved. Without a register write or a
+        // dynamic fragment selector, the shader itself is view-independent.
+        if layer.layer == crate::fog::FOG_LAYER
+            && !imp.pixel_constants_from_engine
+            && imp.vertex_defaults.iter().all(|r| r.origin != tags::material::Origin::Engine)
+            && (!imp.variant || imp.input_reads.ints & !tags::material::INSTANCE_INTS == 0)
+        {
+            look.per_draw_inputs = false;
+        }
         match fog_parity(&look) {
             Ok(()) => {}
             Err(FogParity::NoFinalCombiner) => return Err(FogRefusal::NoFinalCombiner { pass: n }),
@@ -416,7 +482,14 @@ fn passes_of(
             // the layer's draws start with [`layer_cull`].
             (state.primitive.cull_mode, state.primitive.front_face) = layer_cull_primitive();
         }
-        out.push(FogPass { look, state, fog: FogWords::from_states(&states) });
+        let planar = if layer.layer == crate::fog::FOG_LAYER && look.per_draw_inputs {
+            let bindings = PlanarBindings::from_implementation(imp).ok_or_else(|| FogRefusal::Compile {
+                pass: n, reason: format!("unsupported planar engine inputs {:?}", imp.input_reads),
+            })?;
+            look.per_draw_inputs = false;
+            Some(bindings)
+        } else { None };
+        out.push(FogPass { look, state, fog: FogWords::from_states(&states), planar });
     }
     Ok(out)
 }
@@ -509,6 +582,7 @@ pub fn stencil_writes(device: &gfx::state::StencilState) -> bool {
 /// One compiled layer-16 pass of a material.
 #[derive(Clone, Debug)]
 pub struct FogProgram {
+    pub planar: Option<PlanarBindings>,
     pub program: MaterialProgram,
     pub state: PassState,
     /// The fog words the pass's implementation sets itself.
@@ -547,7 +621,7 @@ impl FogProgram {
         let rigid = rigid_microcode
             .map(|code| crate::program::compile_pass_rigid(&pass.look, pass.state.alpha_test, code))
             .transpose()?;
-        Ok(FogProgram { program, state: pass.state, words: pass.fog, rigid })
+        Ok(FogProgram { program, state: pass.state, words: pass.fog, planar: pass.planar.clone(), rigid })
     }
 }
 
@@ -822,7 +896,7 @@ impl FogSet {
     /// part per pass in reservation order, with the pass's pipeline, its
     /// uniform group (a placement's at its slot's dynamic offset), the
     /// part's texture group, the pass's blend constant, the part's index
-    /// range and the whole target as viewport and scissor. The writes are
+    /// range and the whole target as viewport and the player view as scissor. The writes are
     /// the selected materials' blocks (and the selected placements'
     /// slots) only: nothing else is read. `cache` holds the described
     /// pipelines ([`crate::gpu::GpuWorld::fog_draws`]); the pipelines
@@ -838,12 +912,14 @@ impl FogSet {
         color: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         target_size: (u32, u32),
+        scissor: gfx::ScissorRect,
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
+        samples: &LayerSamples,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let off = gfx::state::StencilState::default();
-        self.draws_stencil(cache, vertices, indices, color, depth, target_size, selected, view, fogs, &off, &LayerSamples::new())
+        self.draws_stencil(cache, vertices, indices, color, depth, target_size, scissor, selected, view, fogs, &off, samples)
     }
 
     /// [`FogSet::draws`] under the device's stencil at the layer call
@@ -860,15 +936,15 @@ impl FogSet {
         color: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         target_size: (u32, u32),
+        scissor: gfx::ScissorRect,
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
         device_stencil: &gfx::state::StencilState,
         samples: &LayerSamples,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
-        use gfx::{BoundGroup, RecordedDraw, ScissorRect};
+        use gfx::{BoundGroup, RecordedDraw};
         let stencil = layer_stencil(device_stencil, depth).ok_or("the layer's stencil needs a stencil attachment")?;
-        let scissor = ScissorRect::full(target_size.0, target_size.1);
         // The packets set the stencil reference from the render state.
         let render = gfx::state::RenderState { stencil: *device_stencil, ..Default::default() };
         let mut packets = Vec::new();
@@ -1035,6 +1111,30 @@ pub(crate) mod tests {
 
     pub(crate) const SIZE: u32 = 32;
 
+    pub(crate) fn player_viewport(split: bool) -> [f32; 4] {
+        // A guest boundary at 10 / 19 of the screen falls between physical texels.
+        let request = d3d::ExternalPassRequest {
+            rect: if split { (10, 0, 9, 19) } else { (0, 0, 19, 19) },
+            surface_size: (19, 19),
+            display_projection_factor: 0.75,
+            z_scale: 1.0,
+        };
+        d3d::external_viewport(&request, (SIZE, SIZE))
+    }
+
+    pub(crate) fn assert_split_images(images: &[(Vec<u8>, Vec<u8>)]) {
+        assert_eq!(images[0], images[1], "full-view packet and direct draws");
+        assert_eq!(images[2], images[3], "split-view packet and direct draws");
+        let boundary = 17; // round(32 * 10 / 19)
+        let mut covered = [false; 2];
+        for (i, (full, split)) in images[0].0.chunks_exact(4).zip(images[2].0.chunks_exact(4)).enumerate() {
+            let in_view = i % SIZE as usize >= boundary;
+            covered[usize::from(in_view)] |= full.iter().any(|&byte| byte != 0);
+            assert_eq!(split, if in_view { full } else { &[0; 4] }, "texel {i}");
+        }
+        assert_eq!(covered, [true, true], "geometry crosses the split");
+    }
+
     pub(crate) fn look(stage0: Stage) -> PassLook {
         PassLook {
             pass: map::TagId(0xe000_0001),
@@ -1050,7 +1150,7 @@ pub(crate) mod tests {
     }
 
     /// `dp4 oPos, v0, c[0..3]; mov oT0, v1`.
-    fn cluster_code() -> Vec<u8> {
+    pub(super) fn cluster_code() -> Vec<u8> {
         let row = |c, mask| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask);
         program(&[
             row(0, 8),
@@ -1101,8 +1201,8 @@ pub(crate) mod tests {
         let rigid = compile_pass_rigid(&look, None, &rigid_code()).expect("rigid compiles");
         let state = state();
         (
-            FogPass { look, state, fog: FogWords::default() },
-            FogProgram { program, state, words: FogWords::default(), rigid: Some(rigid) },
+            FogPass { look, state, fog: FogWords::default(), planar: None },
+            FogProgram { program, state, words: FogWords::default(), planar: None, rigid: Some(rigid) },
         )
     }
 
@@ -1236,9 +1336,12 @@ pub(crate) mod tests {
         let (selected, view, fogs) = (selected(), view(), fogs());
         let mut images = Vec::new();
         // Packets first: the uniforms they read are only those written ahead.
-        for packets in [true, false] {
+        for (packets, split) in [(true, false), (false, false), (true, true), (false, true)] {
             images.push(render(&ctx, |enc, arena, target| {
-                let draws = gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs).unwrap();
+                let draws = gpu.fog_draws(
+                    &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(split),
+                    &selected, &view, &fogs, &LayerSamples::new(),
+                ).unwrap();
                 assert_eq!((draws.ranges, draws.packets.len()), (2, 2), "one pass each, cluster and placement");
                 assert_eq!(draws.writes.len(), 2 + 2, "the pass's two blocks, the placement's view prefix and tail");
                 if packets {
@@ -1248,17 +1351,17 @@ pub(crate) mod tests {
                     gfx::Renderer::encode_pass(&ctx, enc, target, gfx::Clear::NONE, &draws.packets, None).unwrap();
                 } else {
                     let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena, encoder: enc };
-                    gpu.prepare_fog(&mut uploads, &view, &fogs);
+                    gpu.prepare_fog(&mut uploads, &view, &fogs, &LayerSamples::new());
                     assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
                     let recorded = gpu.encode_fog(
-                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), &selected,
+                        &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split), &selected,
                     );
                     assert_eq!(recorded, 2);
                 }
             }));
         }
         assert!(images[0].0.iter().any(|&b| b != 0), "the fog drew something");
-        assert_eq!(images[0], images[1]);
+        assert_split_images(&images);
     }
 
     /// A world layer's draws take the device's stencil at the layer call:
@@ -1368,7 +1471,10 @@ pub(crate) mod tests {
         gpu.set_fog(set);
         let (view, fogs) = (view(), fogs());
         let draws = |gpu: &mut GpuWorld, selected: &[(Owner, u8)], fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>| {
-            gpu.fog_draws(&ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selected, &view, fogs)
+            gpu.fog_draws(
+                &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), player_viewport(false),
+                selected, &view, fogs, &LayerSamples::new(),
+            )
         };
         assert!(draws(&mut gpu, &selected(), &fogs).is_ok());
         assert!(draws(&mut gpu, &[(Owner::Cluster(9), 0)], &fogs).is_err(), "a part the set does not hold");
@@ -1434,6 +1540,45 @@ mod selection_tests {
     const FRONT: Option<wgpu::Face> = Some(wgpu::Face::Front);
 
     #[test]
+    fn planar_pass_samples_the_current_views_combiner_constants() {
+        use scene_extract::layout::layer_inputs::{FADE, MATERIAL, ONE};
+        use scene_extract::testing::Mem;
+        use tags::material::{VectorBinding, VectorTarget};
+
+        let mut i = imp(0, &[state(CULL_MODE, CW)]);
+        i.per_draw_inputs = true;
+        i.pixel_constants_from_engine = true;
+        i.input_reads.scalars = (1 << 35) | (1 << 36);
+        i.input_reads.vectors = 1 << 31;
+        let binding = |source, slot, mask| VectorBinding {
+            source, target: VectorTarget::Pixel { c1: false, slot, mask, half: false, transform: 0 },
+        };
+        i.vector_bindings.push(binding(31, 0, 0x00ff_ffff));
+        i.scalar_bindings.extend([binding(35, 0, 0xff00_0000), binding(36, 1, 0xff00_0000)]);
+        let mut unsupported = i.clone();
+        unsupported.input_reads.ints = 1;
+        assert!(layer_passes(&material(16, vec![vec![unsupported]]), 16).is_err());
+        let mat = material(16, vec![vec![i]]);
+        let pass = layer_passes(&mat, 16).unwrap().remove(0);
+        let program = FogProgram::compile(&pass, &super::tests::cluster_code()).unwrap();
+        let mut mem = Mem::default();
+        mem.f(ONE, 1.0);
+        mem.f(FADE, 0.25);
+        mem.f(MATERIAL + 0x90, 0.5);
+        for (n, value) in [1.0, 0.5, 0.0].into_iter().enumerate() {
+            mem.f(MATERIAL + 0x84 + 4 * n as u32, value);
+        }
+        let sample = |mem: &Mem| program.planar.as_ref().unwrap()
+            .sample(&program.program.pixel, &PlanarInputs::read(mem).unwrap());
+        assert_eq!(sample(&mem).c0[0], psh::argb(0x60ff_8000));
+        assert_eq!(sample(&mem).c0[1][3], psh::argb(0x2000_0000)[3]);
+        mem.f(FADE, 1.0);
+        assert_eq!(sample(&mem).c0[0], psh::argb(0x00ff_8000));
+        mem.0.remove(&ONE);
+        assert!(PlanarInputs::read(&mem).is_none());
+    }
+
+    #[test]
     fn water_binds_both_images_of_the_supplied_rasterizer_bitmap() {
         use tags::material::{StageTexture, TextureSource};
         let mut pass = imp(0, &[state(CULL_MODE, CW)]);
@@ -1446,6 +1591,29 @@ mod selection_tests {
         assert_eq!(passes[0].look.textures[0], Stage::Bitmap { bitmap, image: 0 });
         assert_eq!(passes[0].look.textures[1], Stage::Bitmap { bitmap, image: 1 });
         assert!(crate::water_gpu::water_passes(&water, None).is_err());
+    }
+
+    #[test]
+    fn fog_ignores_an_unbound_input_and_retains_dynamic_bindings() {
+        use tags::material::{VectorBinding, VectorTarget};
+
+        let mut pass = imp(0, &[state(CULL_MODE, CW)]);
+        pass.per_draw_inputs = true;
+        pass.input_reads.vectors = 1;
+        let resolve = |i| layer_passes(&material(16, vec![vec![i]]), 16);
+        let static_pass = resolve(pass.clone()).unwrap().remove(0);
+        assert!(!static_pass.look.per_draw_inputs);
+        assert!(static_pass.planar.is_none());
+
+        pass.input_reads.vectors = 1 << 31;
+        pass.pixel_constants_from_engine = true;
+        pass.vector_bindings.push(VectorBinding {
+            source: 31,
+            target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0 },
+        });
+        assert!(resolve(pass.clone()).unwrap()[0].planar.is_some());
+        pass.variant = true;
+        assert!(resolve(pass).is_err());
     }
 
     #[test]

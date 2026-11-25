@@ -59,6 +59,7 @@ mod film_state;
 pub mod hosted;
 pub mod spatial;
 mod state_hash;
+pub(crate) mod voices;
 
 /// The engine's shared random seed: a pointer to the struct whose first
 /// word it is.
@@ -826,8 +827,19 @@ impl Sim {
     pub fn install_with_film(
         &self, features: &mut hooks::Registry, film_playback: Option<bool>,
     ) -> Result<()> {
+        self.install_with_audio(features, film_playback, None)
+    }
+
+    /// Include the actual DirectSound scheduling and delivery sequence in
+    /// the arena verification arm's full component series.
+    pub fn install_with_audio(
+        &self,
+        features: &mut hooks::Registry,
+        film_playback: Option<bool>,
+        audio: Option<Arc<dsound::Hle>>,
+    ) -> Result<()> {
         features
-            .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback })
+            .add(&SimMetrics { sim: Arc::clone(&self.0), film_playback, audio })
             .map_err(|e| anyhow::anyhow!("sim metrics: {e}"))?;
         if self.0.matched.config.bounces.is_some() {
             // The search's teleports go the drops' way.
@@ -1510,6 +1522,7 @@ impl Metered {
 struct SimMetrics {
     sim: Arc<Inner>,
     film_playback: Option<bool>,
+    audio: Option<Arc<dsound::Hle>>,
 }
 
 impl hooks::Feature for SimMetrics {
@@ -1525,6 +1538,15 @@ impl hooks::Feature for SimMetrics {
             None => hooks::SnapshotPolicy::Stateless,
         };
         b.snapshot(policy);
+        let audio = self.audio.clone().filter(|_| {
+            b.switches().implementation("sim.arena-hash", false)
+                && self.sim.matched.config.detail().tally() == Detail::Full
+                && self.sim.matched.config.components != Some(false)
+        });
+        if let Some(hle) = &audio {
+            voices::install(b, hle);
+        }
+        let start_audio = audio.clone();
         let me = Arc::clone(&self.sim);
         b.game().on_start("sim: match start", move |o| {
             let g = o.guest();
@@ -1548,6 +1570,9 @@ impl hooks::Feature for SimMetrics {
                 .traces()
                 .then(|| spatial::places(&*g));
             drop(g);
+            if let Some(hle) = &start_audio {
+                hle.begin_voice_trace();
+            }
             let mut s = me.lock();
             s.bindings.clear();
             s.tally.start((tick & 0xffff_ffff) as u32);
@@ -1584,6 +1609,10 @@ impl hooks::Feature for SimMetrics {
         me.lock().pages.enabled = page_census;
         let full_detail = me.matched.config.detail().tally() == Detail::Full;
         let traces = me.matched.config.detail().traces();
+        // The Havok heap walk (docs/engine/sim-rewrite-havok.md §9.2): the
+        // arena hash cannot cover the heap, so its digest joins the named
+        // components when the report has them.
+        let havok_digest = full_detail && me.matched.config.components != Some(false);
         b.frame().on_tick("sim: tick sample", move |o| {
             if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
@@ -1596,6 +1625,11 @@ impl hooks::Feature for SimMetrics {
             if me.lock().phase == Phase::Binding
                 && bots::phantom::session::host_session(&*g).is_err()
             {
+                if let Some(hle) = &audio {
+                    let tick = telemetry::game_tick(&g).unwrap_or(0) as u32;
+                    drop(g);
+                    let _ = hle.direct_sound().voice_events(tick);
+                }
                 return;
             }
             let snap = if projected {
@@ -1633,7 +1667,17 @@ impl hooks::Feature for SimMetrics {
             };
             // A handful of reads (docs/runtime/sim.md §6, `guest_census`).
             let census = crate::sim_census::read(&*g);
+            let voice_tick = audio.as_ref().map(|_| {
+                snap.as_ref()
+                    .map(|s| s.tick)
+                    .unwrap_or_else(|_| telemetry::game_tick(&g).unwrap_or(0)) as u32
+            });
+            let havok = havok_digest
+                .then(|| live_telemetry::havok_agents::digest::read(&*g).ok())
+                .flatten();
             drop(g);
+            let voice_events = audio.as_ref().zip(voice_tick)
+                .and_then(|(hle, tick)| hle.direct_sound().voice_events(tick));
             let ground = spatial::MapGround::when(traces);
             let mut s = me.lock();
             if let Some(hashes) = page_base {
@@ -1672,7 +1716,22 @@ impl hooks::Feature for SimMetrics {
                     // `detail = "training"` or "spatial" leaves it out too,
                     // with all but a sparse few of the digests.
                     if full_detail && me.matched.config.components != Some(false) {
-                        let components = state_hash::components(&snap, rng);
+                        let mut components = state_hash::components(&snap, rng);
+                        if let Some(events) = voice_events {
+                            components.push(("sound.voices".into(), events));
+                        }
+                        // The Havok walk names the first tick where physics
+                        // differs when the arena hash cannot.
+                        let havok = havok.map_or_else(
+                            || "unreadable".to_owned(),
+                            |d| {
+                                format!(
+                                    "hash={:016x} bodies={} constraints={} pairs={} heap={}",
+                                    d.hash, d.bodies, d.constraints, d.pairs, d.heap_used
+                                )
+                            },
+                        );
+                        components.push(("havok.world".into(), havok));
                         s.tally
                             .tick_components_blocks(tick, arena_base, components, &arena_blocks);
                     }

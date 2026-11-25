@@ -70,6 +70,12 @@ impl HsType {
         }
     }
 
+    /// Bytes transferred between a cell and its external binding. The guest
+    /// has no store for object-name subtypes after the base object name.
+    pub fn external_storage_width(self) -> u8 {
+        if self.0 > Self::FIRST_OBJECT_NAME.0 { 0 } else { self.size() }
+    }
+
     /// The value an *unbound* external global reads as: the refresh at
     /// `0x0020a2e0` stores 0 (boolean/real/short/long/string_id), the empty
     /// string (string), `0xffff` (16-bit indices) or `-1` (32-bit handles)

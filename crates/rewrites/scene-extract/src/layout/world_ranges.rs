@@ -418,7 +418,8 @@ impl Emitter {
     }
 }
 
-fn emissions(m: &dyn GuestRead, geometry: u32, part: u32, flags: u32, bitmap: u32,
+/// Raw index spans the standard emitter submits for this section part.
+pub(crate) fn emissions(m: &dyn GuestRead, geometry: u32, part: u32, flags: u32, bitmap: u32,
     strip: bool) -> Result<Vec<Range<u32>>, Refusal> {
     let subparts = word(m, geometry, 8)?;
     if flags & USE_SUBPARTS == 0 || bitmap == 0 || subparts == 0 {

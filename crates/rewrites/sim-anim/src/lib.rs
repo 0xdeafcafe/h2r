@@ -1,7 +1,7 @@
 //! Animation sampling and node matrices for the simulation rewrite
-//! (docs/engine/sim-rewrite.md phases 1a to 1c; the contracts are
+//! (docs/engine/sim-rewrite.md phases 1a to 1d; the contracts are
 //! docs/engine/anim-sampling.md, docs/engine/skeleton-walk.md and
-//! docs/engine/markers.md).
+//! docs/engine/markers.md and docs/engine/animation-manager.md).
 //!
 //! The guest evaluates an animation at a frame by walking per-node flag
 //! arrays and calling a codec function per channel per node. Here each
@@ -35,8 +35,10 @@
 
 pub mod clip;
 pub mod codec;
+pub mod graph_resolve;
 pub mod graph_walk;
 pub mod kernel;
+pub mod manager_channels;
 pub mod markers;
 pub mod palette;
 pub mod skeleton;

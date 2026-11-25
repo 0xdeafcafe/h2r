@@ -6,10 +6,12 @@
 use std::collections::HashMap;
 
 use agent_proto::havok::{
-    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Point, Shape, Side, method,
+    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Digest, Point, Shape, Side,
+    method,
 };
 use agent_proto::{Kind, Object, ObjectId, RpcError, code};
 use live_telemetry::havok::{self as hk, IslandState};
+use live_telemetry::havok_agents::digest as hk_digest;
 use serde_json::{Value, json};
 
 use crate::exec::GameCtx;
@@ -22,6 +24,7 @@ pub fn install(agent: &Agent) {
     agent.add_game_method(method::AGENTS, Access::Read, agents::agents_method);
     agent.add_game_method(method::BODIES, Access::Read, bodies_method);
     agent.add_game_method(method::CONTACTS, Access::Read, contacts_method);
+    agent.add_game_method(method::DIGEST, Access::Read, digest_method);
 }
 
 /// Registers `havok.pair.set`, using sim's host-write checks.
@@ -119,6 +122,18 @@ fn contacts_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
         serde_json::to_value(answer_contacts(&raw, &bodies, &objects, &p)?)
             .expect("contacts serialise"),
     )
+}
+
+fn digest_method(_v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
+    let raw = read(ctx, hk_digest::read)?;
+    let answer = Digest {
+        digest: format!("{:016x}", raw.hash),
+        bodies: raw.bodies,
+        constraints: raw.constraints,
+        pairs: raw.pairs,
+        heap_used: raw.heap_used,
+    };
+    Ok(serde_json::to_value(answer).expect("digest serialises"))
 }
 
 fn wire_body(b: &hk::Body, ids: &HashMap<u32, String>) -> Body {
@@ -537,6 +552,13 @@ mod tests {
         a.submit(
             conn,
             r#"{"jsonrpc":"2.0","id":2,"method":"havok.bodies","params":{}}"#,
+        );
+        a.between_slices(&mut NoGuest, 0);
+        let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(line.contains(&code::UNAVAILABLE.to_string()), "{line}");
+        a.submit(
+            conn,
+            r#"{"jsonrpc":"2.0","id":3,"method":"havok.digest","params":{}}"#,
         );
         a.between_slices(&mut NoGuest, 0);
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();

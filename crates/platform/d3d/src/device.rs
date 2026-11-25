@@ -84,6 +84,26 @@ impl<B: Backend> Device<B> {
         self.stats.backend_draws += 1;
         timeline::phase::count(timeline::phase::Counter::D3dResidualDraws, 1);
     }
+
+    /// The device wrote colour surface `surface` (a draw, clear or pass):
+    /// present cameras drop what they kept of it, and its frame-buffer
+    /// copies are stale (its colour-write generation moves on).
+    fn color_surface_written(&mut self, surface: B::Surface) {
+        self.present_cameras.color_written(surface);
+        self.frame_snaps.written(surface);
+    }
+
+    /// Host surface `surface` is being destroyed: nothing shared of it
+    /// outlives it, and a later surface given the same handle starts clean.
+    fn forget_surface(&mut self, surface: B::Surface) {
+        self.frame_snaps.forget(surface);
+    }
+
+    /// Frame-buffer copies the device holds for sharing between draws
+    /// (bounded; `frame_snaps.rs`).
+    pub fn frame_snapshots_held(&self) -> usize {
+        self.frame_snaps.len()
+    }
 }
 
 mod admission_scope;
@@ -92,6 +112,7 @@ mod projection;
 pub use projection::widen_projection_rows;
 mod display;
 mod fragments;
+mod frame_snaps;
 mod external_sequence;
 pub use external_sequence::{ExternalStep, ExternalTargets, PreparedSequence};
 mod mirror;
@@ -456,6 +477,9 @@ pub struct Stats {
     /// display surface's `Data` ([`DISPLAY_BUFFER_DATA`] at creation),
     /// Halo's previous-parity frame texture.
     pub previous_frame_snapshots: u64,
+    /// Draws that sampled a frame buffer through a copy an earlier draw
+    /// made, the surface unwritten since (`device/frame_snaps.rs`).
+    pub frame_snapshot_reuses: u64,
     /// Draws split into several pieces by scissor rectangles
     /// ([`ResolvedDraw::clip_rects`]).
     pub scissor_split_draws: u64,
@@ -1101,7 +1125,7 @@ pub struct Device<B: Backend> {
     cache: HashMap<TextureKey, CachedTexture<B::Texture>>,
     /// Guest-write tracking (see [`crate::dirty`]).
     pub tracker: WriteTracker,
-    events: Vec<Event>,
+    events: crate::events::EventLog,
     last_stop: Option<HleStop>,
     stats: Stats,
     queued_external_stats: Arc<QueuedExternalStats>,
@@ -1163,6 +1187,9 @@ pub struct Device<B: Backend> {
     /// Textures over the depth buffer, made from `depth_copy`, by header
     /// and effective channel signs.
     depth_alias: HashMap<raster::DepthAliasKey, raster::DepthAlias<B::Texture>>,
+    /// Frame-buffer copies shared by the draws that sample them while
+    /// their surface is unwritten (`frame_snaps.rs`).
+    frame_snaps: frame_snaps::FrameSnapshots<B::Surface, B::Texture>,
     /// Lazy depth levels: the texture each dirty depth level was last
     /// sampled through ([`Backend::depth_level_texture`]), until it is drawn
     /// into, refilled or dropped.
@@ -1317,7 +1344,7 @@ impl<B: Backend> PreparedExternal<'_, B> {
             self.device.backend.commit_external(recording);
         }
         for (header, surface) in self.binding.colors {
-            self.device.present_cameras.color_written(surface);
+            self.device.color_surface_written(surface);
             self.device.mark_color_written(header);
         }
         if self.binding.depth_write {
@@ -1358,7 +1385,7 @@ impl<B: Backend> SceneReservation<'_, B> {
             return;
         }
         for (header, surface) in self.binding.colors {
-            self.device.present_cameras.color_written(surface);
+            self.device.color_surface_written(surface);
             self.device.mark_color_written(header);
         }
         if self.binding.depth_write {
@@ -1468,7 +1495,7 @@ impl<B: Backend> Device<B> {
             regs: None,
             cache: HashMap::default(),
             tracker: WriteTracker::new(),
-            events: Vec::new(),
+            events: Default::default(),
             last_stop: None,
             stats: Stats::default(),
             queued_external_stats: Default::default(),
@@ -1499,6 +1526,7 @@ impl<B: Backend> Device<B> {
             depth_alias_decodes: Vec::new(),
             depth_read_generation: None,
             depth_alias: HashMap::default(),
+            frame_snaps: Default::default(),
             depth_level_tex: HashMap::default(),
             lazy_depth: true,
             leave_read: false,
@@ -1558,9 +1586,15 @@ impl<B: Backend> Device<B> {
         stats
     }
 
-    /// Drains recorded events.
+    /// Drains recorded events: the first `EventLog::LIMIT` since the last
+    /// drain (crates/platform/d3d/src/events.rs).
     pub fn take_events(&mut self) -> Vec<Event> {
-        std::mem::take(&mut self.events)
+        self.events.take().0
+    }
+
+    /// Drains recorded events with the count of those past the kept limit.
+    pub fn take_events_counted(&mut self) -> (Vec<Event>, u64) {
+        self.events.take()
     }
 
     /// Records the call that stopped the guest (the runtime glue does this).
@@ -1916,6 +1950,7 @@ impl<B: Backend> Device<B> {
         surfaces.extend(self.depth.take());
         surfaces.extend(self.other_surfaces.drain().map(|(_, (_, s))| s));
         for s in surfaces {
+            self.forget_surface(s);
             self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
         }
         self.created = false;
@@ -1967,6 +2002,7 @@ impl<B: Backend> Device<B> {
         self.depth_copy = None;
         self.depth_read_generation = None;
         self.depth_alias.clear();
+        self.frame_snaps.clear();
         self.depth_color = None;
         self.depth_color_newer = false;
         self.drop_visibility_tests();
@@ -2408,6 +2444,11 @@ impl<B: Backend> Device<B> {
         };
         for &(_, surface) in &binding.colors {
             self.materialize_display_copy(surface)?;
+        }
+        // What the display draws reaches the scaled view's copies of these
+        // surfaces, so frame-buffer copies of them are stale either way.
+        for &(_, surface) in &binding.colors {
+            self.frame_snaps.written(surface);
         }
         let queued = self.queues_scene_stages(plan.stage);
         let stage = crate::SceneStage {
@@ -3078,7 +3119,7 @@ impl<B: Backend> Device<B> {
             match outcome.map_err(D3dError::Backend)? {
                 DrawOutcome::Drawn => {
                     if writes_color {
-                        self.present_cameras.color_written(p.color);
+                        self.color_surface_written(p.color);
                     }
                 }
                 DrawOutcome::Skipped(reason) => {
@@ -3355,7 +3396,7 @@ impl<B: Backend> Device<B> {
             {
                 Ok(true) => {
                     if writes_color {
-                        self.present_cameras.color_written(color);
+                        self.color_surface_written(color);
                     }
                     self.stats.external_passes += 1;
                 }
@@ -3420,7 +3461,7 @@ impl<B: Backend> Device<B> {
                 self.backend.commit_external(recording);
             }
             for target in s.surfaces.iter().flatten() {
-                self.present_cameras.color_written(target.surface);
+                self.color_surface_written(target.surface);
             }
             self.stats.swallow_draws_dropped += plan.ranges as u64;
             self.stats.claimed_draws += s.packets.len() as u64;
@@ -3659,7 +3700,7 @@ impl<B: Backend> Device<B> {
             Ok(color) => {
                 self.stats.external_passes += 1;
                 if writes.color {
-                    self.present_cameras.color_written(color);
+                    self.color_surface_written(color);
                     self.mark_color_written(self.render_target);
                 }
                 if writes.depth_stencil && !colour_only {
@@ -4279,6 +4320,7 @@ impl<B: Backend> Device<B> {
         self.mirror_stale.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
             self.rtt_epoch += 1;
+            self.forget_surface(t.surface);
             self.backend
                 .destroy_surface(t.surface)
                 .map_err(D3dError::Backend)?;
@@ -4297,11 +4339,13 @@ impl<B: Backend> Device<B> {
             self.rtt_epoch += 1;
             self.mirror_stale.remove(&h);
             self.depth_level_tex.remove(&h);
+            self.forget_surface(t.surface);
             self.backend
                 .destroy_surface(t.surface)
                 .map_err(D3dError::Backend)?;
         }
         if let Some((_, s)) = self.other_surfaces.remove(&header) {
+            self.forget_surface(s);
             self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
         }
         if self.depth_color.is_some_and(|c| c.header == header) {
@@ -4979,6 +5023,7 @@ impl<B: Backend> Device<B> {
             .create_surface(desc.format, desc.width, desc.height, depth)
             .map_err(D3dError::Backend)?;
         if let Some((_, old)) = self.other_surfaces.insert(header, (id, s)) {
+            self.forget_surface(old);
             self.backend
                 .destroy_surface(old)
                 .map_err(D3dError::Backend)?;
@@ -5466,6 +5511,9 @@ impl<B: Backend> Device<B> {
             // A fresh image; a front a failed copy left stale stays lost.
             self.display.shown_lost = false;
         }
+        // Frame-buffer copies never cross a present: a frame owner replays
+        // each frame's samples with that frame.
+        self.frame_snaps.clear();
         let metadata = crate::present_camera::Present::Guest {
             image: self.present_cameras.get(shown),
             reference: false,
@@ -6079,6 +6127,7 @@ impl<B: Backend> Device<B> {
         let mut glyph_cache = 0u8;
         let mut reads_frame_copy = false;
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
+        let mut frames: [Option<u64>; 4] = [None; 4];
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut depth_levels: [Option<u32>; 4] = [None; 4];
         let mut bound = self.textures;
@@ -6109,6 +6158,14 @@ impl<B: Backend> Device<B> {
                         extras[stage].color_sign = 0;
                         texture_info[stage] = Some(info);
                         snapshots[stage] = Some(t);
+                        continue;
+                    }
+                    FrameTexture::Shared(info, id) => {
+                        extras[stage].samples_frame = sampled[stage];
+                        reads_frame_copy |= sampled[stage];
+                        extras[stage].color_sign = 0;
+                        texture_info[stage] = Some(info);
+                        frames[stage] = Some(id);
                         continue;
                     }
                     FrameTexture::DepthAlias(info, key) => {
@@ -6193,16 +6250,64 @@ impl<B: Backend> Device<B> {
         #[cfg(not(feature = "gpu"))]
         let retail_constants = None;
 
+        let frame_size = self.swap.as_ref().map(|swap| swap.size);
+        for stage in 0..4 {
+            let Some(info) = texture_info[stage] else { continue };
+            let size = (info.width, info.height);
+            if !sampled[stage] || extras[stage].samples_frame || Some(size) != frame_size
+                || info.kind != gfx::texture::TextureKind::D2 || info.levels != 1
+            {
+                continue;
+            }
+            // Texaccum can be bound directly, through a feedback snapshot, or
+            // after writeback through the ordinary texture cache. In each case
+            // the sampler addresses the same screen image in guest coordinates.
+            let pixels = crate::resource::PixelContainer::read(mem, info.header)?;
+            let data = self.cfg.address_map.to_virtual(pixels.resource.data);
+            extras[stage].samples_frame = self.rtt.values().any(|level| {
+                level.data == data
+                    && (level.width, level.height) == size
+                    && level.identity[1] == pixels.format
+                    && level.identity[2] == pixels.size
+            });
+        }
+        #[cfg(feature = "gpu")]
+        self.projection.fit_camera_bumps(
+            &shader,
+            self.ui_fit.is_none() && (target.width, target.height) == (640, 480),
+            &mut extras,
+        );
         // A draw that samples a frame-sized render target into a frame-sized
         // target copies the frame (the blur under a menu dialog ping-pongs
         // two of them). The UI fit places widgets; it must not shrink a
         // copy into the safe area (docs/graphics/high-resolution.md).
         let copies_a_frame = (0..4).any(|stage| {
             sampled[stage]
-                && (snapshots[stage].is_some() || aliases[stage].is_some())
+                && (extras[stage].samples_frame
+                    || snapshots[stage].is_some()
+                    || frames[stage].is_some()
+                    || aliases[stage].is_some())
                 && texture_info[stage]
                     .is_some_and(|i| (i.width, i.height) == (target.width, target.height))
         });
+        // A screen-space quad whose positions reach both frame edges along
+        // an axis the fit shrinks is a full-frame pass too: like a frame
+        // copy, it spans the display, not the fitted safe box. The guest's
+        // own quads choose this at their submission sites (`render_aspect`);
+        // the strips a screen effect pushes by hand have no site, so the
+        // device reads the draw's vertices.
+        let spans_frame = match &self.ui_fit {
+            Some(fit) if !fit.applies_to_frame_sample() => spans_the_fitted_frame(
+                fit,
+                &parts.layout,
+                streams,
+                parts.indices.is_some(),
+                parts.vertex_count,
+                (target.width, target.height),
+            ),
+            _ => false,
+        };
+        let full_frame_pass = copies_a_frame || spans_frame;
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_color = state.render.color_write.xbox_value() != 0;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
@@ -6234,7 +6339,7 @@ impl<B: Backend> Device<B> {
             ui_fit: self
                 .ui_fit
                 .filter(|fit| (target.width, target.height) == (640, 480)
-                    && (!copies_a_frame || fit.applies_to_frame_sample())),
+                    && (!full_frame_pass || fit.applies_to_frame_sample())),
             glyph_cache,
         };
         let (mut draw, snapshots) = if self
@@ -6349,6 +6454,7 @@ impl<B: Backend> Device<B> {
         let textures: [Option<&B::Texture>; 4] = std::array::from_fn(|i| {
             snapshots[i]
                 .as_ref()
+                .or_else(|| frames[i].and_then(|id| self.frame_snaps.texture(id)))
                 .or_else(|| {
                     aliases[i]
                         .and_then(|k| self.depth_alias.get(&k))
@@ -6432,7 +6538,7 @@ impl<B: Backend> Device<B> {
                 };
                 if self.backend.queue_external_draw(queued, textures) {
                     if writes_color {
-                        self.present_cameras.color_written(color);
+                        self.color_surface_written(color);
                         self.mark_color_written(self.render_target);
                     }
                     if writes_depth {
@@ -6530,7 +6636,7 @@ impl<B: Backend> Device<B> {
         match outcome.map_err(D3dError::Backend)? {
             DrawOutcome::Drawn => {
                 if writes_color {
-                    self.present_cameras.color_written(color);
+                    self.color_surface_written(color);
                 }
                 self.mark_written(writes_depth);
             }
@@ -7272,6 +7378,71 @@ pub(crate) fn attribute_value(ty: VertexDataType, b: &[u8]) -> [f32; 4] {
         }
     }
     out
+}
+
+/// Whether an unindexed draw's screen-space positions reach both edges of
+/// the `frame` along an axis `fit` shrinks. A quad that does is a
+/// full-frame pass — a fill, tint, fade, blur or colour pass over the whole
+/// view — and the fit must not shrink it into the safe area
+/// (docs/graphics/high-resolution.md). The positions are read from the
+/// draw's own vertices, so every path that pushes a full-window quad is
+/// covered, whether or not the submission site is one `render_aspect`
+/// reads: the screen effects' hand-pushed strips, the colour pass's quads,
+/// a menu fill the background-art rule missed.
+fn spans_the_fitted_frame(
+    fit: &crate::backend::UiFit,
+    layout: &VertexLayout,
+    streams: &[StreamBytes],
+    indices: bool,
+    vertex_count: u32,
+    frame: (u32, u32),
+) -> bool {
+    let [sx, sy, _, _] = fit.transform;
+    let shrunk = [sx < 1.0, sy < 1.0];
+    if !shrunk[0] && !shrunk[1] {
+        return false;
+    }
+    // Indexed widgets select their own vertices; the strips, fans and
+    // quads of a full-frame pass never use indices. A cap keeps the walk
+    // off geometry submitted inside a fitted scope (a menu's model view).
+    if indices || vertex_count == 0 || vertex_count > 1024 {
+        return false;
+    }
+    let mut lo = [f32::INFINITY; 2];
+    let mut hi = [f32::NEG_INFINITY; 2];
+    for (stream, bytes) in layout.streams.iter().zip(streams) {
+        let Some(position) = stream
+            .attributes
+            .iter()
+            .find(|a| a.register == VertexRegister::POSITION)
+        else {
+            continue;
+        };
+        let stride = bytes.stride as usize;
+        let size = position.data_type.byte_size() as usize;
+        if stride < size {
+            return false;
+        }
+        let data: &[u8] = bytes.data.as_ref();
+        for vertex in 0..vertex_count as usize {
+            let base = vertex * stride + position.offset as usize;
+            let Some(b) = data.get(base..base + size) else {
+                return false;
+            };
+            let value = attribute_value(position.data_type, b);
+            for axis in 0..2 {
+                if value[axis].is_finite() {
+                    lo[axis] = lo[axis].min(value[axis]);
+                    hi[axis] = hi[axis].max(value[axis]);
+                }
+            }
+        }
+    }
+    // Pixel-centred corners sit half a pixel in: allow one guest pixel.
+    let frame = [frame.0 as f32, frame.1 as f32];
+    (0..2).any(|axis| {
+        shrunk[axis] && lo[axis] <= 1.0 && hi[axis] >= frame[axis] - 1.0
+    })
 }
 
 /// The attributes of an inline-array vertex and its size in bytes, from the

@@ -1,6 +1,7 @@
 //! Playback channels. A channel holds its graph and animation ID, play
 //! flags, speed and current frame. The event masks are 16-bit accumulators.
 use super::*;
+use ::sim_anim::manager_channels::WrappedInterval;
 use crate::function_eval::constant::{ONE, SMALL};
 use crate::points::TAG_ENTRIES;
 use crate::sim_native::sub_flags;
@@ -425,17 +426,19 @@ fn first_interval(c: &mut CpuAbi, g: &mut Bus<'_>) -> sim_native::Result {
 }
 
 fn wrapped_interval(c: &mut CpuAbi, g: &mut Bus<'_>) -> sim_native::Result {
-    c.eax = g.u16(at(c.esi, 0x2e))? as i16 as u32;
-    scalar(c, 0, g.u32(at(c.esp, 0x20))?);
-    binary(c, 0, g.u32(at(c.esp, 0x24))?, simd::subss)?;
+    let loop_frame = g.u16(at(c.esi, 0x2e))? as i16;
+    c.eax = loop_frame as u32;
+    let interval = WrappedInterval::new(
+        g.u32(at(c.esp, 0x20))?, g.u32(at(c.esp, 0x24))?, loop_frame, &mut c.mxcsr,
+    );
     c.ecx = g.u32(at(c.esp, 0x30))?;
     c.ebx = g.u32(at(c.esp, 0x2c))?;
-    float(c, 1, c.eax)?;
+    scalar(c, 0, interval.end);
+    c.xmm[1][..4].copy_from_slice(&interval.start.to_le_bytes());
     push(c, g, c.ecx)?;
     c.ecx = u32::from(g.u16(at(c.ebp, 0x12))?);
-    binary(c, 0, low32(c, 1), simd::addss)?;
-    g.set_u32(at(c.esp, 0x24), low32(c, 0))?;
-    g.set_u32(at(c.esp, 0x18), low32(c, 1))?;
+    g.set_u32(at(c.esp, 0x24), interval.end)?;
+    g.set_u32(at(c.esp, 0x18), interval.start)?;
     c.edx = g.u32(at(c.esp, 0x24))?;
     c.eax = g.u32(at(c.esp, 0x18))?;
     push(c, g, c.edx)?;

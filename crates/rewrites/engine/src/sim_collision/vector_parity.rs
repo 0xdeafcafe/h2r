@@ -4,9 +4,9 @@ use super::{
     layout::{context, record},
     plan_context, plan_vector,
 };
-use runtime::CpuAbi;
+use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
+use sim_collision::Entry;
 use sim_collision::GuestRead;
-use std::{cell::RefCell, collections::HashMap};
 
 pub struct Prediction {
     addr: u32,
@@ -65,6 +65,9 @@ impl Prediction {
     }
 
     pub fn compare(&self, al: u8, g: &impl CollisionMemory) -> Result<Option<String>, Bail> {
+        if g.trapped() {
+            return Err(Bail::Trap);
+        }
         if al != self.al {
             return Ok(Some(format!("AL: expected {}, guest {al}", self.al)));
         }
@@ -95,81 +98,67 @@ impl Prediction {
     }
 }
 
-thread_local! {
-    static CONTEXT: RefCell<HashMap<u32, (u32, Option<Prediction>)>> = RefCell::default();
-    static OPEN: RefCell<HashMap<u32, Prediction>> = RefCell::default();
-}
+type Dispatch = Result<(Option<TransferAbi>, Option<Prediction>), GuestFault>;
 
-pub fn begin(thread: u32, c: &CpuAbi, g: &mut runtime::Guest, world: &CollisionWorld) {
-    let predicted = if g.has_trap() {
-        Err(Bail::Trap)
-    } else {
-        Prediction::gather(c, g, world)
-    };
-    OPEN.with_borrow_mut(|calls| {
-        calls.remove(&thread);
-        match predicted {
-            Ok(p) => {
-                calls.insert(thread, p);
-            }
-            Err(why) => world.record_vector(Err(why)),
+/// The recursive near child is included in its outer prediction. A D
+/// entry called by C runs lifted too, so C's oracle remains independent.
+fn gather(
+    c: &CpuAbi,
+    g: &mut Guest,
+    world: &CollisionWorld,
+    entry: Entry,
+) -> Result<Option<(Plan, bool)>, Bail> {
+    if g.has_trap() {
+        return Err(Bail::Trap);
+    }
+    if entry == Entry::VectorContext {
+        super::vector_env(c)?;
+        let caller = Read(&*g, (0, 0)).u32(c.esp)?;
+        if caller == super::layout::CONTEXT_RECURSIVE_RETURN {
+            return Ok(None);
         }
-    });
-}
-
-pub fn end(thread: u32, c: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) {
-    if let Some(p) = OPEN.with_borrow_mut(|calls| calls.remove(&thread)) {
-        world.record_vector(if g.has_trap() {
-            Err(Bail::Trap)
-        } else {
-            p.compare(c.eax as u8, g)
-        });
+        let can_answer = caller != super::straight::WRAPPER_AFTER_WALK;
+        Ok(Some((plan_context(c, g, world)?, can_answer)))
+    } else {
+        Ok(Some((plan_vector(c, g, world)?, true)))
     }
 }
 
-/// The recursive call is already included in the outer kernel walk.
-pub fn begin_context(thread: u32, c: &CpuAbi, g: &mut runtime::Guest, world: &CollisionWorld) {
-    let return_sp = c.esp.wrapping_add(4 + super::layout::VECTOR_ARGS);
-    let trapped = g.has_trap();
-    CONTEXT.with_borrow_mut(|calls| {
-        let recursive = if trapped {
-            // Keep a pending parent when the trap precludes reading the call site.
-            calls.get(&thread).is_some_and(|(sp, _)| return_sp < *sp)
-        } else {
-            Read(&*g, (0, 0)).u32(c.esp) == Ok(super::layout::CONTEXT_RECURSIVE_RETURN)
-        };
-        if recursive {
-            return;
-        }
-        let result = if trapped {
-            Err(Bail::Trap)
-        } else {
-            Prediction::gather_context(c, g, world)
-        };
-        let prediction = match result {
-            Ok(p) => Some(p),
-            Err(why) => {
-                world.record_context(Err(why));
-                None
+fn dispatch(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld, entry: Entry) -> Dispatch {
+    let predicted = match gather(c, g, world, entry) {
+        Ok(None) => return Ok((None, None)),
+        Ok(Some((plan, can_answer))) => {
+            if let Some(walk) = plan.outcome.straight.filter(|_| can_answer) {
+                let ret = super::straight::commit(c, g, &plan, walk)?;
+                world.record(entry, &Ok(()));
+                return Ok((Some(ret), None));
             }
-        };
-        calls.insert(thread, (return_sp, prediction));
-    });
+            Prediction::from_plan(plan, g)
+        }
+        Err(why) => Err(why),
+    };
+    match predicted {
+        Ok(p) => Ok((None, Some(p))),
+        Err(why) => {
+            world.record::<()>(entry, &Err(why));
+            if entry == Entry::VectorContext {
+                world.record_context(Err(why));
+            } else {
+                world.record_vector(Err(why));
+            }
+            Ok((None, None))
+        }
+    }
 }
 
-pub fn end_context(thread: u32, c: &CpuAbi, g: &runtime::Guest, world: &CollisionWorld) {
-    CONTEXT.with_borrow_mut(|calls| {
-        if calls.get(&thread).is_some_and(|(sp, _)| *sp == c.esp) {
-            let Some((_, Some(p))) = calls.remove(&thread) else {
-                return;
-            };
-            world.record_context(if g.has_trap() {
-                Err(Bail::Trap)
-            } else {
-                p.compare(c.eax as u8, g)
-            });
-        }
-    });
+/// Return the exact answer or hand the lifted call's prediction to its
+/// caller. A declined plan returns neither.
+pub fn dispatch_vector(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld) -> Dispatch {
+    dispatch(c, g, world, Entry::VectorTest)
+}
+
+pub fn dispatch_context(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld) -> Dispatch {
+    dispatch(c, g, world, Entry::VectorContext)
 }
 
 #[cfg(test)]
@@ -179,35 +168,40 @@ mod tests {
     use sim_core::Epoch;
 
     #[test]
-    fn recursive_entry_and_return_leave_outer_prediction_pending() {
+    fn recursive_child_needs_no_prediction_or_context_read() {
         static EPOCH: Epoch = Epoch::new();
         let world = CollisionWorld::new(&EPOCH);
         let mut g = Guest::new();
         let addr = 0x18000;
-        g.map(addr, 0x1000, 0, Permissions::RW).unwrap();
+        g.map(addr, 4, 0, Permissions::RW).unwrap();
         let mut cpu = CpuAbi {
-            esp: addr + 0x800,
+            esp: addr,
+            mxcsr: 0x1fa0,
             ..CpuAbi::default()
         };
-        g.set_u32(cpu.esp, super::super::layout::CONTEXT_RECURSIVE_RETURN)
+        g.set_u32(addr, super::super::layout::CONTEXT_RECURSIVE_RETURN)
             .unwrap();
-        let outer_return = cpu.esp + 0x80;
-        let p = Prediction {
-            addr,
-            al: 0,
-            record: vec![0; record::SIZE as usize],
-            context: None,
-        };
-        CONTEXT.with_borrow_mut(|calls| {
-            calls.insert(7, (outer_return, Some(p)));
-        });
-        begin_context(7, &cpu, &mut g, &world);
-        cpu.esp += 4 + super::super::layout::VECTOR_ARGS;
-        end_context(7, &cpu, &g, &world);
+        let (ret, prediction) = dispatch_context(&mut cpu, &mut g, &world).unwrap();
+        assert!(ret.is_none() && prediction.is_none());
         assert_eq!(world.stats().context, Default::default());
-        cpu.esp = outer_return;
-        end_context(7, &cpu, &g, &world);
-        assert_eq!(world.stats().context.matched, 1);
+    }
+
+    #[test]
+    fn an_unsupported_environment_declines_before_reading_an_unmapped_return_slot() {
+        static EPOCH: Epoch = Epoch::new();
+        let world = CollisionWorld::new(&EPOCH);
+        let mut g = Guest::new();
+        let mut cpu = CpuAbi {
+            esp: 0x18000,
+            mxcsr: 0,
+            ..CpuAbi::default()
+        };
+        let (ret, prediction) = dispatch_context(&mut cpu, &mut g, &world).unwrap();
+        assert!(ret.is_none() && prediction.is_none());
+        assert_eq!(
+            world.stats().entries[Entry::VectorContext as usize].bails[Bail::Env as usize],
+            1
+        );
     }
 
     #[test]

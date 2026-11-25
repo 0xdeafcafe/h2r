@@ -1312,6 +1312,12 @@ impl ShaderProvider for Nv2aShaders {
         }
     }
 
+    fn forget_textures(&mut self, gone: &[wgpu::Texture]) {
+        if let Some(b) = &mut self.bindings {
+            b.forget_textures(gone);
+        }
+    }
+
     fn maintain(
         &mut self,
         ctx: &gfx::GfxContext,

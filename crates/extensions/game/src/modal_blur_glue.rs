@@ -307,13 +307,27 @@ mod tests {
         assert_eq!(o.items.len(), 1);
         assert_eq!(o.items[0].clip, ClipRect::full([640, 480]));
         assert_eq!(o.blur_of(&o.items[0]), Some(&c.blur));
-        let plan = OverlayPlan::new(&o, [1280, 960], &NoGlyphs);
-        assert_eq!(plan.blurs.len(), 1);
-        assert_eq!(plan.blurs[0].pick, 0.25);
-        assert_eq!(
-            plan.blurs[0].offsets[0],
-            [0.5 / 640.0, 0.5 / 480.0],
-            "a fraction of the target at any scale"
-        );
+        for target in [
+            [1280, 960],
+            [1920, 1080],
+            [2520, 1080],
+            [5120, 2880],
+            [5120, 2648],
+        ] {
+            let plan = OverlayPlan::new(&o, target, &NoGlyphs);
+            assert_eq!(plan.blurs.len(), 1);
+            let blur = &plan.blurs[0];
+            assert_eq!(blur.pick, 0.25);
+            let clip = blur.scissor;
+            assert_eq!(
+                [clip.x, clip.y, clip.width, clip.height],
+                [0, 0, target[0], target[1]]
+            );
+            assert_eq!(
+                blur.offsets[0],
+                [0.5 / 640.0, 0.5 / 480.0],
+                "tap offsets are expressed as fractions of the guest frame"
+            );
+        }
     }
 }

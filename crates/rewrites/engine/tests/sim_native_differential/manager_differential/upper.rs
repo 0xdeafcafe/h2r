@@ -193,5 +193,22 @@ pub(super) fn cases(h: &mut Harness<'_>) {
             h.case(pc, seed, |c, m| channel_fixture(pc, seed, c, m), stub);
         }
     }
+    // Resolve can replace the channel speed. The resumed sampler decides
+    // interpolation from the live channel, including clock and NaN cases.
+    for (seed, speed) in [(-0.0f32).to_bits(), 1.0f32.to_bits(), 0x7f80_0011]
+        .into_iter().enumerate()
+    {
+        h.case(
+            0x1c6f60,
+            seed as u32,
+            |c, m| channel_fixture(0x1c6f60, 1, c, m),
+            |target, site, c, m| {
+                if site == 0x1c6f8c {
+                    word(m, CHANNEL + 24, speed);
+                }
+                stub(target, site, c, m)
+            },
+        );
+    }
     events(h);
 }

@@ -16,7 +16,8 @@
 //!   buffer's ([`BACK_BUFFER_DATA`], [`DISPLAY_BUFFER_DATA`], ...) is
 //!   sampled from a copy of that buffer ([`Backend::snapshot_surface`]):
 //!   the image being drawn while it is the back buffer, the image last
-//!   presented while it is the front. One over the depth buffer
+//!   presented while it is the front. Draws share a copy until the device
+//!   writes that buffer again (`frame_snaps.rs`). One over the depth buffer
 //!   ([`DEPTH_BUFFER_DATA`]) reads the depth/stencil bits as the colour
 //!   format it names: the depth buffer is read back as guest bytes
 //!   ([`Backend::read_depth`]) once per change, and those bytes are decoded
@@ -130,8 +131,13 @@ pub(crate) struct DepthColor {
 pub(super) enum FrameTexture<T> {
     /// Ordinary guest texture memory.
     No,
-    /// A frame buffer, copied for this draw.
+    /// A frame buffer, copied for this draw alone (while post-process
+    /// draws are held, each packet keeps its own copy).
     Snapshot(TextureInfo, T),
+    /// A frame buffer, through the copy `Device::frame_snaps` holds under
+    /// this id, shared with every draw that samples the surface before it
+    /// is written again.
+    Shared(TextureInfo, u64),
     /// The depth buffer's bits as this texture's format: the host texture
     /// is `Device::depth_alias[key]`.
     DepthAlias(TextureInfo, DepthAliasKey),
@@ -340,32 +346,61 @@ impl<B: Backend> Device<B> {
         }
         // X8: the texel's alpha reads as one, whatever the buffer holds.
         let opaque = desc.format == D3DFormat::LinX8R8G8B8;
+        let previous = source != sw.back[0];
+        let info = TextureInfo {
+            header,
+            palette: 0,
+            format: desc.format,
+            kind: desc.kind,
+            width: desc.width,
+            height: desc.height,
+            depth: desc.depth,
+            levels: desc.levels,
+        };
+        Ok(self.frame_copy(source, opaque, info, previous)?.unwrap_or_else(|| {
+            FrameTexture::Skip(format!(
+                "texture {header:#010x} reads {which} and the backend cannot copy surfaces into textures"
+            ))
+        }))
+    }
+
+    /// A draw samples colour surface `source` as `info`: a copy of it as it
+    /// is now ([`Backend::snapshot_surface`], alpha one with `opaque`).
+    /// The copy is shared with later draws until the device writes
+    /// `source` again (`frame_snaps.rs`), so N sampling draws with no
+    /// write in between make one copy. While post-process draws are held
+    /// (swallowing) the writes they will make are not issued yet, so each
+    /// draw gets a copy of its own. `previous`: the copy is of the image
+    /// last presented (`Stats::previous_frame_snapshots`). `None`: the
+    /// backend cannot copy surfaces.
+    fn frame_copy(
+        &mut self,
+        source: B::Surface,
+        opaque: bool,
+        info: TextureInfo,
+        previous: bool,
+    ) -> Result<Option<FrameTexture<B::Texture>>, D3dError> {
+        let shared = self.swallowing.is_none();
+        if shared && let Some(id) = self.frame_snaps.find(source, opaque) {
+            self.stats.frame_snapshot_reuses += 1;
+            return Ok(Some(FrameTexture::Shared(info, id)));
+        }
         let Some(t) = self
             .backend
             .snapshot_surface(source, opaque)
             .map_err(D3dError::Backend)?
         else {
-            return Ok(FrameTexture::Skip(format!(
-                "texture {header:#010x} reads {which} and the backend cannot copy surfaces into textures"
-            )));
+            return Ok(None);
         };
         self.stats.frame_snapshots += 1;
-        if source != self.swap.as_ref().expect("created").back[0] {
+        if previous {
             self.stats.previous_frame_snapshots += 1;
         }
-        Ok(FrameTexture::Snapshot(
-            TextureInfo {
-                header,
-                palette: 0,
-                format: desc.format,
-                kind: desc.kind,
-                width: desc.width,
-                height: desc.height,
-                depth: desc.depth,
-                levels: desc.levels,
-            },
-            t,
-        ))
+        if !shared {
+            return Ok(Some(FrameTexture::Snapshot(info, t)));
+        }
+        let id = self.frame_snaps.insert(source, opaque, t);
+        Ok(Some(FrameTexture::Shared(info, id)))
     }
 
     /// Texture `header` (`pc`) reads the depth buffer's memory from byte
@@ -575,15 +610,10 @@ impl<B: Backend> Device<B> {
             && desc.pitch.max(desc.width * 4) == c.width * 4
         {
             let opaque = desc.format == D3DFormat::LinX8R8G8B8;
-            let Some(t) = self
-                .backend
-                .snapshot_surface(surface, opaque)
-                .map_err(D3dError::Backend)?
-            else {
-                return skip("the backend cannot copy surfaces into textures".into());
+            return match self.frame_copy(surface, opaque, info, false)? {
+                Some(t) => Ok(t),
+                None => skip("the backend cannot copy surfaces into textures".into()),
             };
-            self.stats.frame_snapshots += 1;
-            return Ok(FrameTexture::Snapshot(info, t));
         }
         let generation = self.depth_generation;
         let identity = pc.identity();
@@ -757,6 +787,7 @@ impl<B: Backend> Device<B> {
             self.rtt_synced.remove(&header);
             self.rtt_stores.remove(&header);
             self.depth_level_tex.remove(&header);
+            self.forget_surface(old.surface);
             self.backend
                 .destroy_surface(old.surface)
                 .map_err(D3dError::Backend)?;
@@ -1110,6 +1141,7 @@ impl<B: Backend> Device<B> {
         self.backend
             .write_surface(t.surface, &desc, &bytes)
             .map_err(D3dError::Backend)?;
+        self.frame_snaps.written(t.surface);
         self.stats.rtt_uploads += 1;
         let hash = if self.cfg.upload == UploadPolicy::Verify {
             hash_bytes(&bytes)
@@ -1231,6 +1263,7 @@ impl<B: Backend> Device<B> {
         }
         let (src, dst) = (sw.back[0], sw.front);
         sw.copy_pending = false;
+        self.frame_snaps.written(dst);
         if self
             .backend
             .copy_surface(src, dst)
@@ -1459,6 +1492,7 @@ impl<B: Backend> Device<B> {
         self.depth_level_tex.clear();
         self.rtt_epoch += 1;
         for (_, t) in self.rtt.drain().collect::<Vec<_>>() {
+            self.forget_surface(t.surface);
             self.backend
                 .destroy_surface(t.surface)
                 .map_err(D3dError::Backend)?;
@@ -1781,7 +1815,7 @@ impl<B: Backend> Device<B> {
                 self.stats.native_rect_clears += 1;
             }
             if clear.color.is_some() {
-                self.present_cameras.color_written(c);
+                self.color_surface_written(c);
             }
             self.mark_written(writes_depth);
             return Ok(());
@@ -1812,7 +1846,7 @@ impl<B: Backend> Device<B> {
                     self.stats.native_rect_clears += 1;
                 }
                 if rc.color.is_some() {
-                    self.present_cameras.color_written(c);
+                    self.color_surface_written(c);
                 }
                 self.mark_written(writes_depth);
                 Ok(())

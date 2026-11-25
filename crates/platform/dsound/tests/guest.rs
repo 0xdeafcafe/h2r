@@ -2834,3 +2834,36 @@ fn each_halo_submix_hears_only_its_own_streams() {
     let after = rig.render(RATE as usize / 4);
     assert!(after.iter().all(|&v| v == 0.0));
 }
+
+#[test]
+fn voice_parity_trace_follows_guest_completion_order_and_grid() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let first = rig.create_stream(wfx, 4, 0, 0);
+    let second = rig.create_stream(wfx, 4, 0, 0);
+    assert!(rig.ds.voice_events(8).is_none());
+    rig.ds.begin_voice_trace();
+    // Submit out of handle order. Each stream completes in FIFO order
+    // and the output quantum releases the two streams in guest handle order.
+    rig.process(second, &pcm16(&[5; 8]), 3);
+    rig.process(first, &pcm16(&[7; 8]), 1);
+    rig.process(first, &[], 2);
+    let submitted = rig.ds.voice_events(9).unwrap();
+    let starts: Vec<_> = submitted.lines().filter(|l| l.contains("stream-start")).collect();
+    assert_eq!(starts, [format!("0 stream-start {second:x}"), format!("0 stream-start {first:x}")]);
+    rig.ds.advance_audio(&mut rig.h, 8).unwrap();
+    let completed = rig.ds.voice_events(9).unwrap();
+    assert!(completed.starts_with(&submitted));
+    let contexts: Vec<_> = completed.lines().filter(|line| line.starts_with("8 complete ")).map(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        u32::from_str_radix(fields[6], 16).unwrap()
+    }).collect();
+    assert_eq!(contexts, rig.h.signalled);
+    assert_eq!(contexts, [1, 2, 3]);
+    assert_eq!(rig.ds.voice_events(10).as_deref(), Some(""));
+    rig.process(first, &pcm16(&[8; 8]), 4);
+    rig.call(FLUSH, &[first]);
+    assert!(rig.ds.voice_events(11).unwrap().lines().any(|line|
+        line.starts_with("8 complete ") && line.ends_with(&format!(" 4 {XMEDIAPACKET_STATUS_FLUSHED:x}"))
+    ));
+}

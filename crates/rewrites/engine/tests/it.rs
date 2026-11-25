@@ -45,12 +45,16 @@ mod sim_anim_differential;
 mod sim_anim_graph_differential;
 #[path = "sim_collision_differential.rs"]
 mod sim_collision_differential;
+#[path = "sim_effects_differential.rs"]
+mod sim_effects_differential;
 #[path = "sim_objects_differential.rs"]
 mod sim_objects_differential;
 #[path = "sim_native_differential.rs"]
 mod sim_native_differential;
 #[path = "sim_physics_differential.rs"]
 mod sim_physics_differential;
+#[path = "sim_sound_differential.rs"]
+mod sim_sound_differential;
 #[path = "sim_tier_differential.rs"]
 mod sim_tier_differential;
 #[path = "states_differential.rs"]

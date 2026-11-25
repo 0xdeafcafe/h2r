@@ -6,27 +6,48 @@ use engine::{points, sim_native as sim};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 use std::sync::Arc;
 
+mod manager_arm;
 mod manager_fusion;
+#[cfg(test)]
+mod hs_differential;
+mod hs_dispatch;
+mod hs_eval;
+mod hs_globals;
+pub mod hs_parity;
+mod hs_scheduler;
+mod hs_thread;
+
+const HS: &str = "sim.native.hs";
+const HS_POINTS: &[&points::Point] = &[
+    &points::SCRIPT_UPDATE,
+    &points::HS_THREAD_EXECUTE,
+    &points::HS_GLOBAL_READ,
+    &points::HS_GLOBAL_STORED,
+    &points::HS_EVALUATE,
+    &points::HS_EVALUATE_ARGUMENTS,
+    &points::HS_NEW_MAP,
+];
 
 pub struct SimNative {
-    ray_dispatch: bool,
+    missing_hs_entries: Vec<&'static str>,
     exported_anim: Vec<AnimBody>,
 }
 
 impl SimNative {
     pub fn new(runtime: &runtime::Runtime) -> Self {
         runtime.read_dispatch(|d| Self {
-            ray_dispatch: d.has_resume(sim::mopp_query::RAY_DISPATCH),
+            missing_hs_entries: HS_POINTS.iter().filter(|p| !d.has_generated(p.base))
+                .map(|p| p.name).collect(),
             exported_anim: ANIM_BODIES.iter().copied().filter(|body| {
                 d.has_generated(body.point.base) && body.sites.iter().all(|&pc| d.has_resume(pc))
             }).collect(),
         })
     }
 
-    /// An image with the ray dispatch and all animation resume selectors.
+    /// An image with all animation resume selectors.
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
-        Self { ray_dispatch: true, exported_anim: ANIM_BODIES.to_vec() }
+        Self { missing_hs_entries: Vec::new(), exported_anim: ANIM_BODIES.to_vec() }
     }
 }
 
@@ -49,49 +70,14 @@ pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
         sim::pose_matrix,
     ),
     (
-        &points::COLLISION_POINT_TO_LEAF,
-        "sim.native_point_to_leaf",
-        sim::point_to_leaf,
-    ),
-    (
-        &points::COLLISION_GEOMETRY_TEST,
-        "sim.native_geometry_test",
-        sim::geometry_test,
-    ),
-    (
         &points::SIM_UNIT_POSE,
         "sim.native_unit_pose",
         sim::unit::pose,
     ),
     (
-        &points::SIM_GRAPH_RESOLVE,
-        "sim.native_graph_resolve",
-        sim::graph::resolve,
-    ),
-    (
         &points::SIM_MARKER_TRANSFORMS,
         "sim.native_marker_transforms",
         sim::marker::transforms,
-    ),
-    (
-        &points::COLLISION_BSP_SEGMENT,
-        "sim.native_bsp_segment",
-        sim::bsp::segment,
-    ),
-    (
-        &points::SIM_COLLISION_QUERY,
-        "sim.native_collision_query",
-        sim::collision::query,
-    ),
-    (
-        &points::SIM_MOPP_BOX,
-        "sim.native_mopp_box",
-        sim::mopp_query::box_query,
-    ),
-    (
-        &points::SIM_MOPP_RAY,
-        "sim.native_mopp_ray",
-        sim::mopp_query::ray_query,
     ),
 ];
 
@@ -114,30 +100,15 @@ impl Feature for SimNative {
         engine::sim_anim::markers::set_enabled(anim);
         engine::sim_anim::palette::set_enabled(anim);
         engine::sim_anim::filter::set_enabled(anim);
-        let query_on = b
-            .switches()
-            .implementation("sim.native_collision_query", false);
         let collision = collision_on(b.switches());
         for &(point, name, body) in ENTRIES {
-            // The subsystem switch owns its entries; their per-function
-            // ports stay as test oracles.
-            if collision
-                && (COLLISION_ENTRIES.iter().any(|(p, _, _)| p.base == point.base)
-                    || point.base == points::COLLISION_BSP_SEGMENT.base)
-            {
-                continue;
-            }
             if owns_anim(b.switches(), point.base) {
                 continue;
             }
             if crate::sim_objects::owns(b.switches(), point.base) {
                 continue;
             }
-            let completes_query = query_on && point.base == points::COLLISION_BSP_SEGMENT.base;
-            // Long programs yield at the float VM dispatch loop. Some
-            // generated images omit loop selectors.
-            let installed = b.switches().implementation(name, false)
-                && (point.base != points::SIM_MOPP_RAY.base || self.ray_dispatch);
+            let installed = b.switches().implementation(name, false);
             crate::shadow::register(name, crate::shadow::SIM_NATIVE, point, installed);
             if installed {
                 b.raw()
@@ -149,20 +120,24 @@ impl Feature for SimNative {
                                 cpu,
                                 &mut mem,
                                 addr,
-                                &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
-                                    let transfer = body(cpu, mem)?;
-                                    if completes_query {
-                                        return sim::collision::complete_segment(
-                                            cpu, mem, transfer,
-                                        );
-                                    }
-                                    Ok(transfer)
-                                },
+                                &mut |cpu, mem| body(cpu, mem),
                             );
                         }
                         original(cpu, ctx, addr)
                     })
                     .context_only();
+            }
+        }
+        if b.switches().implementation(HS, false) {
+            if self.missing_hs_entries.is_empty() {
+                hs_scheduler::install(b);
+                hs_thread::install(b);
+                hs_eval::install(b);
+                hs_globals::install(b);
+                hs_dispatch::install(b);
+            } else {
+                eprintln!("HaloScript parity requires these generated entries: {}",
+                    self.missing_hs_entries.join(", "));
             }
         }
         if anim {
@@ -171,9 +146,10 @@ impl Feature for SimNative {
         if collision {
             install_collision(b);
         }
-        if crate::sim_objects::on(b.switches()) {
-            crate::sim_objects::install(b);
-        }
+        crate::sim_objects::install(b);
+        // Registers the effect ports with the shadow registry whatever
+        // the switch says; installs them when it is on.
+        crate::sim_effects::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.
@@ -210,9 +186,9 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 
 /// Animation sampling and pose (docs/engine/sim-rewrite.md). The group
 /// owns the channel manager, graph resolve, stream, marker, unit pose, unit
-/// aim and first-person filter entries, enables the first-person palette
-/// and filter kernels, and checks the graph walk `1dd1c0` against the
-/// guest at every call.
+/// aim and first-person filter entries and enables the palette and filter
+/// kernels. It compares the graph walk at each call and the six phase 1d
+/// manager and graph entries at each generated transfer.
 pub const ANIM: &str = "sim.native.anim";
 
 pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
@@ -242,6 +218,8 @@ const ANIM_INVALIDATE: [(&points::Point, &str); 3] = [
 enum AnimRun {
     Pose(fn(&mut CpuAbi, &mut Guest, u32) -> Result<Option<TransferAbi>, GuestFault>),
     Manager,
+    // Its segments always dispatch. Fusion only indexes Manager rows.
+    ManagerArm,
 }
 
 #[derive(Clone, Copy)]
@@ -275,7 +253,11 @@ static ANIM_BODIES: std::sync::LazyLock<Vec<AnimBody>> = std::sync::LazyLock::ne
     POSE_BODIES.into_iter().chain(manager::bodies().map(|body| AnimBody {
         point: points::by_base(body.entry).unwrap_or(&body.point),
         sites: body.sites,
-        run: AnimRun::Manager,
+        run: if manager::arm::ENTRIES.contains(&body.entry) {
+            AnimRun::ManagerArm
+        } else {
+            AnimRun::Manager
+        },
     })).collect()
 });
 
@@ -294,6 +276,9 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
             .implement(body.point, ANIM, move |cpu, ctx, pc| {
                 let transfer = match body.run {
                     AnimRun::Pose(run) => run(cpu, &mut *ctx.memory(), pc)?,
+                    AnimRun::ManagerArm => {
+                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base);
+                    }
                     AnimRun::Manager => {
                         let available = run_fusion.available(ctx.runtime());
                         manager::drive(cpu, &mut ctx.memory(), pc, |next| available(next.entry))?
@@ -309,6 +294,8 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
         if matches!(body.run, AnimRun::Manager) {
             let guard_fusion = Arc::clone(&fusion);
             hook.optional().when_shared(move |entry| guard_fusion.guard(entry));
+        } else if matches!(body.run, AnimRun::ManagerArm) {
+            hook.optional();
         }
     }
     let point = &points::SIM_ANIMATION_STREAM;
@@ -364,12 +351,8 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
     }
 }
 
-/// `impl.sim.native.collision`: the collision world, phase 2 of the
-/// simulation rewrite (docs/engine/collision-queries.md). It takes over
-/// point to leaf, the structure location and the MOPP box query. Vector
-/// and instance traces execute their original bodies while we measure
-/// their float environments. The general MOPP ray runs its original too,
-/// with the native walk compared against it (`collision.stats` `ray`).
+/// Phase two collision queries and their return comparisons.
+/// See docs/engine/collision-queries.md for the admission rules.
 pub const COLLISION: &str = "sim.native.collision";
 
 fn collision_on(switches: &hooks::Switches) -> bool {
@@ -382,7 +365,7 @@ type CollisionBody = fn(
     &engine::sim_collision::CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault>;
 
-const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 4] = [
+const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 5] = [
     (
         &points::COLLISION_POINT_TO_LEAF,
         Entry::PointToLeaf,
@@ -392,6 +375,11 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 4] = [
         &points::COLLISION_LOCATION,
         Entry::Location,
         engine::sim_collision::location,
+    ),
+    (
+        &points::COLLISION_INSTANCE_TRACE,
+        Entry::InstanceTrace,
+        engine::sim_collision::instance::empty_cluster,
     ),
     (
         &points::COLLISION_MOPP_BOX,
@@ -405,18 +393,18 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 4] = [
     ),
 ];
 
-/// These entries have a contract and a precision census. The vector kernels
-/// still need transitive register liveness or exact scratch replay; the
-/// flood and the visit need their call-site scans. The flood's census also
-/// counts its own recursive entries. The general MOPP ray's observer also
-/// opens its parity check.
-const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 6] = [
-    (&points::COLLISION_VECTOR_TEST, Entry::VectorTest, "collision-vector-fp"),
-    (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext, "collision-walk-fp"),
-    (&points::COLLISION_INSTANCE_TRACE, Entry::InstanceTrace, "collision-instance-fp"),
-    (&points::COLLISION_CLUSTER_FLOOD, Entry::ClusterFlood, "collision-flood-fp"),
-    (&points::OBJECT_SPATIAL_VISIT, Entry::ObjectVisit, "collision-visit-fp"),
+// Each body answers exact exits, then compares admitted lifted calls at their
+// real returns. A return continuation in guest RAM could alias query inputs.
+const COLLISION_PARTIAL: [(&points::Point, Entry); 4] = [
+    (&points::COLLISION_VECTOR_TEST, Entry::VectorTest),
+    (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext),
+    (&points::COLLISION_CLUSTER_FLOOD, Entry::ClusterFlood),
+    (&points::OBJECT_SPATIAL_VISIT, Entry::ObjectVisit),
+];
+
+const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 2] = [
     (&points::COLLISION_MOPP_RAY, Entry::MoppRay, "collision-ray-fp"),
+    (&points::SIM_COLLISION_QUERY, Entry::Query, "collision-query"),
 ];
 
 /// The rest of the general MOPP ray's parity arm: each interpreter call,
@@ -441,7 +429,7 @@ fn install_collision(b: &mut Builder) {
                 if addr != point.base {
                     return original(cpu, ctx, addr);
                 }
-                let world = &engine::sim_collision::WORLD;
+                let world: &'static engine::sim_collision::CollisionWorld = &engine::sim_collision::WORLD;
                 world.observe_environment(entry, cpu.mxcsr, cpu.x87.control);
                 if sim::supported(cpu) {
                     let mut mem = ctx.memory();
@@ -449,6 +437,17 @@ fn install_collision(b: &mut Builder) {
                         world.record::<()>(entry, &Err(Bail::Trap));
                     } else if let Some(transfer) = body(cpu, &mut mem, world)? {
                         return Ok(transfer);
+                    } else if entry == Entry::InstanceTrace {
+                        let prediction = engine::sim_collision::instance::ReturnPrediction::gather(cpu, &mut *mem, world);
+                        drop(mem);
+                        match prediction {
+                            Ok(p) => {
+                                ctx.observe_guest_return(cpu, 12, move |c, ctx| {
+                                    world.record_instance(p.compare(c, &*ctx.runtime().memory()));
+                                });
+                            }
+                            Err(why) => world.record_instance(Err(why)),
+                        }
                     }
                 } else {
                     world.record::<()>(entry, &Err(Bail::Env));
@@ -458,46 +457,89 @@ fn install_collision(b: &mut Builder) {
     }
     // This family updates shared decode caches, write watches and counters.
     // The hook registry keeps these calls on the owning executor.
-    for (point, entry, label) in COLLISION_OBSERVED {
+    use engine::sim_collision::{WORLD, mopp_ray, query, spatial_parity, vector_parity};
+    for (point, entry) in COLLISION_PARTIAL {
+        let points::Sig::Fn { pop, .. } = point.sig else {
+            unreachable!()
+        };
+        let pop = u32::from(pop);
         b.raw()
-            .observe_before(point, label, move |o| {
-                if o.addr == point.base {
-                    let world = &engine::sim_collision::WORLD;
-                    world.observe_environment(entry, o.cpu.mxcsr, o.cpu.x87.control);
-                    if entry == Entry::VectorTest {
-                        engine::sim_collision::vector_parity::begin(o.thread_id, o.cpu, &mut *o.guest(), world);
-                    }
-                    if entry == Entry::VectorContext {
-                        engine::sim_collision::vector_parity::begin_context(o.thread_id, o.cpu, &mut *o.guest(), world);
-                    }
-                    if entry == Entry::MoppRay {
-                        engine::sim_collision::mopp_ray::begin(o.cpu, &mut *o.guest(), world);
-                    }
+            .implement(point, COLLISION, move |cpu, ctx, addr| {
+                if addr != point.base {
+                    return original(cpu, ctx, addr);
                 }
+                let mut g = ctx.memory();
+                // The pending prediction is compared at this call's own
+                // guest return, so each arm owns its comparison.
+                enum Pending {
+                    Vector(vector_parity::Prediction),
+                    Spatial(spatial_parity::Prediction),
+                }
+                let (transfer, pending) = match entry {
+                    Entry::VectorTest | Entry::VectorContext => {
+                        WORLD.observe_environment(entry, cpu.mxcsr, cpu.x87.control);
+                        let (t, p) = if entry == Entry::VectorTest {
+                            vector_parity::dispatch_vector(cpu, &mut g, &WORLD)?
+                        } else {
+                            vector_parity::dispatch_context(cpu, &mut g, &WORLD)?
+                        };
+                        (t, p.map(Pending::Vector))
+                    }
+                    _ => {
+                        let (t, p) = spatial_parity::dispatch(entry, cpu, &mut g, &WORLD)?;
+                        (t, p.map(Pending::Spatial))
+                    }
+                };
+                if let Some(transfer) = transfer {
+                    return Ok(transfer);
+                }
+                drop(g);
+                if let Some(pending) = pending {
+                    ctx.observe_guest_return(cpu, pop, move |c, ctx| {
+                        let g = ctx.runtime().memory();
+                        let g = &*g;
+                        match pending {
+                            Pending::Vector(p) if entry == Entry::VectorTest => {
+                                WORLD.record_vector(p.compare(c.eax as u8, g))
+                            }
+                            Pending::Vector(p) => WORLD.record_context(p.compare(c.eax as u8, g)),
+                            Pending::Spatial(p) => WORLD.record_spatial(entry, p.compare(c, g)),
+                        }
+                    });
+                }
+                original(cpu, ctx, addr)
             })
             .optional();
     }
-    let vector = &points::COLLISION_VECTOR_TEST;
-    b.raw().observe_after(vector, "collision-vector-end", move |o| {
-        if o.addr == vector.base {
-            engine::sim_collision::vector_parity::end(o.thread_id, o.cpu, &*o.guest(), &engine::sim_collision::WORLD);
-        }
-    }).optional();
-    let context = &points::COLLISION_BSP_SEGMENT;
-    b.raw().observe_after(context, "collision-context-end", move |o| {
-        if o.addr == context.base {
-            engine::sim_collision::vector_parity::end_context(o.thread_id, o.cpu, &*o.guest(), &engine::sim_collision::WORLD);
-        }
-    }).optional();
-    let ray = &points::COLLISION_MOPP_RAY;
-    b.raw()
-        .observe_after(ray, "collision-ray-end", move |o| {
-            if o.addr == ray.base {
-                let world = &engine::sim_collision::WORLD;
-                engine::sim_collision::mopp_ray::end(&*o.guest(), world);
-            }
-        })
-        .optional();
+    for (point, entry, label) in COLLISION_OBSERVED {
+        let points::Sig::Fn { pop, .. } = point.sig else {
+            unreachable!()
+        };
+        let pop = u32::from(pop);
+        b.raw()
+            .before(point, label, move |call| {
+                if call.addr == point.base {
+                    WORLD.observe_environment(entry, call.cpu.mxcsr, call.cpu.x87.control);
+                    let thread = call.ctx.thread_id;
+                    if entry == Entry::MoppRay {
+                        let observation =
+                            mopp_ray::begin_observed(thread, call.cpu, &mut *call.ctx.memory(), &WORLD);
+                        call.ctx.observe_guest_return(call.cpu, pop, move |_, ctx| {
+                            observation.finish(&*ctx.runtime().memory(), &WORLD);
+                        });
+                    } else if let Some(pending) = {
+                        let mut mem = call.ctx.memory();
+                        query::observe(call.cpu, &mut *mem, &WORLD)
+                    } {
+                        call.ctx.observe_guest_return(call.cpu, pop, move |c, ctx| {
+                            pending.finish(c, &ctx.runtime().memory(), &WORLD);
+                        });
+                    }
+                }
+                Ok(hooks::Flow::Continue)
+            })
+            .optional();
+    }
     for (point, label) in RAY_PARITY {
         b.raw()
             .observe_before(point, label, move |o| {
@@ -506,9 +548,9 @@ fn install_collision(b: &mut Builder) {
                 }
                 let g = o.guest();
                 if point.base == points::SIM_MOPP_RAY.base {
-                    engine::sim_collision::mopp_ray::enter(o.cpu, &*g);
+                    engine::sim_collision::mopp_ray::enter(o.thread_id, o.cpu, &*g);
                 } else {
-                    engine::sim_collision::mopp_ray::key(o.cpu, &*g);
+                    engine::sim_collision::mopp_ray::key(o.thread_id, o.cpu, &*g);
                 }
             })
             .optional();
@@ -546,6 +588,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hs_switch_installs_guest_observers_for_the_complete_image() {
+        let plan_for = |spec, feature: SimNative| {
+            let mut registry = Registry::new(Switches::parse(spec).unwrap());
+            registry.add(&feature).unwrap();
+            registry.build(&Base).unwrap()
+        };
+        for (spec, installed) in [
+            ("", false),
+            ("impl.sim.native.hs", true),
+            ("-impl.sim.native", false),
+            ("impl.sim.native,-impl.sim.native.hs", false),
+            ("-impl.sim.native,impl.sim.native.hs", true),
+        ] {
+            let plan = plan_for(spec, SimNative::for_tests());
+            for point in HS_POINTS {
+                let observed = plan.chains.get(&point.base).is_some_and(|chain| {
+                    chain.implement.is_none() && !chain.observe_before.is_empty()
+                });
+                assert_eq!(observed, installed, "{spec}: {}", point.name);
+            }
+        }
+        let mut incomplete = SimNative::for_tests();
+        incomplete.missing_hs_entries.push(points::HS_THREAD_EXECUTE.name);
+        assert!(plan_for("impl.sim.native.hs", incomplete).chains.is_empty());
     }
 
     #[test]
@@ -591,7 +660,7 @@ mod tests {
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
 
         // The retired per-function switches are gone from the table.
-        for key in ["sim.native_rotation_codec", "sim.native_animation_stream"] {
+        for key in ["sim.native_rotation_codec", "sim.native_animation_stream", "sim.native_graph_resolve"] {
             assert!(Switches::parse(&format!("impl.{key}")).is_err(), "{key}");
         }
     }
@@ -681,9 +750,7 @@ mod tests {
                 }
             }
             let rt = runtime::Runtime::new(Guest::new(), dispatch);
-            let switches = Switches::defaults()
-                .with("impl.sim.native.anim", true)
-                .with("impl.sim.native_graph_resolve", true);
+            let switches = Switches::defaults().with("impl.sim.native.anim", true);
             let mut registry = Registry::new(switches);
             registry.add(&SimNative::new(&rt)).unwrap();
             let plan = registry.build(&Base).unwrap();
@@ -760,14 +827,17 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert_eq!(chain.addr, entry.addr());
             assert!(chain.implement.is_none());
-            // The vector test, outer BSP walk and MOPP ray compare guest
-            // returns through the shadow.
-            let compares_return = matches!(entry, Entry::VectorTest | Entry::VectorContext | Entry::MoppRay);
-            assert_eq!(chain.shadow.is_some(), compares_return, "{entry:?}");
-            assert_eq!(chain.observe_after.len(), compares_return as usize, "{entry:?}");
-            assert!(chain.observe_after.iter().all(|hook| hook.optional), "{entry:?}");
-            assert_eq!(chain.observe_before.len(), 1, "{entry:?}");
-            assert!(chain.observe_before[0].optional, "{entry:?}");
+            assert!(chain.shadow.is_none());
+            assert_eq!(chain.before.len(), 1);
+            assert!(chain.before[0].optional);
+        }
+        for (point, entry) in COLLISION_PARTIAL {
+            let chain = &plan.chains[&point.base];
+            assert_eq!(chain.addr, entry.addr());
+            let body = chain.implement.as_ref().unwrap();
+            assert_eq!(body.label, COLLISION);
+            assert!(body.optional);
+            assert!(chain.shadow.is_none());
         }
         // The ray parity arm also observes each interpreter call and
         // each instanced key.
@@ -781,24 +851,11 @@ mod tests {
             plan.chains.len(),
             COLLISION_ENTRIES.len()
                 + COLLISION_INVALIDATE.len()
+                + COLLISION_PARTIAL.len()
                 + COLLISION_OBSERVED.len()
                 + RAY_PARITY.len()
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
-
-        // The subsystem owns the shared points when both switches are on.
-        let switches = Switches::defaults()
-            .with(&key, true)
-            .with("impl.sim.native_point_to_leaf", true)
-            .with("impl.sim.native_bsp_segment", true)
-            .with("impl.sim.native_geometry_test", true);
-        let mut registry = Registry::new(switches);
-        registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        assert_eq!(plan.chains[&points::COLLISION_POINT_TO_LEAF.base].implement.as_ref().unwrap().label, COLLISION);
-        assert!(plan.chains[&points::COLLISION_BSP_SEGMENT.base].implement.is_none());
-        let geometry = &plan.chains[&points::COLLISION_GEOMETRY_TEST.base];
-        assert_eq!(geometry.implement.as_ref().unwrap().label, COLLISION);
 
         // Off by default.
         let mut registry = Registry::new(Switches::defaults());
@@ -827,18 +884,16 @@ mod tests {
             };
             run(&mut cpu, &mut ctx, point.base).unwrap();
         }
+        for (point, _) in COLLISION_PARTIAL {
+            let hook = plan.chains[&point.base].implement.as_ref().unwrap();
+            let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
+            run(&mut cpu, &mut ctx, point.base).unwrap();
+        }
         for (point, _, _) in COLLISION_OBSERVED {
-            let hook = &plan.chains[&point.base].observe_before[0];
-            let hooks::Run::ObserveBefore(observe) = &hook.run else {
-                unreachable!()
-            };
-            observe(&hooks::Obs {
-                thread_id: 1,
-                cpu: &cpu,
-                runtime: &rt,
-                addr: point.base,
-                point,
-            });
+            let hook = &plan.chains[&point.base].before[0];
+            let hooks::Run::Before(run) = &hook.run else { unreachable!() };
+            let flow = run(&mut hooks::Call { cpu: &mut cpu, ctx: &mut ctx, addr: point.base, point }).unwrap();
+            assert!(matches!(flow, hooks::Flow::Continue));
         }
         let after = engine::sim_collision::stats();
         for entry in Entry::ALL {
@@ -855,7 +910,8 @@ mod tests {
             let env = Bail::Env as usize;
             assert_eq!(
                 new.bails[env] - old.bails[env],
-                u64::from(COLLISION_ENTRIES.iter().any(|(_, native, _)| *native == entry))
+                u64::from(COLLISION_ENTRIES.iter().any(|(_, native, _)| *native == entry)
+                    || COLLISION_PARTIAL.iter().any(|(_, native)| *native == entry))
             );
         }
     }

@@ -732,7 +732,7 @@ mod tests {
         assert_eq!(s.focus, 1, "it opens on the held value");
         let states = states(MODE_PICKER).unwrap();
         let names: Vec<&str> = states.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["focus-1", "focus-0", "focus-3"], "the held value first");
+        assert_eq!(names, ["focus-1", "focus-0", "focus-2"], "the held value first");
         assert_eq!(states[0].1.focus, p.current);
     }
 

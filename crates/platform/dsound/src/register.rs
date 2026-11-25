@@ -193,6 +193,7 @@ pub struct SignalFailure {
 /// Everything the overrides share. Create it once, [`register`] it, and keep
 /// the `Arc` to inspect stops, failures and the DirectSound state.
 pub struct Hle {
+    tracing_voices: AtomicBool,
     ds: Mutex<DirectSound>,
     arena: Mutex<Arena>,
     events: Mutex<Box<dyn Events>>,
@@ -218,6 +219,7 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Hle {
     pub fn new(ds: DirectSound, events: Box<dyn Events>) -> Arc<Self> {
         Arc::new(Self {
+            tracing_voices: AtomicBool::new(false),
             ds: Mutex::new(ds),
             arena: Mutex::new(Arena::default()),
             events: Mutex::new(events),
@@ -229,6 +231,12 @@ impl Hle {
             signal_failures: Mutex::new(Vec::new()),
         })
     }
+    /// Begin the match's verification window, including notification delivery.
+    pub fn begin_voice_trace(&self) {
+        lock(&self.ds).begin_voice_trace();
+        self.tracing_voices.store(true, Ordering::Release);
+    }
+
     /// The DirectSound state. Do not hold this while a runner is active on
     /// another thread longer than needed: every override takes it.
     pub fn direct_sound(&self) -> MutexGuard<'_, DirectSound> {
@@ -410,6 +418,8 @@ impl Hle {
                     };
                     if let Err(error) = result {
                         lock(&self.signal_failures).push(SignalFailure { handle, error });
+                    } else if self.tracing_voices.load(Ordering::Acquire) {
+                        lock(&self.ds).voice_event(format_args!("event {handle:x} {token:x}"));
                     }
                 }
                 EventOp::Release(_, token) => drop(lock(&self.pins).remove(&token)),
@@ -695,7 +705,7 @@ pub fn unregister(dispatch: &mut Dispatch, registration: &Registration) {
 }
 
 fn call(
-    hle: &Hle,
+    hle: &Arc<Hle>,
     e: Entry,
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
@@ -722,7 +732,9 @@ fn call(
             cpu.esp = cpu.esp.wrapping_add(4).wrapping_add(r.pop_bytes);
             let mut queue = std::mem::take(&mut *lock(&hle.callbacks));
             queue.extend(finished.callbacks);
-            run_callbacks(cpu, ctx, queue, r.eax, ret_pc)
+            let trace = (!queue.is_empty() && hle.tracing_voices.load(Ordering::Acquire))
+                .then(|| Arc::clone(hle));
+            run_callbacks(cpu, ctx, queue, r.eax, ret_pc, trace)
         }
         Err(Stop::Memory(m)) => {
             // Packets that completed before the fault still owe callbacks.
@@ -761,6 +773,7 @@ fn run_callbacks(
     mut queue: VecDeque<StreamCallback>,
     eax: u32,
     ret_pc: u32,
+    trace: Option<Arc<Hle>>,
 ) -> Result<TransferAbi, GuestFault> {
     let Some(cb) = queue.pop_front() else {
         cpu.eax = eax;
@@ -773,7 +786,15 @@ fn run_callbacks(
     guard.set_u32(esp.wrapping_add(4), cb.packet_context)?;
     guard.set_u32(esp.wrapping_add(8), cb.status)?;
     cpu.esp = esp;
-    ctx.call_guest(cpu, &mut guard, cb.function, move |cpu, ctx| {
-        run_callbacks(cpu, ctx, queue, eax, ret_pc)
-    })
+    let next = trace.clone();
+    let transfer = ctx.call_guest(cpu, &mut guard, cb.function, move |cpu, ctx| {
+        run_callbacks(cpu, ctx, queue, eax, ret_pc, next)
+    })?;
+    if let Some(hle) = trace {
+        lock(&hle.ds).voice_event(format_args!(
+            "callback {:x} {:x} {:x} {:x}",
+            cb.function, cb.stream_context, cb.packet_context, cb.status
+        ));
+    }
+    Ok(transfer)
 }

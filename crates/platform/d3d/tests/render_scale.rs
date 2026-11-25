@@ -375,22 +375,22 @@ fn only_frame_sized_surfaces_scale() {
     };
     assert_eq!(size(&b, back.view), (2560, 1920));
     assert_eq!(size(&b, depth.view), (2560, 1920));
-    assert_eq!(small.view, None, "another size stays in the reference");
+    assert_eq!(size(&b, small.view), (320, 240));
     assert_eq!(
         size(&b, level.view),
         (2560, 1920),
         "a back-buffer-sized render-to-texture level scales"
     );
-    assert_eq!(bloom.view, None, "smaller levels stay at 1x");
+    assert_eq!(size(&b, bloom.view), (128, 128), "smaller levels stay at 1x");
     let r = *b.reference().store.get(back.reference).unwrap().desc();
     assert_eq!(
         (r.width, r.height),
         (640, 480),
         "the reference keeps the guest's size"
     );
-    // The reference's textures are shared, not uploaded twice.
+    // A small target can hold a different scene in each copy.
     let snap = b.snapshot_surface(small, false).unwrap().unwrap();
-    assert_eq!(snap.view.as_ref().unwrap().texture, snap.reference.texture);
+    assert_ne!(snap.view.as_ref().unwrap().texture, snap.reference.texture);
     let snap = b.snapshot_surface(back, false).unwrap().unwrap();
     assert_eq!(
         snap.view.as_ref().unwrap().texture.width(),
@@ -553,9 +553,8 @@ fn square_level(
     }
 }
 
-/// A header at `at` over the depth buffer's memory: a `LIN_A8R8G8B8`
-/// texture (`surface` false) or colour surface, 64x64.
-fn over_depth(m: &mut SparseMemory, at: u32, surface: bool) {
+/// A frame-sized linear colour texture or surface over a buffer at `data`.
+fn over_buffer(m: &mut SparseMemory, at: u32, data: u32, surface: bool) {
     let common = if surface {
         1 | (5 << 16) | 0x0100_0000
     } else {
@@ -563,7 +562,6 @@ fn over_depth(m: &mut SparseMemory, at: u32, surface: bool) {
     };
     let fmt = 1 | (2 << 4) | (0x12 << 8) | (1 << 16);
     let size = (W - 1) | ((H - 1) << 12) | ((W * 4 / 64 - 1) << 24);
-    let data = d3d::device::DEPTH_BUFFER_DATA;
     for (i, w) in [common, data, 0, fmt, size, 0].iter().enumerate() {
         m.write_u32(at + 4 * i as u32, *w).unwrap();
     }
@@ -634,9 +632,7 @@ enum Scene {
     /// A frame-sized depth level whose guest bytes hold the depth, bound
     /// with the back buffer and tested LESS.
     GuestDepthLevel,
-    /// The same with a depth level twice the frame's size: the view's
-    /// back buffer with a depth surface it does not scale, so the
-    /// reference's image stands in.
+    /// A frame pass depth-tested against a larger level on its own grid.
     LargerDepthLevel,
     /// Depth from clears, then the depth buffer's memory sampled as a
     /// colour texture over the whole screen.
@@ -746,15 +742,15 @@ fn scene<B: Backend>(backend: B, scene: Scene) -> Device<B> {
                 rects(&mut m, &[rect]);
                 d.clear(&mut m, 1, RECTS, 0x03, 0, z, s).unwrap();
             }
-            over_depth(&mut m, ALIAS, false);
+            over_buffer(&mut m, ALIAS, d3d::device::DEPTH_BUFFER_DATA, false);
             z_state(&mut m, false, false, Z_ALWAYS);
             d.set_texture(&mut m, 0, ALIAS).unwrap();
             texel_quad(&mut d, &mut m, (0.0, 0.0, W as f32, H as f32), 0.5);
             d.set_texture(&mut m, 0, 0).unwrap();
         }
         Scene::ColorOverDepth => {
-            over_depth(&mut m, CSURF, true);
-            over_depth(&mut m, ALIAS, false);
+            over_buffer(&mut m, CSURF, d3d::device::DEPTH_BUFFER_DATA, true);
+            over_buffer(&mut m, ALIAS, d3d::device::DEPTH_BUFFER_DATA, false);
             d.set_render_target(&mut m, CSURF, 0).unwrap();
             set_states(&mut d, &mut m);
             d.clear(&mut m, 0, 0, 0xF0, 0xFF40_4040, 1.0, 0).unwrap();
@@ -881,7 +877,7 @@ fn a_colour_surface_over_the_depth_memory_matches_downsampled() {
 }
 
 #[test]
-fn a_draw_the_view_cannot_repeat_shows_the_reference_not_a_hole() {
+fn the_display_frame_depth_tests_against_a_larger_level_on_its_own_grid() {
     let Some(ctx) = context() else { return };
     if !ctx.caps.depth32_stencil8 {
         eprintln!("skipping: the depth level cannot be read back");
@@ -891,7 +887,7 @@ fn a_draw_the_view_cannot_repeat_shows_the_reference_not_a_hole() {
         let (px, stats) = check_scene(&ctx, Scene::LargerDepthLevel, scale);
         assert_eq!(argb(&px, 10, 10), 0xFF10_2030);
         assert_eq!(argb(&px, 50, 10), 0xFF00_FF00);
-        assert_eq!(stats.color_resyncs, 1, "{stats:?}");
+        assert_eq!(stats.color_resyncs, 0, "{stats:?}");
     }
 }
 
@@ -1072,8 +1068,7 @@ fn uv_quad<B: Backend>(
 enum EdgePass {
     /// A flat quad (gfx's built-in pre-transformed shader).
     Flat,
-    /// A 32x32 render-to-texture level (guest size: only the reference
-    /// draws it) upsampled over the frame (a translated program).
+    /// A guest-sized 32x32 render-to-texture level upsampled over the frame.
     SmallBlur,
     /// A frame-sized level (scaled) drawn by a flat quad over stale
     /// contents, then sampled bilinearly over the frame.
@@ -1134,6 +1129,40 @@ fn edge_scene<B: Backend>(backend: B, pass: EdgePass) -> Device<B> {
         .collect();
     assert!(skipped.is_empty(), "{pass:?}: {skipped:?}");
     d
+}
+
+#[test]
+fn only_frame_sized_render_levels_supply_screen_coordinates() {
+    for direct in [false, true] {
+        for (pass, frame) in [(EdgePass::FrameChain, true), (EdgePass::SmallBlur, false)] {
+            let mut backend = d3d::RecordingBackend::new();
+            backend.sample_surfaces = direct;
+            let device = edge_scene(backend, pass);
+            let draws = device.backend.draws();
+            let copy = draws.last().unwrap();
+            assert!(copy.texture_info[0].is_some());
+            assert_eq!(copy.extras[0].samples_frame, frame, "{pass:?}, direct={direct}");
+            let clip = copy.display_rect(copy.clip.unwrap());
+            assert!(clip.is_whole(W, H));
+        }
+    }
+}
+
+#[test]
+fn clipped_world_bounds_reach_both_edges_of_the_presented_player_view() {
+    use d3d::backend::PixelRect;
+
+    let grid = d3d::scaled::RenderScale::between((640, 480), (5120, 2880)).unwrap();
+    // A right-hand player view with a water plane clipped at the left
+    // boundary and a fog plane clipped at the right boundary.
+    let view = (320, 0, 320, 480);
+    let physical = |x, width| {
+        let rect = PixelRect { x, y: 0, width, height: 480 }.projected_x(view, 0.75);
+        grid.rect(rect.x, rect.y, rect.width, rect.height)
+    };
+    assert_eq!(physical(320, 320), [2560, 0, 2560, 2880]);
+    assert_eq!(physical(320, 200), [2560, 0, 1520, 2880]);
+    assert_eq!(physical(440, 200), [3600, 0, 1520, 2880]);
 }
 
 #[test]
@@ -1206,9 +1235,78 @@ fn render_diagnostics_read_display_allocations_on_the_worker() {
 }
 
 #[test]
-fn fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime() {
+fn exact_frame_copies_keep_each_scene_through_a_fixed_size_post_target() {
     let Some(ctx) = context() else { return };
-    let output = (149, 101);
+    let drawable = (256, 144);
+    let retail = 0xffcc_2200u32;
+    let displayed = 0xff00_ff00u32;
+    let detail = 0xff33_66ddu32;
+    for raster in [drawable, (192, 108)] {
+        let grid = d3d::scaled::RenderScale::between((W, H), raster).unwrap();
+        let mut backend = ScaledBackend::with_resolution(
+            GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, false,
+        ).unwrap();
+        backend.follow_presentation(move |_| drawable);
+        let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+        d.set_rtt_direct(true);
+        set_states(&mut d, &mut m);
+        let back = back_address(&m);
+        let buffers = d.back_buffer().unwrap();
+        let display = d.backend.view_surface(&buffers).unwrap();
+
+        // Different scene colours model geometry seen only by the display camera.
+        // An off-centre rectangle locates the same scene point in both copies.
+        d.clear(&mut m, 0, 0, 0xF0, retail, 1.0, 0).unwrap();
+        d.backend.view_mut().clear(display, None, gfx::Clear {
+            color: Some([0.0, 1.0, 0.0, 1.0]), ..gfx::Clear::NONE
+        }).unwrap();
+        rects(&mut m, &[[32, 16, 56, 48]]);
+        d.clear(&mut m, 1, RECTS, 0xF0, detail, 1.0, 0).unwrap();
+
+        // Downsample the bound frame texture to the guest-sized post target.
+        level(&mut m);
+        over_buffer(&mut m, ALIAS, d3d::device::BACK_BUFFER_DATA, false);
+        d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+        d.set_texture(&mut m, 0, ALIAS).unwrap();
+        linear_clamp(&mut m);
+        let small = (-0.5, -0.5, SIZE as f32 - 0.5, SIZE as f32 - 0.5);
+        uv_quad(&mut d, &mut m, small, (W as f32, H as f32));
+
+        d.set_texture(&mut m, 0, 0).unwrap();
+        d.set_render_target(&mut m, back, 0).unwrap();
+        d.clear(&mut m, 0, 0, 0xF0, STALE, 1.0, 0).unwrap();
+        d.set_texture(&mut m, 0, TEX_A).unwrap();
+        uv_quad(&mut d, &mut m, FULL, (SIZE as f32, SIZE as f32));
+
+        let reference = pixels(d.backend.reference_mut(), buffers.reference);
+        let shown = pixels(d.backend.view_mut(), display);
+        assert_eq!(reference.1, (W, H));
+        assert_eq!(shown.1, raster);
+        for ((bytes, (w, h)), background) in [(reference, retail), (shown, displayed)] {
+            // Probe on either side of each edge, outside the bilinear transition.
+            for (x, y) in [(0, 0), (28, 32), (36, 32), (52, 32), (60, 32),
+                           (44, 12), (44, 20), (44, 44), (44, 52), (63, 63)] {
+                let inside = (32..56).contains(&x) && (16..48).contains(&y);
+                let expected = if inside { detail } else { background };
+                let i = (((y * h / H) * w + x * w / W) * 4) as usize;
+                assert_eq!(&bytes[i..i + 4], &expected.to_le_bytes(), "{raster:?} at ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime() {
+    patterned_feedback((149, 101));
+}
+
+#[test]
+fn water_frame_sample_includes_the_rightmost_presented_column_at_sixteen_by_nine() {
+    patterned_feedback((192, 108));
+}
+
+fn patterned_feedback(output: (u32, u32)) {
+    let Some(ctx) = context() else { return };
     let grid = d3d::scaled::RenderScale::between((W, H), output).unwrap();
     let mut backend = ScaledBackend::with_resolution(
         GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), grid, true,

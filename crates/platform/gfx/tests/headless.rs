@@ -1061,6 +1061,44 @@ fn texture_groups_are_replaced_and_evicted() {
     assert_ne!(group(&mut b, &other), replaced, "evicted");
 }
 
+/// A destroyed texture's groups leave the cache at once
+/// (`ProgramBindings::forget_textures`), not after four frames; groups
+/// over other textures stay.
+#[test]
+fn texture_groups_of_destroyed_textures_are_forgotten() {
+    use gfx::program::ProgramBindings;
+    use gfx::translate::SamplerKey;
+    let Some(ctx) = context() else { return };
+    let mut b = ProgramBindings::new(&ctx.device);
+    let texture = |fill: u8| {
+        let desc = TextureDesc::new(D3DFormat::LinA8R8G8B8, TextureKind::D2, 4, 4, 1, 1);
+        let tex = decode_texture(&desc, &[fill; 64], None, DecodeOptions::default()).unwrap();
+        gfx::upload::upload_texture(&ctx.device, &ctx.queue, &tex, "group")
+    };
+    let (copy, resident) = (texture(1), texture(2));
+    let dims = [Some(wgpu::TextureViewDimension::D2), Some(wgpu::TextureViewDimension::D2), None, None];
+    let sampler = SamplerKey::from_stage(&gfx::state::TextureStageState::default_for_stage(0), ctx.caps);
+    let group = |b: &mut ProgramBindings, views: [Option<&wgpu::TextureView>; 4]| {
+        b.textures(&ctx.device, &ctx.queue, dims, views, [sampler; 4], [[false; 4]; 4])
+            .unwrap()
+    };
+    // Three draws, each with a copy of its own (as each frame-buffer
+    // sample makes), two of them with the resident texture beside it.
+    let copies: Vec<wgpu::TextureView> = (0..3).map(|_| copy.create_view(&Default::default())).collect();
+    let kept = resident.create_view(&Default::default());
+    group(&mut b, [Some(&copies[0]), Some(&kept), None, None]);
+    group(&mut b, [Some(&kept), Some(&copies[1]), None, None]);
+    group(&mut b, [Some(&copies[2]), None, None, None]);
+    let steady = group(&mut b, [Some(&kept), None, None, None]);
+    assert_eq!(b.texture_group_count(), 4);
+    b.forget_textures(&[]);
+    assert_eq!(b.texture_group_count(), 4, "nothing gone, nothing dropped");
+    copy.destroy();
+    b.forget_textures(std::slice::from_ref(&copy));
+    assert_eq!(b.texture_group_count(), 1, "every group over the copy is dropped");
+    assert_eq!(group(&mut b, [Some(&kept), None, None, None]), steady, "the resident group stays");
+}
+
 /// Pipelines are built off the drawing thread: a draw-time miss is queued
 /// on a compile worker and collected when the pass is encoded (output as
 /// if built inline), and a prewarmed pipeline is never built by the

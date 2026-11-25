@@ -203,7 +203,9 @@ and indirect arguments. Its upload arena reserves a fresh source range for
 each write and records a copy immediately before the consuming draw. Target
 copies and multiple runs may share a submission. The queue completion callback
 returns the leased storage to its pool after the last submission using it.
-World placement transforms are initialized once at map load.
+World placement transforms and layer-3 lighting implementations are resolved
+at map load. The accumulation texture sampled by combined materials is
+resolved on each target copy at the draw. See [the static world](native-world.md).
 
 ## Frame counters
 
@@ -316,8 +318,12 @@ needs a matching A/B. See [render-loop.md](render-loop.md).
 
 The world stands down when its BSP loads yield no drawable native parts.
 The lights stand down when the native world is disabled or its BSPs yield
-no native lit parts. Fog and water stand down when their translated passes
-yield no drawable parts. A BSP-backed stage stays eligible while any BSP
+no native lit parts. Fog and the layer-6 water edge blend stand down when their
+translated passes yield no drawable parts. This applies to whole-list
+replacement. Indexed fog ranges stay eligible at
+their indexed draws, using the live shader and geometry after the guest
+handler sets them up. Planar world passes sample the current view’s combiner
+colour and fade weights. A BSP-backed stage stays eligible while any BSP
 has work or has yet to be checked.
 
 Objects stand down only when the map's tag index contains no object
@@ -515,8 +521,6 @@ through the common adapter.
   stages other than the indexed world, object and transparent passes are
   drawn at their tick's camera (`render.stats`' `display_rate.held_stages`).
 - Split screen: one native pass per view with the view's camera.
-- Which 03a templates have a layer-1 texaccum pass that layer 3 samples in
-  screen space; those need the texaccum target bound to the native pass.
 - All-stage runtime counts of the residual callers
   ([retire-d3d.md](retire-d3d.md), "Measurement plan").
 

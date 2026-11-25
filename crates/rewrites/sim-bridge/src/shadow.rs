@@ -3,10 +3,9 @@
 //! [`crate::sim_physics`]) and [`lifted::shadow`].
 //!
 //! Every port is registered with the process's registry at plan build,
-//! installed or not, under its switch name and its group. Each installed
-//! body runs through [`run`], which costs one atomic load until the agent
-//! API's `shadow.enable` turns checks on. There is no switch or variable:
-//! the agent call is the switch.
+//! installed or not, under its name and group. Authoritative bodies use
+//! [`run`]. Guest-authoritative arms use [`compare_only`] before running
+//! generated code. Both check the registry's atomic flag before doing work.
 
 pub use lifted::shadow::{Enabled, Error, Mismatch, Port, PortFn, SHADOW, Shadow, Status};
 
@@ -51,13 +50,26 @@ pub fn run(
     SHADOW.run(name, cpu, guest, pc, game_tick, port)
 }
 
+/// Check a candidate on private state before dispatching the live guest.
+pub fn compare_only(
+    name: &'static str,
+    cpu: &CpuAbi,
+    guest: &Guest,
+    pc: u32,
+    port: &mut PortFn<'_>,
+) {
+    SHADOW.compare_only(name, cpu, guest, pc, game_tick, port);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn every_switch() -> impl Iterator<Item = &'static str> {
+    fn every_port() -> impl Iterator<Item = &'static str> {
         let native = crate::sim_native::ENTRIES.iter().map(|&(_, name, _)| name);
-        native.chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+        native
+            .chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+            .chain(crate::sim_objects::SHADOW_POINTS.iter().map(|p| p.name))
     }
 
     #[test]
@@ -70,7 +82,7 @@ mod tests {
         registry.add(&crate::sim_physics::NativePhysics).unwrap();
         registry.build(&hooks::Base).unwrap();
         let status = SHADOW.status();
-        for name in every_switch() {
+        for name in every_port() {
             let port = status.ports.iter().find(|p| p.name == name);
             assert!(port.is_some(), "{name} is not registered");
         }
@@ -82,11 +94,11 @@ mod tests {
         assert_eq!(pose.group, SIM_NATIVE);
     }
 
-    /// `scripts/shadow-gate.sh` turns every port on by its switch.
+    /// The disc gate accepts each port by its registered name.
     #[test]
     fn the_disc_gate_names_every_port() {
         let script = include_str!("../../../../scripts/shadow-gate.sh");
-        for name in every_switch() {
+        for name in every_port() {
             assert!(
                 script.contains(&format!(" {name} ")) || script.contains(&format!(" {name}\n")),
                 "scripts/shadow-gate.sh does not list {name}"

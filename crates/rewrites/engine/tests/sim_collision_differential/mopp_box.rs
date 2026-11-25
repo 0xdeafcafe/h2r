@@ -76,6 +76,18 @@ fn full(rng: &mut Rng) -> f64 {
 /// A box for `code`: random cells mapped back to the world, or near a
 /// compiled program's surfaces; now and then NaN, inverted or far away.
 fn random_aabb(rng: &mut Rng, code: &Code) -> Aabb {
+    let mut b = frame_box(rng, code);
+    match rng.below(40) {
+        0 => b.min[rng.below(3) as usize] = f32::NAN,
+        1 => b.max.swap(0, 1),
+        2 => b.max[0] = 3.0e9 / code.scale,
+        3 => b.min[2] = b.max[2] + 100.0,
+        _ => {}
+    }
+    b
+}
+
+fn frame_box(rng: &mut Rng, code: &Code) -> Aabb {
     let world = |a: usize, x: f64| (x / f64::from(code.scale) + f64::from(code.offset[a])) as f32;
     let mut b = Aabb {
         min: [0.0; 3],
@@ -90,13 +102,6 @@ fn random_aabb(rng: &mut Rng, code: &Code) -> Aabb {
         };
         b.min[a] = world(a, lo);
         b.max[a] = world(a, hi);
-    }
-    match rng.below(40) {
-        0 => b.min[rng.below(3) as usize] = f32::NAN,
-        1 => b.max.swap(0, 1),
-        2 => b.max[0] = 3.0e9 / code.scale,
-        3 => b.min[2] = b.max[2] + 100.0,
-        _ => {}
     }
     b
 }
@@ -189,7 +194,10 @@ fn mopp_box_matches_the_guest() {
 #[test]
 fn mopp_box_edges_match_the_guest() {
     with_oracle("collision MOPP box edges", |oracle, image| {
-        let programs: [&[u8]; 9] = [
+        let programs: [&[u8]; 10] = [
+            // Both splits visit both sides. The duplicate surrounds a distinct
+            // key, so sorting, uniquing, or reversing a sibling pair differs.
+            &[0x10, 255, 0, 6, 0x10, 255, 0, 1, 0x37, 0x32, 0x37],
             &[0x10, 10, 20, 1, 0x31, 0x32],
             &[0x23, 10, 20, 0, 0, 0, 1, 0x31, 0x32],
             &[0x20, 10, 1, 0x31, 0x32],
@@ -264,125 +272,96 @@ fn structure_box(samples: &super::disc::Samples<'_>, rng: &mut Rng, i: u32) -> A
 #[test]
 #[ignore = "reads the owner's Halo 2 ISO (H2_DISC) and XBE (H2_XBE)"]
 fn every_disc_mopp_box_matches_the_guest() {
-    use map::Map;
-    use std::fs::File;
-    use std::io::BufReader;
-    use std::path::PathBuf;
-    use tags::geometry::TagView;
+    use super::disc::programs::{self, Kind::*};
     const BOXES: u32 = 400;
     const GUEST_EVERY: u32 = 10;
     assert!(common::xbe_path().is_some(), "set H2_XBE to run the disc sweep");
-    let disc = std::env::var_os("H2_DISC")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../disc/halo2.iso"));
     with_oracle("collision MOPP box disc sweep", |oracle, image| {
-        let mut iso = xiso::Xiso::open(BufReader::new(File::open(&disc).unwrap())).unwrap();
-        let part = iso.partition_offset();
-        let mut entries = iso.entries().unwrap();
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-        let (mut programs, mut compared, mut guest_runs) = (0u32, 0u64, 0u64);
+        // Input bytes live below the sparse overlay, so cloning the guest for
+        // a comparison copies only the handful of words each case writes.
+        let mut fixture = image.to_vec();
+        fixture[VM as usize..VM as usize + 0x40].fill(0xab);
+        fixture[DATA as usize..DATA as usize + 0x4000].fill(0xcd);
+        let mut programs = [0u32; 4];
+        let mut compared = [0u64; 4];
+        let mut guest_runs = [0u64; 4];
         let mut bails = [0u64; sim_collision::BAILS];
-        for file in entries {
-            let path = file.path.to_ascii_lowercase();
-            if file.is_dir || !path.starts_with("/maps/") || !path.ends_with(".map") {
-                continue;
-            }
-            let mut map = Map::from_region(
-                BufReader::new(File::open(&disc).unwrap()),
-                part + u64::from(file.sector) * xiso::SECTOR,
-                u64::from(file.size),
-            )
-            .unwrap();
-            let structures: Vec<_> = map
-                .tags()
-                .iter()
-                .filter(|t| t.group == map::FourCC(*b"sbsp"))
-                .filter_map(|t| Some((t.id, t.location?)))
-                .collect();
-            for (id, location) in structures {
-                let raw = map.read_tag_bytes(id).unwrap();
-                let view = TagView::new(&raw, location.address);
-                let root = view.range(location.address, 0x1e8).unwrap();
-                let count = u32::from_le_bytes(root[0x1e0..0x1e4].try_into().unwrap());
-                let at = u32::from_le_bytes(root[0x1e4..0x1e8].try_into().unwrap());
-                if count == 0 {
-                    continue;
+        programs::for_each(&[Structure, Cluster, CollisionModel, PhysicsModel], |tag, kind, view, at, code, samples| {
+            let family = kind as usize;
+            let tree = Tree::decode(
+                at,
+                Source {
+                    origin: code.offset.map(f32::to_bits),
+                    scale: code.scale.to_bits(),
+                    bytecode: code.bytecode.clone(),
+                },
+            );
+            programs[family] += 1;
+            let label = format!("{tag} {kind:?} {at:#x}");
+            eprintln!(
+                "{label}: {} bytecode bytes, {} nodes, guest_only {}",
+                code.bytecode.len(),
+                tree.nodes().len(),
+                tree.guest_only()
+            );
+            let mut rng = Rng(u64::from(at) << 1 | 1);
+            for i in 0..BOXES {
+                let b = match (kind, samples) {
+                    (Structure, Some(samples)) => structure_box(samples, &mut rng, i),
+                    _ => frame_box(&mut rng, &code),
+                };
+                let model = mopp::query_box(&code, &b);
+                let ours = Corners::convert(
+                    b.min.map(f32::to_bits),
+                    b.max.map(f32::to_bits),
+                    code.offset.map(f32::to_bits),
+                    code.scale.to_bits(),
+                    0x027f,
+                )
+                .and_then(|q| tree.query_box(&q, usize::MAX));
+                match ours {
+                    Ok(found) => {
+                        assert_eq!(Ok(found.keys), model, "{label} box {i}: {b:?}");
+                        compared[family] += 1;
+                    }
+                    Err(why) => bails[why as usize] += 1,
                 }
-                let block = view.range(at, u64::from(count)).unwrap();
-                let code = Code::parse(block).unwrap();
-                let tree = Tree::decode(
-                    at,
-                    Source {
-                        origin: code.offset.map(f32::to_bits),
-                        scale: code.scale.to_bits(),
-                        bytecode: code.bytecode.clone(),
-                    },
-                );
-                programs += 1;
-                let header = super::disc::bsp_headers(&view, map::FourCC(*b"sbsp"), location.address)[0];
-                let samples = super::disc::Samples::new(&view, header);
-                let label = format!("{path} sbsp {id}");
-                eprintln!(
-                    "{label}: {} bytecode bytes, {} nodes, guest_only {}",
-                    code.bytecode.len(),
-                    tree.nodes().len(),
-                    tree.guest_only()
-                );
-                let mut rng = Rng(u64::from(at) << 1 | 1);
-                for i in 0..BOXES {
-                    let b = structure_box(&samples, &mut rng, i);
-                    let model = mopp::query_box(&code, &b);
-                    let ours = Corners::convert(
-                        b.min.map(f32::to_bits),
-                        b.max.map(f32::to_bits),
-                        code.offset.map(f32::to_bits),
-                        code.scale.to_bits(),
-                        0x027f,
-                    )
-                    .and_then(|q| tree.query_box(&q, usize::MAX));
-                    match ours {
-                        Ok(found) => {
-                            assert_eq!(Ok(found.keys), model, "{label} box {i}: {b:?}");
-                            compared += 1;
-                        }
-                        Err(why) => bails[why as usize] += 1,
-                    }
-                    if i.is_multiple_of(GUEST_EVERY) {
-                        let mut m = fresh(image);
-                        m.tag = Some((view.address(), view.bytes(), TableVersion::fresh()));
-                        m.store(VM, &[0xab; 0x40]);
-                        m.store(DATA, &vec![0xcd; 0x4000]);
-                        put_aabb(&mut m, &b);
-                        m.word(ARRAY + layout::mopp_box::DATA, DATA);
-                        m.word(ARRAY + layout::mopp_box::SIZE, 0);
-                        m.word(ARRAY + layout::mopp_box::CAPACITY, 0x1000);
-                        m.word(STACK + 4, at);
-                        m.word(STACK + 8, AABB);
-                        m.word(STACK + 12, ARRAY);
-                        let mut c = entry_cpu(&mut rng, MOPP_BOX.point.base);
-                        (c.mxcsr, c.x87.control, c.x87.tag) = (0x1fa0, 0x027f, 0xffff);
-                        c.x87.status |= layout::mopp_box::X87_PE;
-                        c.ecx = VM;
-                        let ok = check(
-                            oracle,
-                            &MOPP_BOX,
-                            &c,
-                            &m,
-                            |c, g, w| adapter::mopp_box(c, g, w),
-                            None,
-                            &format!("{label} box {i} guest"),
-                        );
-                        guest_runs += u64::from(ok);
-                    }
+                if i.is_multiple_of(GUEST_EVERY) {
+                    let mut m = fresh(&fixture);
+                    m.tag = Some((view.address(), view.bytes(), TableVersion::fresh()));
+                    put_aabb(&mut m, &b);
+                    m.word(ARRAY + layout::mopp_box::DATA, DATA);
+                    m.word(ARRAY + layout::mopp_box::SIZE, 0);
+                    m.word(ARRAY + layout::mopp_box::CAPACITY, 0x1000);
+                    m.word(STACK + 4, at);
+                    m.word(STACK + 8, AABB);
+                    m.word(STACK + 12, ARRAY);
+                    let mut c = entry_cpu(&mut rng, MOPP_BOX.point.base);
+                    (c.mxcsr, c.x87.control, c.x87.tag) = (0x1fa0, 0x027f, 0xffff);
+                    c.x87.status |= layout::mopp_box::X87_PE;
+                    c.ecx = VM;
+                    let ok = check(
+                        oracle,
+                        &MOPP_BOX,
+                        &c,
+                        &m,
+                        |c, g, w| adapter::mopp_box(c, g, w),
+                        None,
+                        &format!("{label} box {i} guest"),
+                    );
+                    guest_runs[family] += u64::from(ok);
                 }
             }
+        });
+        for kind in [Structure, Cluster, CollisionModel, PhysicsModel] {
+            let k = kind as usize;
+            eprintln!("{kind:?}: {} programs, {} boxes compared with mopp::boxvm, {} with the guest", programs[k], compared[k], guest_runs[k]);
+            assert!(programs[k] > 0 && compared[k] > 0 && guest_runs[k] > 0, "{kind:?} never compared");
         }
-        eprintln!("{programs} structure programs, {compared} boxes compared with mopp::boxvm, {guest_runs} with the guest");
         for why in sim_collision::Bail::ALL {
             if bails[why as usize] > 0 {
                 eprintln!("  {}: {}", why.name(), bails[why as usize]);
             }
         }
-        assert!(programs > 0 && compared > 0 && guest_runs > 0);
     });
 }

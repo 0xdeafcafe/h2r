@@ -576,7 +576,7 @@ impl ShaderPostprocess {
         imp: usize,
     ) -> Option<&AnimationRanges> {
         let l = self.lods.get(lod)?;
-        if layer >= 32 || l.layer_mask & (1 << layer) == 0 || layer >= usize::from(l.layers.count) {
+        if layer >= usize::from(l.layers.count) || layer >= 32 || l.layer_mask & (1 << layer) == 0 || layer >= usize::from(l.layers.count) {
             return None;
         }
         let pr = *self.layers.get(usize::from(l.layers.start) + layer)?;

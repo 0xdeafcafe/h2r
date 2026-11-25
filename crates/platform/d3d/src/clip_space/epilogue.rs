@@ -73,6 +73,9 @@ pub enum Position {
     /// block is the matrix the draw's vertices go through to the screen:
     /// the only one that can be its camera.
     Rows(u8),
+    /// Perspective X, Y and W rows with W also written to clip Z. The
+    /// projected surface lies at the far plane regardless of its distance.
+    FarPlaneRows(u8),
     /// No constant: the vertices as given (a pass-through, `mov oPos,
     /// v0`), already in screen or clip space. Nothing the camera does
     /// moves them.
@@ -97,6 +100,7 @@ pub fn position(microcode: &[u32]) -> Position {
     // `oPos` components read back: the clip position's, as they stand;
     // later writes are the epilogue's.
     let mut read = [false; 4];
+    let mut written = [false; 4];
     for inst in &p.instructions {
         let reaches = |s: &Source, constant: &[[bool; 4]; 13]| match s.reg {
             SrcReg::Const { .. } => true,
@@ -116,7 +120,8 @@ pub fn position(microcode: &[u32]) -> Position {
         for s in inst.sources() {
             if s.reg == SrcReg::Temp(12) {
                 for &c in &s.swizzle {
-                    read[c as usize & 3] = true;
+                    let i = c as usize & 3;
+                    read[i] |= written[i];
                 }
             }
         }
@@ -150,6 +155,9 @@ pub fn position(microcode: &[u32]) -> Position {
         let mut write = |reg: usize, mask: shaders::vsh::Mask, v: [Option<u8>; 4], k: bool| {
             for (j, x) in v.into_iter().enumerate() {
                 if mask.has(j) && !(reg == 12 && read[j]) {
+                    if reg == 12 {
+                        written[j] = true;
+                    }
                     rows[reg][j] = x;
                     constant[reg][j] = k;
                 }
@@ -180,6 +188,11 @@ pub fn position(microcode: &[u32]) -> Position {
             if b as usize + 4 <= CONSTANTS && (0..4).all(|j| rows[12][j] == Some(b + j as u8)) =>
         {
             Position::Rows(b)
+        }
+        Some(b) if usize::from(b) + 4 <= CONSTANTS
+            && rows[12] == [Some(b), Some(b + 1), Some(b + 3), Some(b + 3)] =>
+        {
+            Position::FarPlaneRows(b)
         }
         _ => Position::Unknown,
     }
@@ -687,6 +700,21 @@ mod tests {
         let mut p = vec![pass];
         p.extend(standard(10, 11));
         assert_eq!(position(&words(&p)), Position::Fixed);
+        // A sky surface clamped to the far plane writes the W row twice.
+        let mut far = clip();
+        far.remove(2);
+        far[2] = Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(3)), None)
+            .to_out(false, OutReg::Pos, Z | W);
+        far.extend(standard(10, 11));
+        assert_eq!(position(&words(&far)), Position::FarPlaneRows(0));
+
+        // Reading a partial oPos for an effect varying before producing
+        // the other three coordinates must not freeze the unwritten rows.
+        let mut partial = clip();
+        partial.insert(1, Inst::mac(MacOp::Mov, Some(O::r(12)), None, None)
+            .to_out(false, OutReg::T(0), X));
+        partial.extend(standard(10, 11));
+        assert_eq!(position(&words(&partial)), Position::Rows(0));
         // Anything else is not known.
         let scaled = Inst::mac(MacOp::Mul, Some(O::v(0)), Some(O::c(16)), None).to_out(
             false,

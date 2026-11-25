@@ -18,6 +18,7 @@ use native_render::world_layers_gpu::{Cache as IndexedCache, IndexedPass};
 use timeline::native::{Metric, Stage};
 
 struct Walk<B: d3d::Backend> {
+    state: crate::native_world_glue::State,
     device: d3d::abi::SharedDevice<B>,
     cache: Arc<crate::native_map::MapIndexedCache>,
     packed: Arc<Mutex<Cache>>,
@@ -48,6 +49,12 @@ impl d3d::DrawAdmission for IndexedRange<'_> {
 }
 
 impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B> {
+    fn sorted_pools(&self, mem: &dyn engine::memory::GuestMemory) -> Option<Arc<std::collections::BTreeSet<u32>>> {
+        let state = self.state.lock().ok()?;
+        let ready = crate::native_world_glue::current_ready(&state, mem)?;
+        Some(Arc::clone(&ready.water.get()?.0.pools))
+    }
+
     fn retire_bsp(&self) {
         let packed = self.packed.lock().unwrap_or_else(|e| e.into_inner()).take_map();
         if !packed.by_streams.is_empty() {
@@ -73,7 +80,7 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
 }
 
 
-pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: crate::native_world_glue::State) {
     let switches = hooks::Switches::from_env().unwrap_or_default();
     if !native_transparents::on(&switches) {
         return;
@@ -81,6 +88,7 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
     let packed = Arc::new(Mutex::new(Cache::default()));
     let indexed = Arc::new(crate::native_map::MapIndexedCache::default());
     native_transparents::set_walk_host(Arc::new(Walk {
+        state,
         device: device.clone(),
         cache: Arc::clone(&indexed),
         packed: Arc::clone(&packed),
@@ -102,8 +110,10 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
             }, Box::new(pass) as Box<dyn d3d::ExternalPass>))
         }));
         device.set_scoped_indexed_geometry(
-            native_transparents::in_indexed_handler,
+            || crate::native_world_layers_glue::pool_issue().is_none() && native_transparents::in_indexed_handler(),
             Box::new(move |mem, esp, draw| {
+                // Retained pool admissions compare the original stream layout.
+                if crate::native_world_layers_glue::pool_issue().is_some() { return None; }
                 let (map, _) = native_transparents::indexed_entry(&ReadMemory(mem), esp)?;
                 packed.lock().ok()?.geometry(map, draw)
             }),

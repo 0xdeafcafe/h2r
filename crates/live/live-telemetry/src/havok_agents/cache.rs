@@ -87,11 +87,7 @@ fn convex(m: &dyn GuestMemory, base: u32, swept: bool) -> Result<Convex, MemFaul
     })
 }
 
-pub(super) fn cache(
-    m: &dyn GuestMemory,
-    base: u32,
-    remaining: &mut u32,
-) -> Result<Cache, MemFault> {
+pub(super) fn allocation(m: &dyn GuestMemory, base: u32) -> Result<(u32, &'static str, u32), MemFault> {
     span(base, 12)?;
     let vtable = m.u32(base)?;
     let (kind, size) = if base == EMPTY_AGENT {
@@ -113,6 +109,15 @@ pub(super) fn cache(
         }
         (kind, size)
     };
+    Ok((vtable, kind, size))
+}
+
+pub(super) fn cache(
+    m: &dyn GuestMemory,
+    base: u32,
+    remaining: &mut u32,
+) -> Result<Cache, MemFault> {
+    let (vtable, kind, size) = allocation(m, base)?;
     *remaining = remaining.checked_sub(size).ok_or_else(|| bad(base))?;
     span(base, size)?;
     Ok(Cache {

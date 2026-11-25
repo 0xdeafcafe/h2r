@@ -32,10 +32,10 @@ forces an anamorphic aspect with `--aspect`. See the
 
 - **Guest device coordinates.** The device (`d3d::Device`) keeps
   every size, viewport, scissor, header and return value in guest pixels.
-  Raster scaling lives below the `d3d::Backend` trait. In offline play
-  structure LOD uses projected pixels at the accepted render height, and
-  model LOD the camera distance divided by the same factor. Both copies
-  draw the same chosen geometry. See
+  Raster scaling lives below the `d3d::Backend` trait. In offline play the
+  guest walk always selects retail geometry whatever the LOD setting; the
+  display draws the chosen selection through the substituting render
+  paths. See
   [projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail).
 - **One draw per target in single-copy mode.** At increased resolution
   the display encoder owns the draw stream, including draws to guest-size intermediates. Guest reads sample the
@@ -61,12 +61,13 @@ widescreen factor at `0x0045dfdc`. A 16:9 image can therefore occupy
 the same 640x480 allocation as a 4:3 image.
 
 `crates/extensions/game/src/render_aspect.rs` reads the Xbox anamorphic
-state at both the game and alternate view entries. For a recognised
+state at both the game and alternate view entries. In exact mode, for a recognised
 perspective draw, the host scales the
 horizontal clip coordinate by the ratio of the guest's pixel aspect to
 the displayed pixel aspect. For translated shaders, the recogniser
-requires a four-row perspective transform. Programs with an unrecognised
-clip transform keep their original positions. The flare pass translates its
+follows the X, Y and W rows through partial position writes. It accepts
+a four-row perspective transform or a far-plane surface that writes W to Z. Programs with an unrecognised
+clip transform keep their original positions. With a retail camera the flare pass translates its
 occlusion query to the projected display column, preserving the footprint used
 for the expected count, and applies the lens to the reflection billboards and final composite fans.
 Light volumes and light trails use the same CPU projector. Both billboard
@@ -76,7 +77,8 @@ translator applies the same transform to its depth lookup in register 1
 and to its raster position. Its sprite UVs keep their authored range.
 On a perspective draw that samples scene colour or depth with a bump matrix,
 both coefficients contributing to horizontal displacement take the display
-lens. Asset-space bump matrices keep their material values.
+lens, including when the guest camera already contains the correction. A frame-sized render level such as texaccum
+is identified by its backing address, format and dimensions. Asset-space bump matrices keep their material values.
 The exact reference draws both at the retail coordinates. The display keeps the
 vertical field of view and depth of the simulation camera. Orthographic
 menu widgets use a uniform fit inside each player's viewport. A menu quad
@@ -114,25 +116,51 @@ render target the size of its own 640x480 target without the fit: a frame
 copy covers the frame (`crates/platform/d3d/src/device.rs`, test
 `a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame`). With the fit,
 each copy would shrink the picture into the centred box and leave stale
-target contents at the sides. Corner HUD
+target contents at the sides.
+
+A screen-space quad whose positions reach both edges of the frame along
+the axis the fit shrinks is a full-frame pass the same way: the screen
+effects' hand-pushed strips (the cutscene tints, the title screen's
+backdrop fill, the wide convolution's grid rows), the colour pass's quads
+and any menu fill a submission site did not read. The device reads the
+positions from the draw's own unindexed vertices and drops the widget
+fit for the draw (`crates/platform/d3d/src/device.rs`,
+`spans_the_fitted_frame`; test
+`full_frame_quads_span_the_display_in_a_fitted_ui_scope`). Without this,
+a full-window quad covered only the centred 4:3 box at a wide display
+while the scene under it, drawn with the display lens, spanned the whole
+raster — hard vertical edges at the box. A quad that covers the cinema
+window (full width, letterboxed height) spans the display along the
+fitted axis and keeps the fit on the other. Corner HUD
 groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
 
-The main portal gather starts from the tangent rectangle in the render
-projection. The single-copy hook at `VIEW_FRUSTUM_RECT` in
-`crates/extensions/game/src/render_aspect.rs` scales its horizontal extent
-around the lens centre before the guest builds the root polygon and side
-planes. The BSP flood clips each open portal to the parent window. Objects
-must pass a sphere test against one of their cluster's window frusta.
-The player FOV setting supplies the vertical extent through the observer.
+Single-copy play fits the horizontal projection terms in the guest's active
+and saved display cameras at `VIEW_PROJECTION_TERMS`
+(`crates/extensions/game/src/render_aspect.rs`). The camera matrix, CPU
+pixel scale and root portal bounds derive from these terms. Water and fog
+geometry built with this camera, the sky and CPU-projected effects share
+its horizontal lens. The BSP flood clips each open portal to its parent
+window. Object spheres must intersect one of their cluster's window frusta.
+The observer supplies the vertical field of view.
 
 Exact mode keeps the guest gather and visibility readbacks at the retail
 lens. The scene step walks the open portals with both the retail and display
 cameras, including their off-centre projections. It excludes geometry
 already admitted by the retail lens or submitted by the guest. Each rigid
 BSP placement needs to intersect a portal window in a cluster that references
-it. Layer 3 draws resident cluster parts and fully opaque rigid placements.
+it. For layers 6 and 16, a display-only submission needs an empty guest
+layer and one supported part in a cluster wholly inside one portal window.
+The live material must be visible and have a single shader LOD. For fog,
+the cluster's atmosphere and the planar gate must select the loaded
+implementation.
+The visible water surface uses the sorted transparent geometry handler on
+layer 15. That handler needs the guest's sorted entry, so an exact-mode
+cluster ID alone cannot supply a missing surface. Decorator placements
+also come from the guest's per-view list. A layer-6 material count
+describes the edge blend.
+Layer 3 draws resident cluster parts and fully opaque rigid placements.
 For objects, it builds the model sections and node palettes on a private
 copy of the record writes. Materials without native layer-3 support, fades,
 attachments and objects that require guest animation code can still leave
@@ -145,14 +173,19 @@ scissor and projection factor.
 [FrameScene reads](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)
 and [display raster](../runtime/agent-api.md#renderframe_layout).
 
+First-person draws use the weapon camera and the section, parts and node
+palette selected by the guest's first-person records. On the native layer-3
+path the material's fog and specular state resolve over the device state at
+the draw boundary (`crates/extensions/game/src/native_first_person_glue.rs`).
+
 The playerless Theater observer has the whole BSP and object array. It
 uses the same Hor+ lens for projection and its own frustum test on both.
 See [the host film view](../game/film-format.md#choosing-a-players-view).
 
-In offline play with the default LOD Distance, timings above 480 lines include the cost
-of retaining more detailed models and structure geometry. To compare raster
-cost at different resolutions with the original detail choices, select
-**Retail** at every resolution. Record both settings with the timings.
+**Highest** requests the finest model tiers at any resolution; the
+structure walks keep their retail projected sizes and pixel radii. To
+compare raster cost with retail geometry choices, record both settings
+with the timings.
 [Lab benchmarks](../runtime/lab.md#--serve-and-bench).
 
 ## Single-copy readbacks
@@ -269,8 +302,9 @@ What scales in the view: surfaces made with `create_surface` at the frame
 size (the first colour surface's, the back buffer), `PersistDisplay`'s copy,
 back-buffer-sized render-to-texture levels
 (`ScaleView::create_scaled_texture_target`) and depth aliases of the whole
-depth buffer (`ScaleStats::scaled_depth_aliases`). Other levels live only in
-the reference and the view samples the reference's textures of them.
+depth buffer (`ScaleStats::scaled_depth_aliases`). Smaller render targets
+keep their guest dimensions. Exact mode gives each camera its own contents,
+including the downsample and blur levels used by the final composite.
 Scissors and clears are scaled inside `GfxBackend` for a scaled surface.
 
 A view failure (a draw it cannot make, an allocation that fails at 4K) does
@@ -342,19 +376,24 @@ once at guest size: `ScaledBackend::guest_image` samples the scaled
 partner to its guest-size handle (`ScaleStats::downsamples`), and a scaled
 partner that the draw modified is transferred back on the GPU
 (`crates/platform/d3d/src/scaled/single.rs`, `draw_single`). In exact mode the
-reference draws every guest-size target from its own 1x surfaces and the view
-samples the reference's result, so no resolve is needed. The view never reads
-back to the CPU.
+reference and display each draw the chain from their own frame. Both
+downsample to the same guest dimensions. The display then composites its
+own blurred image, keeping highlights aligned with their sources at each
+raster resolution. The guest texture header supplies the texel dimensions
+for UV normalization. The compositor supplies the final drawable extent
+after the frame is complete.
 
 ### Depth as a texture
 
-Textures over the whole depth buffer are made on the GPU from the view's
-scaled depth, by a full-screen pass that writes the depth and stencil bits
-into a colour texture in the alias's channel order
-(`ScaleStats::scaled_depth_aliases`; tests `the_depth_buffer_as_a_texture_matches_downsampled`
-and `tests/gpu_depth_alias.rs`). Partial or swizzled aliases stay the
-reference's 1x textures in exact mode ([d3d.md](d3d.md), "Frame buffers as
-textures").
+Each camera decodes textures over its own depth or colour attachment.
+The texture header supplies the guest byte offset, dimensions and pitch
+or swizzle. The decoder maps each addressed guest texel to the source
+attachment's physical grid. This includes subrectangles and texture
+headers that reinterpret texaccum or the colour surface drawn over the
+depth allocation. The GPU paths are `gfx::guest_words::GuestWords` for
+aligned depth words and `gfx::surface_alias::AliasDecoder` for the other
+layouts. `crates/platform/d3d/tests/gpu_depth_alias.rs` checks a partial
+feedback alias against the two cameras at full and three-quarter raster.
 
 Those textures hold packed bits. They must be point sampled, at any scale.
 A stage that samples one with a linear filter is already wrong at 1x.
@@ -722,12 +761,22 @@ independently of the recorded guest. The Video row itself writes its label
 into guest memory. Local films record each size the row or picker observes so
 replaying a trip through Settings shows the same choices on another monitor.
 See [film playback](../game/film-format.md#choosing-a-players-view).
-For protected sessions, the guest
-uses retail LOD distances independent of the viewer's output height or
-LOD preference. Older films that record the scalar render scale and LOD
-selection reproduce the corresponding startup multiplier. A legacy film's
-startup record cannot describe a later change to either setting. In offline
-single-copy play, guest readbacks still sample the display raster.
+Every session keeps retail geometry selection on the guest and reference
+path: the display choice changes only the drawn geometry, through the
+native display passes and, in single-copy rendering, the D3D fallback's
+draw-boundary swap (whose records and palettes are per-frame render
+scratch). The native opaque object pass builds supported display
+sections on a private overlay and submits them to the display attachments.
+The overlay keeps the guest object pose, lighting cache, palette and
+residency writes private. Marker lookup reads the live object's node
+matrices, and film and lockstep checkpoints hash the live arena; both are
+retail whatever the setting. Older
+films with a scalar render scale and LOD selection reproduce that startup
+multiplier on the reference. In offline single-copy play, guest readbacks
+sample the display raster.
+[Private model sections](../../crates/rewrites/render-bridge/src/native_scene_lists/setup.rs),
+[marker lookup](../../crates/rewrites/engine/src/sim_native/marker.rs),
+[arena hash](../../crates/extensions/lockstep/src/lib.rs).
 
 The observer produces the vertical field of view from player control.
 Aim search and shot assistance use weapon tag angles and zoom, and the

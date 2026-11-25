@@ -3,7 +3,8 @@
 //! The two stack frames identify the entry while the indexed call is live.
 //! Push-buffer work and other kinds of handlers keep their ordinary path.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -23,7 +24,9 @@ use points::scene_effects::{
 const GEOMETRY_RANGE_TAIL: u32 = 0x0004_dae0;
 const GEOMETRY_EMITTER_CALLER: u32 = 0x0004_d626;
 const TRANSPARENT_DRAW_CALLER: u32 = 0x0004_1010;
-const LAYER_DRAW_CALLER: u32 = 0x0003_bc90;
+const LAYER_DRAW_CALLER: u32 = native_render::light_list::HANDLER_RETURN;
+const LAYER_ENTRIES_FRAME: u32 = 0xf094;
+const LAYER_ENTRIES_RETURN: u32 = 0x0004_45b7;
 const LAYER_DRAW_FRAME: u32 = 0xf0a4;
 const SORTED_HANDLER_RETURN: u32 = 0x0001_e3f3;
 const LIST_COUNT: u32 = 0x004b_6280;
@@ -46,6 +49,7 @@ pub struct IndexRange {
 }
 
 pub trait WalkHost: Send + Sync {
+    fn sorted_pools(&self, _mem: &dyn GuestMemory) -> Option<Arc<BTreeSet<u32>>> { None }
     fn retire_bsp(&self) {}
 
     fn draw(&self, mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> bool;
@@ -81,6 +85,7 @@ fn sorted_data(mem: &dyn GuestMemory, ordinal: u32) -> Option<u32> {
 }
 
 thread_local! {
+    static POOLS: RefCell<Option<Arc<BTreeSet<u32>>>> = const { RefCell::new(None) };
     static WALK_DATA: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
@@ -118,6 +123,28 @@ pub fn layered_indexed_call(mem: &dyn GuestRead, api_esp: u32) -> bool {
     live_layer(mem, esp, layer) && sorted_layer_call(layer, caller)
 }
 
+/// The standard handler saves the signed record index at its ESP+0x3c
+/// (0x4d131) and keeps the corresponding record pointer in EBP (0x4d141).
+/// The emitter saves that EBP before reusing it. Its frame includes the
+/// handler's three arguments and return address. The handler has already
+/// reused the original packed part argument by this point (0x4d147).
+fn emits_object(mem: &dyn GuestRead, esp: u32) -> Option<bool> {
+    use native_render::{objects::RECORD_MODEL, skip::{RENDER_RECORDS, RENDER_RECORD_SIZE}};
+    const RECORD_COUNT: u32 = 0x004c_0b78;
+    const RECORD_CAPACITY: u32 = 0x352;
+    let index = mem.read_u32(esp.checked_add(0x64)?)?;
+    if index >= mem.read_u32(RECORD_COUNT)?.min(RECORD_CAPACITY) {
+        return None;
+    }
+    let record = RENDER_RECORDS + index * RENDER_RECORD_SIZE;
+    if mem.read_u32(esp.checked_add(8)?)? != record {
+        return None;
+    }
+    // 0x4d157 selects model geometry by this datum, including unlit
+    // objects for which a lighting-cache owner cannot be recovered.
+    Some(mem.read_u32(record + RECORD_MODEL)? != u32::MAX)
+}
+
 fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let word = |offset| mem.read_u32(esp.checked_add(offset)?);
     if word(0x18)? != GEOMETRY_EMITTER_CALLER {
@@ -126,30 +153,72 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
     let layer = word(0x78)?;
     match word(0x68)? {
         TRANSPARENT_DRAW_CALLER if layer == 15 => {
-            let frame_data = SCOPE.with(|slot| {
-                let scope = slot.take();
-                let data = scope.live_handler(mem, esp).map(|h| h.data);
-                slot.set(scope);
-                data
-            })?;
-            (WALK_DATA.get() == Some(frame_data)).then_some(Stage::Transparents)
+            // Pools use the resolved D3D issue below, so a replay can keep
+            // the admission beside the exact packet and its texture inputs.
+            (!sorted_pool(mem, esp)?).then_some(Stage::Transparents)
         }
         LAYER_DRAW_CALLER => {
-            use native_render::world_layers::{Site, layer_site};
+            use native_render::world_layers::{Site, layer_site, sorted_site};
             let caller = word(LAYER_DRAW_FRAME)?;
-            // The emitter is inside the layer dispatcher, after the guest
-            // applied the material and selected this exact index range.
-            if live_layer(mem, esp, layer) && scene_extract::late::scene_layer_call(layer, caller) {
+            // The layer's sorted dispatcher has already applied the pass and
+            // chosen this range. Require the live handler and current layer
+            // to agree even at the first-person renderer's overlay call.
+            let overlay_fog = layer == 16 && caller == scene_extract::late::FIRST_PERSON_OVERLAY_RETURN;
+            if (scene_extract::late::scene_layer_call(layer, caller) || overlay_fog)
+                && live_layer(mem, esp, layer)
+            {
                 return Some(if layer == 16 { Stage::Fog } else { Stage::Water });
             }
-            let first_person_layer = layer_site(layer, caller) == Site::FirstPerson;
+            let site = layer_site(layer, caller);
             let list = mem.read_u32(native_render::skip::CURRENT_LIST)?;
-            (first_person_layer && list != 0
-                && mem.read_u32(list.checked_add(0x14)?)? == crate::native_first_person::FIRST_PERSON_ITEMS)
-                .then_some(Stage::FirstPerson)
+            if list == 0 { return None; }
+            let items = mem.read_u32(list.checked_add(0x14)?)?;
+            if items == crate::native_first_person::FIRST_PERSON_ITEMS {
+                return (site == Site::FirstPerson).then_some(Stage::FirstPerson);
+            }
+            // Resident plans consume their ranges before the emitter.
+            // A residual model draw reaches this point with its streams,
+            // constants and render states already bound by the handler.
+            if items != 0 && (matches!(site, Site::Scene | Site::AlternateView) || sorted_site(layer, caller).is_some())
+                && mem.read_u32(native_render::skip::CURRENT_LAYER) == Some(layer)
+                && word(LAYER_ENTRIES_FRAME) == Some(LAYER_ENTRIES_RETURN)
+                && emits_object(mem, esp)?
+            {
+                Some(Stage::Objects)
+            } else {
+                None
+            }
         }
         _ => None,
     }
+}
+
+fn sorted_pool(mem: &dyn GuestRead, esp: u32) -> Option<bool> {
+    let scope = SCOPE.take();
+    let handler = scope.live_handler(mem, esp);
+    SCOPE.set(scope);
+    let handler = handler?;
+    if WALK_DATA.get() != Some(handler.data) { return None; }
+    Some(POOLS.with_borrow(|p| p.as_ref().is_some_and(|p| p.contains(&handler.shader))))
+}
+
+/// The pool's resolved indexed call, with its three arguments still on the stack.
+pub fn pool_issue(mem: &dyn GuestRead, esp: u32) -> Option<(u32, u32)> {
+    WALK_DATA.get()?;
+    let ret = mem.read_u32(esp)?;
+    if ret != GEOMETRY_RANGE_TAIL && !SUBPART_DRAWS.iter().any(|&(_, end)| end == ret) {
+        return None;
+    }
+    let frame = esp.checked_add(16)?;
+    if mem.read_u32(frame.checked_add(0x18)?)? != GEOMETRY_EMITTER_CALLER
+        || mem.read_u32(frame.checked_add(0x68)?)? != TRANSPARENT_DRAW_CALLER
+        || mem.read_u32(frame.checked_add(0x78)?)? != 15
+        || !sorted_pool(mem, frame)?
+    {
+        return None;
+    }
+    Some((mem.read_u32(engine::render_loop::occlusion::guest::VIEW_INDEX)?,
+        mem.read_u32(esp.checked_add(8)?)?))
 }
 
 fn subpart_range(mem: &dyn GuestRead, esp: u32) -> Option<IndexRange> {
@@ -170,7 +239,7 @@ impl IndexRange {
         // Both indexed backends consume the full list and rasterize its
         // complete triangles. Preserve the tail in the device snapshot.
         self.indices != 0 && self.count >= 3
-            && (matches!(stage, Stage::Transparents | Stage::FirstPerson) || !matches!(self.topology, IndexTopology::List)
+            && (matches!(stage, Stage::Transparents | Stage::FirstPerson | Stage::Objects) || !matches!(self.topology, IndexTopology::List)
                 || self.count % 3 == 0)
     }
 }
@@ -461,6 +530,8 @@ impl Feature for NativeTransparents {
             .observe_before(&points::SCENE_TRANSPARENTS, "native_transparents_view", |c| {
                 WALK_DATA.set(None);
                 let mem = c.guest();
+                let host = WALK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                POOLS.replace(host.and_then(|h| h.sorted_pools(&*mem)));
                 let mut scope = Scope::default();
                 scope.begin_view(&ReadMemory(&*mem), c.cpu.esp);
                 SCOPE.with(|slot| slot.set(scope));
@@ -469,6 +540,7 @@ impl Feature for NativeTransparents {
         b.raw()
             .observe_before(&SCENE_TRANSPARENTS_END, "native_transparents_end", |_| {
                 WALK_DATA.set(None);
+                POOLS.replace(None);
                 SCOPE.with(|slot| slot.set(Scope::default()));
             })
             .context_only();
@@ -540,6 +612,16 @@ mod walk_tests {
         WALK_DATA.set(Some(data));
         SCOPE.set(scope);
         assert_eq!(walk_stage(&read, frame), Some(Stage::Transparents));
+
+        POOLS.replace(Some(Arc::new([0].into())));
+        assert_eq!(walk_stage(&read, frame), None);
+        let issue = frame - 16;
+        mem.set_u32(issue, GEOMETRY_RANGE_TAIL).unwrap();
+        mem.set_u32(issue + 8, 7).unwrap();
+        assert_eq!(pool_issue(&ReadMemory(&mem), issue), Some((0, 7)));
+        mem.set_u32(issue, 0x1234).unwrap();
+        assert_eq!(pool_issue(&ReadMemory(&mem), issue), None);
+        POOLS.replace(None);
 
         // No lighting owner for this object. The emitter still supplies the
         // exact sorted range and the device resolves its streams and shader.
@@ -665,6 +747,7 @@ mod walk_tests {
         for (layer, caller, stage) in [
             (6, scene_extract::late::SCENE_WATER_RETURN, Stage::Water),
             (16, scene_extract::late::SCENE_FOG_RETURN, Stage::Fog),
+            (16, scene_extract::late::FIRST_PERSON_OVERLAY_RETURN, Stage::Fog),
         ] {
             for (offset, value) in [(0x18, GEOMETRY_EMITTER_CALLER), (0x68, LAYER_DRAW_CALLER),
                 (0x78, layer), (0xf094, 0x0004_45b7), (LAYER_DRAW_FRAME, caller)] {
@@ -681,6 +764,44 @@ mod walk_tests {
             mem.set_u32(native_render::skip::CURRENT_LAYER, 3).unwrap();
             assert_eq!(classify(&mem), None);
         }
+    }
+
+    #[test]
+    fn residual_objects_require_the_emitters_live_model_record_and_layer() {
+        use native_render::skip::{CURRENT_LAYER, RENDER_RECORDS, RENDER_RECORD_SIZE};
+        let mut mem = FlatMemory::new(0x0040_0000, 0x0020_0000);
+        let (sp, list) = (0x005a_0000, 0x004a_0000);
+        let record = RENDER_RECORDS + RENDER_RECORD_SIZE;
+        for (at, word) in [
+            (sp + 0x18, GEOMETRY_EMITTER_CALLER), (sp + 0x68, LAYER_DRAW_CALLER),
+            (sp + LAYER_ENTRIES_FRAME, LAYER_ENTRIES_RETURN),
+            (CURRENT_LIST, list), (list + 0x14, 0x0052_0000),
+            (0x004c_0b78, 2), (sp + 0x64, 1), (sp + 8, record),
+            (record + 4, 0xface_0009),
+        ] {
+            mem.set_u32(at, word).unwrap();
+        }
+        let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), sp);
+        for (layer, caller) in [(1, 0x0002_be4a), (3, 0x0002_bed5), (3, 0x0002_bd74),
+            (17, 0x0002_c30b), (18, 0x0004_2015), (19, 0x0004_205f), (21, 0x0004_2721)]
+        {
+            mem.set_u32(CURRENT_LAYER, layer).unwrap();
+            mem.set_u32(sp + 0x78, layer).unwrap();
+            mem.set_u32(sp + LAYER_DRAW_FRAME, caller).unwrap();
+            assert_eq!(classify(&mem), Some(Stage::Objects), "layer {layer}");
+        }
+        for (at, invalid) in [
+            (sp + 0x18, 0), (sp + 0x68, 0), (sp + LAYER_ENTRIES_FRAME, 0), (sp + LAYER_DRAW_FRAME, 0),
+            (CURRENT_LAYER, 1), (sp + 8, RENDER_RECORDS), (0x004c_0b78, 1),
+            (sp + 0x64, u32::MAX), (record + 4, u32::MAX), (list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS),
+        ] {
+            let original = mem.u32(at).unwrap();
+            mem.set_u32(at, invalid).unwrap();
+            assert_eq!(classify(&mem), None, "at {at:#x}");
+            mem.set_u32(at, original).unwrap();
+        }
+        assert!(IndexRange { indices: 0x4000, count: 5, topology: IndexTopology::List }
+            .has_indices_for(Stage::Objects));
     }
 
     #[test]
