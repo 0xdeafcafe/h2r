@@ -12,8 +12,37 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
 }
 
 /// The refusal counted (`layer_plan_15_pool_on_d3d`) for each sorted pool
-/// draw left on the D3D path.
+/// draw left on the D3D path, besides its own cause
+/// (`layer_plan_15_pool_refused_<cause>`).
 pub(crate) const POOL_ON_D3D: &str = "pool_on_d3d";
+
+/// A sorted pool issue `(view, index count)` as a native water pass, or the
+/// guest's D3D draw with the cause counted.
+fn admit_pool(
+    draw: &d3d::ResolvedDraw, view: u32, count: u32, cache: std::sync::Arc<native_render::world_layers_gpu::Cache>,
+) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+    use native_render::world_layers_gpu::pool_refusal_counter;
+    let refuse = |cause: &str| {
+        // The cause counter is `layer_plan_15_pool_refused_<cause>`.
+        render_bridge::native_layers::count(15, pool_refusal_counter(cause).trim_start_matches("layer_plan_15_"), 1);
+        render_bridge::native_layers::count(15, POOL_ON_D3D, 1);
+        None
+    };
+    if draw.indices.as_deref().is_none_or(|i| i.len() != count as usize) {
+        return refuse("index_count");
+    }
+    let frame = crate::d3d_diag::presents() + 1;
+    match IndexedPass::for_pool(draw, cache, frame) {
+        Ok(pass) => {
+            render_bridge::native_layers::count(15, "pool_admitted", 1);
+            Some((
+                d3d::ExternalPlan { stage: timeline::native::Stage::Water, view, ranges: 1, slots: Vec::new() },
+                Box::new(pass),
+            ))
+        }
+        Err(cause) => refuse(cause),
+    }
+}
 
 #[derive(Default)]
 struct ResidualDraws {
@@ -31,12 +60,8 @@ impl d3d::DrawAdmission for ResidualDraws {
         if draw.entry != "D3DDevice_DrawIndexedVertices" {
             return None;
         }
-        if crate::native_world_layers_glue::pool_issue().is_some() {
-            // The native pool pass drew the bay over the terrain on Delta
-            // Towers (cbfe69a). Its depth and lens against the scene are not
-            // proven, so the guest's draw stays the D3D packet.
-            render_bridge::native_layers::count(15, POOL_ON_D3D, 1);
-            return None;
+        if let Some((view, count)) = crate::native_world_layers_glue::pool_issue() {
+            return admit_pool(draw, view, count, self.geometry.get());
         }
         let call = crate::native_world_layers_glue::indexed_draw()?;
         let (stage, pass) = match (call.layer.site, call.layer.number) {
@@ -153,11 +178,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_sorted_pool_issue_keeps_the_guest_d3d_draw() {
-        let draw = indexed_triangle();
-        let snapshot = DrawSnapshot {
-            draw: &draw,
+    fn counter(name: &str) -> u64 {
+        render_bridge::native_layers::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
+    }
+
+    fn snapshot(draw: &d3d::ResolvedDraw) -> DrawSnapshot<'_> {
+        DrawSnapshot {
+            draw,
             vertex_shader: 0,
             pixel_shader: 0,
             bound_textures: [0; 4],
@@ -165,15 +192,89 @@ mod tests {
             palettes: [0; 4],
             color_header: 1,
             depth_header: 2,
+        }
+    }
+
+    /// The pool draws the test's triangle can become: a projective lens of
+    /// the target's size at stage 0, depth tested and never written.
+    fn pool_draw() -> d3d::ResolvedDraw {
+        use shaders::psh::{PixelShaderDef, bits::*};
+        let mut draw = indexed_triangle();
+        let def = PixelShaderDef {
+            texture_modes: texture_modes([TEX_PROJECT2D, 0, 0, 0]),
+            final_inputs_abcd: inputs(0, 0, 0, REG_T0),
+            ..Default::default()
         };
-        let refused = || render_bridge::native_layers::counters().into_iter()
-            .find(|(k, _)| *k == format!("layer_plan_15_{POOL_ON_D3D}"))
-            .map_or(0, |(_, n)| n);
-        let before = refused();
-        let admitted = crate::native_world_layers_glue::with_pool_issue((0, 3), || {
-            ResidualDraws::default().admit(&snapshot)
+        let bytes = def.to_bytes();
+        let words: [u32; 60] = std::array::from_fn(|i| u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap()));
+        draw.shader.pixel_shader = Some(Arc::new(words));
+        draw.shader.combiner_state = Arc::new(words[..57].try_into().unwrap());
+        let raw = Arc::make_mut(&mut draw.raw);
+        raw.render[..57].copy_from_slice(&words[..57]);
+        raw.render[136] = words[54];
+        draw.texture_info[0] = Some(d3d::backend::TextureInfo {
+            header: 0x1000,
+            palette: 0,
+            format: gfx::D3DFormat::A8R8G8B8,
+            kind: gfx::texture::TextureKind::D2,
+            width: 64,
+            height: 64,
+            depth: 1,
+            levels: 1,
         });
-        assert!(admitted.is_none(), "a sorted pool must not become a native pass");
-        assert!(refused() > before);
+        draw.textures[0] = Some(0x1000);
+        draw
+    }
+
+    #[test]
+    fn a_sorted_pool_with_a_lens_and_a_tested_depth_becomes_a_native_pass() {
+        let mut draw = pool_draw();
+        draw.state.render.depth_mode = gfx::state::DepthBufferMode::Z;
+        draw.state.render.depth_write = false;
+        draw.state.render.stencil.enable = false;
+        let (before, drops) = (counter("layer_plan_15_pool_admitted"), counter("layer_plan_15_pool_on_d3d"));
+        let admitted = crate::native_world_layers_glue::with_pool_issue((0, 3), || {
+            ResidualDraws::default().admit(&snapshot(&draw))
+        });
+        let (plan, _) = admitted.expect("a pool with its inputs is admitted");
+        assert_eq!(plan.stage, timeline::native::Stage::Water);
+        assert!(counter("layer_plan_15_pool_admitted") > before);
+        assert_eq!(counter("layer_plan_15_pool_on_d3d"), drops);
+    }
+
+    #[test]
+    fn each_pool_refusal_is_named_and_leaves_the_guest_d3d_draw() {
+        use gfx::state::{CompareFunc, DepthBufferMode};
+        let tested = || {
+            let mut draw = pool_draw();
+            draw.state.render.depth_mode = DepthBufferMode::Z;
+            draw.state.render.depth_write = false;
+            draw.state.render.stencil.enable = false;
+            draw
+        };
+        let mut cases: Vec<(&str, d3d::ResolvedDraw)> = Vec::new();
+        let mut draw = tested();
+        draw.target.depth_format = None;
+        cases.push(("no_depth", draw));
+        let mut draw = tested();
+        draw.state.render.depth_func = CompareFunc::Always;
+        cases.push(("depth_not_tested", draw));
+        let mut draw = tested();
+        draw.state.render.depth_write = true;
+        cases.push(("writes_depth", draw));
+        let mut draw = tested();
+        draw.texture_info[0] = None;
+        cases.push(("no_lens", draw));
+        cases.push(("index_count", { let mut d = tested(); d.indices = Some(vec![0, 1, 2, 0, 1, 2].into()); d }));
+        for (cause, draw) in cases {
+            let name = format!("layer_plan_15_pool_refused_{cause}");
+            let (before, drops) = (counter(&name), counter("layer_plan_15_pool_on_d3d"));
+            let admitted = crate::native_world_layers_glue::with_pool_issue((0, 3), || {
+                ResidualDraws::default().admit(&snapshot(&draw))
+            });
+            assert!(admitted.is_none(), "{cause}: the guest's D3D draw stands");
+            assert!(counter(&name) > before, "{cause} is counted by name");
+            assert!(counter("layer_plan_15_pool_on_d3d") > drops, "{cause} is counted as on D3D");
+        }
     }
 }
