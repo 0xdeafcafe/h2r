@@ -154,3 +154,49 @@ Command: `h2 play` with `halo1.iso` beside the Halo 2 disc, release build.
 36 maps (ten levels, 13 multiplayer maps in two sandboxes) converted in
 about 90 s, the disc's hash included. The ten Halo 2-assets variants were
 added after (converter version 55).
+
+## 2026-11-20: placements and script-sound counts
+
+Commits: `c55daf023` (placements), `0cc737264` (script sounds). Method:
+the `h1_placement_flags` survey and the serialized reference tables
+`both_sandboxes_rebuild_every_retail_map` checks, read-only walks of the
+retail discs.
+
+- Of 11,624 retail Halo 1 placements, four scenery rows have palette
+  index -1, one each on a10, a30, b40 and c40.
+- The ten campaign script reference tables hold 570 distinct map/sound
+  pairs, including every authored sound atom; the busiest level is a10
+  with 175. The thirteen multiplayer scenarios have no authored script
+  sounds.
+
+## 2026-11-19: recordings and cinematic command lists
+
+Commits: `8e112edc2` (recordings), `83774dff5` (command lists). Method:
+the recordings disc test and the `cutscene_survey` walk.
+
+- The ten levels hold 349 version-4 recording streams, using unit
+  control versions 0, 3 and 4; reading the original encoding directly
+  loses event framing on 189 of them; 73 timed animation-state changes
+  keep their original tick.
+- On the source disc c10 has ten by-unit command-list calls and c40
+  twenty.
+
+## 2026-11-17: the import's wall time
+
+Commit: `9a3d7864d`. Method: `h2 play` on a release build, first start,
+the Halo 1 disc's hash included.
+
+36 maps (ten levels, 13 multiplayer maps in two sandboxes) import in about
+90 s.
+
+## 2026-11-17: a10's hidden placements and cutscene graphs
+
+Commits: `45f326821` (hidden placements), `94aa80832` (graphs, dialogue
+calls). Method: the `h1_placement_flags` survey and the `cutscene_survey`
+walk, read-only.
+
+- A10 hides 67 of 107 bipeds, 51 of 56 vehicles and 92 of 274 scenery
+  from the automatic placement pass ("not placed automatically").
+- Graphs a cutscene names: 34 nodes for the captain, 41 for Cortana, 1 to
+  26 for props; 9 graphs on a10, 2 to 9 elsewhere.
+- 493 `sound_impulse_time` calls.

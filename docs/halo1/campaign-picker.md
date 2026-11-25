@@ -7,6 +7,7 @@ the retail path and no campaign hooks or artwork rewrite are installed.
 The level lists, level select and progress are confirmed in a game run.
 The picker flow and checkpoint isolation are covered by tests and not yet
 run in the game.
+Measurements: [notes/campaign-picker.md](notes/campaign-picker.md).
 
 Labels: **E** read from the retail XBE with `h2 disasm` (a full linear
 disassembly of `.text`), **V** measured on the user's disc (the ignored

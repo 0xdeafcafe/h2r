@@ -25,3 +25,11 @@ other weapon's HUD, drawn on the held assault rifle by pointing its `hud`
 reference at it, had its panel, count, icon and meter where Halo 1 puts
 them and no widget over another; only the always-on "Reload" overlapped
 the crosshair.
+
+## 2026-11-20: the weapon HUD census on the discs
+
+Commit: `237749036`. Machine: the owner's Halo 1 disc. Method: a
+read-only census of every `wphi` chain of the ten campaign and thirteen
+multiplayer maps.
+
+1,497 authored weapon draw entries in 360 interfaces.

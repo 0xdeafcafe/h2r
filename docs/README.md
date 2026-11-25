@@ -270,6 +270,8 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - Notes: [rebuild.md](halo1/notes/rebuild.md) (game runs on converted Blood Gulch behind the rebuilt vehicles, scenery and weapons)
 - Notes: [hud.md](halo1/notes/hud.md) (the reload warning's thresholds on a converted map)
 - Notes: [multiplayer.md](halo1/notes/multiplayer.md) (the teleporter receiver's brightness against Halo 1's)
+- Notes: [campaign-picker.md](halo1/notes/campaign-picker.md) (the card rewrite on the disc's mainmenu, the retail level-picture frame, the owner's progress)
+- Notes: [not-adopted.md](halo1/notes/not-adopted.md) (Halo 1 designs built and removed)
 
 Reading and converting Halo 1 data:
 

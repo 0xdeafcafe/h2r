@@ -83,3 +83,48 @@ Gulch's base, gives every scenery with collision a `phmo` (6 of 6, V:
 Giving converted scenery a built `phmo` (versions 85 to 91) did not help:
 the engine never builds scenery a body from it. Moving each placement's
 collision into the level's collision (version 96) is the design on the page.
+
+## 2026-11-19: a converted weapon plays Halo 1's effects and sounds
+
+Commits: `7074e4c63` (fire and reload), `690ab1fed` (ready, overheat,
+pickup, zoom, chamber). Method: `weapon_rebuild_disc` against the discs.
+
+Before converter version 97 the counterpart's were kept: drawing the
+assault rifle played the needler's ready effect (the SMG's), picking it
+up the SMG's ammunition sound.
+
+## 2026-11-19: the assault rifle's reserve
+
+Commit: `9dc0cb45b` (converter version 76; the live check ran on the
+version 77 build). Method: game run on converted Blood Gulch, the HUD's
+reserve count.
+
+With the magazine's reserve cap (`+0xc`) written 0 there is no reserve
+and the HUD count reads 0. Live: the assault rifle spawns with 180 in
+reserve, and emptying the magazine and reloading leaves 120.
+
+## 2026-11-17: b40's shared BSP blocks
+
+Commits: `fefbf343f` (the BSP physics slots, converter version 18),
+`108e8f932` (shared blocks stay shared). Method:
+`level_objects_select_collision_with_bsp_physics` prints the bytes the
+slots add; converting b40 at each lean step.
+
+The slots alone add 37,280 bytes on b40 (38 slots; a10 13,152 for 15),
+which put b40 0x8000 over the tag memory bound even at the last lean
+step. With sharing b40 converts at lean 1 (with the empty squads
+dropped) with tag memory `0xc22000` of `0xc24000`.
+
+## 2026-11-17: lifepods and the pelican's engine loops
+
+Commits: `0daf3e54a` (converter version 17: lifepods drop the loops),
+`495e87ca8` (lifepods on the pelican template), `d4528bee4` (converter
+version 49: every vehicle from the `vehi` definition, the quiet
+stand-in gone). Method: the campaign disc test comparing converted
+vehicles' ordered loop attachments with their source.
+
+On the pelican template the pelican's attachments (`obje +0x94`, `0x18`
+each) loop six sounds, engine, hover and banking on each side, scaled
+by its `engine_audio`, `hover_audio` and `banking_audio` functions; on
+a lifepod they hummed the pelican's engine at every placement, all
+level (a10 on a converter version 14 build: "repeated wurrrring").

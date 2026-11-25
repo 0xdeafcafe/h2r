@@ -66,3 +66,53 @@ carries:
 | warthog | 11 | 43 | 2.1e-5 rad | 0 | 0 |
 
 The rotation error is the i16 re-quantisation of normalised quaternions.
+
+## 2026-11-20: campaign biped graphs
+
+Commit: `fe15711b8`. Method: `campaign_biped_slots_and_talk_frames`, a
+read-only walk of the ten Xbox campaign maps.
+
+The maps reference 25 distinct animation graphs from their biped object
+layers.
+
+## 2026-11-19: the emblem placement on Blood Gulch's cyborg
+
+Commit: `2bc3e05c5`. Method: `h1objects/tests/model_shaders_disc.rs`
+`bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder`, reading
+the converted model.
+
+The anchor joint (`bip01 l upperarm`) is at (-0.008, 0.09, 0.569) and the
+arm's x axis is (0.01, 0.19, -0.98).
+
+## 2026-11-17: compressed animations and the section group
+
+Commits: `6671d5c89` (compressed animations), `bf8589cea` (section group).
+Method: `h1_disc_compressed_animations_decode` on every map of the Halo 1
+disc; `retail_h2_mode_layouts` on 05a.
+
+Compressed animations: 186 on 24 maps' cinematic graphs (628 graphs in
+all), the pilot, captain, chief, Cortana, marines and others on a10, a30,
+a50, b40, c40, d20 and d40; none on the multiplayer maps. `[+88]` is 0 on
+all 186. 3,031 channels, 17 with no keys.
+
+| Check | Result |
+|---|---|
+| Animations, frames, keys | 186, 31,596, 202,404 |
+| a50's chief `B30HoloMapShort` (compressed) against a30's copy on the b30 graph (uncompressed, same 130 frames and channels) | max 0.0026 rad, translation 1.3e-4 |
+| a10's chief x30 `stand rifle idle` (compressed) against the cyborg's (uncompressed, same 59 frames) | max 0.0028 rad, translation 0 |
+| Converted to `jmad` and decoded by `crates/formats/tags` | max 6.1e-5 rad, translation and scale 0 |
+
+The two uncompressed copies agree to under 0.003 rad, the keyframe
+reduction's own loss. Undriven channels sit at the model's rest pose (same
+node list) for 1,426 of 2,007 undriven rotation channels (within 0.01 rad).
+The pilot's `aye_aye_sir` has 21 rotation statics, 10 rotation channels and
+no scale statics.
+
+Section group: all 181 of 05a's `mode`s have the one section group. Retail
+sets header flag `0x8` on all 181 and `0x4` on 167 (on Coagulation: `0x4`
+on 103 of 121 `mode`s, 17 of the 22 first-person ones; `0x8` on all 121).
+
+V3 and V4 coverage: V3 reads the `jmad` trees of 30 maps, 2,268 graphs. V4
+reads 24 maps, 628 graphs, 186 compressed animations. The disc's vehicle
+graphs (86 on the campaign and multiplayer maps) hold animation types 0 and
+1 only.
