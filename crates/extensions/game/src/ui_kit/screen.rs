@@ -1723,7 +1723,7 @@ mod tests {
             let mut g = guest();
             g.put_u32(STACK + 4, 1);
             let free = s.on_free();
-            let f = move |cx| -> EntryFuture { Box::pin(destructor(cx, DTOR, free.clone())) };
+            let f = move |cx| -> EntryFuture { Box::pin(destructor(cx, DTOR, Some(free.clone()))) };
             let run = testing::run(&f, g, on(SCREEN), |_, _| Regs::default());
             assert_eq!(run.result, Ok(Ret::new(0, 4)));
             assert_eq!(run.calls, expect);

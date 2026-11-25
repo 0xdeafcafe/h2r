@@ -137,7 +137,7 @@ struct Owner {
     focus: Focus,
 }
 
-fn owner(m: &dyn GuestMemory) -> Option<Owner> {
+fn owner(m: &dyn GuestMemory, closing: Option<u32>) -> Option<Owner> {
     let mut receiver = None;
     for slot in [ui_watch::SHARED, 0] {
         for window in 0..6 {
@@ -146,7 +146,7 @@ fn owner(m: &dyn GuestMemory) -> Option<Owner> {
             };
             let screen = m.u32(ch + 8).ok()?;
             let pending = m.u32(ch + 12).ok()?;
-            if screen == 0 && pending == 0 {
+            if pending == 0 && (screen == 0 || closing == Some(screen)) {
                 continue;
             }
             // A pending screen may receive the next input poll.
@@ -197,7 +197,12 @@ fn owner(m: &dyn GuestMemory) -> Option<Owner> {
 }
 
 pub(crate) fn target(m: &dyn GuestMemory) -> Option<Target> {
-    owner(m).map(|o| o.target)
+    owner(m, None).map(|o| o.target)
+}
+
+/// The settled receiver exposed when a kit value picker dismisses its overlay.
+pub(crate) fn target_beneath(m: &dyn GuestMemory, closing: u32) -> Option<Target> {
+    owner(m, Some(closing)).map(|o| o.target)
 }
 
 struct Widget {
@@ -787,7 +792,7 @@ fn screen(
 }
 
 fn inspect(m: &dyn GuestMemory) -> Value {
-    let owner = owner(m);
+    let owner = owner(m, None);
     let mut issues = Vec::new();
     let mut current = Value::Null;
     let mut active = Value::Null;

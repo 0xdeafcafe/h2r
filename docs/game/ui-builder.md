@@ -892,8 +892,9 @@ held to the disc by the disc test). Two classes show it: `kit.picker`
 on `low_level_settings` and `kit.picker.game` on the large dialog with
 the same list, skin and description block; `list_class::open` takes the
 second in a game. A row sets the process-wide `Pick` (title, values,
-held value, description, its setter) and opens `kit.picker`. The
-description is the row's explanation (`Row::explain`), else its
+held value, description, its setter) and opens `kit.picker`. The pane
+claims that offer when it sets its opening focus. The destructor releases
+the offer if it still belongs to this screen. The description is the row's explanation (`Row::explain`), else its
 description. On a settings dialog both come from the doc (a row's
 `explain`, else its `help`), and the kit titles a pick row's picker by
 the row and gives it that text, whatever the binding's pick says
@@ -1223,21 +1224,18 @@ legend the same on both pages), the co-op screens (Start starts or readies, Invi
 the friends list), the account menu, and every screen taking every input
 in every state with its spec still passing the kit's checks.
 
-**Closing.** A closing screen still holds its window, and the input
-dispatcher (`0x147dbe`) gives every press to the first window holding a
-screen, so until the window freed a closing dialog of ours the lobby
-under it took no input. A press on a closing screen of ours
-(`list_class::event_with`, state bit 1) is the screen beneath's
-(`lifecycle::while_closing`): the next screen down its own window's list
-(the value picker's page), else the first screen of the first lower
-window on its slot (Game Setup under a dialog), with a controller in
-common and not closing itself. A press inside `lifecycle::CLOSE_GUARD`
-(50 ms, the opener guard's reading) of the close starting is the
-closing press seen again and is dropped; every later one goes down
-through that screen's own event slot (`lifecycle::hand_down`). The
-tests `lifecycle::tests::the_screen_beneath_is_the_next_down_the_list_then_the_next_window`
+**Closing.** The first occupied window receives the input dispatch.
+When a closing kit screen sees its closing press again within 50 ms,
+`lifecycle::while_closing` consumes it. For a later press, it checks the
+active screen on the same slot, starting with that window and continuing
+underneath the closing screen. A pending replacement or an unsettled
+active screen consumes the press. A settled screen can receive it when
+the channel's focused widget belongs to that screen. The first widget
+on the focus path that accepts the pressing controller receives the event
+through its own slot (`lifecycle::hand_down`). The tests
+`lifecycle::tests::a_closing_dialog_only_forwards_to_the_next_active_widgets`
 and `list_class::tests::a_press_while_a_dialog_closes_goes_to_the_screen_beneath`
-hold it.
+cover this dispatch.
 
 Rules the tables hold:
 

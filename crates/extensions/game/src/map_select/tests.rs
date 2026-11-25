@@ -571,12 +571,13 @@ fn a_folder_return_arms_categories_even_after_the_original_is_freed() {
     let categories = f.opening().unwrap();
     assert_eq!(categories.mode, Mode::Categories);
     assert_eq!(categories.focus, None);
-    f.built(0x1614, categories.mode, None);
+    f.built(0x1614, categories.mode, None, categories.from_setup);
 
-    f.pick(Category::Halo1);
+    f.open(Mode::Maps(Category::Halo1));
     let maps = f.opening().unwrap();
     assert_eq!(maps.mode, Mode::Maps(Category::Halo1));
-    f.built(0x2614, maps.mode, None);
+    f.built(0x2614, maps.mode, None, maps.from_setup);
+    assert!(!f.maps_from_setup(0x2614));
     f.freed(0x1000);
     assert_eq!(f.mode_of(0x1614), None);
     let Some(Mode::Maps(folder)) = f.mode_of(0x2614) else {
@@ -624,7 +625,7 @@ fn snapshots_wait_while_a_select_map_of_ours_is_armed_or_up() {
     f.categories(None);
     assert!(f.snapshot_live().unwrap().contains("to be built"));
     let open = f.opening().unwrap();
-    f.built(0x1614, open.mode, None);
+    f.built(0x1614, open.mode, None, open.from_setup);
     assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
     f.freed(0x1000);
     assert_eq!(f.snapshot_live(), None, "every screen of ours freed");

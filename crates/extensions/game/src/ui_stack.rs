@@ -12,13 +12,10 @@ use crate::layout_glue::ReadGm;
 use crate::map_select::{Mode, SCREEN_LIST};
 use crate::ui_back::{self, Back, GAME_SETUP_ID, Navigation, SCREEN_ID, SELECT_MAP_ID};
 use crate::ui_kit::input::Input;
-use crate::ui_kit::lifecycle::{SCREEN_STATE, focused_row_handle};
+use crate::ui_kit::lifecycle::focused_row_handle;
 use crate::ui_watch::{ACTIVE, PENDING, SHARED, channel};
 
 const OUTGOING: u32 = 0x30;
-const FOCUSED: u32 = 0x34;
-const WIDGET_PARENT: u32 = 0x10;
-const PLAYER_MASK: u32 = 0x8;
 const SCREEN_EVENT_SLOT: u32 = 0x28;
 const HISTORY: u32 = 0x38;
 const HISTORY_SCREEN_ID: u32 = 0x24;
@@ -81,38 +78,6 @@ impl Channel {
     }
 }
 
-/// The first occupied channel in dispatcher order on the shared and
-/// player-one slots. A channel that is transitioning consumes the event.
-fn input_channel(m: &dyn GuestMemory, channels: &[Channel]) -> Option<Channel> {
-    for slot in [SHARED, 0] {
-        let Some(ch) = channels.iter().copied().find(|c| c.slot == slot && c.occupied()) else {
-            continue;
-        };
-        let mut widget = m.u32(ch.address + FOCUSED).ok()?;
-        let mut player_one = false;
-        let mut root = 0;
-        for _ in 0..MAX_LINKS {
-            if widget == 0 {
-                break;
-            }
-            player_one |= m.u16(widget.checked_add(PLAYER_MASK)?).ok()? & 1 != 0;
-            root = widget;
-            widget = m.u32(widget.checked_add(WIDGET_PARENT)?).ok()?;
-        }
-        if widget != 0
-            || root == 0
-            || root != ch.active
-            || m.u8(root.wrapping_add(SCREEN_STATE)).ok()? & 3 != 1
-        {
-            return None;
-        }
-        if player_one {
-            return Some(ch);
-        }
-    }
-    None
-}
-
 fn screen_back(m: &dyn GuestMemory, ch: Channel, id: u32, active: &Value) -> Value {
     let screen = ch.active;
     let parent = &active["parent"];
@@ -132,6 +97,9 @@ fn screen_back(m: &dyn GuestMemory, ch: Channel, id: u32, active: &Value) -> Val
         .and_then(|p| m.u32(p).ok());
     let generic = handler == Some(points::SCREEN_BACK_EVENT.base)
         || handler == Some(points::GAME_SETUP_EVENT.base);
+    if ch.window == crate::ui_kit::dialog_tag::DIALOG_WINDOW && value_picker(active["class"].as_str()) {
+        return json!({"instance": screen, "id": id, "action": "close", "parent": parent});
+    }
     let closes = match ch.window {
         2 | 3 => true,
         5 => !parent.is_null() || m.u8(ch.address + CLOSE_WITHOUT_HISTORY).is_ok_and(|f| f != 0),
@@ -142,6 +110,10 @@ fn screen_back(m: &dyn GuestMemory, ch: Channel, id: u32, active: &Value) -> Val
     } else {
         Value::Null
     }
+}
+
+fn value_picker(class: Option<&str>) -> bool {
+    matches!(class, Some(crate::ui_kit::picker::NAME | crate::ui_kit::picker::GAME_NAME))
 }
 
 fn screen_view(
@@ -157,6 +129,7 @@ fn screen_view(
     let id = m.u32(screen.wrapping_add(SCREEN_ID)).ok();
     let list = screen.wrapping_add(SCREEN_LIST);
     let mode = nav.maps.mode_of(list);
+    let class = m.u32(screen).ok().and_then(crate::list_class::class_name);
     let setup = nav.setup_parent(screen).map(|_| json!({"id": GAME_SETUP_ID})).or_else(|| {
         nav.category_parent(screen).map(|p| json!({"id": ui_back::CATEGORY_ID,
             "parent": p.setup.map(|_| json!({"id": GAME_SETUP_ID}))}))
@@ -164,7 +137,13 @@ fn screen_view(
     let parent = match mode {
         Some(Mode::Pack(_)) => json!({"id": SELECT_MAP_ID, "mode":"maps", "folder":"Mods",
             "parent":{"id": SELECT_MAP_ID, "mode":"folders", "parent":setup}}),
+        Some(Mode::Maps(_)) if nav.maps.maps_from_setup(list) => setup.unwrap_or(Value::Null),
         Some(Mode::Maps(_)) => json!({"id": SELECT_MAP_ID, "mode": "folders", "parent": setup}),
+        _ if value_picker(class) && ch.window == crate::ui_kit::dialog_tag::DIALOG_WINDOW && ch.active == screen => {
+            crate::ui_audit::target_beneath(m, screen)
+                .map(|target| json!({"id":target.id, "class":m.u32(target.screen).ok().and_then(crate::list_class::class_name)}))
+                .unwrap_or(Value::Null)
+        }
         _ => setup.or_else(|| native_parent.map(|id| json!({"id": id}))).unwrap_or(Value::Null),
     };
     let pack_name = mode.and_then(|mode| match mode {
@@ -177,12 +156,17 @@ fn screen_view(
         Some(Mode::Pack(_)) => (Some("pack"), pack_name.as_deref()),
         None => (None, None),
     };
-    let focused_row = (mode.is_some() && screen == ch.active)
+    let variant_list = matches!(id, Some(15 | 208));
+    let category = variant_list.then(|| crate::tweakers::screen_row(m, screen)).flatten();
+    let picker = mode.is_some() || variant_list || matches!(id, Some(60 | 207));
+    let focused_row = (picker && screen == ch.active)
         .then(|| focused_row_handle(m, ch.address, list).map(|handle| handle as u16))
         .flatten();
     json!({
         "id": id,
         "instance": screen,
+        "class": class,
+        "variant_category": category.map(|row| row.label()),
         "mode": mode,
         "folder": folder,
         "focused_row": focused_row,
@@ -195,13 +179,13 @@ fn inspect(m: &dyn GuestMemory, nav: &Navigation) -> Value {
         .flat_map(|slot| (0..6).filter_map(move |window| Channel::read(m, window, slot)))
         .filter(|ch| ch.occupied() || ch.outgoing != 0)
         .collect();
-    let input_channel = input_channel(m, &channels);
+    let target = crate::ui_audit::target(m);
     let mut input = Value::Null;
     let mut back = Value::Null;
     let channels: Vec<_> = channels.into_iter().map(|ch| {
         let history = ch.history(m);
         let active = screen_view(m, nav, ch, ch.active, history.first().copied());
-        if input_channel.is_some_and(|selected| selected.address == ch.address)
+        if target.as_ref().is_some_and(|t| t.screen == ch.active)
             && let Some(id) = m.u32(ch.active.wrapping_add(SCREEN_ID)).ok()
         {
             input = json!({"id": id, "instance": ch.active, "window": ch.window, "slot": ch.slot});
@@ -223,7 +207,10 @@ fn inspect(m: &dyn GuestMemory, nav: &Navigation) -> Value {
 mod tests {
     use super::*;
     use crate::map_select::Category;
-    use crate::ui_kit::lifecycle::{SCREEN_SLOT, SCREEN_WINDOW};
+    use crate::ui_kit::lifecycle::{SCREEN_SLOT, SCREEN_STATE, SCREEN_WINDOW};
+    use crate::list_class::WIDGET_PARENT;
+    const FOCUSED: u32 = 0x34;
+    const PLAYER_MASK: u32 = 8;
     use engine::testing::FakeGuest;
 
     const SCREEN: u32 = 0x10000;
@@ -245,7 +232,7 @@ mod tests {
             .put_u32(VTABLE + SCREEN_EVENT_SLOT, points::SCREEN_BACK_EVENT.base);
         m.set_u32(SCREEN + SCREEN_WINDOW, window).unwrap();
         m.set_u32(SCREEN + SCREEN_SLOT, SHARED).unwrap();
-        m.set_u8(SCREEN + SCREEN_STATE, 1).unwrap();
+        m.set_u8(SCREEN + SCREEN_STATE, 0).unwrap();
         m.set_u16(SCREEN + PLAYER_MASK, 1).unwrap();
         (m, ch)
     }
@@ -254,7 +241,7 @@ mod tests {
     fn maps_report_the_folder_parent_and_back_action() {
         let nav = Navigation::default();
         let (m, _) = focused(3, SELECT_MAP_ID);
-        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Maps(Category::Halo1), None);
+        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Maps(Category::Halo1), None, false);
         let answer = inspect(&m, &nav);
         let map = &answer["channels"][0]["active"];
         assert_eq!(answer["input"]["id"], SELECT_MAP_ID);
@@ -265,19 +252,39 @@ mod tests {
         assert_eq!(answer["back"]["parent"]["mode"], "folders");
         assert_eq!(answer["back"]["action"], "reopen");
 
-        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Pack(17), None);
+        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Maps(Category::Firefight), None, true);
+        let direct = inspect(&m, &nav);
+        assert!(direct["channels"][0]["active"]["parent"].is_null());
+        assert_eq!(direct["back"]["action"], "close");
+
+        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Pack(17), None, false);
         let answer = inspect(&m, &nav);
         assert_eq!(answer["channels"][0]["active"]["mode"], "pack");
         assert_eq!(answer["back"]["action"], "reopen");
         assert_eq!(answer["back"]["parent"]["folder"], "Mods");
         assert_eq!(answer["back"]["parent"]["parent"]["mode"], "folders");
 
-        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Categories, None);
+        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Categories, None, false);
         let answer = inspect(&m, &nav);
         assert_eq!(answer["channels"][0]["active"]["mode"], "folders");
         assert_eq!(answer["channels"][0]["active"]["focused_row"], 2);
         assert_eq!(answer["back"]["action"], "close");
         assert!(answer["back"]["parent"].is_null());
+    }
+
+    #[test]
+    fn a_reused_variant_screen_reports_only_its_current_category() {
+        use crate::community_variants::Row;
+
+        let nav = Navigation::default();
+        let (mut m, _) = focused(3, 208);
+        for row in [Row::Siege, Row::Research, Row::Firefight, Row::PartyGames] {
+            m.put_u32(SCREEN + SCREEN_ID, 208)
+                .put_u8(SCREEN + crate::tweakers::SCREEN_MARK, row.mark());
+            assert_eq!(inspect(&m, &nav)["channels"][0]["active"]["variant_category"], row.label());
+            m.put_u32(SCREEN + SCREEN_ID, ui_back::CATEGORY_ID);
+            assert!(inspect(&m, &nav)["channels"][0]["active"]["variant_category"].is_null());
+        }
     }
 
     #[test]
@@ -289,6 +296,21 @@ mod tests {
         assert_eq!(answer["channels"][0]["history"], json!([19]));
         assert_eq!(answer["back"]["parent"]["id"], 19);
         assert_eq!(answer["back"]["action"], "close");
+    }
+
+    #[test]
+    fn the_value_picker_closes_to_the_underlying_input_owner() {
+        let (mut m, _) = focused(3, GAME_SETUP_ID);
+        let modal = channel(1, SHARED).unwrap();
+        let picker = 0x26000;
+        m.put_u32(modal + ACTIVE, picker).put_u32(modal + FOCUSED, picker)
+            .put_u32(picker + SCREEN_ID, 223).put_u16(picker + PLAYER_MASK, 1);
+        let under = crate::ui_audit::target_beneath(&m, picker).unwrap();
+        assert_eq!(under.screen, SCREEN);
+        let view = json!({"class":crate::ui_kit::picker::NAME, "parent":{"id":under.id}});
+        let back = screen_back(&m, Channel::read(&m, 1, SHARED).unwrap(), 223, &view);
+        assert_eq!(back["action"], "close");
+        assert_eq!(back["parent"]["id"], GAME_SETUP_ID);
     }
 
     #[test]

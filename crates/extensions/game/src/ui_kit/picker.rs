@@ -32,7 +32,8 @@
 //!
 //! **One at a time.** The row being picked for is a process-wide
 //! [`Pick`]: a row sets it as it opens the picker, and both pickers show
-//! it. Only one screen takes input at a time, so one is enough.
+//! it. The pane that takes the offer owns it until it is freed or another
+//! row offers a replacement.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -181,11 +182,18 @@ pub fn title(label: &str) -> String {
         .to_uppercase()
 }
 
-#[cfg(not(test))]
-static PICK: Mutex<Option<Pick>> = Mutex::new(None);
+struct Offer {
+    pick: Option<Pick>,
+    screen: Option<u32>,
+}
+
+const EMPTY: Offer = Offer { pick: None, screen: None };
 
 #[cfg(not(test))]
-fn with_pick<T>(f: impl FnOnce(&mut Option<Pick>) -> T) -> T {
+static PICK: Mutex<Offer> = Mutex::new(EMPTY);
+
+#[cfg(not(test))]
+fn with_offer<T>(f: impl FnOnce(&mut Offer) -> T) -> T {
     f(&mut PICK.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
@@ -193,12 +201,24 @@ fn with_pick<T>(f: impl FnOnce(&mut Option<Pick>) -> T) -> T {
 // so one test's row can't swap another's.
 #[cfg(test)]
 thread_local! {
-    static PICK: Mutex<Option<Pick>> = const { Mutex::new(None) };
+    static PICK: Mutex<Offer> = const { Mutex::new(EMPTY) };
 }
 
 #[cfg(test)]
-fn with_pick<T>(f: impl FnOnce(&mut Option<Pick>) -> T) -> T {
+fn with_offer<T>(f: impl FnOnce(&mut Offer) -> T) -> T {
     PICK.with(|p| f(&mut p.lock().unwrap_or_else(|e| e.into_inner())))
+}
+
+fn with_pick<T>(f: impl FnOnce(&mut Option<Pick>) -> T) -> T {
+    with_offer(|offer| f(&mut offer.pick))
+}
+
+fn freed(screen: u32) {
+    with_offer(|offer| {
+        if offer.screen == Some(screen) {
+            *offer = EMPTY;
+        }
+    });
 }
 
 /// The row's pick, when the picker can show it ([`MIN_CHOICES`] to
@@ -218,7 +238,7 @@ pub(crate) fn offer_list(p: Pick) -> Option<&'static str> {
     if p.values.is_empty() || p.values.len() > i16::MAX as usize {
         return None;
     }
-    with_pick(|held| *held = Some(p));
+    with_offer(|offer| *offer = Offer { pick: Some(p), screen: None });
     Some(NAME)
 }
 
@@ -312,6 +332,7 @@ impl Picker {
             let row = me.opening_focus.swap(u32::MAX, Ordering::SeqCst);
             Box::pin(async move {
                 if row != u32::MAX {
+                    with_offer(|offer| offer.screen = Some(screen));
                     let list = screen.wrapping_add(engine::view::ui::LIST);
                     cx.call(
                         engine::entry::GuestCall::new(crate::list_class::LIST_SET_ROW)
@@ -332,6 +353,10 @@ impl Picker {
             .description(PICKER_HELP_TEXT)
             .action(action)
             .pane_ready(focus)
+            .on_free(Arc::new(|_, screen| {
+                freed(screen);
+                Box::pin(async { Ok(()) })
+            }))
             .action_buttons(&[])
             .footer(footer)
     }
@@ -339,8 +364,9 @@ impl Picker {
     async fn act(&self, cx: &Cx, screen: u32) -> Result<(), EntryError> {
         if self.chosen.swap(false, Ordering::SeqCst) {
             eprintln!("{}: chosen; closing", self.name);
+            let after = current().and_then(|p| p.after);
             crate::ui_kit::dialog_tag::close(cx, screen).await?;
-            if let Some(after) = current().and_then(|p| p.after) {
+            if let Some(after) = after {
                 after(cx.clone(), screen).await?;
             }
         }

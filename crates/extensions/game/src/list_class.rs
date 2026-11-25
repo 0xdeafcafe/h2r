@@ -1274,6 +1274,10 @@ impl Shown {
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<ShownEntry>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
+    fn forget(&self, screen: u32) {
+        self.lock().retain(|entry| entry.screen != screen);
+    }
+
     /// Screen `screen`'s description widget is `widget`, showing nothing.
     pub fn set_widget(&self, screen: u32, widget: u32) {
         let mut v = self.lock();
@@ -1440,6 +1444,12 @@ pub fn loader_of(screen: &str) -> Option<u32> {
         .unwrap_or_else(|e| e.into_inner())
         .get(screen)
         .map(|&(loader, _)| loader)
+}
+
+/// A kit screen can replace Game Setup on its single-screen lobby channel.
+pub(crate) fn owns_loader(vtable: u32, loader: u32) -> bool {
+    vtable != 0 && LOADERS.lock().unwrap_or_else(|e| e.into_inner())
+        .values().any(|&entry| entry == (loader, vtable))
 }
 
 /// The runtime class of a screen, even when its retail base id is shared.
@@ -2313,7 +2323,8 @@ pub async fn event_with(
     let ev = cx.arg(0)?;
     let now = std::time::Instant::now();
     // A screen whose state can't be read is taken as not closing.
-    match cx.read(|m| lifecycle::while_closing(m, screen, now)).unwrap_or(None) {
+    let closing = cx.read(|m| lifecycle::while_closing(m, screen, now, m.u32(ev + 4)?));
+    match closing.unwrap_or(None) {
         Some(Some(to)) => {
             let eax = lifecycle::hand_down(&cx, to, ev).await?;
             return Ok(Ret::new(eax, 4));
@@ -2401,16 +2412,17 @@ pub async fn focused_row(cx: &Cx, screen: u32) -> Result<Option<i16>, EntryError
     Ok((focused != u32::MAX).then(|| DatumHandle(focused).index() as i16))
 }
 
-/// Screen slot 0 of a class told of frees: the Controls destructor
-/// (`original`), then `on_free` with the screen. Thiscall, flags, `ret 4`.
-pub async fn destructor(cx: Cx, original: u32, on_free: OnFree) -> Result<Ret, EntryError> {
+/// Run the Controls destructor and then any action waiting for this instance.
+pub async fn destructor(cx: Cx, original: u32, on_free: Option<OnFree>) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let flags = cx.arg(0)?;
     let r = cx
         .call(GuestCall::new(original).ecx(screen).args([flags]))
         .await?;
     crate::skulls_model::forget(screen);
-    on_free(cx.clone(), screen).await?;
+    if let Some(on_free) = on_free {
+        on_free(cx, screen).await?;
+    }
     Ok(Ret::new(r.eax, 4))
 }
 
@@ -2896,17 +2908,25 @@ impl hooks::Feature for ListClass {
         } else {
             0
         };
-        let destructor_at = match self.on_free.clone() {
-            Some(on_free) => b.entry("destructor", move |cx| -> EntryFuture {
-                let on_free = Arc::clone(&on_free);
+        let destructor_at = if event_at == 0 && shown.is_none() && self.on_free.is_none() {
+            0
+        } else {
+            let shown = shown.clone();
+            let on_free = self.on_free.clone();
+            b.entry("destructor", move |cx| -> EntryFuture {
+                let screen = cx.entry().ecx;
+                crate::ui_kit::lifecycle::forget_closing(screen);
+                if let Some(shown) = &shown {
+                    shown.forget(screen);
+                }
+                let on_free = on_free.clone();
                 Box::pin(async move {
                     let original = cx.read(|m| {
                         ui::slot(m, CONTROLS_SCREEN_VTABLE.base, SCREEN_DESTRUCTOR_SLOT)
                     })?;
                     destructor(cx, original, on_free).await
                 })
-            })?,
-            None => 0,
+            })?
         };
 
         let description = description_block
@@ -3107,6 +3127,24 @@ mod tests {
         );
         assert_eq!(press_open("test-open-missing", 0), [], "not ours");
         assert_eq!(press_open("test-open-target", 4), [], "no local player");
+    }
+
+    #[test]
+    fn freeing_one_page_forgets_only_its_widgets() {
+        let shown = Shown::default();
+        for screen in [SCREEN, SCREEN + 0x1000] {
+            shown.set_widget(screen, screen + 0x100);
+            shown.set_picture(screen, screen + 0x200, 7);
+            shown.set_panel(screen, vec![screen + 0x300]);
+        }
+        shown.forget(SCREEN);
+        assert_eq!(shown.widget(SCREEN), None);
+        assert_eq!(shown.picture(SCREEN), None);
+        assert!(shown.panel(SCREEN).is_empty());
+        let sibling = SCREEN + 0x1000;
+        assert_eq!(shown.widget(sibling), Some(sibling + 0x100));
+        assert_eq!(shown.picture(sibling), Some(sibling + 0x200));
+        assert_eq!(shown.panel(sibling), vec![sibling + 0x300]);
     }
 
     #[test]
@@ -4696,7 +4734,7 @@ mod tests {
     }
 
     #[test]
-    fn a_class_with_a_description_places_the_same_entries() {
+    fn a_class_with_a_description_installs_the_widget_cleanup() {
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
         let class = ListClass::with_rows("described", "described", Arc::new(Described))
             .description(TextBlock {
@@ -4707,7 +4745,8 @@ mod tests {
             });
         r.add(&class).unwrap();
         let plan = r.build(&hooks::Base).unwrap();
-        assert_eq!(plan.entries.len(), 6);
+        assert_eq!(plan.entries.len(), 7);
+        assert!(plan.text().contains("entry described:destructor"));
         assert_eq!(class.loader(), plan.entries[0].addr);
     }
 
@@ -5620,7 +5659,7 @@ mod tests {
                 Box::pin(async { Ok(()) })
             })
         };
-        let f = move |cx| -> EntryFuture { Box::pin(destructor(cx, 0x1234, Arc::clone(&on_free))) };
+        let f = move |cx| -> EntryFuture { Box::pin(destructor(cx, 0x1234, Some(Arc::clone(&on_free)))) };
         let regs = Regs {
             esp: STACK,
             ecx: SCREEN,

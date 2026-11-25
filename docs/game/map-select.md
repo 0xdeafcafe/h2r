@@ -152,7 +152,9 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   and its category, then arms a maps list for it. It pushes a second
   Select Map on the pressing screen's own window and slot. Window 3 has
   one active dialog and disposes of the categories when the maps take
-  over. The maps screen carries the selected category's identity.
+  over. At push the maps screen inherits the Game Setup return before the
+  window frees the folders. It records whether its opener was Game Setup
+  or a folder, so another lobby mode cannot change its Back target.
 - **B or Back on a category's maps** (`SCREEN_BACK_EVENT`) queues Select
   Map in categories mode with request bit 0 set. The push hook resolves
   the opened category's representative map ID to a row handle in the
