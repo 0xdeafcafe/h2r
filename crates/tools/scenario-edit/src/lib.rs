@@ -18,6 +18,11 @@
 //!   and picking, and an offscreen wgpu viewport (no UI toolkit).
 //! - [`scene`]: the map's art for the viewport: the BSP textured with each
 //!   shader's base map, and the placed objects' render models.
+//! - [`marker_view`]: the game type markers of the open map (spawns, goals,
+//!   hills, item spawners, trigger volumes) as the shared `game_markers`
+//!   shapes, placed and split into the layers' overlays.
+//! - [`area_edit`]: the handles of a marker's area, and the area a drag of
+//!   one makes.
 //! - [`volumes`]: the trigger volumes, kill triggers and BSP switches as
 //!   oriented boxes to draw, pick and edit (BSP switches read only), kept
 //!   as the editor's own block list beside [`layout`].
@@ -36,6 +41,7 @@
 //! docs/editor/scenario-editor.md §6. No game data is in this crate or its tests.
 #![forbid(unsafe_code)]
 
+pub mod area_edit;
 pub mod collision_view;
 pub mod edit;
 /// An invented cache for tests and the editor's screenshots.
@@ -44,6 +50,7 @@ pub mod fixture;
 pub mod geometry;
 pub mod layers;
 pub mod layout;
+pub mod marker_view;
 pub mod native_view;
 pub mod nav_view;
 pub mod object_collision;
@@ -57,17 +64,26 @@ pub mod scene;
 pub mod session;
 pub mod volumes;
 #[cfg(test)]
+mod area_tests;
+#[cfg(test)]
+mod data_tests;
+#[cfg(test)]
+mod ground_tests;
+#[cfg(test)]
 mod tests;
 
 pub use edit::{Command, History, SetField};
 pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
 pub use save::MapSource;
+pub use scenario::ground::{FlagLabel, LABEL_FLAG_TYPE, LabelKind, SOLID_BLOCKS};
 pub use scenario::{
     BspPatch, Changes, GeometryChanges, GeometryGrown, Grown, MovedRaw, RawAppend, RawPatch,
     Removed, Scenario, TagGrown, TagMove, TagRef, Value, VolumeRemoved,
 };
-pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
+pub use session::{
+    AreaFrom, DATA_GROWTH_REFUSAL, GROWTH_REFUSAL, Reference, RotationField, Session, Transform,
+};
 
 /// Why an edit, read or save was refused.
 #[derive(Debug, thiserror::Error)]

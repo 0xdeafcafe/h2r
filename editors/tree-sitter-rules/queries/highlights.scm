@@ -70,13 +70,10 @@
 (option_declaration
   name: (identifier) @constant)
 
-(carrier_declaration
+(type_declaration
   name: (identifier) @constant)
 
-(list_declaration
-  name: (identifier) @constant)
-
-(scoring_declaration
+(uses_declaration
   name: (identifier) @constant)
 
 (quick_declaration
@@ -101,10 +98,11 @@
 
 [
   "rules"
-  "carrier"
+  "type"
   "teams"
-  "list"
-  "scoring"
+  "uses"
+  "use"
+  "points"
   "about"
   "quick"
   "settings"

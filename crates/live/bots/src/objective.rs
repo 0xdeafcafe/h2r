@@ -101,14 +101,23 @@ pub struct Spot {
     pub position: Vec3,
 }
 
-/// The hill: its corners, in the scenario's order.
+/// The hill: its corners, in the scenario's order, or the area of its one
+/// flag (docs/game/gametype-markers.md, "In a script"): the zone a rules
+/// script scores.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Hill {
     pub corners: Vec<Vec3>,
+    /// The area round the hill's flag, the flag's place, when the hill is
+    /// shaped as one: it then decides [`Hill::contains`], [`Hill::center`]
+    /// and [`Hill::radius`].
+    pub area: Option<(Vec3, game_markers::Area)>,
 }
 
 impl Hill {
     pub fn center(&self) -> Vec3 {
+        if let Some((at, area)) = &self.area {
+            return area.middle(*at);
+        }
         let n = self.corners.len().max(1) as f32;
         let mut c = [0.0; 3];
         for p in &self.corners {
@@ -121,12 +130,24 @@ impl Hill {
     /// The corners' mean distance from the centre (XY).
     pub fn radius(&self) -> f32 {
         let c = self.center();
+        if let Some((at, area)) = &self.area {
+            let outline = area.outline();
+            let n = outline.len().max(1) as f32;
+            return outline
+                .iter()
+                .map(|o| dist_xy([at[0] + o[0], at[1] + o[1], c[2]], c))
+                .sum::<f32>()
+                / n;
+        }
         let n = self.corners.len().max(1) as f32;
         self.corners.iter().map(|p| dist_xy(*p, c)).sum::<f32>() / n
     }
     /// Whether `p` stands in the hill: inside the corners (taken round
     /// the centre by angle) and within [`HILL_HEIGHT`] of it.
     pub fn contains(&self, p: Vec3) -> bool {
+        if let Some((at, area)) = &self.area {
+            return area.contains(*at, p);
+        }
         if self.corners.len() < 3 {
             return false;
         }
@@ -153,6 +174,21 @@ impl Hill {
         }
         inside
     }
+}
+
+/// The areas of the scenario's netgame flags, by flag index, as the host's
+/// census has them (`game::rules::world::zones`): the document's data,
+/// which no guest memory holds.
+static FLAG_AREAS: std::sync::Mutex<Vec<(u32, game_markers::Area)>> = std::sync::Mutex::new(Vec::new());
+
+/// Sets the flag areas the bots read a rules script's hill from: the host
+/// sets them with the census when a game starts, and they replace the last.
+pub fn set_flag_areas(areas: Vec<(u32, game_markers::Area)>) {
+    *FLAG_AREAS.lock().unwrap_or_else(|e| e.into_inner()) = areas;
+}
+
+fn flag_areas() -> Vec<(u32, game_markers::Area)> {
+    FLAG_AREAS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// How far above or below a hill's centre still counts as in it.
@@ -403,13 +439,16 @@ fn read_hill(m: &dyn GuestMemory, flags: &[(Vec3, u16, u16)], out: &mut Objectiv
     if k == 0 {
         // No King globals (a rules script): the first hill's corners, and
         // who stands in it judged by them.
-        out.hill = zones::first_hill(flags);
+        out.hill = zones::first_hill(flags, &flag_areas());
         return Ok(());
     }
     out.state = State::Hill {
         occupants: m.u16(k + engine::objectives::HILL_OCCUPANTS)?,
     };
-    out.hill = engine::objectives::hill_corners(m, k, flags)?.map(|(_, corners)| Hill { corners });
+    out.hill = engine::objectives::hill_corners(m, k, flags)?.map(|(_, corners)| Hill {
+        corners,
+        area: None,
+    });
     Ok(())
 }
 

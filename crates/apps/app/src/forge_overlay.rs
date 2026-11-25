@@ -1,23 +1,16 @@
-//! The Forge page shown over the world and the desktop input it consumes.
+//! The desktop input the Forge session consumes. The window draws no Forge
+//! page: the monitor HUD and the Forge screens are the game's
+//! (docs/game/forge-firefight-ui.md).
 
 use std::sync::Arc;
 
-use crate::theater_overlay::Page;
 use input::forge::Key;
 
-pub struct Frame {
-    pub page: Arc<Page>,
-    pub modal: bool,
-}
-
 pub trait Controller: Send + Sync {
-    fn frame(&self) -> Option<Frame>;
     fn key(&self, key: Key, down: bool, repeat: bool) -> bool;
     fn release_keys(&self);
     fn mouse_look(&self, dx: f32, dy: f32) -> bool;
     fn mouse_button(&self, left: bool, down: bool) -> bool;
-    /// Page pixels relative to the last frame drawn in the viewport.
-    fn click(&self, x: i32, y: i32);
 }
 
 #[derive(Clone)]
@@ -52,6 +45,7 @@ pub(crate) fn key(code: winit::keyboard::KeyCode, command: bool, shift: bool) ->
         K::KeyF => Key::Objects,
         K::KeyT => Key::Tools,
         K::KeyG => Key::Settings,
+        K::KeyH => Key::Overlays,
         K::Delete => Key::Delete,
         K::Escape => Key::Back,
         K::Enter | K::NumpadEnter | K::Space => Key::Accept,
@@ -73,6 +67,7 @@ mod tests {
         assert_eq!(key(KeyCode::KeyZ, true, true), Some(Key::Redo));
         assert_eq!(key(KeyCode::KeyF, false, false), Some(Key::Objects));
         assert_eq!(key(KeyCode::KeyT, false, false), Some(Key::Tools));
+        assert_eq!(key(KeyCode::KeyH, false, false), Some(Key::Overlays));
         assert_eq!(key(KeyCode::ShiftLeft, false, false), Some(Key::Thrust));
         assert_eq!(key(KeyCode::Escape, false, false), Some(Key::Back));
     }

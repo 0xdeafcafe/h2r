@@ -33,7 +33,7 @@ fn prefix(h: &Sha256) -> [u8; 8] {
 /// A Slayer script of its own, scoring `k` a kill.
 fn ir(k: u32) -> Vec<u8> {
     let src = format!(
-        "rules \"Score {k}\" 1\ncarrier slayer\n\non kill(victim, killer) {{ if killer != none {{ score(killer, {k}) }} }}\n"
+        "rules \"Score {k}\" 1\ntype slayer\n\non kill(victim, killer) {{ if killer != none {{ score(killer, {k}) }} }}\n"
     );
     ::rules::compile(&src).unwrap().encode()
 }
@@ -177,6 +177,44 @@ fn saved_variants_port_once_and_the_saves_are_left_alone() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn newly_created_and_legacy_script_saves_keep_their_settings_through_port_and_reopen() {
+    use variants::save::{CONTENT_TYPES, XbeNames};
+    let root = tmp("script-save");
+    let names = XbeNames {
+        file_names: (0..CONTENT_TYPES).map(|i| format!("type{i}")).collect(),
+        labels: (0..CONTENT_TYPES).map(|i| format!("Label {i}")).collect(),
+    };
+    let saves = SaveStore::new(root.join("saves"), Some(names));
+    let ir = ::rules::compile(::rules::builtin::SLAYER).unwrap();
+    let options = [("kill_points".into(), ::rules::ir::OptionValue::Int(3))];
+    let mut made = variants::portable::record_for_named(&ir, "My rules", &options).unwrap();
+    assert_eq!(made.game_type(), GameType::Script);
+    made.set(SettingId(2), 35).unwrap();
+    made.set_ext(&variants::ext::Ext { gravity: 75, ..made.ext() }).unwrap();
+    saves.create(&made).unwrap();
+
+    let mut legacy = GameVariant::stock(GameType::Slayer).unwrap();
+    legacy.set_name("Old rules").unwrap();
+    legacy.set_ext(&made.ext()).unwrap();
+    saves.create(&legacy).unwrap();
+
+    let store_root = root.join("game-variants");
+    let (mut store, _) = Store::open(&store_root);
+    let report = port::port_saves(&mut store, &saves, &PortScript::Builtin);
+    assert_eq!(report.ported, 2, "{report:?}");
+    let (reopened, lines) = Store::open(&store_root);
+    assert!(lines.is_empty(), "{lines:?}");
+    for saved in [&made, &legacy] {
+        let entry = reopened.entries().iter().find(|e| e.bundle.name == saved.name()).unwrap();
+        assert_eq!(entry.bundle.engine, saved.game_type().engine());
+        assert_eq!(entry.bundle.game_type, ir.header.game_type.row().label);
+        assert_eq!(entry.record, *saved.bytes());
+        assert_eq!(entry.bundle.ir().unwrap(), Some(ir.encode()));
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Sparse little-endian memory; unwritten bytes read as missing.
 #[derive(Default)]
 struct Fake(HashMap<u32, u8>);
@@ -318,6 +356,40 @@ fn the_merged_block_holds_retail_community_and_store_entries() {
     m.wr(rec, other.bytes());
     assert_eq!(inject::apply_block(&mut m, OPTIONS), None);
 
+    // Both records share a goof loader. Their menu names still select
+    // distinct records, even when the name fills the UTF-16 field.
+    let long = "Long shared store variant name!";
+    let src = format!("rules \"{long}\" 1\ntype slayer\nuses slayer\nsettings {{ score_limit = 10 }}\n");
+    let ir = ::rules::compile(&src).unwrap();
+    let source = variants::portable::from_script(&ir, None, &[]).unwrap();
+    let script = source.variant().unwrap();
+    assert_eq!(script.game_type(), GameType::Script);
+    let retail = Bundle::new(&record(long, 10), long, "", None).unwrap();
+    let mut both = Store::in_memory();
+    both.add(Origin::Imported, retail).unwrap();
+    both.add(Origin::Imported, variants::portable::read(&source.canonical()).unwrap()).unwrap();
+    let (rows, omitted) = inject::entries(&both, &offered, 2);
+    assert!(omitted.is_empty(), "{omitted:?}");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].list_type, rows[1].list_type);
+    let display = inject::text(rows[1].name_id).unwrap();
+    assert!(display.ends_with(&format!(" 2 {}", inject::ICON)));
+    let mut template = GameVariant::stock(GameType::Slayer).unwrap();
+    template.set_name(&display).unwrap();
+    template.set(SettingId(2), 10).unwrap();
+    let mut mem = engine::memory::FlatMemory::new(0, variants::record::RECORD_SIZE);
+    engine::GuestMemory::write(&mut mem, 0, template.bytes()).unwrap();
+    assert!(inject::restore_listed(&mut mem, 0).unwrap());
+    assert!(!inject::restore_listed(&mut mem, 0).unwrap());
+    let mut restored = template.to_bytes();
+    engine::GuestMemory::read(&mem, 0, &mut restored).unwrap();
+    assert!(restored[variants::record::TYPE_AREA].iter().all(|&b| b == 0));
+    let restored = GameVariant::from_bytes(&restored).unwrap();
+    assert_eq!(restored.game_type(), GameType::Script);
+    assert_eq!(restored.ext_block(), script.ext_block());
+    assert_eq!(restored.get(SettingId(2)), Some(10));
+    assert_eq!(restored.name(), display);
+
     // 101 built-ins at most: the store's past it are left out.
     let names: Vec<String> = (0..60).map(|i| format!("V{i}")).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -419,5 +491,60 @@ fn the_live_refresh_saves_each_variant_with_its_script() {
     // Offline: the store keeps what it had.
     super::refresh_from(&s, |_| Err(FetchError::Offline), |_, _| Err(FetchError::NotFound));
     assert_eq!(s.lock().unwrap().entries().len(), 2);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_kept_game_variant_takes_its_map_suggestions_and_writes_them_to_its_file() {
+    use super::suggest;
+    use forge::files::variants::{Source, Suggestable};
+    let castle = Suggestable {
+        source: Source::Saved,
+        map: "fixture".into(),
+        file: "Castle".into(),
+        name: "Castle".into(),
+        base: Sha256::of(b"base"),
+        id: Sha256::of(b"castle"),
+    };
+    let tower = Suggestable {
+        name: "Tower".into(),
+        file: "Tower".into(),
+        id: Sha256::of(b"tower"),
+        ..castle.clone()
+    };
+    let choices = [castle.clone(), tower.clone()];
+    let ids = |list: &[&Suggestable]| list.iter().map(|c| c.id.to_string()).collect::<Vec<_>>();
+    // A pick is the suggestions, in the order picked; an unknown id or too
+    // many is refused by name.
+    let picked = suggest::suggestions(&choices, &ids(&[&tower, &castle])).unwrap();
+    assert_eq!(picked.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Tower", "Castle"]);
+    assert_eq!(picked[0].base, castle.base.to_string());
+    assert!(suggest::suggestions(&choices, &["0".repeat(64)]).unwrap_err().contains("no map variant"));
+    assert!(suggest::suggestions(&choices, &vec![castle.id.to_string(); 9]).unwrap_err().contains("at most 8"));
+
+    let root = tmp("suggest");
+    let a = bundle("Imported", 10, None);
+    std::fs::write(root.join("a.h2variant"), a.canonical()).unwrap();
+    std::fs::create_dir_all(root.join("live")).unwrap();
+    let from_live = bundle("From Live", 20, None);
+    std::fs::write(root.join("live/l.h2variant"), from_live.canonical()).unwrap();
+    let (mut s, lines) = Store::open(&root);
+    assert_eq!(s.entries().len(), 2, "{lines:?}");
+    let new = s.set_maps(&a.id(), picked.clone()).unwrap();
+    assert_ne!(new, a.id());
+    // The entry and its own file hold the suggestions, the record untouched.
+    let entry = s.entries().iter().find(|e| e.bundle.id() == new).unwrap();
+    assert_eq!(entry.bundle.maps, picked);
+    assert_eq!(entry.bundle.record_hex, a.record_hex);
+    let (again, _) = Store::open(&root);
+    let back = again.entries().iter().find(|e| e.bundle.id() == new).unwrap();
+    assert_eq!(back.bundle.maps, picked);
+    assert_eq!(again.entries().len(), 2, "the file was rewritten, not copied");
+    // The same suggestions again change nothing; none clears them.
+    assert_eq!(s.set_maps(&new, picked.clone()).unwrap(), new);
+    assert_eq!(s.set_maps(&new, Vec::new()).unwrap(), a.id());
+    // A Live variant and an id not kept are refused by name.
+    assert!(s.set_maps(&from_live.id(), picked.clone()).unwrap_err().contains("Live variant"));
+    assert!(s.set_maps(&"0".repeat(64), picked).unwrap_err().contains("kept here"));
     let _ = std::fs::remove_dir_all(&root);
 }

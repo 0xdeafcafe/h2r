@@ -38,11 +38,26 @@ pub fn of(e: &Entry) -> Option<Sig> {
         id::CARRIER_OF | id::PLAYER_OF => given(&[O], Some(P_)),
         id::OBJECT_TEAM => given(&[O], Some(T_)),
         id::END_ROUND | id::FF_TEAM_FINISH => given(&[T_], None),
+        id::FF_LIVES => given(&[P_, Type::Int], None),
         id::REGISTER_OBJECTIVE => given(&[O, T_], None),
         id::SPAWN_OBJECTIVE => given(&[Type::TAG, O, T_], None),
         id::SET_LOADOUT => given(&[P, W_, W_], None),
         id::GIVE => given(&[P, W], None),
         id::SPAWN_AREAS => given(&[T, Type::Set(SetKind::Spawns), Type::Int], None),
+        id::SPAWN_NEAR => given(&[T, Type::H(Handle::Zone, true), Type::Int], None),
+        // A `vec` is three registers in the IR (`Type::width`). The `at` of
+        // `teleport` and `move_to` may also be an object, which the checker
+        // and the lowering turn into its position.
+        id::TELEPORT => given(&[O, Type::Vec], None),
+        id::MOVE_TO => given(&[O, Type::Vec, Type::Time], None),
+        id::SHOW_AREA => given(&[Z, T_], None),
+        id::SOUND_AT => given(&[Type::SOUND, O], None),
+        id::SOUND_TO => given(&[Type::SOUND, P], None),
+        id::SOUND_TO_TEAM => given(&[Type::SOUND, T], None),
+        id::SOUND_TO_ALL | id::MUSIC => given(&[Type::SOUND], None),
+        id::HIDE_AREA => given(&[Z], None),
+        id::SET_BODY => given(&[T, Type::H(Handle::Tag, true)], None),
+        id::FLY => given(&[O, Type::Set(SetKind::Paths), Type::Time], None),
         id::PLACE_SQUAD => given(&[Type::Squad, Type::Class, Type::Int, Type::Set(SetKind::Objects)], None),
         _ => {
             let mut args = Vec::with_capacity(e.args.len());
@@ -63,11 +78,15 @@ pub fn of(e: &Entry) -> Option<Sig> {
 pub fn event_args(ev: Event) -> &'static [Type] {
     match ev {
         Event::Kill => &[P, P_],
-        Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced => &[P],
+        Event::Spawn | Event::Death | Event::Join | Event::Quit | Event::Bounced | Event::Grounded => &[P],
         Event::Pickup | Event::Drop | Event::Press | Event::Edit => &[P, O],
         Event::Bounce => &[P, Z, Type::Int, Type::Bool],
         Event::Enter | Event::Leave => &[Z, O],
+        Event::Arrive => &[O],
         Event::SquadDead => &[Type::Squad],
+        Event::Damage => &[O, P_, Type::Fixed],
+        Event::Touchdown => &[P, Type::Fixed, Type::Fixed],
+        Event::Launch => &[P, Type::H(Handle::Zone, true), Type::Fixed],
         Event::ActorKill => &[P_, Type::Class],
         Event::ActorAssist => &[P_, P_, Type::Class],
         Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
@@ -99,7 +118,11 @@ mod tests {
                 assert_eq!(e.id, id::LABEL_OF, "{}", e.name);
                 continue;
             };
-            let args: Vec<_> = sig.args.iter().map(|t| t.ir()).collect();
+            let args: Vec<_> = sig
+                .args
+                .iter()
+                .flat_map(|t| std::iter::repeat_n(t.ir(), t.width()))
+                .collect();
             assert_eq!(args, e.args, "{}", e.name);
             assert_eq!(sig.result.map(|t| t.ir()), e.result, "{}", e.name);
         }

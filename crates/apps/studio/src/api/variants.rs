@@ -28,6 +28,32 @@ fn need_open(app: &mut App) -> Result<(), RpcError> {
     }
 }
 
+/// This machine's map variants a game variant may suggest
+/// (`forge::files::variants::suggestable` under the data root).
+fn suggestable(app: &App) -> Result<Vec<forge::files::variants::Suggestable>, RpcError> {
+    forge::files::variants::suggestable(&app.data_root()).map_err(|e| err(code::FAILED, e.to_string()))
+}
+
+/// The suggestions for map variant `ids` (document ids), in the order
+/// given: each must be on this machine, or the id is refused by name.
+fn suggestions(app: &App, ids: &[String]) -> Result<Vec<variants::portable::MapSuggestion>, RpcError> {
+    let list = suggestable(app)?;
+    ids.iter()
+        .map(|id| {
+            list.iter()
+                .find(|s| s.id.to_string() == *id)
+                .map(|s| variants::portable::MapSuggestion {
+                    base: s.base.to_string(),
+                    variant: s.id.to_string(),
+                    name: s.name.clone(),
+                })
+                .ok_or_else(|| {
+                    err(code::INVALID_PARAMS, format!("no map variant {id} on this machine (variant.maps lists them)"))
+                })
+        })
+        .collect()
+}
+
 fn origin(o: Option<&Origin>) -> Value {
     match o {
         Some(Origin::Builtin(i)) => json!({ "builtin": i }),
@@ -242,8 +268,41 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 std::fs::create_dir_all(dir)
                     .map_err(|e| err(code::FAILED, format!("{}: {e}", dir.display())))?;
             }
-            run(app, Action::ExportVariant(path.clone()))?;
-            Ok(json!({ "path": path.display().to_string() }))
+            let ids: Vec<String> = match p.0.get("maps") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|v| v.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| err(code::INVALID_PARAMS, "maps takes variant ids (strings)"))?,
+                Some(_) => return Err(err(code::INVALID_PARAMS, "maps takes a list of variant ids")),
+            };
+            let maps = if ids.is_empty() {
+                Vec::new()
+            } else {
+                suggestions(app, &ids)?
+            };
+            let n = maps.len();
+            let action = if maps.is_empty() {
+                Action::ExportVariant(path.clone())
+            } else {
+                Action::ExportVariantWith(path.clone(), maps)
+            };
+            run(app, action)?;
+            Ok(json!({ "path": path.display().to_string(), "maps": n }))
+        }
+        m::VARIANT_MAPS => {
+            let list = suggestable(app)?;
+            Ok(json!({ "maps": list.iter().map(|s| json!({
+                "map": s.map,
+                "name": s.name,
+                "base": s.base.to_string(),
+                "variant": s.id.to_string(),
+                "source": match s.source {
+                    forge::files::variants::Source::Saved => "saved",
+                    forge::files::variants::Source::Live => "live",
+                },
+            })).collect::<Vec<_>>() }))
         }
         m::VARIANT_IMPORT => {
             let action = match (p.opt_str("path")?, p.opt_str("text")?) {

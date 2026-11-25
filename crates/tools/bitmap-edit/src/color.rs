@@ -38,8 +38,9 @@ pub fn to_srgb(l: f32) -> u8 {
 }
 
 /// Which of the four channels a tool writes: alpha is often a mask, so
-/// channels paint apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// channels paint apart. In JSON the letters, as [`Channels::parse`] and
+/// [`Channels::name`] read and write them (`"rgb"`, `"a"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channels {
     pub r: bool,
     pub g: bool,
@@ -109,6 +110,21 @@ impl Channels {
 impl Default for Channels {
     fn default() -> Self {
         Channels::ALL
+    }
+}
+
+impl Serialize for Channels {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for Channels {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Channels::parse(&s).ok_or_else(|| {
+            <D::Error as serde::de::Error>::invalid_value(serde::de::Unexpected::Str(&s), &"letters of rgba")
+        })
     }
 }
 

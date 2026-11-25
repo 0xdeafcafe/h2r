@@ -16,6 +16,8 @@ mod ranges;
 pub(crate) use ranges::{WebIndexCache, WebRanges, read_film};
 mod upload;
 pub(crate) use upload::{cleanup_published, upload_host_film};
+#[cfg(test)]
+pub(crate) use upload::film_file::tests::build as test_film_file;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
@@ -51,7 +53,7 @@ const CLIP_DELETED: &str = "ClipDeleted";
 const HOST_FILM_STORED: &str = "HostFilmStored";
 const HOST_FILM_CLEANED: &str = "HostFilmCleaned";
 const HOST_FILM_CLEANUP_REQUESTED: &str = "HostFilmCleanupRequested";
-pub(crate) const KINDS: [&str; 17] = [
+pub(crate) const KINDS: [&str; 18] = [
     shared::PURGED,
     shared::REMOVED,
     shared::RESERVED,
@@ -69,6 +71,7 @@ pub(crate) const KINDS: [&str; 17] = [
     legacy::QUEUED,
     legacy::FINISHED,
     HOST_FILM_CLEANUP_REQUESTED,
+    upload::film_file::STORED,
 ];
 pub(crate) const HOST_FILM_PREFIX: &str = "films/";
 
@@ -159,6 +162,8 @@ pub(crate) struct Films {
     removed: HashMap<Xuid, BTreeSet<String>>,
     shared: BTreeMap<String, shared::Share>,
     downloads: HashMap<String, (u64, String)>,
+    /// The film file a Live game's host sent beside its stats stream.
+    film_files: HashMap<String, upload::film_file::FilmFile>,
     standalone: HashMap<String, Standalone>,
     standalone_order: BTreeMap<u64, String>,
     // Signed per-game journal versions survive both successful publication and
@@ -325,6 +330,13 @@ pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
             {
                 films.standalone_order.insert(event.position, id.to_owned());
                 films.standalone.insert(id.to_owned(), entry);
+            }
+        }
+        upload::film_file::STORED => {
+            if let Some(id) = event.body.data["game"].as_str()
+                && let Ok(file) = serde_json::from_value(event.body.data["file"].clone())
+            {
+                films.film_files.entry(id.to_owned()).or_insert(file);
             }
         }
         HOST_FILM_CLEANED | HOST_FILM_CLEANUP_REQUESTED => {
@@ -713,25 +725,75 @@ pub(crate) fn host_film_key(id: &str) -> String {
     format!("{HOST_FILM_PREFIX}{id}.h2film")
 }
 
-/// Exact playback includes private machine and network state. A catalogue
-/// reservation can list the film before a real start establishes who played.
-async fn download_host_film(live: &Live, headers: &HeaderMap, id: &str) -> ApiResult<Response> {
+/// Which object of a host game a download names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostPart {
+    Film,
+    Stats,
+}
+
+/// One stored object of a host game, with its size and digest when the
+/// receipt has them.
+pub(crate) struct HostObject {
+    pub key: String,
+    pub receipt: Option<(u64, String)>,
+}
+
+/// A download of a host game: the film file the host sent beside its stats
+/// stream, or, for the film when there is none, the container that holds
+/// both. A film file with no machine part goes to any signed-in account
+/// that can see the game. The container, which holds private machine and
+/// network state, and a film file that still has a machine part go only to
+/// the game's players. A catalogue reservation can list the film before a
+/// real start establishes who played.
+pub(crate) fn host_object(
+    model: &Model,
+    id: &str,
+    viewer: Viewer,
+    player: Xuid,
+    part: HostPart,
+) -> ApiResult<HostObject> {
+    let none = || not_found("no host film for this account");
+    let Some(Source::Game(g)) = visible_game(model, id, viewer) else {
+        return Err(none());
+    };
+    let played = g.xuids.contains(&player);
+    if part == HostPart::Film
+        && let Some(file) = model.films.film_files.get(id)
+    {
+        if file.machine && !played {
+            return Err(none());
+        }
+        return Ok(HostObject {
+            key: file.blob.clone(),
+            receipt: Some((file.size, file.sha256.clone())),
+        });
+    }
+    if !g.has_host_film || !played {
+        return Err(none());
+    }
+    Ok(HostObject {
+        key: g.film_blob.clone().unwrap_or_else(|| host_film_key(id)),
+        receipt: model.films.downloads.get(id).cloned(),
+    })
+}
+
+/// Stream a whole host object ([`host_object`]) to a signed-in account.
+async fn download_host_film(
+    live: &Live,
+    headers: &HeaderMap,
+    id: &str,
+    part: HostPart,
+) -> ApiResult<Response> {
     use axum::{body::Body, http::header};
 
     let author = live.authenticate(bearer(headers), lxm::READ)?;
     let player = account(&author)?;
     let viewer = live.viewer_of(&author);
-    let key = {
-        let model = live.model.read();
-        let Some(Source::Game(g)) = visible_game(&model, id, viewer) else {
-            return Err(not_found("no host film for this account"));
-        };
-        if !g.has_host_film || !g.xuids.contains(&player) {
-            return Err(not_found("no host film for this account"));
-        }
-        g.film_blob.clone().unwrap_or_else(|| host_film_key(id))
-    };
-    let store = live.blobs().ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "the film store is unavailable"))?;
+    let key = host_object(&live.model.read(), id, viewer, player, part)?.key;
+    let store = live
+        .blobs()
+        .ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "the film store is unavailable"))?;
     let (size, stream) = parts::get_stream(&store.private, &key)
         .await
         .map_err(|error| {

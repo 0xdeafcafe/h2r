@@ -2,11 +2,10 @@
 
 **Built.** Converted Halo 1 maps default to their source unit, grenade and
 weapon interfaces. The HUD pair recorded by the converter also supports the
-player's Halo 2 HUD choice. A read-only disc census counts 1,497 authored
+player's Halo 2 HUD choice. A read-only disc census found 1,497 authored
 weapon draw entries in 360 interfaces across ten campaign and thirteen
-multiplayer maps ([note](notes/hud.md)). The placement test also walks
-inherited entries for each owning interface. Runtime verification of this
-rebuild is pending.
+multiplayer maps. The placement test also walks inherited entries for each
+owning interface. Not run in the game.
 
 Labels as in [health.md](health.md): **E**
 engine code (`h2 disasm`), **V** checked on the owner's discs, **D** a
@@ -129,8 +128,7 @@ it at `weap +0x2b0`; the Halo 2 counterpart's `nhdt` becomes the Halo 2
 side of the weapon's HUD pair. `weapon_hud` is the function to call for
 any other builder of a `weap`. A chain with no element at all (V: the
 multiplayer maps' flamethrower, `flame thrower` → `master fuel`) draws
-nothing in Halo 1 and becomes an `nhdt` with no widget. A failed element
-stops conversion with the map and source interface in the error.
+nothing in Halo 1 and becomes an `nhdt` with no widget. A failed element stops conversion with the map and source interface in the error.
 
 ### Held and stowed weapons
 
@@ -143,10 +141,14 @@ on `0x06`. The magnum has a second panel on the opposite corner for the
 off hand. All three use a dedicated `backpack` bitmap widget at a different
 offset from their held panels. It shows on `0x04`.
 
-The widget gate (`0x0013ac87`) accepts a match on **any** show word, so
-a primary show bit alone would still draw a stowed weapon's panel when
-another show word matched; the hide mask in word C is what keeps a widget
-to one pass.
+The overlap in converted Blood Gulch came from using the shield-meter
+state for weapon panels, meters, icons and counts. Word A could show them
+on every pass, so a stowed weapon drew its entire panel at the same
+top-left coordinates as the held weapon. The older Blood Gulch serve
+reported both the assault rifle and sniper reserve counts at the same
+top-left offset with `hide_when_c` zero (`h2 agent edit get`).
+The widget gate (`0x0013ac87`) accepts a match on **any** show word. A primary show bit
+alone would still permit a stowed draw when another show word matched.
 
 Halo 1 draws a single weapon HUD. Its converted bitmap and text widgets
 all set the retail primary panel's hide mask `0x06` in word C
@@ -265,12 +267,17 @@ weapon that actually supplied the widget. Switching HUDs returns the
 native widgets to the normal input, visibility and material paths.
 
 The from-scratch map build reads every tag through the inferred schema,
-which leaves the warning widget's threshold word raw
-(`tags::schema::infer::ENGINE_DATA`,
-[../formats/tag-schema.md](../formats/tag-schema.md) step 9), so the
-bytes the converter writes reach the map as written. The gate and the
-weapon HUD layout were checked live on a converter-v83 map
-([note](notes/hud.md)).
+which would type the thresholds word (`00 0b 01 00` at the widget's
+`+0x18`) as a raw-resource pointer and write a copy's offset there; the
+schema leaves the word out (`tags::schema::infer::ENGINE_DATA`,
+docs/formats/tag-schema.md step 9), so the bytes reach the map as
+written. A live gate test that writes the thresholds into memory with
+`edit.set` after the build cannot see a wrong word in the built map. Run:
+with the thresholds written back that way, "Reload" hides at 60 loaded
+and shows at 5 loaded with 180 in reserve, and "No ammo" shows alone at
+nothing loaded and nothing in reserve; every other weapon's HUD has its
+panel, count, icon and meter where Halo 1 puts them
+([notes/hud.md](notes/hud.md), "The reload warning's thresholds").
 
 ### Zoom level
 
@@ -296,9 +303,9 @@ Halo 2's own sniper rifle
 "5x" and "10x" (V: `ui\hud\sniper_rifle`): show word A `0x90`, hide
 `0x140`; show `0x110`, hide `0xc0`; both shown on word C `0x01` and
 hidden on `0x06` (`ZOOM_LEVEL_STATES`). The widgets use Halo 1's
-sprite placement. Their draw has yet to be checked in a game run.
+sprite placement. Their draw is not checked in a game run.
 
-Converter version 99 retains the zoom levels of Halo 1's pistol and sniper
+The converter keeps the zoom levels of Halo 1's pistol and sniper
 rifle. The assault rifle and other unscoped weapons have
 zero levels and suppress Halo 2's binocular fallback.
 See [Weapon zoom](objects.md#weapon-zoom).
@@ -307,8 +314,8 @@ See [Weapon zoom](objects.md#weapon-zoom).
 
 The sniper rifle's scope lines and zoom labels come from the converted
 crosshairs. Its surrounding mask is a separate screen effect. The
-sniper rifle's `wphi +0xac` block references the full-screen
-`sniper_scope_mask2` and split-screen `sniper_scope_mask_sm` at
+sniper rifle's `wphi +0xac` block references the full-screen and
+split-screen scope mask bitmaps at
 element `+0x18` and `+0x28` on Blood Gulch. The pistol and rocket
 launcher reference their scope masks through the same block.
 
@@ -447,9 +454,9 @@ times the diffuse is inferred from the vertex layout; the texture stages
 were not read). So an element of colour `0x00000000` adds nothing and
 takes nothing away: Halo 1 does not draw it. Each ballistic weapon on
 Blood Gulch has one, `hud_ammo_alphas` on the rounds-loaded state (V:
-assault rifle, pistol, shotgun, rocket launcher, sniper rifle, needler).
-`h1hud::static_alpha` gives such a weapon static empty show words. Unit
-and grenade statics with that colour are omitted. A colour with alpha 0 but some RGB adds the
+assault rifle, pistol, shotgun, rocket launcher, sniper rifle, needler),
+which would draw opaque. `h1hud::static_alpha` gives such a
+weapon static empty show words. Unit and grenade statics with that colour are omitted. A colour with alpha 0 but some RGB adds the
 sprite's colour (a glow in Halo 1); Halo 2's `widget_gradient_flash`
 blends by alpha only, so it is drawn at full alpha. Any other colour's
 alpha goes into the sprite as for the unit HUD ("Colours" below): weapon
@@ -502,7 +509,7 @@ Halo 2 draws its counts as text widgets. The layout, from the retail
 
 Retail: inputs 20 (frag count, HUD state `+0x38`) and 21 (plasma, `+0x3a`),
 flags 1, `hud_input1`, `ui\hud\shaders\text_flash`, centred, top left at
-(65, -1) and (12, -1); the `_hidden` pair draws through `dim_text_flash`.
+(65, -1) and (12, -1); the `_hidden` pair draws through a dimmed variant of that shader.
 
 The converter emits one text widget per type (`h1hud::grenade_count`):
 input `20 + type`, that type's grenade states, flags 1, `hud_input1`,
@@ -525,11 +532,12 @@ The text's font and where its digits fall:
 - Halo 1's digit sprites (`hud_counter_numbers`) are 12 rows, drawn from
   the number's point down on a top anchor.
 
-The point's y is set so the ink is centred on Halo 1's digit sprite: y
--2, ink rows 3..15, Halo 1's sprite rows 3..15 (`hud_layout_disc`
-`grenade_count_digits_sit_inside_the_indicator`). The indicator's top
-ends at row 17 (V: the `grhi` background's texels, x 82..119, y 1..17),
-so the digits sit inside it.
+At Halo 1's y (3) the text's top would put the digits' ink on rows
+8..20 under the indicator's top, which ends at row 17 (V: the `grhi`
+background's texels, x 82..119, y 1..17), sticking out of the bottom of
+the indicator. The point's y is therefore set so the ink is centred on Halo 1's digit sprite: y -2, ink rows 3..15,
+Halo 1's sprite rows 3..15 (`hud_layout_disc`
+`grenade_count_digits_sit_inside_the_indicator`).
 
 ## Scale
 
@@ -562,11 +570,12 @@ byte (A8, A8Y8, A8R8G8B8) are scaled in place. The rest (block-compressed,
 decoder (`h1bitmaps::decode_image`) and the copy written as linear
 A8R8G8B8, top level only, rows at Halo 2's 64-byte linear pitch
 (`h1hud::alpha_scaled_argb`). Retail Halo 2 HUD bitmaps are stored the
-same way (E: `grenade_bkd`'s images, linear A8R8G8B8). The sensor
-background is a faint disc at `0x28/255`.
+same way (E: `grenade_bkd`'s images, linear A8R8G8B8). Before this the
+sensor background would draw opaque in the shader's light blue; with
+the copy it is a faint disc at `0x28/255`.
 Halo 1's colour RGB needs a `shad` per colour whose
 constant reaches the pixel shader's last-stage `c0`; which `colors` entry
-or animation binding feeds it is not yet established
+or animation binding feeds it is not established
 (`docs/formats/shader-instances.md`: E `0x0001717b`).
 
 ## The motion sensor's centre
@@ -624,7 +633,8 @@ stage 3's `c1` at `0xffffffff`, nothing the engine writes). Halo 1's meter
 sprites are A8Y8 with their luminance ramp carried under the clear parts
 too: the cyborg's shield meter has 1435 clear texels with a luminance,
 722 of them on the health meter's visible texels. With both meters
-full, 849 texels of the two would show in both (297 on `cyborg_mp`).
+full, 849 texels would show both (297 on `cyborg_mp`): the shield drawn
+over the health meter.
 
 The converter gives each meter its own copy, `<bitmap>_meter`, with
 every clear texel's colour made black (`h1hud::clear_meter_colour`;
@@ -667,7 +677,7 @@ nothing of them to carry. What differs is the motion sensor's range and
 movement threshold, one message time, and the assets (the waypoint
 arrow's bitmap and arrows, the message icons, the damage arrows).
 
-Two reasons keep `hudg` out of the conversion:
+Not converted, for two reasons:
 
 - `hudg` is one tag for the whole game (Halo 2 keeps it at `[0x00510c94]`,
   E `0x00191764`: `matg +0x110` interface element `+0x30`), not a HUD's,
@@ -678,13 +688,10 @@ Two reasons keep `hudg` out of the conversion:
   `distance * scale / range` pixels (`+0x2d8` 32 over `+0x2d0` 20,
   `0x000da209`), Halo 2 at `(distance / range + 1) * 32` in a 64-wide
   grid (`0x001a27d0`) that its draw (`0x001a28ac`..`0x001a2917`) then
-  scales to the screen, a factor not read yet. Halo 1's range belongs in
+  scales to the screen, a factor not read. Halo 1's range belongs in
   Halo 2's `+0x290` only once that factor is known, scaled by it.
 
-## Not converted
-
-Besides the HUD globals above:
-
+- **HUD globals** (`hudg`). See the field comparison above.
 - **Motion sensor sweep**: Halo 1 draws a sweep around its sensor
   centre; Halo 2's sensor draws its own blips only. The sweep is not
   carried.
@@ -746,7 +753,7 @@ Besides the HUD globals above:
 
 ## What a game run should show
 
-On a converted Halo 1 map (converter version 66 or later) in the Halo 1
+On a converted Halo 1 map in the Halo 1
 sandbox, or a Halo 1 campaign level: Halo 1's shield and health bars top
 right, Halo 1's motion sensor frame bottom left, Halo 1's ammunition
 counter top left with its count (rounds in reserve; the battery's

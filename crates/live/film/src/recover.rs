@@ -18,9 +18,11 @@
 //! chunk stay: a chunk is never split, and the replay stops at the end
 //! before reading them.
 //!
-//! The recovered film keeps no map, variant or scores: the descriptors of
-//! an unsealed tape live in the recorder's memory, not in the file. It
-//! lists unnamed and plays from boot. A tape with no usable capture mark
+//! The recovered film keeps no scores and no descriptor: those live in the
+//! recorder's memory, not in the file. Its map, variant and players come
+//! from the last header the recorder appended to the tape when a game
+//! started or its roster changed, so a game a crash cut off is named; a
+//! tape of menus is unnamed. It plays from boot. A tape with no usable capture mark
 //! — a session that died outside a game, or before its first capture —
 //! has no exact end; [`recover_tape`] says so and the caller deletes it.
 
@@ -28,7 +30,7 @@ use crate::{
     Entry, HEAD, HASH, KEYF, MARK, Reader, Tag, Writer,
     blam::{self, MatchHeader, Summary, TidxBlock, TidxDirectory},
     range,
-    tape::{Call, Check, Mark},
+    tape::{Check, Mark},
     xbe_digest,
 };
 use anyhow::{Context, Result, ensure};
@@ -130,14 +132,18 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
                 Ok(Mark::Lobby { .. }) => entry.offset < mark_offset,
                 _ => false,
             },
-            t if crate::tape::CALL_STREAMS.contains(&t) => entry.offset < mark_offset,
+            crate::tape::TAPE | crate::tape::TAPE_PART => entry.offset < mark_offset,
             KEYF => crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)
                 .ok()
                 .and_then(|raw| range::key_tick(&raw).ok())
                 .is_some_and(|tick| tick <= end_tick),
             t if t == blam::DESC || t == blam::SUMM || t == blam::TIDX => false,
             t if t == *b"PSUM" || t == range::CIDX || t == crate::INDX => false,
-            crate::HEAD | crate::DATA => true,
+            // The tape's later headers (the one that carries the simulation
+            // hook digest, a sealing session's own) are read for their
+            // digest and rewritten as the one sealed header below.
+            crate::HEAD => false,
+            crate::DATA => true,
             _ => true,
         };
         if keep {
@@ -149,15 +155,26 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     // first taped call after the mark names the call count at the end.
     let mut calls = 0;
     for entry in rest.iter().filter(|e| e.offset > mark_offset) {
-        if crate::tape::CALL_STREAMS.contains(&entry.tag) {
-            let batch: Vec<Call> = crate::decode(&mut source, entry)?;
+        if entry.tag == crate::tape::TAPE {
+            let raw = crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?;
+            if let Some((index, _)) = crate::tape::fragments(&raw)? {
+                calls = index;
+                break;
+            }
+            let batch = crate::tape::decode_batch(&raw)?;
             calls = batch.first().context("an empty film call batch")?.index;
             break;
         }
     }
     if calls == 0 {
-        for entry in kept.iter().filter(|e| crate::tape::CALL_STREAMS.contains(&e.tag)) {
-            if let Some(last) = crate::decode::<_, Vec<Call>>(&mut source, entry)?.last() {
+        for entry in kept.iter().filter(|e| e.tag == crate::tape::TAPE) {
+            let raw = crate::read_bytes(&mut source, entry, crate::MAX_CHUNK)?;
+            if let Some((index, _)) = crate::tape::fragments(&raw)? {
+                calls = index.checked_add(1).context("invalid tape index")?;
+                continue;
+            }
+            let batch = crate::tape::decode_batch(&raw)?;
+            if let Some(last) = batch.last() {
                 calls = last.index + 1;
             }
         }
@@ -260,6 +277,23 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
     }
 
     let mut header = boot.clone();
+    // The recorder appends a header once the installed hooks are known, and
+    // another each time the game on the tape changes (its map, variant and
+    // players; an empty one when it is gone). The boot header holds none of
+    // them, so the tape's own later headers supply them: the digest from
+    // the last that has one, the game from the last header of all.
+    for later in rest.iter().filter(|e| e.tag == HEAD) {
+        if let Ok(later) = crate::decode::<_, crate::Header>(&mut source, later)
+            && later.meta.id == boot.meta.id
+        {
+            if later.simulation_hooks.is_some() {
+                header.simulation_hooks = later.simulation_hooks;
+            }
+            header.meta.map = later.meta.map;
+            header.meta.variant = later.meta.variant;
+            header.meta.players = later.meta.players;
+        }
+    }
     header.meta.length_ticks = end_tick;
     let mut ranges = range::Build::new(&boot);
     ranges.directory = range::Directory { version: 1, chunks, keyframes: keys };
@@ -269,6 +303,7 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
         failed: false,
         version: 3,
         ranges: Some(Box::new(ranges)),
+        mirror: None,
     };
     writer.chunk(HEAD, &header)?;
     writer.chunk(blam::DESC, &MatchHeader::default())?;
@@ -292,6 +327,13 @@ pub fn recover_tape(path: &Path) -> Result<bool> {
         "the recovered film ends elsewhere"
     );
     drop(playback);
+    // A tape whose actions are in a film file ends there at the same tick.
+    if boot.inputs_in_film
+        && let Err(error) = crate::file::recover_beside(path, end_tick)
+    {
+        let _ = fs::remove_file(&staging);
+        return Err(error.context("the recovered film's film file"));
+    }
     fs::rename(&staging, path)?;
     Ok(true)
 }

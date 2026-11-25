@@ -31,7 +31,7 @@ level boot: 03a_oldmombasa loaded at present N
 perf: session from present N+1, the first after 03a_oldmombasa loaded
 ```
 
-For a multiplayer map the word after the name is `slayer` (`requesting
+For a multiplayer map the word after the name is the variant name, with `slayer` as the default (`requesting
 ascension slayer (scenario scenarios\multi\ascension\ascension, campaign
 -1, map 80; ...)`). The options check line is the game's own validator
 (`0x138180`) on what we built; if it says it rejects them they are queued
@@ -94,6 +94,11 @@ built-in's tag pairs), and adds the one default player through
 `0x138640`, which marks players differently for mode 2 and so runs after
 the mode is written. It is queued through `0x18e790` like the campaign
 request, rather than started directly.
+
+Studio can supply a portable variant record for an editor-mode
+multiplayer launch ([switches.md](switches.md)). Level boot writes that
+record in place of the default variant. A script carried by the file is
+available in the run's script store.
 
 The loaded mark wraps activation: after the original returns AL=1, the
 game globals' active options name the scenario that loaded.

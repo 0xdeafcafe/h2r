@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::{Ack, Change, Frame, Key, LayoutIndex, Op, Rows, SampleIndex, diff, document, respawn};
 use crate::app::App;
-use crate::play::{Play, PUSH_EVERY, link::ObjectDispatch, tag_sync};
+use crate::play::{Play, PUSH_EVERY, link::{ObjectDispatch, Purpose}, tag_sync};
 
 mod outcome;
 mod placements;
@@ -514,6 +514,40 @@ impl Play {
             }
             self.objects.requested.remove(&change.key);
         }
+    }
+
+    /// The object definitions the Pending tab's `next_spawn` rows change.
+    pub(crate) fn can_respawn_definitions(&self, app: &App) -> bool {
+        self.live_edits
+            && self.has_method(method::OBJECT_RESPAWN)
+            && !super::definitions::definitions(&app.tags, &app.pairing.pending).is_empty()
+    }
+
+    /// One `world.object.respawn {definition}` per object definition the
+    /// pending `next_spawn` rows change; the count sent.
+    pub(in crate::play) fn respawn_definitions(&mut self, app: &App) -> Result<usize, String> {
+        let defs = super::definitions::definitions(&app.tags, &app.pairing.pending);
+        if defs.is_empty() {
+            return Ok(0);
+        }
+        if !self.live_edits {
+            return Err("View mode".into());
+        }
+        if self.reload_copy.is_some() {
+            return Err("waiting for the play copy to load".into());
+        }
+        if let Some(why) = self.map_refusal(app).or_else(|| self.session_refusal(app)) {
+            return Err(why);
+        }
+        self.require_method(method::OBJECT_RESPAWN)?;
+        for tag in &defs {
+            self.call(
+                method::OBJECT_RESPAWN,
+                json!({ "definition": format!("{:08x}", tag.0) }),
+                Purpose::Control("respawn.definition"),
+            );
+        }
+        Ok(defs.len())
     }
 
     pub(in crate::play) fn respawn_objects(&mut self, app: &App) -> Result<(), String> {

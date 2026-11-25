@@ -20,6 +20,8 @@ use std::sync::OnceLock;
 pub const HEADER_LEN: usize = 0x14;
 /// Upper bound accepted for a blob of an unknown (unevaluated) type.
 pub const MAX_UNKNOWN_LEN: usize = 1 << 16;
+/// The wave a new periodic set names (cosine, one of the procedural ones).
+const DEFAULT_WAVE: u8 = 2;
 
 /// Function type, header byte 0 (**E**: the jump table has eleven entries).
 /// Names are **S** vocabulary; behaviour is **E**.
@@ -51,6 +53,42 @@ pub enum FunctionType {
     Unknown(u8),
 }
 impl FunctionType {
+    /// The word the curve editor and the agent API name the type by
+    /// (`periodic`); a type outside the list is `unknown_<byte>`.
+    pub fn word(self) -> String {
+        match self {
+            Self::Identity => "identity".into(),
+            Self::Constant => "constant".into(),
+            Self::Transition => "transition".into(),
+            Self::Periodic => "periodic".into(),
+            Self::Linear => "linear".into(),
+            Self::LinearKey => "linear_key".into(),
+            Self::MultiLinearKey => "multi_linear_key".into(),
+            Self::Spline => "spline".into(),
+            Self::MultiSpline => "multi_spline".into(),
+            Self::Exponent => "exponent".into(),
+            Self::Spline2 => "spline_2".into(),
+            Self::Unknown(n) => format!("unknown_{n}"),
+        }
+    }
+    /// The type a word names (the curve editor's picker and
+    /// `function.set` take it).
+    pub fn from_word(word: &str) -> Option<Self> {
+        Some(match word {
+            "identity" => Self::Identity,
+            "constant" => Self::Constant,
+            "transition" => Self::Transition,
+            "periodic" => Self::Periodic,
+            "linear" => Self::Linear,
+            "linear_key" => Self::LinearKey,
+            "multi_linear_key" => Self::MultiLinearKey,
+            "spline" => Self::Spline,
+            "multi_spline" => Self::MultiSpline,
+            "exponent" => Self::Exponent,
+            "spline_2" => Self::Spline2,
+            other => Self::Unknown(other.strip_prefix("unknown_")?.parse().ok()?),
+        })
+    }
     pub fn from_byte(b: u8) -> Self {
         match b {
             0 => Self::Identity,
@@ -113,6 +151,63 @@ impl FunctionType {
     }
 }
 
+/// One key of a linear key set (type 5): the value the key adds, ramping
+/// from `position` over `inverse_span` (the ramp's inverse length).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Key {
+    pub value: f32,
+    pub position: f32,
+    pub inverse_span: f32,
+}
+
+/// One set of a function's per-type payload, typed: the words the engine's
+/// evaluator reads, named as the curve editor's handles
+/// (docs/editor/rich-editors.md, "Curves"). Word indexes are the
+/// evaluator's own ([`Function::evaluate_with`]; the table in
+/// docs/formats/effects.md). Words the evaluator does not read (a
+/// constant's, a linear's first four, a spline's first eight, a linear
+/// key's first nine and word 12) are not part of the typed value:
+/// [`Function::write_set`] keeps them, so a typed edit round-trips
+/// through [`Function::to_bytes`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Set {
+    /// Type 0 (identity): no words.
+    Identity,
+    /// Types 1 (constant), 6 (multi linear key) and 8 (multi spline): a
+    /// layout but no word the engine's evaluator reads, given as they
+    /// are. Types 6 and 8 have no evaluator, so the curve editor shows
+    /// them read-only.
+    Words(Vec<f32>),
+    /// Type 2 (transition): the two end values.
+    Transition { from: f32, to: f32 },
+    /// Type 3 (periodic): `wave(frequency * x + phase)` mapped between
+    /// minimum and maximum.
+    Periodic {
+        frequency: f32,
+        phase: f32,
+        minimum: f32,
+        maximum: f32,
+    },
+    /// Type 4 (linear): `slope * x + intercept`.
+    Linear { slope: f32, intercept: f32 },
+    /// Type 5 (linear key): the value before the first key, then the
+    /// three keys.
+    LinearKey { base: f32, keys: [Key; 3] },
+    /// Types 7 and 10 (spline, spline 2): the cubic
+    /// `c3 t³ + c2 t² + c1 t + c0` and the four points spline 2's input
+    /// re-parameterisation reads (type 7 keeps them unread).
+    Spline {
+        points: [[f32; 2]; 4],
+        coefficients: [f32; 4],
+    },
+    /// Type 9 (exponent): `minimum + (maximum - minimum) * x ^ power`.
+    Exponent {
+        minimum: f32,
+        maximum: f32,
+        power: f32,
+    },
+}
+
 /// A parsed function blob. Round-trips: [`Function::to_bytes`] reproduces the
 /// parsed bytes exactly.
 #[derive(Clone, Debug, PartialEq)]
@@ -128,7 +223,7 @@ pub struct Function {
     /// Header floats at +4 and +8 (**E**): output range, applied by the
     /// property wrapper when `flags & 0xF0 == 0`.
     pub range: [f32; 2],
-    /// Header +0xc..+0x14: not read by the engine.
+    /// Header +0xc..+0x14: retained as bytes. Shader colour outputs can use both words as packed colours.
     pub unknown_0c: [u8; 8],
     /// Everything after the header (two sets).
     pub payload: Vec<u8>,
@@ -185,6 +280,266 @@ impl Function {
     /// True when the property wrapper uses the output unmapped.
     pub fn is_raw_output(&self) -> bool {
         self.flags & 0xf0 != 0
+    }
+
+    /// Packed ARGB from a shader colour property (0x0013bc00). The high
+    /// nibble selects how many colours the function header supplies.
+    pub fn output_colour(&self, raw: f32) -> u32 {
+        let [a, b] = self.range.map(f32::to_bits);
+        let c = u32::from_le_bytes(self.unknown_0c[..4].try_into().unwrap());
+        let d = u32::from_le_bytes(self.unknown_0c[4..].try_into().unwrap());
+        let kind = self.flags >> 4;
+        if self.kind == FunctionType::Constant && (!self.is_ranged() || kind <= 1) {
+            return a;
+        }
+        let x = raw.clamp(0.0, 1.0);
+        let stops: &[u32] = match kind {
+            0 => {
+                let grey = (x * 255.0).round_ties_even() as u32;
+                return 0xff00_0000 | grey * 0x010101;
+            }
+            1 => return a,
+            2 => &[a, d],
+            3 => &[a, b, d],
+            4 => &[a, b, c, d],
+            _ => return u32::MAX,
+        };
+        let at = x * (stops.len() - 1) as f32;
+        let i = (at as usize).min(stops.len() - 2);
+        // The MMX interpolation scales the weight to 14 fractional bits.
+        let weight = ((at - i as f32) * 16384.0).round_ties_even() as i32;
+        let [left, right] = [stops[i], stops[i + 1]];
+        let mut colour = 0;
+        for shift in [0, 8, 16, 24] {
+            let lo = ((left >> shift) & 255) as i32;
+            let hi = ((right >> shift) & 255) as i32;
+            let channel = lo + (((hi - lo) * weight + 8192) >> 14);
+            colour |= (channel.clamp(0, 255) as u32) << shift;
+        }
+        colour
+    }
+
+    /// Set `i`'s typed values (0 or 1), from the words the engine's
+    /// evaluator reads. Types 6 and 8 have a layout but no evaluator, so
+    /// their words are given unnamed; an unknown type has no layout, so
+    /// it has no sets.
+    pub fn set_values(&self, i: usize) -> Option<Set> {
+        let words = self.kind.set_words()?;
+        let base = i.checked_mul(words).filter(|_| i < 2)?;
+        let w = |k: usize| self.w(base + k);
+        Some(match self.kind {
+            FunctionType::Identity => Set::Identity,
+            FunctionType::Constant | FunctionType::MultiLinearKey | FunctionType::MultiSpline => {
+                Set::Words((0..words).map(|k| w(k)).collect())
+            }
+            FunctionType::Transition => Set::Transition {
+                from: w(0),
+                to: w(1),
+            },
+            FunctionType::Periodic => Set::Periodic {
+                frequency: w(0),
+                phase: w(1),
+                minimum: w(2),
+                maximum: w(3),
+            },
+            FunctionType::Linear => Set::Linear {
+                slope: w(4),
+                intercept: w(5),
+            },
+            FunctionType::LinearKey => Set::LinearKey {
+                base: w(16),
+                keys: [0, 1, 2].map(|k| Key {
+                    value: w(17 + k),
+                    position: w(9 + k),
+                    inverse_span: w(13 + k),
+                }),
+            },
+            FunctionType::Spline | FunctionType::Spline2 => Set::Spline {
+                points: [0, 1, 2, 3].map(|k| [w(2 * k), w(2 * k + 1)]),
+                coefficients: [w(8), w(9), w(10), w(11)],
+            },
+            FunctionType::Exponent => Set::Exponent {
+                minimum: w(0),
+                maximum: w(1),
+                power: w(2),
+            },
+            FunctionType::Unknown(_) => return None,
+        })
+    }
+
+    /// Write `values` into set `i`'s words (0 or 1): the type's own named
+    /// words only, every other word kept, so the function round-trips
+    /// through [`Self::to_bytes`]. Refused for a set the type does not
+    /// have, a value of another type's shape, and an unknown type (no
+    /// layout).
+    pub fn write_set(&mut self, i: usize, values: &Set) -> Result<()> {
+        let words = self
+            .kind
+            .set_words()
+            .ok_or(Error::Invalid("an unknown function type has no layout"))?;
+        if i > 1 {
+            return Err(Error::Invalid("a function has two sets: 0 and 1"));
+        }
+        let base = i * words;
+        let mut put = |k: usize, v: f32| {
+            let at = 4 * (base + k);
+            self.payload[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        match values {
+            Set::Identity if self.kind == FunctionType::Identity => {}
+            Set::Words(list) => {
+                let named = matches!(
+                    self.kind,
+                    FunctionType::Constant
+                        | FunctionType::MultiLinearKey
+                        | FunctionType::MultiSpline
+                );
+                if !named {
+                    return Err(Error::Invalid(
+                        "this type's set is not given as unnamed words",
+                    ));
+                }
+                if list.len() != words {
+                    return Err(Error::Invalid("the word count differs from the type's set"));
+                }
+                for (k, v) in list.iter().enumerate() {
+                    put(k, *v);
+                }
+            }
+            Set::Transition { from, to } if self.kind == FunctionType::Transition => {
+                put(0, *from);
+                put(1, *to);
+            }
+            Set::Periodic {
+                frequency,
+                phase,
+                minimum,
+                maximum,
+            } if self.kind == FunctionType::Periodic => {
+                put(0, *frequency);
+                put(1, *phase);
+                put(2, *minimum);
+                put(3, *maximum);
+            }
+            Set::Linear { slope, intercept } if self.kind == FunctionType::Linear => {
+                put(4, *slope);
+                put(5, *intercept);
+            }
+            Set::LinearKey { base, keys } if self.kind == FunctionType::LinearKey => {
+                put(16, *base);
+                for (k, key) in keys.iter().enumerate() {
+                    put(17 + k, key.value);
+                    put(9 + k, key.position);
+                    put(13 + k, key.inverse_span);
+                }
+            }
+            Set::Spline {
+                points,
+                coefficients,
+            } if matches!(self.kind, FunctionType::Spline | FunctionType::Spline2) => {
+                for (k, [x, y]) in points.iter().enumerate() {
+                    put(2 * k, *x);
+                    put(2 * k + 1, *y);
+                }
+                for (k, c) in coefficients.iter().enumerate() {
+                    put(8 + k, *c);
+                }
+            }
+            Set::Exponent {
+                minimum,
+                maximum,
+                power,
+            } if self.kind == FunctionType::Exponent => {
+                put(0, *minimum);
+                put(1, *maximum);
+                put(2, *power);
+            }
+            _ => return Err(Error::Invalid("the value is another type's shape")),
+        }
+        Ok(())
+    }
+
+    /// This function given another type: the header's flags, range and
+    /// unread bytes kept, the payload rebuilt at the new type's length
+    /// ([`FunctionType::blob_len`]) with each set at a plain default that
+    /// draws a visible curve: a transition from 0 to 1 by the linear
+    /// shape, a periodic cosine of one cycle between 0 and 1, a line
+    /// through the origin of slope 1, a linear key ramping from 0 to 1,
+    /// a cubic that is `t`, an exponent that is `x`, a constant of 0.
+    /// The sub-type bytes are the type's own defaults (the shape or wave
+    /// each set names), 0 for a type that uses none. Refused for a type
+    /// the engine does not evaluate (6, 8, unknown): it has no editable
+    /// layout.
+    pub fn with_kind(&self, kind: FunctionType) -> Result<Self> {
+        if !kind.is_evaluated() {
+            return Err(Error::Invalid("the game does not evaluate that type"));
+        }
+        let len = kind
+            .blob_len()
+            .ok_or(Error::Invalid("an unknown function type has no layout"))?;
+        let mut f = Self {
+            kind,
+            flags: self.flags,
+            sub_types: match kind {
+                FunctionType::Periodic => [DEFAULT_WAVE; 2],
+                _ => [0; 2],
+            },
+            range: self.range,
+            unknown_0c: self.unknown_0c,
+            payload: vec![0; len - HEADER_LEN],
+        };
+        let default = match kind {
+            FunctionType::Transition => Set::Transition { from: 0.0, to: 1.0 },
+            FunctionType::Periodic => Set::Periodic {
+                frequency: 1.0,
+                phase: 0.0,
+                minimum: 0.0,
+                maximum: 1.0,
+            },
+            FunctionType::Linear => Set::Linear {
+                slope: 1.0,
+                intercept: 0.0,
+            },
+            FunctionType::LinearKey => {
+                let off = Key {
+                    value: 0.0,
+                    position: 0.0,
+                    inverse_span: 0.0,
+                };
+                Set::LinearKey {
+                    base: 0.0,
+                    keys: [
+                        Key {
+                            value: 1.0,
+                            position: 0.0,
+                            inverse_span: 1.0,
+                        },
+                        off,
+                        off,
+                    ],
+                }
+            }
+            FunctionType::Spline | FunctionType::Spline2 => Set::Spline {
+                points: [
+                    [0.0, 0.0],
+                    [1.0 / 3.0, 1.0 / 3.0],
+                    [2.0 / 3.0, 2.0 / 3.0],
+                    [1.0, 1.0],
+                ],
+                coefficients: [0.0, 0.0, 1.0, 0.0],
+            },
+            FunctionType::Exponent => Set::Exponent {
+                minimum: 0.0,
+                maximum: 1.0,
+                power: 1.0,
+            },
+            FunctionType::Constant => Set::Words(vec![0.0]),
+            _ => Set::Identity,
+        };
+        for i in 0..2 {
+            f.write_set(i, &default)?;
+        }
+        Ok(f)
     }
 
     /// Word `i` of the payload as a float (0.0 if out of range, which the
@@ -573,11 +928,67 @@ mod tests {
         }
         v
     }
+    #[test]
+    fn shader_colour_interpolates_the_header_stops_selected_by_the_high_nibble() {
+        let mut bytes = blob(0, 0x40, [0; 2], [0.; 2], &[]);
+        for (i, c) in [0xff00_0000u32, 0xff40_8020, 0xff10_2030, 0xff80_8040].into_iter().enumerate() {
+            bytes[4 + 4*i..8 + 4*i].copy_from_slice(&c.to_le_bytes());
+        }
+        let mut f = Function::parse(&bytes).unwrap();
+        assert_eq!(f.output_colour(0.5), 0xff28_5028);
+        f.flags = 0x30;
+        assert_eq!(f.output_colour(0.5), 0xff40_8020);
+        f.flags = 0x20;
+        assert_eq!(f.output_colour(1.), 0xff80_8040);
+        f.flags = 0x10;
+        assert_eq!(f.output_colour(1.), 0xff00_0000);
+        f.flags = 0;
+        assert_eq!(f.output_colour(0.5), 0xff80_8080);
+    }
+
     fn pad(words: &mut Vec<f32>, n: usize) {
         words.resize(n, 0.0);
     }
     fn ev(bytes: &[u8], x: f32, r: f32) -> f32 {
         Function::parse(bytes).unwrap().evaluate(x, r)
+    }
+
+    /// A type change rebuilds the payload at the new length, keeps the
+    /// header's flags, range and unread bytes, round-trips, and its
+    /// defaults are visible curves; types without an evaluator are refused.
+    #[test]
+    fn with_kind_rebuilds_at_the_new_length() {
+        let mut from = blob(2, 1, [3, 1], [0.25, 0.75], &[0.0; 4]);
+        from[0xc..0x14].copy_from_slice(&[9; 8]);
+        let from = Function::parse(&from).unwrap();
+        for byte in [0u8, 1, 2, 3, 4, 5, 7, 9, 10] {
+            let kind = FunctionType::from_byte(byte);
+            let f = from.with_kind(kind).unwrap();
+            let bytes = f.to_bytes();
+            assert_eq!(bytes.len(), kind.blob_len().unwrap(), "type {byte}");
+            assert_eq!(Function::parse(&bytes).unwrap(), f, "type {byte}");
+            assert_eq!((f.flags, f.range, f.unknown_0c), (1, [0.25, 0.75], [9; 8]));
+        }
+        // The defaults draw: a ramp from 0 to 1 for the types that can,
+        // a cosine for the periodic.
+        for byte in [2u8, 4, 5, 7, 9, 10] {
+            let f = from.with_kind(FunctionType::from_byte(byte)).unwrap();
+            for r in [0.0, 1.0] {
+                for x in [0.0f32, 0.5, 1.0] {
+                    assert!((f.evaluate(x, r) - x).abs() < 3e-3, "type {byte} at {x}");
+                }
+            }
+        }
+        let p = from.with_kind(FunctionType::Periodic).unwrap();
+        assert_eq!(p.sub_types, [2, 2]);
+        assert!(p.set_values(1).is_some());
+        for kind in [
+            FunctionType::MultiLinearKey,
+            FunctionType::MultiSpline,
+            FunctionType::Unknown(0x42),
+        ] {
+            assert!(from.with_kind(kind).is_err());
+        }
     }
 
     /// Ranged functions blend in the second set, not set 0 again. Each case
@@ -901,5 +1312,179 @@ mod tests {
         let saw = t.wave[6].as_ref().unwrap();
         assert_eq!(saw[0], 0);
         assert!(t.has_wave(0) && t.has_wave(2) && !t.has_wave(3) && !t.has_wave(12));
+    }
+
+    /// Every payload word distinct, so a typed read picks its own words
+    /// out by value.
+    fn typed_blob(kind: u8) -> Vec<u8> {
+        let n = FunctionType::from_byte(kind).blob_len().unwrap();
+        let words: Vec<f32> = (0..(n - HEADER_LEN) / 4).map(|i| i as f32 * 0.25).collect();
+        blob(kind, 0, [0; 2], [0.0, 1.0], &words)
+    }
+
+    #[test]
+    fn the_type_words_round_trip() {
+        for b in 0u8..=10 {
+            let t = FunctionType::from_byte(b);
+            assert_eq!(FunctionType::from_word(&t.word()), Some(t), "{b}");
+        }
+        let t = FunctionType::Unknown(0x42);
+        assert_eq!(FunctionType::from_word(&t.word()), Some(t));
+        assert_eq!(FunctionType::from_word("nonsense"), None);
+        assert_eq!(FunctionType::from_word("unknown_x"), None);
+    }
+
+    /// The typed set reads the evaluator's own words, per set: word `k`
+    /// of the blob is `k * 0.25`.
+    #[test]
+    fn typed_sets_read_the_evaluator_words() {
+        let f = |kind: u8| Function::parse(&typed_blob(kind)).unwrap();
+        let w = |k: usize| k as f32 * 0.25;
+        assert_eq!(f(0).set_values(0), Some(Set::Identity));
+        assert_eq!(f(1).set_values(1), Some(Set::Words(vec![w(1)])));
+        assert_eq!(
+            f(2).set_values(0),
+            Some(Set::Transition {
+                from: w(0),
+                to: w(1)
+            })
+        );
+        assert_eq!(
+            f(2).set_values(1),
+            Some(Set::Transition {
+                from: w(2),
+                to: w(3)
+            })
+        );
+        assert_eq!(
+            f(3).set_values(1),
+            Some(Set::Periodic {
+                frequency: w(4),
+                phase: w(5),
+                minimum: w(6),
+                maximum: w(7)
+            })
+        );
+        // A linear's slope and intercept are the set's words 4 and 5, not
+        // its first.
+        assert_eq!(
+            f(4).set_values(0),
+            Some(Set::Linear {
+                slope: w(4),
+                intercept: w(5)
+            })
+        );
+        assert_eq!(
+            f(4).set_values(1),
+            Some(Set::Linear {
+                slope: w(10),
+                intercept: w(11)
+            })
+        );
+        assert_eq!(
+            f(5).set_values(0),
+            Some(Set::LinearKey {
+                base: w(16),
+                keys: [
+                    Key {
+                        value: w(17),
+                        position: w(9),
+                        inverse_span: w(13)
+                    },
+                    Key {
+                        value: w(18),
+                        position: w(10),
+                        inverse_span: w(14)
+                    },
+                    Key {
+                        value: w(19),
+                        position: w(11),
+                        inverse_span: w(15)
+                    }
+                ]
+            })
+        );
+        for kind in [7u8, 10] {
+            assert_eq!(
+                f(kind).set_values(1),
+                Some(Set::Spline {
+                    points: [12, 13, 14, 15, 16, 17, 18, 19]
+                        .map(|k| w(k))
+                        .chunks(2)
+                        .map(|c| [c[0], c[1]])
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .unwrap(),
+                    coefficients: [w(20), w(21), w(22), w(23)],
+                }),
+                "spline type {kind}"
+            );
+        }
+        assert_eq!(
+            f(9).set_values(1),
+            Some(Set::Exponent {
+                minimum: w(3),
+                maximum: w(4),
+                power: w(5)
+            })
+        );
+        assert_eq!(
+            f(6).set_values(0),
+            Some(Set::Words((0..32).map(w).collect()))
+        );
+        assert_eq!(
+            f(8).set_values(1),
+            Some(Set::Words((4..8).map(w).collect()))
+        );
+        // A type with no layout has no sets, and no set index past 1.
+        let unknown = Function::parse(&blob(0x42, 0, [0; 2], [0.0, 1.0], &[1.0])).unwrap();
+        assert_eq!(unknown.set_values(0), None);
+        assert_eq!(f(3).set_values(2), None);
+    }
+
+    /// A typed edit round-trips: writing the values back leaves the bytes
+    /// as they were; writing them into a zeroed copy sets only the words
+    /// the type names (a linear's first four stay zero).
+    #[test]
+    fn typed_edits_round_trip_and_keep_unread_words() {
+        fn w(k: usize) -> f32 {
+            k as f32 * 0.25
+        }
+        let bytes = typed_blob(4);
+        let mut f = Function::parse(&bytes).unwrap();
+        let values = f.set_values(1).unwrap();
+        f.write_set(1, &values).unwrap();
+        assert_eq!(f.to_bytes(), bytes);
+        let mut zeroed = Function::parse(&blob(4, 0, [0; 2], [0.0, 1.0], &vec![0.0; 12])).unwrap();
+        zeroed.write_set(1, &values).unwrap();
+        let out = zeroed.to_bytes();
+        let word = |b: &[u8], k: usize| {
+            f32::from_le_bytes(
+                b[HEADER_LEN + 4 * k..HEADER_LEN + 4 * k + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        assert_eq!((word(&out, 10), word(&out, 11)), (10.0 * 0.25, 11.0 * 0.25));
+        for k in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] {
+            assert_eq!(word(&out, k), 0.0, "word {k} is not the type's own");
+        }
+        // A shape of another type's is refused, and so is a set past 1.
+        assert!(
+            f.write_set(0, &Set::Transition { from: 0.0, to: 1.0 })
+                .is_err()
+        );
+        assert!(f.write_set(2, &values).is_err());
+        // Types 6 and 8 take their words as they are; an unknown type
+        // refuses (no layout).
+        let mut six = Function::parse(&typed_blob(6)).unwrap();
+        six.write_set(1, &Set::Words((32..64).map(w).collect()))
+            .unwrap();
+        assert_eq!(
+            six.set_values(1),
+            Some(Set::Words((32..64).map(w).collect()))
+        );
+        let mut unknown = Function::parse(&blob(0x42, 0, [0; 2], [0.0, 1.0], &[1.0])).unwrap();
+        assert!(unknown.write_set(0, &Set::Words(vec![0.0])).is_err());
     }
 }

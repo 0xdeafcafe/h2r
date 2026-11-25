@@ -124,6 +124,31 @@ def manifest_lines(path):
     return lines
 
 
+def whole_number_shapes():
+    """f5-tts-mlx's sampler draws its noise as mx.random.normal((channels,
+    dur)) with `dur` an element of a float32 mx.array of durations, which
+    current MLX refuses as a shape ("normal(): incompatible function
+    arguments ... Invoked with types: tuple"). Every shape handed to
+    mx.random.normal is made of Python ints from here on. Safe to call more
+    than once."""
+    import mlx.core as mx
+
+    random = mx.random
+    if getattr(random.normal, "whole_number_shapes", False):
+        return
+    original = random.normal
+
+    def normal(shape=(), *args, **kwargs):
+        try:
+            shape = tuple(int(d) for d in shape)
+        except TypeError:
+            pass  # not a sequence: let MLX say what is wrong
+        return original(shape, *args, **kwargs)
+
+    normal.whole_number_shapes = True
+    random.normal = normal
+
+
 class F5Mlx:
     """F5-TTS through its MLX port, f5-tts-mlx (code MIT; weights CC-BY-NC-4.0)."""
 
@@ -163,6 +188,7 @@ class F5Mlx:
     def say(self, params, p):
         import f5_tts_mlx.generate as g
 
+        whole_number_shapes()
         ref = params["reference"]
         checkpoint = params.get("checkpoint")
         model = self.load(checkpoint)
@@ -195,6 +221,7 @@ class F5Mlx:
         import mlx.optimizers as optim
         from mlx.utils import tree_flatten
 
+        whole_number_shapes()
         try:
             from f5_tts_mlx.audio import log_mel_spectrogram
         except ImportError as e:

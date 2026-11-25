@@ -3,6 +3,45 @@
 use crate::Tag;
 use serde::{Deserialize, Serialize};
 
+mod codec;
+pub use codec::{decode_batch, encode_batch};
+
+/// The chunk tag of a call batch: the binary stream of
+/// [`codec`](encode_batch), every stream interleaved in call order.
+pub const TAPE: Tag = *b"TAPE";
+pub const TAPE_PART: Tag = *b"TPAR";
+const PART_BYTES: usize = 1 << 20;
+const PARTS: u8 = 0xC8;
+
+/// A fragmented call ends with a TAPE record giving its index and the
+/// number of immediately preceding TPAR records.
+pub(crate) fn fragments(raw: &[u8]) -> FilmResult<Option<(u64, usize)>> {
+    if raw.first() != Some(&PARTS) {
+        return Ok(None);
+    }
+    ensure!(raw.len() == 17, "invalid tape fragment descriptor");
+    let index = u64::from_le_bytes(raw[1..9].try_into()?);
+    let parts = usize::try_from(u64::from_le_bytes(raw[9..].try_into()?))?;
+    ensure!(parts > 0, "empty fragmented call");
+    Ok(Some((index, parts)))
+}
+
+pub fn read_batch(reader: &mut Reader<File>, entry: &Entry, raw: &[u8]) -> FilmResult<Vec<Call>> {
+    let Some((index, count)) = fragments(raw)? else { return decode_batch(raw) };
+    let end = reader.entries.binary_search_by_key(&entry.offset, |e| e.offset)
+        .map_err(|_| anyhow::anyhow!("missing tape entry"))?;
+    let start = end.checked_sub(count).context("missing tape fragments")?;
+    let mut data = Vec::new();
+    for pos in start..end {
+        let part = reader.entries[pos].clone();
+        ensure!(part.tag == TAPE_PART, "missing tape fragment");
+        data.extend(reader.read_bytes_limited(&part, PART_BYTES)?);
+    }
+    let calls = decode_batch(&data)?;
+    ensure!(calls.len() == 1 && calls[0].index == index, "invalid fragmented tape call");
+    Ok(calls)
+}
+
 /// XAPI reads share the HLE call cursor; topology changes are sparse and
 /// indexed by the XAPI pump (the guest also sees its device-change globals).
 pub const PADR: Tag = *b"PADR";
@@ -17,9 +56,45 @@ pub const VSIZ: Tag = *b"VSIZ";
 pub const VIDEO_MENU_SIZE: &str = "Video.MenuSize";
 pub const PDEV: Tag = *b"PDEV";
 
-/// Streams of indexed HLE calls, in report order. PDEV and BOTR carry
-/// separate boundary records and do not advance the call cursor.
+/// Streams of indexed HLE calls, in report order. A stream is a way to
+/// count calls ([`stream_of`]); the film stores them interleaved in
+/// [`TAPE`] batches. PDEV and BOTR carry separate boundary records and do
+/// not advance the call cursor.
 pub const CALL_STREAMS: [Tag; 6] = [crate::NETR, crate::RAND, PADR, TEXT, BTAP, VSIZ];
+
+/// Whether any call on the tape is `op`. Reads every batch.
+pub fn holds_op(reader: &mut Reader<File>, op: &str) -> FilmResult<bool> {
+    let entries: Vec<Entry> = reader
+        .machine_section()
+        .entries()
+        .filter(|e| e.tag == TAPE)
+        .cloned()
+        .collect();
+    for entry in entries {
+        let raw = reader.read_bytes(&entry)?;
+        if read_batch(reader, &entry, &raw)?.iter().any(|c| c.op == op) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The stream an operation belongs to.
+pub fn stream_of(op: &str) -> Tag {
+    if op == VIDEO_MENU_SIZE {
+        VSIZ
+    } else if op == "Bot.BuildAction" {
+        BTAP
+    } else if op == "VirtualKeyboard" {
+        TEXT
+    } else if op == "XInputGetState" {
+        PADR
+    } else if matches!(op, "Random" | "CreateKey") || op.starts_with("Entropy.") {
+        crate::RAND
+    } else {
+        crate::NETR
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortChange {
@@ -53,7 +128,7 @@ pub trait Tap: Send + Sync {
     /// v2 films tape the full guest-facing asynchronous service ABI.
     fn service_calls(&self) -> bool { false }
     fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call>;
-    fn record(&self, tag: Tag, call: Call);
+    fn record(&self, call: Call);
     fn fault(&self, reason: String);
 }
 
@@ -109,26 +184,43 @@ use crate::{Entry, Reader, Writer};
 use anyhow::{Context, Result as FilmResult, ensure};
 use std::{collections::VecDeque, fs::File};
 
-/// Flush before a checkpoint, a stream change, or 128 calls / 64 KiB.
+/// Flush before a checkpoint, an arena hash, or 128 calls / 64 KiB. A
+/// change of stream does not flush: pad reads and socket calls share one
+/// batch in call order.
 #[derive(Default)]
 pub struct Batch {
-    tag: Tag,
     pending: Vec<Call>,
     bytes: usize,
 }
 impl Batch {
-    pub fn append(&mut self, out: &mut Writer<File>, tag: Tag, call: Call) -> FilmResult<()> {
-        if self.tag != tag || self.pending.len() >= 128 || self.bytes >= 65536 {
+    pub fn append(&mut self, out: &mut Writer<File>, call: Call) -> FilmResult<()> {
+        // Validate before queuing: an unencodable call must never poison
+        // the buffered prefix when teardown comes back to cut the film.
+        let storage = codec::call_storage(&call)?;
+        if self.pending.len() >= 128 || self.bytes + storage >= 65536 {
             self.flush(out)?;
         }
-        self.tag = tag;
-        self.bytes += call.outputs.iter().map(Vec::len).sum::<usize>();
+        if storage >= 65536 {
+            let bytes = encode_batch(std::slice::from_ref(&call))?;
+            if bytes.len() <= PART_BYTES {
+                return out.chunk_bytes(TAPE, &bytes);
+            }
+            let parts = bytes.chunks(PART_BYTES);
+            let mut end = vec![PARTS];
+            end.extend(call.index.to_le_bytes());
+            end.extend((parts.len() as u64).to_le_bytes());
+            for part in parts {
+                out.chunk_bytes(TAPE_PART, part)?;
+            }
+            return out.chunk_bytes(TAPE, &end);
+        }
+        self.bytes += storage;
         self.pending.push(call);
         Ok(())
     }
     pub fn flush(&mut self, out: &mut Writer<File>) -> FilmResult<()> {
         if !self.pending.is_empty() {
-            out.chunk(self.tag, &self.pending)?;
+            out.chunk_bytes(TAPE, &encode_batch(&self.pending)?)?;
             self.pending.clear();
             self.bytes = 0;
         }
@@ -199,7 +291,7 @@ impl Playback {
                 "unexpected data after film end"
             );
             match e.tag {
-                tag if CALL_STREAMS.contains(&tag) => streams.push(e),
+                TAPE => streams.push(e),
                 crate::DATA => data += 1,
                 crate::HASH => {
                     let check: Check = reader.read(&e)?;
@@ -460,33 +552,10 @@ impl Playback {
     }
 
     fn read_call_batch(reader: &mut Reader<File>, entry: &Entry) -> FilmResult<VecDeque<Call>> {
-        let batch: VecDeque<Call> = reader.read(entry)?;
-        ensure!(
-            !batch.is_empty() && batch.len() <= 128,
-            "invalid film call batch"
-        );
-        ensure!(
-            batch.iter().all(|call| {
-                let tag = if call.op == VIDEO_MENU_SIZE {
-                    VSIZ
-                } else if call.op == "Bot.BuildAction" {
-                    BTAP
-                } else if call.op == "VirtualKeyboard" {
-                    TEXT
-                } else if call.op == "XInputGetState" {
-                    PADR
-                } else if matches!(call.op.as_str(), "Random" | "CreateKey")
-                    || call.op.starts_with("Entropy.")
-                {
-                    crate::RAND
-                } else {
-                    crate::NETR
-                };
-                tag == entry.tag
-            }),
-            "wrong film stream"
-        );
-        Ok(batch)
+        let raw = reader.read_bytes(entry)?;
+        let batch = read_batch(reader, entry, &raw)?;
+        ensure!(batch.len() <= 128, "invalid film call batch");
+        Ok(batch.into())
     }
 
     pub fn exhausted(&self) -> bool {

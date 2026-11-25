@@ -845,11 +845,24 @@ fn put_bitmap(b: &mut [u8], at: usize, format: u16, pixels_file: usize) {
 /// page. Everything is invented; the readers it goes through are
 /// `native_render::load::load_world`, `base_map` and the decodes.
 pub fn fixture_with_textured_bsp() -> Vec<u8> {
+    textured_bsp(false)
+}
+
+/// The textured floor plus a cube collision BSP with six materials,
+/// in a map that can grow metadata.
+pub fn fixture_with_render_and_collision() -> Vec<u8> {
+    metadata_last(textured_bsp(true))
+}
+
+fn textured_bsp(with_collision: bool) -> Vec<u8> {
     let mut b = fixture();
     let mut names = NAMES.to_vec();
     names.extend(
         b"levels\\test\\floor\0levels\\test\\floor_lightmap\0levels\\test\\shaders\\floor\0levels\\test\\bitmaps\\floor\0levels\\test\\bitmaps\\floor_lightmap\0objects\\test\\spare_kit\0",
     );
+    if with_collision {
+        names.extend(b"objects\\test\\cube_coll\0");
+    }
     tag_names(&mut b, &names);
     let mut classes = CLASSES.to_vec();
     classes.extend([*b"sbsp", *b"ltmp", *b"shad", *b"bitm", *b"bitm", *b"itmc"]);
@@ -862,6 +875,32 @@ pub fn fixture_with_textured_bsp() -> Vec<u8> {
         (TEX_PAGE, 0x100),
         (TEX_SPARE_ITEM, 0x10),
     ]);
+    if with_collision {
+        // Keep the collision payload after all three raw blocks.
+        let coll = 0x2600;
+        let end = coll + OBJ_COLL_SIZE;
+        put(&mut b, 0x18, end as u32);
+        put(&mut b, 0x1c, end as u32);
+        classes.push(*b"coll");
+        payloads.push((coll, OBJ_COLL_SIZE));
+        // Leave room for the cube's encoded BSP blocks before the materials.
+        let (materials, region, perm, bsp) = (coll + 0x400, coll + 0x40, coll + 0x50, coll + 0x70);
+        let material_count = 6;
+        assert!(materials + material_count as usize * 4 <= end);
+        for (field, count, block) in [
+            (coll + 0x14, material_count, materials),
+            (coll + 0x1c, 1, region),
+            (region + 4, 1, perm),
+            (perm + 4, 1, bsp),
+        ] {
+            put(&mut b, META_FILE + field, count);
+            put(&mut b, META_FILE + field + 4, META + block as u32);
+        }
+        let bytes = collision_cube().encode_blocks(META + (bsp + 4) as u32);
+        let start = META_FILE + bsp + 4;
+        assert!(start + bytes.len() <= META_FILE + materials);
+        b[start..start + bytes.len()].copy_from_slice(&bytes);
+    }
     tag_index(&mut b, &classes, &payloads);
     let file = |at: usize| META_FILE + at;
     let addr = |at: usize| META + at as u32;
@@ -1121,6 +1160,68 @@ pub fn fixture_with_layered_bsp() -> Vec<u8> {
     put(&mut b, file(classification) + 0xc, code.len() as u32);
     put(&mut b, file(classification) + 0x10, addr(code_at));
     b[file(code_at)..file(code_at) + code.len()].copy_from_slice(&code);
+    b
+}
+
+/// Where [`fixture_with_shader_colour`]'s floor shader keeps its one
+/// colour parameter (postprocess `+0x0c`), and where its template keeps
+/// the one binding row that feeds it (postprocess `+0x20`).
+pub const SHADER_COLOURS: usize = TEX_SHAD + 0xf0;
+pub const STEM_BINDINGS: usize = LAYERED_STEM + 0xd0;
+/// The colour parameter's value as the fixture writes it: the pass's own
+/// colour, so the picture is [`fixture_with_layered_bsp`]'s until it is
+/// edited.
+pub const SHADER_COLOUR: u32 = LAYERED_COLOR;
+/// The binding word that names the final combiner's first constant
+/// (`tags::shader::ParameterBinding`: register 8 in bits 6 to 9, `c0`),
+/// and its channel mask selector: red, green and blue
+/// (`tags::material::CHANNEL_MASKS[4]`).
+pub const FINAL_C0: u16 = 0x200;
+pub const RGB_MASK: u8 = 4;
+
+/// [`fixture_with_layered_bsp`] with the floor shader given one colour
+/// parameter ([`SHADER_COLOUR`]) and the template one binding that puts
+/// it in the final combiner's first constant, which the pass's pixel
+/// shader outputs: an edit of the colour changes the pass's colour. The
+/// pass draws in `layer` (the layered map's is [`LAYERED_LAYER`]; layer 1
+/// is one the editor refuses, `native_view::LAYER_1_UNCHECKED`).
+/// Everything is invented.
+pub fn fixture_with_shader_colour(layer: u8) -> Vec<u8> {
+    assert!(layer < 6, "the template lists layers 0 to 5");
+    let mut b = fixture_with_layered_bsp();
+    let file = |at: usize| META_FILE + at;
+    let addr = |at: usize| META + at as u32;
+    let half = |b: &mut [u8], at: usize, v: u16| b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    let range = |start: u16, count: u16| start | count << 9;
+
+    // The shader's postprocess: one colour.
+    let post = file(TEX_SHAD + 0x60);
+    put(&mut b, post + 0xc, 1);
+    put(&mut b, post + 0x10, addr(SHADER_COLOURS));
+    put(&mut b, file(SHADER_COLOURS), SHADER_COLOUR);
+
+    // The template: its one implementation row binds colour 0, through
+    // one binding, to the final combiner's c0.
+    let (stem_post, lods, layers, rows) = (
+        file(LAYERED_STEM + 0x60),
+        file(LAYERED_STEM + 0x90),
+        file(LAYERED_STEM + 0xa0),
+        file(LAYERED_STEM + 0xc0),
+    );
+    put(&mut b, stem_post + 0x20, 1);
+    put(&mut b, stem_post + 0x24, addr(STEM_BINDINGS));
+    half(&mut b, rows + 2, range(0, 1));
+    let at = file(STEM_BINDINGS);
+    half(&mut b, at, FINAL_C0);
+    b[at + 2] = RGB_MASK;
+    b[at + 3] = 0;
+
+    // The pass moves to `layer`.
+    if layer != LAYERED_LAYER {
+        half(&mut b, layers + 2 * usize::from(LAYERED_LAYER), 0);
+        half(&mut b, layers + 2 * usize::from(layer), range(0, 1));
+        put(&mut b, lods + 2, 1 << layer);
+    }
     b
 }
 

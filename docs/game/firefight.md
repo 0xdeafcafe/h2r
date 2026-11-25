@@ -1,21 +1,32 @@
 # Firefight
 
-Status: Partly built. The definition format, validator, three built-in wave
-sets, director (FF2), stage-one offline kit, probe recipe, the host
+Status: Partly built. The definition format, validator, the built-in
+wave sets and a map-specific one, director (FF2), stage-one offline kit, its home bases, drops,
+firing positions and hunt orders (FF14), probe recipe, the host
 runtime (FF4) with its `Game` over the guest bodies of the engine
 entries and the `firefight` feature that runs it, the agent API
-(FF5), the Game Setup row and options page, the HUD's mode blob and
-view (FF8, without the drawing), and the dedicated host's whole-pack
-admission and bundled kits (FF10) are implemented, tests only. "Guest boundary" lists the runs that
+(FF5), the Game Setup row and options page, the HUD's mode blob, view and
+its HUD kit HUD (FF8), the kit's stage two (FF12: transplanted classes,
+a library call with no command yet), the mode state in the host log and the host log
+in films (AN14), and the dedicated host's whole-pack
+admission and bundled kits (FF10), and `h2 sim run` Firefight matches with
+the 30 s game-thread CPU p99 (FF11), and Clankers on player teams holding,
+falling back to and regrouping on their home base and rearming between
+waves (FF16, `crates/live/bots/src/firefight.rs`) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
-Code: `crates/formats/firefight` defines and validates wave sets and holds
-the director (`src/director.rs`) and kill scoring (`src/scoring.rs`).
+Code: `crates/formats/firefight` defines and validates wave sets, loads
+their data into `content/modes/rules/firefight.rules` (`src/script.rs`,
+run by `ScriptDirector`) and holds the kill-point math its tests check against
+(`src/scoring.rs`) and the director's interface types (`src/director.rs`).
 `crates/tools/firefight-kit` builds the map kit. The offline command lives
 in `crates/apps/h2-tools/src/firefight_cmd.rs`. The host runtime is
 `crates/extensions/game/src/firefight/` with the shared squad entry in
 `crates/extensions/game/src/actor_net/squads.rs`; the agent API's
 methods are `crates/extensions/agent/src/firefight.rs`. The HUD is
-`firefight/hud.rs`, the Game Setup row and options page `firefight/options.rs`.
+`firefight/hud.rs` (the blob, the view and the feed) and
+`crates/rewrites/hud-kit-core/src/views/firefight.rs` (its states) and
+`content/modes/huds/firefight.hud.yaml` (its kit elements),
+the Game Setup row and options page `firefight/options.rs`.
 Live carries the match in the session data, seats Clankers on player
 teams and takes the built-in sets in hoppers ("Live"); the slice table
 lists the rest of the planned Live code. Tests use invented data.
@@ -62,7 +73,7 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## What the player gets
 
-- A Firefight mode in the custom game lobby ([the
+- A Firefight game type in the custom game lobby ([the
   lobby](#the-lobby)), a **Firefight Options...** row in a custom game's
   Game Setup, and a Firefight entry in matchmaking (FF9): pick a map, a
   wave set, a difficulty, the starting lives and whether rounds switch on
@@ -175,18 +186,47 @@ output and hashes depend on the definition alone.
 
 `firefight::builtin::definitions()` returns Holdout, Attrition and Last
 Stand for one team, then Crossfire for two (a player kill scores 50).
+They are files of the `modes` package, `content/modes/firefight/*.firefight.json`
+(`firefight::builtin::SETS` embeds them), and the package lists each as a
+`rules` item: `h2 package check` reads it as a `Def`, builds the director
+script from it (`script::compile`) and refuses a set the lobby would
+refuse (`workspace::wave_sets` lists a set's). The reference test in
+`builtin.rs` holds the files to the sets written as Rust.
 Each has three rounds and uses the stage-one kit's Elite class.
 `builtin::with_teams(def, n)` plays a set with `n` teams: with two, a
 player kill scores the set's own points or `builtin::PLAYER_KILL_POINTS`
 (50); with one, nothing.
 
+#### Map-specific sets
+
+A set can be tied to a kit map. Its file lives in the `modes` package at
+`content/modes/firefight/maps/<map>/<set>.firefight.json`, where `<map>`
+is the base map's name — the same name the kit package is built from
+(`Firefight – <map>`) — and it is listed as a `rules` item like any set,
+so `h2 package check` reads it the same way.
+`firefight::builtin::MAP_SETS` embeds them, and `builtin::map_sets(map)`
+gives a map's own. Beaver Creek's is **Basin**: the map's tight bowl
+keeps the waves small and quick — three rounds of at most twelve
+actors, gaps of 450 ticks, ten lives with three back a round, Catch,
+Angry and Ghost. Squads still drop at the edges, away from both bases;
+a map set carries the map's tuning, not its own drop zones.
+
+Change Rules → Firefight lists the built-in sets and each map-specific
+variant. The record identifies its wave set by hash. Change Map filters by
+that record, so Basin offers the Beaver Creek kit. At start the director
+resolves the same hash. The direct-boot setting `firefight.waveset` uses
+the built-in index (0 to 3), or `builtin::MAP_SET_BASE` plus the map-specific
+index. See [Live](#live) for hopper records.
+
 ### The director
 
-`firefight::Director` (`crates/formats/firefight/src/director.rs`) is a
-state machine with no I/O:
+`firefight::ScriptDirector` (`crates/formats/firefight/src/script.rs`)
+loads the director script with the definition and runs it on the rules VM. It
+is a state machine with no I/O:
 
 ```rust
-pub fn new(def: Def, settings: Settings) -> Result<Director>;   // Settings { seed, difficulty, skulls }
+pub fn new(def: Def, settings: Settings) -> Result<ScriptDirector, ScriptRefusal>;
+                                       // Settings { seed, difficulty, skulls }
 pub fn step(&mut self, tick: u32, seen: &Observed) -> Vec<Command>;
 pub struct Observed { players: Vec<PlayerSeen { slot, alive, team }>,
                       actors_alive_by_squad: [u16; 16],
@@ -200,10 +240,11 @@ pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Target 
 pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
 ```
 
-- `Director::new` refuses a definition that is not structurally valid.
-  Its generator (SplitMix64) starts from the match seed XORed with the
-  first eight bytes of `Def::id`. The director reads no clock, uses no
-  floating point and iterates only ordered collections, so the same
+- `ScriptDirector::new` refuses a definition that is not structurally
+  valid, and one whose script does not build or verify. The VM's generator
+  (SplitMix64) starts from the match seed XORed with the first eight bytes
+  of `Def::id`. The director reads no clock, uses no floating point and
+  iterates only ordered collections, so the same
   definition, settings and observed sequence give the same commands.
 - The host fills `Observed` after each game tick. `kills` are the tick's
   `SimEvent::ActorKilled` events ([ai-networking.md](ai-networking.md),
@@ -251,8 +292,9 @@ pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
 - Its state (`director::State`: phase, round, wave, the reserve's next
   squad, slots with each squad's target, each team's pool and score,
   players with their team, active skulls, generator) is the mode blob
-  the actor channel sends as `State`. `Director::resume` continues from
-  it.
+  the actor channel sends as `State`. `ScriptDirector::state` reads it
+  back from the script's variables, and `ScriptDirector::resume` continues
+  from the VM state (`RulesExt`).
 
 #### Two teams
 
@@ -296,24 +338,23 @@ a one-team match.
 
 ### The director as a rules script
 
-`firefight::script` (`crates/formats/firefight/src/script.rs`) compiles
-a definition to a rules blob that does what `Director` does, and runs it
-([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). The
-host runtime still runs the Rust director; the script is checked against
-it in tests.
+`content/modes/rules/firefight.rules` defines the director's handlers.
+The runtime loads it with a wave set, and the director's tests are its
+scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
 
-- `compile(&def)` builds the IR directly. The squads, waves, rounds
-  (each round's skull schedule), actor caps, class points, difficulty
-  and skull multipliers are constant tables. The director's state is
-  global and per-player script variables, and the loops over the 16
-  squad slots are unrolled. The blob depends only on the definition, so
-  its hash is stable. A definition with more than 256 squads is refused
-  by name, since a rules table holds 256 rows.
+- `script::load(&def)` validates the definition, supplies the squads,
+  waves, round skull schedule, actor caps, points and multipliers as a
+  data module, then compiles and verifies the script. A definition with
+  more than 256 squads is refused by name, since a table holds 256 rows.
+- Global variables hold match progress, player variables hold lives
+  and registration, and object variables on the host's 16 `ff_slots`
+  records hold squad state. The wave-set data and source determine the
+  blob's hash.
 - The difficulty and the skulls on from the start are script options
   (`script::options`). The VM seeds its generator from the match seed
   and the blob's hash; `script::match_seed` hands it a seed that starts
-  it where the director's generator starts, and `random(n)` draws as the
-  director does (SplitMix64, modulo `n`).
+  where the director's generator starts, and `random(n)` draws by
+  SplitMix64, modulo `n`.
 - Kill points are formed exactly: the class points, the difficulty
   multiplier and nine skull multipliers (1,000 for a skull that is off)
   are multiplied in base-1,000 limbs and divided by 1,000^10 once.
@@ -331,36 +372,38 @@ it in tests.
 - Two teams run in the script too. Each team's pool and score are
   globals (`pool_0`, `pool_1`, `score_0`, `score_1`), the player's team
   a per-player variable `on join` fixes from `team_of`, and a slot's
-  target sits in its info word (times 256, above the count). `on kill`
+  target sits in its `squad_side` field. `on kill`
   scores player kills (only in a two-team blob with `player_kill` above
   0). The entries `zone_team_distance(z, team)`, `ff_target(s, team)`,
   `ff_team_lives(team, n)`, `ff_player_score(p, n)` and
   `ff_team_finish(winner)` (`none` a draw) stand for the two-team parts
   of `Observed` and `Command`. The blob's header has `teams` 1 or 2.
 
-The parity tests (`crates/formats/firefight/tests/script.rs`) replay each
-scenario of the director's tests through both and compare commands and
-state tick by tick: the golden match, the empty pool, the lost match,
-unshared lives, assists, kill points at the multiplier limits, zone
-choice, 48 random matches over the quick built-in sets at every player
-count (Crossfire among them, with player kills), the built-in sets as
-authored, starting skulls, unshared lives, zero gaps, zones all in sight
-and ties, duplicate and absent players, a resumed state, and two teams:
-24 random two-team matches with shared and own lives, every two-team
-end, player kills of each kind with a team change after first sight,
-and targets with zones on each side.
+The director's tests (`crates/formats/firefight/tests`) drive the script
+over their scenarios, and every match the fake world plays is replayed
+through a fresh script for the same commands: the golden match, the empty
+pool, the lost match, unshared lives, assists, kill points at the
+multiplier limits, zone choice, 48 random matches over the quick built-in
+sets at every player count (Crossfire among them, with player kills), the
+built-in sets as authored, starting skulls, unshared lives, zero gaps,
+zones all in sight and ties, duplicate and absent players, a resumed
+state, and two teams: 24 random two-team matches with shared and own
+lives, every two-team end, player kills of each kind with a team change
+after first sight, and targets with zones on each side. `scoring.rs`'s
+kill-point math is what the scoring tests check the script's limbs
+against.
 
-Limits of the script against the director:
+Limits of the script:
 
 - A worst-tick estimate that fits. The zone choice ranks the zones with
   a nested `for each` over the labelled set, and the verifier bounds a
   labelled set at 256 members, so `Report::fits` is false. The VM's run
   time budget (20,000 ops a tick) holds for the kit's 6 to 12 zones.
-- Player slots of 16 and over, which the VM addresses as `none`: the
-  director would still score and register them.
-- Zone distances over 2^31 - 1, which the script reads clamped.
-- A tick with more than 128 commands, past the VM's queue: a script
-  error, where the director has no limit.
+- Player slots of 16 and over, which the VM addresses as `none`: such a
+  player is not scored or registered.
+- Zone distances over 2^31 - 1 are read clamped.
+- A tick with more than 128 commands, past the VM's queue, is a script
+  error.
 
 ### The host runtime
 
@@ -407,8 +450,9 @@ named with `--film` records. Otherwise the simulation world's mode
 decides (docs/live/live-coop.md): `Replica` for a synchronous client (3),
 `Client` for a distributed client (5), and `Host` otherwise. A session's
 [default recording](film-format.md#recording-every-game) and its replay
-take the role by the mode. No transport carries the host's entries to a replica
-yet, so a replica applies none. After each tick the host publishes its
+take the role by the mode. A film's playback gets the host's entries from
+the film ("Theater"); no transport carries them to a synchronous peer
+yet, so a peer applies none. After each tick the host publishes its
 log head (`actor_net::publish_log_head`) for the actor channel's
 digest. A tick boundary's number is the game
 time's tick count plus one before the tick and the count after it, so
@@ -451,8 +495,8 @@ A snapshot is refused while a match runs.
    slot's team, and a slot's `Hunt` goes to that team's base order
    (`SquadOp::Hunt { slot, base }`, the kit's `ff_hunt_NN`). The engine
    keeps no pool, one team's or two, so `Lives` and `TeamLives` set the
-   director's (`Director::set_lives`, `Director::set_team_pool`; the
-   director's own set the count it holds, an operator's changes it), and
+   director's (`ScriptDirector::set_lives`, `ScriptDirector::set_team_pool`;
+   the director's own set the count it holds, an operator's changes it), and
    the director spends a team's respawns from its pool and holds them at
    0, through the same `Respawn` entry as one team; the HUD reads the
    pools from the mode blob. `Finish` ends the game through the engine's
@@ -475,7 +519,14 @@ A snapshot is refused while a match runs.
    replay them.
 5. **Received entries** (`Host::receive`) are checked against the chain.
    The host refuses them: it writes its own log.
-6. **The Clankers** are told of the match (`runtime::bot_context`,
+6. **The mode state** rides in the log. After each step the host
+   appends the HUD's mode blob as a `ModeState` entry for the next tick
+   when it differs from the last one it appended (`Host::note_mode`,
+   from `runtime::post_tick`). Applying one makes no engine call; it
+   sets the blob the machine holds (`Host::mode_state`), which a replica
+   publishes for its HUD after each pre-tick. The operator cannot append
+   one: the agent API's commands have no such variant.
+7. **The Clankers** are told of the match (`runtime::bot_context`,
    `bots::firefight::set_context`): the player teams, the actors' team,
    the bases, each team's lives and whether a wave is on. The runtime
    sends it at the start and whenever it changes, and clears it when the
@@ -498,7 +549,7 @@ that id, and each machine loads its own build.
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time) | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
-| Characters, stage 2 | `tags::schema::transplant` from the player's own campaign maps, with the sound gestalt merge | each class costs tag headroom; `validate` refuses a class that does not fit and the builder reports the cost |
+| Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`) | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
 Stage 1 runs against a map on the configured disc or extracted disc tree:
 
@@ -507,6 +558,7 @@ h2 firefight kit coagulation
 h2 firefight kit beavercreek
 h2 firefight kit beavercreek --home blue --replace
 h2 firefight kit coagulation --probe
+h2 firefight kit beavercreek --classes my-classes.txt --cut
 ```
 
 The first command installs `<data>/maps/firefight-coagulation`. `--home
@@ -519,12 +571,67 @@ probe on a running host. There is no separate list of Firefight maps:
 the lobby offers every installed kit package, so building a map's kit
 offers it.
 
+Stage 2 (`firefight_kit::build_package_with`) takes a `Classes`: the
+donor maps (name and file bytes), the schema, and the class list, each a
+donor's `char` tag path. The classes are copied after the Elite, so
+palette row 0 stays the Elite and row N+1 is class N of the list. A tag
+the base already has (same group and name) is reused, so a class costs
+what its closure adds over the base and the classes before it; sounds
+bring their entries into the base's `ugh!` gestalt, and a class with
+sounds is refused when the base or the donor has no gestalt. The
+package id follows the base, the kit version and the list in order, so
+two machines with the same donors and list build the same id.
+
+`h2 firefight kit` builds the list from the player's own disc
+(`crates/apps/h2-tools/src/firefight_cmd.rs`). Each class is `--class
+NAME=DONOR:CHAR_PATH`, where DONOR is a campaign map on the disc and
+CHAR_PATH the `char` tag's name in it; `--classes FILE` reads one such
+class per line (blank lines and `#` comments skipped). The order of the
+flags and lines is the keep order, `--cut` sets `cut_to_fit`, and the
+command prints each class's cost and what it cut. Donor maps are read
+from the disc at run time and the schema is `Schema::builtin()`; a class
+name listed twice, or `--probe` with classes, is refused. The retail class
+table (which donor and which `char` path gives a Grunt, a Jackal, a Brute)
+is not in the repository: the player writes it from their own maps, and the
+census goes in notes.
+
+**The cost and the cut order.** `Package::classes` gives each class's
+tags, sounds and tag bytes (the copied tags and their index entries; the
+gestalt's growth and alignment are in the build's exact `tag_growth`),
+and `Costs::classes` their sum. The list is in keep order: the first
+class is the last to go. When the build is over the tag headroom, the
+default is a refusal that names the excess, the biggest part and every
+class's cost. With `Classes::cut_to_fit` the builder retries without the
+last class until the build fits, and `Package::cut` names what it cut,
+first cut first. A refusal by the schema (a tag it cannot copy) or a
+missing `char` is an error naming the class, never a cut.
+
+**A drop ship (rules-world-api.md W8, R8).** The same machinery copies
+any group's tree, but three things are missing for a `vehi` root. The
+class takes `char` roots only (`ClassSpec` has no group), so a root group
+and a palette row for it are needed: the scenario's vehicle palette,
+written like the weapon palette row (`ai::weapon_slot`), and a squad's
+`vehicle` index. The schema (`layouts.txt`) must describe every group in
+the ship's closure (vehicle, model, render model, collision, physics,
+animation graph, effects, sounds): the transplant refuses the whole tree
+for one group without a layout, and a census on the player's campaign
+maps says which ship has a closure that copies. And the headroom: a ship
+with its animation graph and physics is far larger than a character, so
+Waterworks, Zanzibar and the other maps with a few KB of room refuse it
+and the cut order drops it first; R8 measures it per map in notes.
+
+The build is `firefight_kit::ground::build`, which takes the labels
+placed on the map and the recipe, and gives each label's place to the
+generator below ([game-types-without-carriers.md](game-types-without-carriers.md),
+"The build step"); with no labels it makes what this section describes.
+
 **Bases.** `firefight-kit/src/bases.rs` finds two bases from the
 scenario: the mean of each team's CTF flag stands (netgame flags at
 `scnr+0x118`, type 0, team at `+0x12`, teams 0 and 1); else the mean of
 each team's starting locations (`scnr+0x100`, team designator at
 `+0x10`); else all starts split into two clusters seeded at the pair
-farthest apart. Base 0 is the home base, base 1 the other. Each starting
+farthest apart; `ff_base` labels, when placed, are the bases instead.
+Base 0 is the home base, base 1 the other. Each starting
 location's team designator is rewritten to its nearer base (a tie goes
 home), so team 0 spawns at the home base and team 1 at the other; the
 rows are rewritten in place, or as a new block at `scnr+0x100` (costed
@@ -691,14 +798,18 @@ Map, and in Forge mode it is hidden ([The lobby](#the-lobby)). It opens
 the Firefight page, a kit screen on Quick
 Options' dialog with six choice rows, each backed by a setting
 (`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Teams
-(`firefight.teams`: the wave set's own, one team or two), Wave set (the
-four built-in definitions, Crossfire the fourth), Difficulty, Starting
+(`firefight.teams`: the wave set's own, one team or two), Wave set
+(`firefight.waveset`: the lobby map's own sets first, then the four
+built-ins, Crossfire the fourth — [Map-specific
+sets](#map-specific-sets)), Difficulty, Starting
 lives (the wave set's own, or 1 to 30) and Skulls (whether each round
 switches its skull on). A on a row opens the value picker over the page; left and right step
 as a shortcut. No row is an arrow row.
 
 `Options::read` reads the store when a game starts and the runtime plays
-that match: `Options::definition` is the wave set with the chosen starting
+that match: `Options::definition` is the wave set the value names on the
+map the game started on (`builtin::resolve`, [Map-specific
+sets](#map-specific-sets)), with the chosen starting
 pool, played with the chosen teams (`builtin::with_teams`) and, with
 skulls off, no round skull; the difficulty goes to the
 director's settings, where it scales kill points. Firefight off in Game
@@ -709,22 +820,16 @@ settings store is present.
 
 The choices are the host's. A client of a distributed session does not read
 its own page: the definition and difficulty reach it in the session data
-(FF9), and a definition other than a built-in one is not offered by the
-page.
+(FF9), and its own page's choices are not read.
 
 ### The lobby
 
-Firefight is a mode of the party lobby
-([party-lobby.md](party-lobby.md), [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)),
-in the GAME MODE picker and on the Xbox Live menu's Firefight row while
-the `firefight` feature is on and a settings store holds the choices,
-whatever maps are installed. Switching to it sets the page's
-Firefight choice on and puts the lobby on a kit map; Game Setup then
-lists the Firefight rows, and the variant panel shows the wave set, the
-difficulty and the starting lives in place of Quick Options' lines (the
-first reads "{set} waves, 2 teams" with two teams). Two teams play as a
-team game whatever the lobby's variant says: the game's start turns the
-variant's team play on ([The host runtime](#the-host-runtime)).
+In Custom Games, choose **Game Setup → Change Rules → Firefight** and
+select a wave set. The variant record carries its definition hash. Both
+activation and the director read that record, including its team count.
+**Change Map** offers installed kit packages that support the wave set.
+A map-specific set requires its own base map. Start Game checks the
+selected map before starting the countdown.
 
 Clankers sit only on player teams (`clankers::firefight_seat_teams`,
 which tells the bots the team count with
@@ -732,41 +837,28 @@ which tells the bots the team count with
 Firefight): with one team every Clanker is on team 0; with two each new
 Clanker joins the team with fewer players, team 0 on a tie. The AI's
 team is never a seat.
-With no kit map installed the mode still opens and the lobby keeps its
-map: the panel says "No installed map supports Firefight yet" and "Make
-one with h2 firefight kit", and Start Game is held with "No installed
-map supports Firefight yet." on the status line
-(`lobby_mode::start_refusal`). A Firefight lobby on a map without the
-kit while one is installed is held the same way, with "This map does
-not support Firefight."
-
-| Row | A does |
-|---|---|
-| **Change Map** | Opens the map select's Firefight category ([map-select.md](map-select.md)): the installed maps that carry the kit. The catalogue lists a kit package as `Firefight – <map>` (what `firefight-kit` names it, `lobby_start::is_kit_map`); the probe's `Firefight Probe – <map>` is not offered. With none installed the retail map list opens, and the log says why. |
-| **Firefight Options...** | Opens the Firefight page ([Game Setup](#game-setup)), the row after Change Map. |
-| **Quick Options**, **Clanker Options** | As in a Multiplayer lobby. |
-
-The game type row is hidden: the runtime starts the mode from the page's
-choices on a kit map ([The host runtime](#the-host-runtime)), and the
-game itself starts as the lobby's Start Game starts any custom game.
+With no compatible kit installed, the map picker is empty and Start
+Game reports the missing kit. Change Rules remains available.
 
 ### The HUD
 
-The HUD shows the round and wave, a banner for the stage, the enemies left
-and the lives (`firefight/hud.rs`). All of it is a function of the **mode
-blob**, `hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
+The HUD shows a banner for the stage, the enemies left, the lives and a
+notification for a new round, a skull switched on or a lost life
+(`firefight/hud.rs`). All of it is a function of the **mode blob**,
+`hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
 intermission, won, lost, team 0 won, team 1 won, draw), the round and
 wave with their totals, whether the wave is a boss wave, the actors
-alive plus those still in the reserve while a wave is on, the team
-count, and the lives (the shared pool, each player's own up to eight
+alive plus those still in the reserve while a wave is on, the skulls on
+(a bit a session skull index, only the nine of `hud::FIREFIGHT_SKULLS`),
+the team count, and the lives (the shared pool, each player's own up to eight
 players, or each team's pool). With two teams the blob carries both
 scores and a mask of team 1's slots, so each viewer sees its own team's
-pool. Version 2 encodes to 13 bytes with one shared pool, 36 with eight
-players' own lives, 25 with two team pools and 46 with two teams and
+pool. Version 3 encodes to 17 bytes with one shared pool, 40 with eight
+players' own lives, 29 with two team pools and 50 with two teams and
 eight players' own lives, inside the actor channel's 63-byte mode
 state. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
-and "DRAW"; a two-team score line, "RED a BLUE b", stays up after the
-end.
+and "DRAW". The points are the game's own score display's and
+scoreboard's; the HUD draws none of its own.
 
 - **The host** builds the blob after each tick from the director and its
   log (`Mode::of`; the outcome is the last `Finish` in the log) and
@@ -777,26 +869,41 @@ end.
   (`actor_net::client::Client::mode_state`) and publishes it
   (`hud::received`) at each tick boundary.
 - **Either machine** draws `hud::current(local_slot)`: the blob, decoded
-  and viewed by `view`, a pure function of the bytes and the roster slot.
+  and viewed by `view_of`, a pure function of the bytes and the roster slot.
   A blob the build cannot read (wrong version, wrong length, a field out
   of range) is an error, not a guess. `the_hud_reads_only_the_mode_blob`
   plays a whole match and requires the client's view to equal the host's
   at every tick.
 
-The layout is one fixed list of six elements (banner, round, wave,
-enemies, lives, and the score, hidden with one team) in the HUD kit's terms (the kit's one layout per HUD, with its `Element`,
-`Place` and `Values`), and `hud::check` runs its rules over
-every state: the same elements in each, each text within its element's
-widest, HUD copy in capitals, digits and single spaces, no two elements
-overlapping and none off the screen in the whole, half and quarter screen
-modes.
+The HUD is the HUD kit's `firefight` HUD
+([forge-firefight-ui.md](forge-firefight-ui.md), "The Firefight HUD";
+`hud_kit_core::huds::firefight`), drawn by Halo 2's own HUD code
+([hud-kit.md](hud-kit.md)). `hud::view_of` turns the blob into the kit's
+`View` for one roster slot and `hud::view` into its `Values`:
 
-The kit's runtime is what draws an element on Halo 2's own HUD, and it is
-not built, so the view is published and checked but not drawn. When it is,
-`hud::LAYOUT` and `hud::view` register as the kit's `Hud` and `Values`,
-and the placements take the kit's retail rectangles. Replicas and films
-have no director and so no blob until the host log carries the mode state
-(AN14). A distributed client gets the blob over the actor channel.
+| Element | Shows |
+|---|---|
+| `ff.banner` (`Banner`) | GET READY, WAVE n, BOSS WAVE, FINISH THEM, WAVE COMPLETE, ROUND COMPLETE, VICTORY, GAME OVER, and the two-team ends; none while the wave is fought. The game shows it for three seconds from when it changes |
+| `ff.lives.pill`, `.end`, `.count` | the viewer's lives while the match is on, in a pill cut from the frag pill at the grenade row's next place, the count in the LCD font (99 at most); the time warning's flash at 1 and 0 |
+| `ff.enemies.pill`, `.end`, `.count` | the enemies left while a wave is on, in the same pill 30 pixels on |
+| `ff.note` (`Message`) | "Round 2 of 3" when a round starts, "Mythic skull on" for each skull switched on (the skull menu's name, `hud::skull_name`; the skulls on at the start send none), "A life lost" or "n lives lost", "Bonus life" or "n bonus lives" when the viewer's count rises (the round's bonus), and at the end "Cleared 2/3" (every round for a one-team win, the rounds before the one lost otherwise; the two-team ends send none) (`huds::firefight::notes`) |
+
+The kit's checks (`h2 hud preview firefight --state all --mode all`)
+hold it in every state and screen mode, and the kit's runtime draws it.
+The feed (`hud::install`, the feature `firefight-hud`, added with the
+`firefight` feature) registers it with the kit and, each tick, views
+`hud::current` at the roster slot of each local user's player
+(`hud::local_slots`), one `hud::Feed` a user (`hud::tick_all`): local
+user 0's values are the HUD's shared ones, which the channels (the
+banner) read, and each other local user's are its own
+(`Handle::publish_for`), so each split-screen player's pill shows its
+own lives. Each user's notes go to that user. With no match, no player
+for the user or a blob it cannot read, that user's elements are hidden;
+the reason for an unreadable blob is logged once. A replica, a
+film's playback among them, has no director: it draws the blob of the
+last `ModeState` entry it applied, one tick after the host's own HUD
+shows it, since the entry is for the next tick. A distributed client
+gets the blob over the actor channel.
 
 ### Live
 
@@ -853,9 +960,28 @@ have no director and so no blob until the host log carries the mode state
 ### Theater
 
 The host's film replays the match, actors included, and holds every
-director command as a recorded log entry (ai-networking.md, "Theater").
-The Theater HUD reads round, wave, lives and score from the recorded
-mode blob.
+host log entry the machine applied, the mode state among them
+(`game::firefight::film`). Each is a Firefight entry record
+(`live_proto::film::stream::FIREFIGHT`, tag 8): the entry's canonical
+JSON at the film tick it was applied. The runtime keeps the entries each
+pre-tick applies and the theater's recorder writes them into that tick
+(`Tick::firefight`); a machine recording no film keeps the latest 4,096.
+The public view of a film leaves them out.
+
+A film's playback runs the mode as a replica: no director, nothing
+appended. When a film tick completes the playback reads the next one and
+hands its Firefight records over (`film::deliver`); the runtime's next
+pre-tick takes them into the replica's log (`Host::receive`), which
+applies each at its own tick, so the entries apply on the tick they did
+on the host. The Theater HUD draws the recorded mode blob.
+`a_film_replays_entries_at_their_ticks` plays a scripted match, records
+it, writes the records through a film time chunk and replays them: the
+same engine calls, the same log and, at every tick, the host's blob.
+Playback starts from the match's first entry: the replica's log is
+checked against a genesis made from the local Game Setup's definition
+and seed, so a film whose match differs is refused at its first entry,
+and a seek or rewind inside a match does not restore the replica's
+log.
 
 ## Interfaces
 
@@ -883,7 +1009,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 | Entry | Points | Body | State | Evidence |
 |---|---|---|---|---|
 | AI on | `AI_GLOBALS` `+0` | `switch_ai_on` | built | the script switch 278 stores its boolean there (`0x2a4d31`, [ai-control.md](../halo1/ai-control.md)) |
-| Place a squad with a count | `AI_SQUAD_PLACE` (`0x201520`), behind `HS_AI_PLACE_COUNTED` (291) | `place_squad` | traced; run R1 | Evaluator 291 resolves its two arguments, keeps the `ai` value only for a plain squad (top two bits clear, `0x2a5045`), and calls `0x201520` with the count in EAX and four stack words: the squad index, start -1, 0 and 1 (`0x2a5052`); it then stores the `ai` value at AI globals `+0x364`. The one-argument overload (290) reaches the same routine through `0x273480` with the count -1, which takes the squad's normal or legendary count by difficulty (`0x2015c5`). The routine returns at once while AI globals `+1` is clear (`0x20152e`). Start -1 lets `AI_CHOOSE_SQUAD_START` pick each actor's start, and the pool of starts refills when it runs out (`0x203ac5`), so a count over the squad's starts reuses them. The third word, a byte, skips the given start's availability check and the vehicle-seat attempt; the fourth goes to `AI_SPAWN_AT_SQUAD_START` as its flags |
+| Place a squad with a count | `AI_SQUAD_PLACE` (`0x201520`), behind `HS_AI_PLACE_COUNTED` (291) | `place_squad` | traced; run R1 | Evaluator 291 resolves its two arguments, keeps the `ai` value only for a plain squad (top two bits clear, `0x2a5045`), and calls `0x201520` with the count in EAX and four stack words: the squad index, start -1, 0 and 1 (`0x2a5052`); it then stores the `ai` value at AI globals `+0x364`. The one-argument overload (290) reaches the same routine through `0x273480` with the count -1, which takes the squad's normal or legendary count by difficulty (`0x2015c5`). The routine returns at once while AI globals `+1` is clear (`0x20152e`). Start -1 lets `AI_CHOOSE_SQUAD_START` pick each actor's start, and the pool of starts refills when it runs out (`0x203ac5`), so a count over the squad's starts reuses them. The third word, when set, skips the given start's availability check and its emitter's deferred placement action. The fourth goes to `AI_SPAWN_AT_SQUAD_START` as its flags. The later seat attempt chooses a vehicle by palette. [Retail trace](notes/2026-11-24-vehicle-actions.md). |
 | ... its character and zone | scenario squad `+0x36` and `+0x38`, its starts' positions | `place_squad` | traced | Nothing chooses them at the call. `AI_SPAWN_AT_SQUAD_START` reads, for each actor, the start's character (`+0x20`) or else the squad's (`+0x36`), as an index into the character palette (scenario `+0x178`, `0x2037cc`); a squad with neither places nobody. The squad's areas while it has no order come from its zone `+0x38` (`0x204f93`), and its actors appear at its starts' positions. So `place_squad` writes the palette index, the zone, and the zone's firing positions into the slot squad's starts, then places: tag memory every applying machine writes the same way. The weapon tier is not applied, since the stage-one kit authors one weapon |
 | Actors' team | `AI_SET_TEAM` (`0x275b60`), behind `HS_AI_SET_TEAM` (322) | `place_squad`, after the placement | traced | The evaluator passes the `ai` value in EAX and the team in BX (`0x2a587a`). The routine accepts a squad or a group, writes the runtime squad's team byte (`+0x76`, `0x275bf4`), then each actor's team (`+0x24`, which `world.ai` reports) and its unit's (`+0x138`, `0x275c99`). Placement copies a nonzero squad team byte onto each new unit (`0x20187a`), but team 0 reads as unset there, so the body sets the team after every placement |
 | Hunt | `AI_SET_ORDERS` (`0x275cb0`), behind `HS_AI_SET_ORDERS` (333) | `hunt` | built | The evaluator passes the `ai` value in EAX and the order index in CX (`0x2a5c39`). The routine ignores an index outside the scenario's order block (`+0x240`, `0x275ce6`) and hands a squad to `0x202e90`, a group to `0x203120`. There is no built-in hunt: it is an order the kit authors, which `hunt` finds by its name `ff_hunt`. The kit writes it as order 0 of an empty block (`ai::hunt_order`): no style, script or follow target, and every area of every drop zone as its primary area set, so a squad sent to it engages from across the arena. A base map that already has orders is refused, since the kit does not merge into another block's child arrays. A kit with no zone areas is refused with the Hunt order named |
@@ -941,23 +1067,23 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 
 | # | Slice | Size | Needs | Files | Named tests | Acceptance |
 |---|---|---|---|---|---|---|
-| **FF1** | `firefight`: `Def`, canonical form and hash, `validate`, three built-in definitions | S | nothing | `crates/formats/firefight/src/{def,validate,builtin}.rs` | `golden_hash_for_the_builtin_defs`, `a_wave_over_the_cap_is_refused`, `an_unknown_class_is_refused`, `canonical_form_is_stable_under_key_order` | every validator rule has a refusing case; built-ins validate |
+| **FF1** | `firefight`: `Def`, canonical form and hash, `validate`, the built-in definitions and the map-specific sets | S | nothing | `crates/formats/firefight/src/{def,validate,builtin}.rs` | `golden_hash_for_the_builtin_defs`, `a_wave_over_the_cap_is_refused`, `an_unknown_class_is_refused`, `canonical_form_is_stable_under_key_order`, `each_map_set_validates_compiles_and_round_trips`, `the_menu_offers_the_maps_sets_first_then_the_built_ins`, `a_store_value_resolves_per_map_and_falls_back_to_the_built_ins` | every validator rule has a refusing case; built-ins and map sets validate |
 | **FF2** | The director: states, the reserve and cap, zone choice, lives, scoring, commands | M | FF1, AN1 | `crates/formats/firefight/src/{director,scoring}.rs` | `a_scripted_match_issues_the_golden_command_list`, `live_actors_never_exceed_the_cap`, `no_zone_in_sight_is_chosen_while_another_exists`, `same_seed_same_commands`, `the_pool_at_zero_holds_respawns_until_the_wave_ends`, `everyone_dead_and_no_lives_finishes_lost`, `a_replay_of_the_observed_sequence_issues_the_same_commands`, `a_resumed_mode_blob_issues_the_same_commands` | 1,000 seeded matches against a scripted `Observed` never break the cap and always end |
 | **FF3** | The kit, stage 1: sectors, drop zones, zones and firing positions, squad slots, authored Elite characters, the package and its id; the `firefight-probe` test map recipe (one squad of two) | L | nothing | `crates/tools/firefight-kit/`, `crates/apps/cli/` (`h2 firefight kit`), the test-map recipe list ([test-maps.md](test-maps.md)) | `two_builds_of_one_map_are_byte_equal`, `squad_blocks_read_back_through_h1campaign`, `every_drop_zone_has_a_path_to_the_middle`, `a_map_without_headroom_is_refused_with_the_cost`, `only_the_arenas_walkable_area_keeps_sectors`, `a_live_index_tail_moves_only_the_group_table`, `the_probe_recipe_places_one_squad`, `the_kit_authors_one_named_hunt_order_over_every_area`, `hunt_spans_every_zone_and_refuses_an_arena_without_areas` | on invented maps the kit's blocks read back; the coordinator's build on a retail map and probe P2 go in notes |
 | **FF4** | The host runtime over the `Game` interface: the AI switch, team setup, `Observed`, applying commands; then the squad, score and game-end entries behind it ("Guest boundary" gives each one's state); the `Game` over the guest bodies and the `firefight` feature at the tick boundary | M | FF2, FF3, AN6, P2 | `crates/extensions/game/src/firefight/{host,guest,runtime,feature}.rs`, `crates/extensions/game/src/actor_net/squads.rs`, `points.rs`, `crates/apps/boot/src/registration.rs` | `place_calls_the_squad_entry_with_class_and_count`, `a_client_applies_no_command`, `score_credits_the_killer`, `entries_apply_at_their_tick_in_seq_order`, `a_map_without_the_kit_refuses_the_mode`, `a_scripted_match_makes_the_expected_engine_calls_in_order`, `a_map_without_the_kit_is_refused_with_its_reason`, `an_operator_command_is_the_engine_call_before_the_next_tick`, `a_kit_map_starts_the_host_switches_ai_on_and_looks_at_each_zone`, `the_plan_builds_with_every_hook_switch_on` | over a fake game, a scripted match produces the expected engine calls in order; over invented guest memory, the runtime makes them through the guest bodies before the tick; boot's plan builds with the feature on |
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit`; `lives` and `score` on `sim.view`'s `player` root | S | FF4 | `crates/extensions/agent/src/firefight.rs`, `crates/extensions/agent-proto/src/firefight.rs`, `crates/extensions/agent/src/sim/state.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback`, `kit_reads_the_loaded_scenario`, `the_view_reports_each_players_lives`, `the_view_reports_each_players_score` | the methods answer over a fake game |
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `the_firefight_summary_is_the_golden_one_and_players_cannot_write_it`, `the_firefight_summary_is_the_same_on_the_worker`, `firefight_scores_do_not_touch_ranks`, `a_two_team_match_projects_wins_by_team`, `credits_pair_each_kill_with_its_class_and_assist`, `a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film`, `firefight_scores_become_running_objective_scores`, `reads the server's golden summary as it is` (web) | both homes give the same summary |
-| **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |
-| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`); `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state (`every_state_passes_the_layout_checks`) | a client with only the mode blob draws the same HUD as the host |
+| **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's "In Firefight" table gives each skull's scope with a test. Built, tests only: the engine's campaign gate is not yet answered for the AI readers (one hook each, listed there). Also tested: `the_skull_array_gets_exactly_the_hosts_ai_set`, `every_firefight_skull_has_a_scope_and_an_engine_index`, `a_skull_already_on_is_not_switched_on_again`, `a_round_skull_scores_from_its_first_wave` |
+| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/rewrites/hud-kit-core/src/views/firefight.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`, `the_wave_set_row_offers_the_maps_set_first_on_its_map`, `a_map_set_value_plays_on_its_map_and_falls_back`); `the_hud_reads_only_the_mode_blob`; the kit's checks in every state and mode (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`, `every_blob_gives_the_kits_one_layout`) | a client with only the mode blob draws the same HUD as the host |
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite; built: `firefight_match_round_trips_and_is_left_out_when_none`, `firefight_match_is_validated`, `sessions_carry_the_hosts_firefight_match`, `guests_read_the_firefight_match_their_host_advertises`, `each_multiplayer_start_names_its_match_for_the_session`, `each_builtin_is_found_by_its_hash_prefix`, `a_hopper_takes_the_builtin_firefight_sets`, `a_crossfire_variant_is_accepted_by_its_hash_prefix`, `the_builtin_firefight_sets_are_offered_crossfire_with_teams`, `firefight_seats_balance_two_teams_and_fill_one`, `firefight_sessions_seat_clankers_on_player_teams_only`, `a_firefight_session_seats_balanced_clankers_on_the_worker` | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/live/live-proto/src/{hosts,host_pack}.rs`, `crates/apps/cli/src/host_cmd/{pack,process}.rs`, `crates/apps/cli/src/server_map.rs`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors`; built: `a_whole_slot_class_needs_an_empty_pack_and_keeps_it`, `a_firefight_lease_takes_the_whole_slot_class`, `the_bundle_carries_each_maps_firefight_kit_and_the_host_places_it`, `only_kit_packages_and_their_index_are_firefight_payload` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `the_firefight_examples_load`, `rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
-| **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order | L | FF3, P2 | `crates/tools/firefight-kit/src/transplant.rs` (new) | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids` | on invented maps; the retail census goes in notes |
+| **FF12** | The kit, stage 2: transplanted classes, their cost, the cut order (**built**, no command yet) | L | FF3, P2 | `crates/tools/firefight-kit/src/{transplant,lib,ai,testkit}.rs` | `a_class_over_the_headroom_is_refused_with_its_cost`, `a_transplanted_closure_resolves`, `two_machines_build_equal_ids`, `the_cut_order_drops_the_last_class_first`, `a_class_the_schema_cannot_copy_is_refused_by_name` | on invented maps; the retail census, the `h2 firefight kit` option and the class table remain |
 | **FF13** | The 16-player playlist at the live-actor cap measured by the CPU probe | S | FF9, FF10, FF11, P5 passes at 16 seats | `crates/tools/hopper-edit/`, `crates/live/live-server/`, `crates/live/live-worker/` | `sixteen_player_playlist_requires_the_measured_host_class`, `sixteen_player_definition_honours_the_measured_actor_cap`, the parity suite | publish in both Live homes only with a P5 result at or below 28 ms p99 game-thread CPU at the chosen live-actor cap on the intended host class. Admission uses that class and cap |
 | **FF14** | Home bases in the kit: bases from flag stands, team starts or clusters; drops away from both with a path to each; firing positions facing the nearer base; `ff_base_NN` zones and `ff_hunt_NN` orders; starts rewritten to their base's team; `--home`; Beaver Creek's kit | M | FF3 | `crates/tools/firefight-kit/src/{bases,nav,ai,lib}.rs`, `crates/apps/h2-tools/src/firefight_cmd.rs`, `crates/extensions/game/src/firefight/guest.rs` | `home_base_is_read_from_team_starting_points`, `home_base_prefers_the_ctf_flag_stand`, `the_home_option_swaps_the_bases`, `bases_split_untagged_starts_into_two_clusters`, `starting_locations_take_their_base_team`, `drops_are_chosen_away_from_the_home_base`, `every_drop_zone_has_a_path_to_each_base`, `firing_positions_face_the_nearer_base`, `each_base_has_a_hunt_order_over_its_area`, `the_kit_writes_each_start_its_base_team`, `read_kit_finds_the_bases_and_hunt_orders` | on invented maps the bases, drops and orders read back; the coordinator's Beaver Creek build goes in notes |
 | **FF15** | Two player teams: `Def::teams` and `player_kill` (format 2), validation, Crossfire, per-team pools and scores, targets, team-side zones, two-team ends, the rules-script form and its entries | M | FF2 | `crates/formats/firefight/src/{def,validate,builtin,director,script}.rs`, `crates/formats/rules/src/{caps.rs,lang/sig.rs}`, `crates/formats/firefight/tests/teams.rs` | `two_teams_start_with_a_pool_each_and_spend_their_own`, `a_team_out_of_lives_loses_to_the_other`, `both_teams_out_at_once_go_to_the_higher_score`, `both_teams_out_level_on_score_and_lives_is_a_draw`, `the_last_round_goes_to_the_higher_score_then_lives_then_a_draw`, `player_kills_score_across_the_teams_only`, `squads_are_sent_at_both_teams`, `the_team_fewer_actors_press_gets_the_next_squad`, `a_squad_drops_on_its_target_teams_side`, `a_players_team_is_fixed_when_first_seen`, `two_team_matches_always_end_with_a_team_result`, `team_counts_and_player_kill_points_are_refused_out_of_range`, `two_team_matches_give_the_same_commands`, `two_team_ends_give_the_same_commands`, `a_team_pool_set_from_outside_is_the_one_its_respawns_spend`, `pools_set_from_outside_are_refused_where_the_match_keeps_none` | the director and the script give the same commands over two-team scenarios; every two-team match ends with a team result |
-| **FF16** | Clankers in Firefight: player-team seats only, balanced with two teams; actors as enemies; home-base hold, fall back, rearm, no lone drop-zone trips, regroup on low lives | M | FF4, FF15 | `crates/live/bots/src/firefight.rs` (new), hooks in `crates/live/bots/src/{lib,mind,mind/strategy,perceive,phantom/session}.rs`, [bots.md](bots.md#310-firefight) | `firefight_seats_are_player_teams_only`, `actors_are_seen_as_targets`, `teammates_are_never_targeted`, `two_team_bots_target_the_other_team_and_actors`, `bots_hold_near_their_home_base`, `bots_regroup_when_the_pool_runs_low`, `bots_do_not_wander_to_a_drop_zone_alone`, `actors_are_read_from_the_pool` | on invented perception, bots never take the AI's team and never target a teammate |
-| **FF17** | Two teams in the game: the host's team checks and third AI team, `Observed` per team and player kills, `Target`/`TeamLives`/hunt by base, HUD blob v2 with both scores, the Teams row, Clanker seats, the bots' context, the agent API's two-team state and commands | M | FF4, FF5, FF8, FF15, FF16 | `crates/extensions/game/src/firefight/{host,runtime,hud,options}.rs`, `crates/extensions/game/src/{clankers,lobby_mode,actor_net/squads}.rs`, `crates/extensions/agent-proto/src/firefight.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `observed_carries_each_players_team_and_player_kills`, `zone_team_distance_is_from_each_teams_centre`, `hunt_goes_to_the_targets_base`, `the_actors_take_a_third_team_with_two_player_teams`, `two_teams_need_a_base_each`, `two_teams_need_team_play_and_a_base_each`, `the_clankers_are_told_the_teams_bases_and_lives`, `the_end_report_carries_each_teams_score_and_the_winner`, `two_teams_show_both_scores_and_each_viewer_its_teams_lives`, `the_teams_choice_reaches_the_definition`, `clankers_never_take_the_ai_team`, `two_team_firefight_balances_clankers`, `state_reports_each_teams_pool_and_score`, `command_takes_the_two_team_commands`, `an_operator_team_pool_is_the_one_the_director_spends`, `two_teams_turn_team_play_on_before_the_game_starts`, `only_two_firefight_teams_on_a_kit_map_turn_team_play_on` | over a fake game a two-team match makes the expected calls; a client's HUD equals the host's in a two-team match |
+| **FF16** | Clankers in Firefight: player-team seats only, balanced with two teams; actors as enemies; home-base hold, fall back, rearm, no lone drop-zone trips, regroup on low lives (**built**) | M | FF4, FF15 | `crates/live/bots/src/firefight.rs` (new), hooks in `crates/live/bots/src/{lib,mind,mind/strategy,perceive,phantom/session}.rs`, [bots.md](bots.md#310-firefight) | `firefight_seats_are_player_teams_only`, `actors_are_seen_as_targets`, `teammates_are_never_targeted`, `two_team_bots_target_the_other_team_and_actors`, `bots_hold_near_their_home_base`, `bots_regroup_when_the_pool_runs_low`, `bots_do_not_wander_to_a_drop_zone_alone`, `actors_are_read_from_the_pool` | on invented perception, bots never take the AI's team and never target a teammate |
+| **FF17** | Two teams in the game: the host's team checks and third AI team, `Observed` per team and player kills, `Target`/`TeamLives`/hunt by base, HUD blob v2 with both scores, the Teams row, Clanker seats, the bots' context, the agent API's two-team state and commands | M | FF4, FF5, FF8, FF15, FF16 | `crates/extensions/game/src/firefight/{host,runtime,hud,options}.rs`, `crates/extensions/game/src/{clankers,lobby_mode,actor_net/squads}.rs`, `crates/extensions/agent-proto/src/firefight.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `observed_carries_each_players_team_and_player_kills`, `zone_team_distance_is_from_each_teams_centre`, `hunt_goes_to_the_targets_base`, `the_actors_take_a_third_team_with_two_player_teams`, `two_teams_need_a_base_each`, `two_teams_need_team_play_and_a_base_each`, `the_clankers_are_told_the_teams_bases_and_lives`, `the_end_report_carries_each_teams_score_and_the_winner`, `two_teams_show_each_viewer_its_teams_lives`, `the_teams_choice_reaches_the_definition`, `clankers_never_take_the_ai_team`, `two_team_firefight_balances_clankers`, `state_reports_each_teams_pool_and_score`, `command_takes_the_two_team_commands`, `an_operator_team_pool_is_the_one_the_director_spends`, `two_teams_turn_team_play_on_before_the_game_starts`, `only_two_firefight_teams_on_a_kit_map_turn_team_play_on` | over a fake game a two-team match makes the expected calls; a client's HUD equals the host's in a two-team match |
 
 FF1 and FF3 start at once, beside AN0, AN1, AN2 and AN6. FF2 follows
 FF1 and AN1. FF9's format half can run beside FF2. FF4 is the join
@@ -983,6 +1109,9 @@ point: it needs the kit, the director and probe P2.
 - That Slayer's lives and rounds can be driven from outside as described.
 - Tag headroom per map with the kit applied.
 - Everything ai-networking.md lists.
+- That a film's playback starts the match before the first Firefight
+  record is handed over, and that the hook order puts the hand-over
+  before the next tick's pre-tick in a real playback.
 - That actors on a third team fight both player teams of a team game,
   and that a squad's `ff_hunt_NN` order makes it push into that base.
 - That the engine spawns each team at the starting locations whose team
@@ -990,6 +1119,10 @@ point: it needs the kit, the director and probe P2.
   names on retail maps.
 - That Beaver Creek yields six drops away from both bases.
 - Whether team 1 reads as blue in the game, as the HUD's "BLUE" assumes.
+- The HUD in a game: the banner, the pills and the notes through
+  `hud.render` and a live match on the lab Mac, the pills clear of the
+  retail grenade panel in every screen mode, and the LCD count inside
+  its pill.
 - That team play turned on at `GAME_ACTIVATE` (the scenario is loaded
   then, so the kit reads) makes a team game of a lobby that was free for
   all, which team each person then plays on, and that a guest's game

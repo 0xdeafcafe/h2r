@@ -22,6 +22,8 @@ pub enum Key {
     Accept,
     Tools,
     Settings,
+    /// The Overlays page.
+    Overlays,
     Undo,
     Redo,
 }

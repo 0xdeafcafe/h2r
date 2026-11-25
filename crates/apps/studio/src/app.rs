@@ -4,12 +4,15 @@
 //! guard. The Dear ImGui layer (`ui`) turns
 //! clicks and shortcuts into [`Action`]s and draws this state; tests drive
 //! it directly.
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 pub mod announcer;
+pub mod anim;
 pub mod audition;
+pub mod sound_mouth;
 pub mod bot_nav;
+pub mod ground;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
@@ -22,20 +25,43 @@ mod navigation;
 pub mod map_cards;
 pub mod map_pack;
 pub mod modeling;
+pub mod playtest;
+pub mod playtest_shown;
 pub mod playtest_static;
 pub mod external;
 pub mod rules_edit;
+pub mod recordings;
+pub mod script_edit;
 pub mod scripts;
 pub mod shared_refs;
+pub mod shader;
+pub mod shader_override;
+pub mod shell;
+pub mod subject;
 pub mod tag_api;
 pub mod tag_browse;
 pub mod tag_bundle;
 pub mod tag_doc;
+pub mod assets;
+pub mod links;
+pub mod edit_lines;
+mod doc_save;
+pub mod edit_target;
+pub mod mods;
+pub mod package_doc;
+pub mod preview_switch;
+pub mod problems;
+pub mod sound_edit;
+pub mod sound_import;
+pub mod bitmap_import;
 pub mod tag_tree;
 pub mod textures;
 pub mod ui_screens;
+pub mod voice_batch;
 pub mod voices;
+pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};
+pub use edit_target::{EditChoice, EditState, Picker};
 pub use convert::{
     Built, Converter, Input as ConvertInput, Running, Written, explain, from_scratch,
     retail_sources,
@@ -44,15 +70,16 @@ pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
 pub use scripts::{ScriptAction, ScriptsTool};
+pub use shell::{Doc, Surface, Tab};
 pub use navigation::{NavAction, NavHistory, NavLocation};
-pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
+pub use tag_doc::{BlockEdit, BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
 use editor_core::map_groups::MapGroup;
 use editor_core::{MapPack, MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
 use scenario_edit::layers::{LayerId, Layers};
-use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
+use scenario_edit::{BlockKind, MapSource as EditSource, Session};
 use variants::panel::Origin;
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
 
@@ -79,6 +106,7 @@ pub enum ToolKind {
     /// The open map's bitmaps: paint, import and export PNGs
     /// (docs/editor/modeling.md, "Texture editing").
     Textures,
+    Package,
 }
 
 impl ToolKind {
@@ -102,6 +130,7 @@ impl ToolKind {
             ToolKind::Tags => "Tags",
             ToolKind::Scripts => "Scripts",
             ToolKind::Textures => "Textures",
+            ToolKind::Package => "Package",
         }
     }
 }
@@ -127,7 +156,9 @@ pub enum Selection {
 pub enum SaveTarget {
     File(PathBuf),
     Package(PathBuf),
-    PackageForm { name: String },
+    /// The edits are lines in the edit target: a package, or `None` while
+    /// there is none and Save asks for one.
+    EditTarget(Option<String>),
     Nothing,
 }
 
@@ -139,12 +170,17 @@ pub enum Action {
     OpenSource(PathBuf),
     /// Open a map from the source's list.
     SelectMap(String),
-    /// Save the map to its current destination or open the package form.
+    /// Save the map to its current destination, or write the edit lines to
+    /// the edit target (asking for one first when there is none).
     Save,
-    /// Write the edited map as a new `.map` file.
+    SaveRules,
+    SaveAnimation { doc: u64, placement: Option<anim::DraftPlacement> },
+    SaveVoiceLines(Vec<u64>),
+    SaveVoiceClip { file: PathBuf, clip: String },
+    /// **Export map...**: write the edited map as a whole `.map` file.
     SaveMapAs(PathBuf),
-    /// Save the edits as a map package under the data root.
-    SavePackage(PackageForm),
+    /// The answer to the first-edit picker.
+    ChooseEditTarget(EditChoice),
     /// Open one of the open map's packages (by directory name).
     OpenPackage(String),
     /// Open a package from the Maps list (by [`PackageEntry::key`]): a
@@ -181,6 +217,17 @@ pub enum Action {
         value: scenario_edit::Value,
         merge: Option<u64>,
     },
+    /// Set or clear the area of a netgame flag
+    /// (docs/game/gametype-markers.md, "Studio"). Edits with the same
+    /// merge key in a row are one undo step (a handle's drag).
+    SetArea {
+        index: usize,
+        area: Option<scenario_edit::marker_view::game_markers::Area>,
+        merge: Option<u64>,
+    },
+    /// Convert the retail hill a corner flag belongs to into one flag with
+    /// an area, as one undo step.
+    ConvertHill(usize),
     /// Edit a field of every selected placement (the inspector), one undo
     /// step; edits with the same merge key in a row stay one.
     EditSelection {
@@ -251,6 +298,19 @@ pub enum Action {
     /// Add a new placement where the cursor met the level: a copy of an
     /// entry, or the block's first palette item.
     PlaceAt(BlockKind, Option<usize>, [f32; 3]),
+    /// Place a ground label at `at`: one netgame flag with its label, as
+    /// one undo step (`app::ground`). The Scene tab's AI and objectives
+    /// group and `scenario.add {block: "label"}` both come here.
+    PlaceLabelAt {
+        kind: scenario_edit::LabelKind,
+        at: [f32; 3],
+        facing: f32,
+        team: u8,
+        phase: u16,
+    },
+    /// Build the AI ground over the open map (`app::ground`): **Build AI
+    /// ground**, and `ground.build`.
+    BuildGround,
     /// Delete the selected placements.
     Delete,
     /// Duplicate the selected placements.
@@ -264,6 +324,8 @@ pub enum Action {
     FocusSelected,
     SetFlySpeed(f32),
     SetAllowGrowth(bool),
+    /// The Shader tab's WGSL override box (`shader_override`).
+    ShaderOverride(shader_override::OverrideAction),
     /// "Allow unverified geometry writes": while off, a save with
     /// Modeling edits is refused (docs/editor/modeling.md).
     SetAllowUnverifiedGeometry(bool),
@@ -276,6 +338,46 @@ pub enum Action {
     Image(image_gen::ImageAction),
     /// Show another tool.
     SetTool(ToolKind),
+    /// Show an editor's surface: the View menu's editors and a document
+    /// brought forward.
+    Show(Surface),
+    /// Open a browser row's tag (an asset id, `tag:<group>:<path>`) in its
+    /// editor, or open a voice, package, or authored item in its document
+    /// (`app::assets`). Tag editors use the supplied map or the open map.
+    OpenAsset { asset: String, map: Option<String> },
+    /// Make and open a package item in the edit target.
+    CreateAsset(assets::CreateAsset),
+    /// Run a package document control through the package API handlers.
+    PackageCommand { method: &'static str, params: serde_json::Value },
+    /// **Fork for this map**: the asset's edit lines for the open map, in
+    /// the edit target (`app::mods`).
+    ForkAsset { asset: String },
+    /// **Revert for this map**: take the open map's fork of the asset out
+    /// of the edit target (`app::mods`).
+    RevertAsset { asset: String },
+    /// Read the Problems list again: every source, or one of
+    /// [`problems::SOURCES`] (`app::problems`).
+    RefreshProblems(Option<String>),
+    /// Open the document of row `.0` of the Problems list (`app::problems`).
+    OpenProblem(usize),
+    /// Run `pair.preview` for a document (the front one without `doc`),
+    /// as the **Preview in game** button does (`app::preview_switch`).
+    PreviewInGame(Option<Doc>),
+    /// Switch a document's preview target (`preview.target`).
+    SetPreviewTarget(Doc, preview_switch::PreviewTarget),
+
+    // Document tabs (`shell`).
+    /// Open a document as a tab and bring it to the front: a tag of the
+    /// open map in the editor its group gets, or an open tool document.
+    OpenDoc(Doc),
+    /// Bring a tab to the front, showing its document in its editor.
+    FocusDoc(Doc),
+    /// Close a tab: a tool's document (asking about its edits first), or a
+    /// tag's tab (its edits stay the map's).
+    CloseDoc(Doc),
+    /// Undo or redo in a tab's own undo stack.
+    UndoDoc(Doc),
+    RedoDoc(Doc),
 
     // Game variants.
     /// Open a list entry (a built-in or a save).
@@ -296,6 +398,11 @@ pub enum Action {
     /// (`variants::panel::VariantEditor::set_row`): the `hx` extras are
     /// edited as these rows.
     SetVariantRow(String, i32),
+    /// Set the weapon of ours the open variant gives as its starting
+    /// (false) or secondary (true) weapon: an id of
+    /// `variants::ext_weapons::TABLE`, 0 for the record's own
+    /// (`VariantEditor::set_other_weapon`).
+    SetVariantWeapon(bool, u16),
     /// Write the open variant to the save storage.
     SaveVariant,
     /// Back to the variant as last loaded or saved.
@@ -304,6 +411,10 @@ pub enum Action {
     DeleteVariant,
     /// Write the open variant as a portable `.h2variant` file.
     ExportVariant(PathBuf),
+    /// The same, suggesting these map variants
+    /// (`VariantEditor::export_current_with`): a version-2 file with
+    /// `maps`. None suggested is `ExportVariant`.
+    ExportVariantWith(PathBuf, Vec<variants::portable::MapSuggestion>),
     /// Open a portable `.h2variant` file as a new, unsaved variant.
     ImportVariantFile(PathBuf),
     /// The same, from pasted text.
@@ -385,10 +496,11 @@ pub enum Action {
     NewHopper,
     /// Start from the Live server's built-in lineup.
     NewDefaultHopper,
-    /// Save the playlist file in place.
+    /// Save the playlist as an item of the edit target.
     SaveHopper,
     /// Save the playlist file to a path (and edit that from now on).
     SaveHopperAs(PathBuf),
+    ExportPlaylist(PathBuf),
     /// Give a playlist entry a game variant (one undo step).
     SetEntryVariant(usize, usize, Box<GameVariant>),
     /// Open a playlist entry's variant in the variant tool, as a new copy.
@@ -429,6 +541,14 @@ impl Action {
                 dirty_map()
             }
             Action::SelectHalo1Map(_) => dirty_map(),
+            Action::OpenAsset { asset, map: Some(name) }
+                if !asset.starts_with("package:")
+                    && (app.loaded.as_deref() != Some(name.as_str())
+                        || app.opened_package.is_some()
+                        || app.browsing().is_some()) =>
+            {
+                dirty_map()
+            }
             Action::OpenVariant(o) if app.variant_origin() != Some(o) => dirty(ToolKind::Variants),
             Action::NewVariant(_)
             | Action::NewVariantFromScript(_)
@@ -439,6 +559,10 @@ impl Action {
                 dirty(ToolKind::Playlists)
             }
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
+            Action::CloseDoc(Doc::Map) => dirty_map(),
+            // The script's text stays in the editor when its tab closes.
+            Action::CloseDoc(Doc::Rules | Doc::Voice | Doc::SourceAsset(_)) => None,
+            Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
     }
@@ -489,6 +613,8 @@ pub struct App {
     /// The bots' nav mesh and spots loading for the open map
     /// ([`bot_nav`]).
     bot_nav: bot_nav::BotNavLoad,
+    /// The AI ground's build and what it made ([`ground`]).
+    ground: ground::GroundBuild,
     /// The playlist editor.
     pub hoppers: HopperSession,
     /// The playlist shown (0..16).
@@ -502,14 +628,13 @@ pub struct App {
     quit: bool,
     /// The outliner's filter text.
     pub filter: String,
-    /// The "Save as package" form while it is open.
-    pub package_form: Option<PackageForm>,
-    /// The image path typed into that form.
-    pub package_image: String,
+    /// Where edits go and what waits for it (`app::edit_target`).
+    pub edits: EditState,
     /// The packages under the data root.
     packages: Vec<editor_core::packages::PackageEntry>,
     /// The package entry open in the scenario tool.
     opened_package: Option<String>,
+    source_assets: Vec<Option<assets::SourceAsset>>,
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
@@ -535,6 +660,10 @@ pub struct App {
     pub layers: Layers,
     /// What the viewport's level shows: the Lighting menu's mode.
     pub lighting: scenario_edit::native_view::Lighting,
+    /// The placements `tag.uses highlight` outlines in the viewport
+    /// (a square on the ground each), until the next highlight or
+    /// selection.
+    pub highlighted: BTreeSet<(BlockKind, usize)>,
     overlay_rev: u64,
     /// The conversion running, why the last one wrote nothing, and what
     /// runs it.
@@ -554,6 +683,14 @@ pub struct App {
     pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// The Problems list as last read (`app::problems`).
+    pub problems: problems::Problems,
+    /// The playtest result the layers draw and the Playtest panel lists
+    /// (`app::playtest_shown`).
+    pub playtest: playtest_shown::Shown,
+    /// Each document's preview target and the Preview in game ask
+    /// (`app::preview_switch`).
+    pub preview: preview_switch::PreviewSwitch,
     /// The fan-out of every write to the Preview, the own game and an
     /// attached game (docs/editor/live-editors.md).
     pub live: live::Fanout,
@@ -574,6 +711,8 @@ pub struct App {
     /// shared cache), beside the open map's document ([`Self::tags`]).
     pub(crate) tag_browse: Option<tag_browse::Browse>,
     nav: NavHistory,
+    /// The documents brought to the front, for the header's Back and Forward.
+    doc_trail: navigation::DocTrail,
     /// The bitmap preview of the open map's document (the browsed map's
     /// is its own): the tag and the picture, or why there is none.
     tag_preview: Option<(map::TagId, Result<std::sync::Arc<map_pack::Picture>, String>)>,
@@ -582,12 +721,22 @@ pub struct App {
     pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
     /// Sound audition: the decoded sound, the audio output and what plays.
     pub audition: audition::Audition,
+    /// Model poses: the graph read, its clips and the models that use it.
+    pub anim: anim::Anim,
     /// The Announcer: its voice source and the last line made.
     pub announcer: announcer::Announcer,
     /// Voices: the clone's datasets, jobs and sidecar (`voices`).
     pub voices: voices::Voices,
+    pub(crate) package_document: package_doc::Document,
     /// The game type script editor (`rules_edit`).
     pub rules: rules_edit::RulesEditor,
+    /// The Shader tab's WGSL drafts and pushed overrides (`shader_override`).
+    pub shader_overrides: shader_override::Overrides,
+    /// The document tabs and the one in front (`shell`).
+    tabs: shell::Tabs,
+    /// The tag workspace: the tree's root, the plan, extraction and
+    /// prune (`app::workspace`, docs/editor/tag-workspace.md).
+    pub workspace: workspace::Workspace,
 }
 
 impl Default for App {
@@ -605,6 +754,9 @@ impl App {
             loaded: None,
             saved_path: None,
             tool: ToolKind::Scenario,
+            problems: Default::default(),
+            playtest: Default::default(),
+            preview: Default::default(),
             fly_speed: crate::camera::DEFAULT_SPEED,
             session: Session::new(),
             pending: None,
@@ -612,6 +764,7 @@ impl App {
             variants_for: None,
             data_root: None,
             bot_nav: Default::default(),
+            ground: Default::default(),
             hoppers: HopperSession::new(),
             hopper_selected: 0,
             hopper_preset: None,
@@ -620,10 +773,10 @@ impl App {
             started: std::time::Instant::now(),
             quit: false,
             filter: String::new(),
-            package_form: None,
-            package_image: String::new(),
+            edits: EditState::default(),
             packages: Vec::new(),
             opened_package: None,
+            source_assets: Vec::new(),
             mappack: None,
             pack: Vec::new(),
             pack_notes: Vec::new(),
@@ -638,6 +791,7 @@ impl App {
             compare: None,
             layers: Layers::default(),
             lighting: Default::default(),
+            highlighted: BTreeSet::new(),
             overlay_rev: 0,
             convert: None,
             convert_error: None,
@@ -657,13 +811,19 @@ impl App {
             tag_homes: Default::default(),
             tag_browse: None,
             nav: NavHistory::default(),
+            doc_trail: Default::default(),
             tag_preview: None,
             last_tag_export: None,
             last_tag_import: None,
             audition: Default::default(),
+            anim: Default::default(),
             announcer: Default::default(),
             voices: Default::default(),
+            package_document: Default::default(),
             rules: Default::default(),
+            shader_overrides: Default::default(),
+            tabs: Default::default(),
+            workspace: Default::default(),
         }
     }
 
@@ -675,6 +835,16 @@ impl App {
         self.data_root = Some(root);
         self.variants_for = None;
         self.refresh_packages();
+    }
+
+    /// The placements `tag.uses highlight` outlines in the viewport; an
+    /// empty list clears them. A new selection clears them too.
+    pub fn set_highlighted_uses(&mut self, placements: Vec<(BlockKind, usize)>) {
+        let next: BTreeSet<_> = placements.into_iter().collect();
+        if next != self.highlighted {
+            self.highlighted = next;
+            self.overlay_rev += 1;
+        }
     }
 
     /// The runtime data root: `--data`, else the default one.
@@ -724,9 +894,7 @@ impl App {
         } else if let Some(dir) = self.session.package_dir() {
             SaveTarget::Package(self.session.maps_dir().join(dir))
         } else {
-            SaveTarget::PackageForm {
-                name: format!("{map} edit"),
-            }
+            SaveTarget::EditTarget(self.edit_target())
         }
     }
 
@@ -746,7 +914,7 @@ impl App {
             ToolKind::UiScreens => self.ui_screens.edit.ours.dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
-            ToolKind::Tags | ToolKind::Scripts => false,
+            ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => false,
             // Bitmap edits reach the map's save when it runs
             // (`push_bitmap_changes`): unsaved until then, and while the
             // map holds changes it has not written.
@@ -765,8 +933,13 @@ impl App {
     pub fn variant_origin(&self) -> Option<&Origin> {
         self.variants.as_ref().and_then(|e| e.origin())
     }
-    /// The active tool can undo or redo.
+    /// The active tool can undo or redo: the document `Self::undo_target`
+    /// names (a tag tab in front, the bitmap on the Textures canvas), else
+    /// the tool's own stack.
     pub fn can_undo(&self) -> bool {
+        if let Some(doc) = self.undo_target() {
+            return self.doc_can(doc).0;
+        }
         match self.tool {
             ToolKind::Scenario if self.modeling.session.active.is_some() => {
                 self.modeling.session.can_undo()
@@ -777,11 +950,16 @@ impl App {
             ToolKind::UiScreens => self.ui_can_undo_redo(false),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
-            ToolKind::Scripts => false,
+            // The compiles into the map's scripts.
+            ToolKind::Scripts => self.scripts.edit.as_ref().is_some_and(|d| d.depth().0 > 0),
             ToolKind::Textures => self.textures.can_undo(),
+            ToolKind::Package => false,
         }
     }
     pub fn can_redo(&self) -> bool {
+        if let Some(doc) = self.undo_target() {
+            return self.doc_can(doc).1;
+        }
         match self.tool {
             ToolKind::Scenario if self.modeling.session.active.is_some() => {
                 self.modeling.session.can_redo()
@@ -792,8 +970,9 @@ impl App {
             ToolKind::UiScreens => self.ui_can_undo_redo(true),
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
-            ToolKind::Scripts => false,
+            ToolKind::Scripts => self.scripts.edit.as_ref().is_some_and(|d| d.depth().1 > 0),
             ToolKind::Textures => self.textures.can_redo(),
+            ToolKind::Package => false,
         }
     }
     pub fn fly_speed(&self) -> f32 {
@@ -844,6 +1023,7 @@ impl App {
             ToolKind::Tags => self.shown_map_name().map(str::to_owned),
             ToolKind::Scripts => self.loaded.clone(),
             ToolKind::Textures => self.loaded.clone(),
+            ToolKind::Package => self.package_document.name().map(str::to_owned),
         };
         // A browsed map is never dirty: the open map's mark is its own.
         let dirty = self.tool_dirty(self.tool)
@@ -911,6 +1091,15 @@ impl App {
         let Some((action, tool)) = self.pending.take() else {
             return;
         };
+        if matches!(answer, Answer::Save)
+            && self.edits.uses_target()
+            && matches!(tool, ToolKind::Variants | ToolKind::Playlists)
+            && self.edit_target().is_none()
+        {
+            self.pending = Some((action, tool));
+            self.hold_prompt_save();
+            return;
+        }
         match answer {
             Answer::Cancel => return,
             Answer::Discard => self.close_tool(tool),
@@ -925,7 +1114,7 @@ impl App {
                     }
                 }
                 ToolKind::Textures => self.run(Action::Save),
-                ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
@@ -933,7 +1122,7 @@ impl App {
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Hud => self.run(Action::HudSaveAs(path)),
                 ToolKind::Textures => self.run(Action::SaveMapAs(path)),
-                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => {}
             },
         }
         if self.tool_dirty(tool) {
@@ -969,11 +1158,17 @@ impl App {
                 // The map no longer holds what they would have written.
                 self.push_bitmap_changes();
             }
-            ToolKind::Tags | ToolKind::Scripts => {}
+            ToolKind::Tags | ToolKind::Scripts | ToolKind::Package => {}
         }
     }
 
+    /// Run one action, then give the tabs what it opened or closed.
     fn run(&mut self, action: Action) {
+        self.run_action(action);
+        self.sync_tabs();
+    }
+
+    fn run_action(&mut self, action: Action) {
         match action {
             Action::OpenSource(path) => self.open_source(&path),
             // Re-picking the open map keeps it (and its edits).
@@ -996,13 +1191,12 @@ impl App {
                     self.saved_path = Some(path);
                 }
             }
-            Action::SavePackage(form) => {
-                self.push_bitmap_changes();
-                let r = self.session.save_package(&form);
-                if self.session_result(r).is_some() {
-                    self.package_saved();
-                }
+            Action::SaveVariant | Action::SaveHopper if self.edits.uses_target() => {
+                self.save_to_target(action);
             }
+            Action::SaveRules | Action::SaveAnimation { .. } | Action::SaveVoiceLines(_)
+            | Action::SaveVoiceClip { .. } => self.save_to_target(action),
+            Action::ChooseEditTarget(choice) => self.choose_edit_target(choice),
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
@@ -1021,8 +1215,32 @@ impl App {
                     self.opened_package = Some(dir);
                 }
             }
-            Action::Undo => self.undo_redo(self.tool, true),
-            Action::Redo => self.undo_redo(self.tool, false),
+            Action::Undo => match self.undo_target() {
+                Some(doc) => self.undo_redo_doc(doc, true),
+                None => self.undo_redo(self.tool, true),
+            },
+            Action::Redo => match self.undo_target() {
+                Some(doc) => self.undo_redo_doc(doc, false),
+                None => self.undo_redo(self.tool, false),
+            },
+            Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
+            Action::CreateAsset(request) => self.create_in_target(request),
+            Action::PackageCommand { method, params } => self.package_command(method, params),
+            Action::ForkAsset { asset } => self.fork_asset(&asset),
+            Action::RevertAsset { asset } => self.revert_asset(&asset),
+            Action::RefreshProblems(source) => self.refresh_problems(source.as_deref()),
+            Action::OpenProblem(index) => self.open_problem(index),
+            Action::PreviewInGame(doc) => self.preview_in_game(doc),
+            Action::SetPreviewTarget(doc, target) => {
+                if let Err(why) = self.set_preview_target(doc, target) {
+                    self.error(why);
+                }
+            }
+            Action::OpenDoc(doc) => self.open_doc(doc),
+            Action::FocusDoc(doc) => self.focus_doc(doc),
+            Action::CloseDoc(doc) => self.close_doc(doc),
+            Action::UndoDoc(doc) => self.undo_redo_doc(doc, true),
+            Action::RedoDoc(doc) => self.undo_redo_doc(doc, false),
             Action::UndoIn(tool) => self.undo_redo(tool, true),
             Action::RedoIn(tool) => self.undo_redo(tool, false),
             Action::SetField {
@@ -1037,6 +1255,8 @@ impl App {
                     self.error(e.to_string());
                 }
             }
+            Action::SetArea { index, area, merge } => self.set_area(index, area, merge),
+            Action::ConvertHill(index) => self.convert_hill(index),
             Action::SealEdit => self.session.seal(),
             Action::GestureSet { position, ypr } => {
                 if let Err(e) = self.session.gesture_set(position, ypr) {
@@ -1060,6 +1280,7 @@ impl App {
                 let before = self.nav_location();
                 self.session.select(sel);
                 self.record_placement_selection(before);
+                self.set_highlighted_uses(Vec::new());
             }
             Action::SelectVolume(index) => {
                 let count = self.session.volumes().map_or(0, |v| v.triggers.len());
@@ -1140,6 +1361,14 @@ impl App {
             }
             Action::GoTo(selection) => self.go_to(selection),
             Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
+            Action::PlaceLabelAt {
+                kind,
+                at,
+                facing,
+                team,
+                phase,
+            } => self.place_label_at(kind, at, facing, team, phase),
+            Action::BuildGround => self.build_ground(),
             Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
             Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
             Action::Delete => match (self.session.selected(), self.session.selected_volume()) {
@@ -1180,10 +1409,19 @@ impl App {
                 self.tags.allow_growth = allow;
             }
             Action::SetAllowUnverifiedGeometry(allow) => self.set_allow_unverified_geometry(allow),
+            Action::ShaderOverride(a) => self.run_shader_override(a),
             Action::Model(a) => self.run_model(a),
             Action::Bitmap(a) => self.run_bitmap(a),
             Action::Image(a) => self.run_image(a),
-            Action::SetTool(tool) => self.set_tool(tool),
+            Action::SetTool(tool) => {
+                self.set_tool(tool);
+                self.follow_tool(tool);
+            }
+            Action::Show(surface) => {
+                let tool = surface.tool();
+                self.set_tool(tool);
+                self.follow_tool(tool);
+            }
             Action::Quit => self.quit = true,
             Action::UiPick(pick) => {
                 self.sync_ui_disc();
@@ -1313,12 +1551,16 @@ impl App {
             | Action::SetVariantName(_)
             | Action::SetSetting(..)
             | Action::SetVariantRow(..)
+            | Action::SetVariantWeapon(..)
             | Action::SaveVariant
             | Action::RevertVariant
             | Action::DeleteVariant
             | Action::ExportVariant(_)
+            | Action::ExportVariantWith(..)
             | Action::ImportVariantFile(_)
-            | Action::ImportVariantText(_)) => self.run_variant(a),
+            | Action::ImportVariantText(_)) => {
+                self.run_variant(a);
+            }
             a => self.run_playlist(a),
         }
     }
@@ -1357,8 +1599,15 @@ impl App {
                 }
             }
             ToolKind::UiScreens => self.ui_undo_redo(undo),
-            ToolKind::Scripts => false,
+            // The map's scripts are the map document's while the Scripts
+            // surface shows them: a compile is its step, and the action logs
+            // its own result.
+            ToolKind::Scripts => {
+                self.run(Action::Script(ScriptAction::CompileUndo { redo: !undo }));
+                return;
+            }
             ToolKind::Textures => self.textures_undo(undo),
+            ToolKind::Package => false,
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
@@ -1393,7 +1642,7 @@ impl App {
     fn set_tool(&mut self, tool: ToolKind) {
         self.tool = tool;
         match tool {
-            ToolKind::Scenario => {}
+            ToolKind::Scenario | ToolKind::Package => {}
             ToolKind::Variants => self.ensure_variants(),
             ToolKind::Playlists => self.refresh_playlist_sources(),
             ToolKind::UiScreens => self.sync_ui_disc(),
@@ -1455,6 +1704,7 @@ impl App {
             .session
             .set_tag_strings(self.tags.new_strings().to_vec());
         self.ok_or_log(r);
+        self.sync_edit_lines();
     }
 
     fn run_tag(&mut self, action: TagAction) {
@@ -1479,6 +1729,9 @@ impl App {
     }
 
     pub(crate) fn run_map_tag(&mut self, action: TagAction) {
+        let Some(action) = self.gate_tag_action(action) else {
+            return;
+        };
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {
@@ -1489,6 +1742,9 @@ impl App {
                 }
             }
             TagAction::Write(w) => self.tags.write(w),
+            TagAction::SetPhysicsShape { tag, kind, index, edit } => {
+                self.edit_physics_shape(tag, kind, index, &edit)
+            }
             TagAction::Block {
                 tag,
                 pair,
@@ -1558,7 +1814,20 @@ impl App {
         }
     }
 
-    fn run_variant(&mut self, action: Action) {
+    fn run_variant(&mut self, action: Action) -> bool {
+        // The actions that replace the document: its tab loses the
+        // `item:` id it answered (`app::assets::open_item` sets it again
+        // when the item opened it).
+        let replaces = matches!(
+            action,
+            Action::OpenVariant(_)
+                | Action::NewVariant(_)
+                | Action::NewVariantFromScript(_)
+                | Action::CopyBuiltin(_)
+                | Action::ImportVariantFile(_)
+                | Action::ImportVariantText(_)
+                | Action::DeleteVariant
+        );
         self.ensure_variants();
         let e = self.variants.as_mut().expect("built");
         let r: Result<Option<String>, String> = match action {
@@ -1606,6 +1875,10 @@ impl App {
                 .set_row(&name, value)
                 .map(|()| None)
                 .map_err(|e| e.to_string()),
+            Action::SetVariantWeapon(secondary, id) => e
+                .set_other_weapon(secondary, id)
+                .map(|()| None)
+                .map_err(|e| e.to_string()),
             Action::SaveVariant => e.save().map(|()| None).map_err(|e| e.to_string()),
             Action::RevertVariant => {
                 e.revert();
@@ -1621,6 +1894,13 @@ impl App {
                     .map(|()| Some(format!("exported {}", path.display())))
                     .map_err(|err| format!("{}: {err}", path.display())),
             },
+            Action::ExportVariantWith(path, maps) => match e.export_current_with(maps) {
+                None => Err("no variant is open".into()),
+                Some(Err(why)) => Err(why.to_string()),
+                Some(Ok(text)) => std::fs::write(&path, text)
+                    .map(|()| Some(format!("exported {}", path.display())))
+                    .map_err(|err| format!("{}: {err}", path.display())),
+            },
             Action::ImportVariantFile(path) => std::fs::read_to_string(&path)
                 .map_err(|err| format!("{}: {err}", path.display()))
                 .and_then(|text| e.import(&text).map_err(|err| err.to_string()))
@@ -1631,12 +1911,17 @@ impl App {
                 .map_err(|e| e.to_string()),
             _ => unreachable!("not a variant action"),
         };
+        let opened = r.is_ok();
+        if opened && replaces {
+            self.set_tab_item(Doc::Variant, None, None);
+        }
         match r {
             Ok(Some(msg)) => self.info(msg),
             Ok(None) => {}
             Err(msg) => self.error(msg),
         }
         self.variant_status();
+        opened
     }
 
     /// Read the playlist tool's map list and variant choices for the
@@ -1647,6 +1932,14 @@ impl App {
     }
 
     fn run_playlist(&mut self, action: Action) {
+        // A new file replaces the document: its tab loses the `item:` id
+        // it answered.
+        if matches!(
+            action,
+            Action::OpenHopper(_) | Action::NewHopper | Action::NewDefaultHopper
+        ) {
+            self.set_tab_item(Doc::Playlists, None, None);
+        }
         match action {
             Action::OpenHopper(path) => match self.hoppers.open_path(&path) {
                 Ok(format) => {
@@ -1673,6 +1966,17 @@ impl App {
                 self.hopper_preset = None;
                 self.refresh_playlist_sources();
                 self.info("new playlist file from the Live server's built-in lineup");
+            }
+            Action::ExportPlaylist(path) => {
+                let result = self.hoppers.build().and_then(|file| {
+                    let bytes = hopper_edit::write_file(&file, self.hoppers.format().expect("built"))?;
+                    std::fs::write(&path, bytes)?;
+                    Ok(())
+                });
+                match result {
+                    Ok(()) => self.info(format!("exported {}", path.display())),
+                    Err(why) => self.error(why.to_string()),
+                }
             }
             Action::SaveHopper => match self.hoppers.path().map(Path::to_owned) {
                 Some(path) => self.run_playlist(Action::SaveHopperAs(path)),
@@ -1701,6 +2005,7 @@ impl App {
                 match editor.import(&variants::portable::export(&v)) {
                     Ok(()) => {
                         self.tool = ToolKind::Variants;
+                        self.set_tab_item(Doc::Variant, None, None);
                         self.info(format!("editing a copy of {:?}", v.name()));
                     }
                     Err(err) => self.error(format!("cannot open the variant: {err}")),
@@ -1760,7 +2065,7 @@ impl App {
                     ToolKind::Variants => self.ensure_variants(),
                     ToolKind::Playlists => self.refresh_playlist_sources(),
                     ToolKind::UiScreens => self.sync_ui_disc(),
-                    ToolKind::Scenario | ToolKind::Hud => {}
+                    ToolKind::Scenario | ToolKind::Hud | ToolKind::Package => {}
                     ToolKind::Tags => self.sync_tags(),
                     ToolKind::Scripts => self.sync_scripts(),
                     ToolKind::Textures => self.sync_textures(),
@@ -1840,25 +2145,31 @@ impl App {
                     self.package_saved();
                 }
             }
-            SaveTarget::PackageForm { name } => {
-                let map = self
-                    .session
-                    .map_name()
-                    .expect("a package form needs an open map");
-                let form = PackageForm {
-                    dir: PackageForm::default_dir(map, "edit"),
-                    name,
-                    ..PackageForm::default()
-                };
-                self.show_package_form(form);
+            SaveTarget::EditTarget(Some(id)) => {
+                self.sync_edit_lines();
+                self.info(format!("the edits are lines in {id}"));
+            }
+            SaveTarget::EditTarget(None) => {
+                self.edits.picker.get_or_insert_with(Picker::default);
             }
             SaveTarget::Nothing => self.error("open an editable map first"),
         }
     }
 
+    /// Save the open map as a map package, as the scenario crate writes it
+    /// (the packages the tests open again; Studio's own edits are lines in
+    /// the edit target).
+    #[cfg(test)]
+    pub(crate) fn save_map_package(&mut self, form: &scenario_edit::PackageForm) {
+        self.push_bitmap_changes();
+        let r = self.session.save_package(form);
+        if self.session_result(r).is_some() {
+            self.package_saved();
+        }
+    }
+
     fn package_saved(&mut self) {
         self.saved_path = None;
-        self.package_form = None;
         self.refresh_packages();
         let dir = self
             .session
@@ -1900,20 +2211,6 @@ impl App {
         }
         format!("{}.map", self.loaded.as_deref().unwrap_or("untitled"))
     }
-
-    /// Open the "Save as package" form with its defaults.
-    pub fn open_package_form(&mut self) {
-        if self.session.is_open() {
-            self.show_package_form(self.session.form_defaults());
-        } else {
-            self.error("open a map first");
-        }
-    }
-
-    fn show_package_form(&mut self, form: PackageForm) {
-        self.package_form = Some(form);
-        self.package_image.clear();
-    }
 }
 
 #[cfg(test)]
@@ -1923,8 +2220,16 @@ mod tag_data_tests;
 #[cfg(test)]
 mod audition_tests;
 #[cfg(test)]
+mod sound_mouth_tests;
+#[cfg(test)]
 pub(crate) mod map_cards_tests;
 #[cfg(test)]
 mod map_pack_tests;
+#[cfg(test)]
+pub(crate) mod shell_tests;
+#[cfg(test)]
+mod problems_tests;
+#[cfg(test)]
+mod ground_tests;
 #[cfg(test)]
 mod tests;

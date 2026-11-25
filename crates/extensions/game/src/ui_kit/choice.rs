@@ -16,7 +16,7 @@
 //!
 //! ```ignore
 //! static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
-//! // Its title, layout and legend: assets/ui/screens/<SCREEN>.yaml.
+//! // Its title, layout and legend: content/ui/screens/<SCREEN>.yaml.
 //! let page = KitScreen::new(FEATURE, SCREEN, IDS)
 //!     .row(COUNT.row(Arc::clone(&store)))
 //!     .row(DIFFICULTY.row(store));

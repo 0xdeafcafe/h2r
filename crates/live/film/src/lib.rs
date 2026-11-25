@@ -1,5 +1,7 @@
 //! Each complete chunk stands alone. Offsets always refer to the four-byte tag.
 pub mod blam;
+pub mod columns;
+pub mod file;
 pub mod image;
 mod library;
 pub mod machine;
@@ -9,6 +11,7 @@ mod recover;
 pub mod range;
 pub mod sidecar;
 pub mod share;
+pub mod side;
 pub mod tape;
 use anyhow::{Context, Result, ensure};
 pub use library::{Library, LibraryEntry};
@@ -130,6 +133,10 @@ pub struct Header {
     /// (docs/game/film-format.md, "Recording every game").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub player_features: bool,
+    /// The stats stream holds no actions: every tick's are in the film
+    /// file beside it (`film::file`, `TrackReader::attach_film`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inputs_in_film: bool,
     /// A film cut from a session's running tape at one game's end
     /// (docs/game/film-format.md, "One film per game"): the tape's ID. The
     /// cut keeps the tape's boot `HEAD`, which carries this ID and the
@@ -157,12 +164,17 @@ pub struct Entry {
     pub size: u32,
 }
 
+/// Sees every chunk the writer stores: its tag and the zstd frame that
+/// went to the file ([`Writer::set_mirror`]).
+pub type Mirror = Box<dyn FnMut(Tag, &[u8]) -> Result<()> + Send>;
+
 pub struct Writer<W: Write + Seek> {
     out: W,
     index: Vec<Entry>,
     failed: bool,
     version: u32,
     ranges: Option<Box<range::Build>>,
+    mirror: Option<Mirror>,
 }
 impl<W: Write + Seek> Writer<W> {
     pub fn new(mut out: W, header: &Header) -> Result<Self> {
@@ -188,9 +200,17 @@ impl<W: Write + Seek> Writer<W> {
             failed: false,
             version: header.version,
             ranges,
+            mirror: None,
         };
         w.chunk(HEAD, header)?;
         Ok(w)
+    }
+    /// Hand each chunk stored from now on, with its stored frame, to
+    /// `mirror`, so the film file's machine part ([`file::machine_mirror`])
+    /// is written as the container's is, without a second compression. A
+    /// cut ([`Writer::fork`]) does not inherit it.
+    pub fn set_mirror(&mut self, mirror: Option<Mirror>) {
+        self.mirror = mirror;
     }
     pub fn chunk(&mut self, tag: Tag, value: &impl Serialize) -> Result<()> {
         ensure!(tag != INDX, "finish writes the index");
@@ -342,6 +362,7 @@ impl<W: Write + Seek> Writer<W> {
             failed: false,
             version: self.version,
             ranges: Some(ranges),
+            mirror: None,
         })
     }
 
@@ -353,6 +374,9 @@ impl<W: Write + Seek> Writer<W> {
         self.index
             .push(write_envelope(&mut self.out, tag, offset, &bytes)?);
         self.failed = false;
+        if let Some(mirror) = &mut self.mirror {
+            mirror(tag, &bytes)?;
+        }
         Ok(())
     }
     pub fn finish(mut self) -> Result<W> {

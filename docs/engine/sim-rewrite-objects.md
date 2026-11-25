@@ -24,13 +24,24 @@ physics step stay callouts), slice 9's (the weapon update `fdfb0`), slice
 10's (the vehicle update `efde0`, with the type physics and the rest of
 its tree left as callouts), and slice 11's (the small type updates and
 the projectile step `f8eb0`). The differential
-harness compares the XMM registers and the x87 state at every callout of
+harness compares MXCSR, the XMM registers and the x87 state at every callout of
 every root, except the roots in its `FLOAT_OPT_OUT`. The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of
 [sim-rewrite.md](sim-rewrite.md) (the plan; its section 8 decisions bind this
 page). Phase 1 (animation and pose, `crates/rewrites/sim-anim`) and phase 2 (collision
 and spatial queries) land first; section 6 says what this phase needs from
 them.
+
+The object walks, export lookup, light endpoint blends and unit look basis
+use the Rust kernels in `crates/rewrites/sim-objects`, as does the
+tag-function curve evaluator `13b390`: an idiomatic kernel
+(`functions/curve.rs`) that predicts every guest call. The guest's answer
+is compared with the prediction until 4096 calls have matched with no
+mismatch; then the kernel answers, one answerable call in 64 is still
+compared, and a mismatch returns every call to the guest. The counts are
+kept in `engine::sim_objects::functions::parity`. The action walk
+`e6830` serves both bipeds and vehicles. Six object points support live
+segment comparison through the [shadow checks](shadow-exec.md#registration-and-the-agent-api).
 
 Evidence marks: **C** confirmed (read from the retail image with `h2 disasm`
 on 2026-11-20, or already encoded in a differential-tested port in
@@ -94,7 +105,7 @@ thread.
 | Lights `c0000..c4000` | 671 | 0.80 | `c0c80` 432, `c1400` 83, `c0b00` 64 | this phase |
 | Type dispatch `108000..10a000` | 558 | 0.66 | `108d90` 317, `108c60` 67, `109140` 44, `109050` 42 | this phase |
 | **Core subtotal (this phase only)** | **4,749** | **5.63** | | |
-| Unit `c4000..d2000` | 2,883 | 3.42 | `c7840` 325, `c60c0` 260, `ce0c0` 195, `cba50` 195, `cafc0` 190, `c49b0` 158, `c58f0` 150, `c6b90` 138 | this phase (`c7840` overlaps phase 1c's `native_unit_aim`) |
+| Unit `c4000..d2000` | 2,883 | 3.42 | `c7840` 325, `c60c0` 260, `ce0c0` 195, `cba50` 195, `cafc0` 190, `c49b0` 158, `c58f0` 150, `c6b90` 138 | object update (the animation subsystem owns `c7840` when both are enabled) |
 | Unit animation `110000..115000` | 1,072 | 1.27 | `112070` 361 (phase 1c), `111650` 210, `1130f0` 85 | 711 this phase |
 | Biped `dc000..ee000` | 1,597 | 1.89 | `df380` 139, `dd360` 138, `e01d0` 137, `e24f0` 137, `dc5c0` 116, `dd990` 109 | this phase |
 | Vehicle `ee000..f8000` | 1,447 | 1.72 | `f6d10` 224, `efde0` 183, `eec90` 175, `f3010` 162 | this phase |
@@ -588,7 +599,10 @@ pub fn build_matrices(k: &Constants, locals: &[Record], parents: &[i16], keep: &
 pub fn unit_pose(state: &UnitPoseIn, clips: &ClipStore, out: &mut [LocalNode]) -> UnitPoseEffects; // 1c
 ```
 
-`UnitPoseEffects` lists the guest effects `112070` has besides its output
+The [unit pose body](unit-pose.md) services an object pose request at
+`112070` through its real guest calls. The pure interface above describes
+the proposed pure pose interface. The [animation manager](animation-manager.md)
+handles the channel and graph calls. In that interface, `UnitPoseEffects` lists the guest effects besides the output
 (resource requests through `1dd9d0` and `1236f0`, any RNG draw through
 `1dd630`), so the caller issues them in retail order on the game thread.
 `bd090` is the register-level port `sim_physics/node_matrices.rs`, adopted

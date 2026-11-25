@@ -1,7 +1,7 @@
 # Forge map variants: the editor's HUD, world marks and screens
 
-Status: Design, slices K5 and H1 built. The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. Everything else named here as new is not built.
-Code: `crates/extensions/game/src/forge_screens/` (the screens), `assets/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, huds/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source). Tests: named per slice below.
+Status: Design, slices K5, H1, H3, S1, S2, S3, S4, S5 and S6 built (S3's picker description lacks the game types with goals, and S5's dialog has no Upload to Xbox Live: the game has no Live client for it). The Forge screens in the game (slice U4), the HUD kit, its world marks and the superbounce readout this page copies are built, and so are `Shape::Line`, `Style::Team` and `Describe::never_with` (K5) and the readout's description with its fourteen states (H1), including the `fgr.zone` marks, the readout's `never_with` declaration and the team-coloured near marks. The runtime (H3, `forge_readout.rs`) registers the HUD, feeds it each tick from the session's aimed or held thing and its bodiless things, chooses the near pool and poses the marks; it has no ring feed yet (below), and its guide row says a refusal's sentence and, while an added thing is held with a tenth or less left, the binding limit (S6). The Properties page's rows are the doc's `props:` block (S1), with **Game types...** on an item spawner, which opens the Game types dialog (`forge.games`, S2; `forge_screens/games.rs`), and the acts **Reset orientation** and **Duplicate** (P1; `Session::duplicate` holds the copy, a kind that needs the kit waits for P2); the rows of the other slices are not built. `Session::budget_for` (S6; `extensions/forge/src/{budget.rs, session/budget.rs}`) is the budget's one source. The Map limits page (P4) lists the object pool and scenario counts on Forge options.
+Code: `crates/extensions/game/src/forge_screens/` (the screens), `content/ui/screens/forge.*.yaml` (their docs), `crates/rewrites/hud-kit-core/src/{world.rs, views/}` (the HUD kit's model), `crates/extensions/game/src/hud_kit_world.rs` (the world-line source), `crates/extensions/game/src/forge_readout.rs` (the readout's runtime), `crates/extensions/game/src/forge_screens/props.rs` (the Properties rows). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 How a monitor sees and edits the things of
@@ -22,7 +22,7 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ### What a screen is made of
 
-- **The doc.** Each screen is `assets/ui/screens/<name>.yaml`: kind,
+- **The doc.** Each screen is `content/ui/screens/<name>.yaml`: kind,
   layout, backing, states, widgets and rows
   ([ui-builder.md](ui-builder.md), "Screens in YAML"). A name in
   `ui_kit::screens::NAMES` gets a `wgit` tag in the maps the game reads
@@ -36,7 +36,7 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
   new property is a row in a doc and a line in `forge::props`.
 - **Bases.** A list page is on the in-game Controller Settings screen,
   a picker and a question on the large dialog, and in the lobby a
-  picker is over Game Setup, as `kit.picker.forge-map` is
+  picker is over Game Setup, as `kit.picker.map-variant` is
   ([forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). No
   screen here needs a base those do not give.
 - **The checks.** `ui_kit::content::check` (capitals in titles,
@@ -49,27 +49,33 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 X on the thing aimed at or held opens `forge.properties`: the thing's
 name as the header, then the rows its kind has. The rows are the doc's
-(`assets/ui/screens/forge.properties.yaml`), in place of the
-`sheet::PROPERTIES` table:
+`props:` block (`content/ui/screens/forge.properties.yaml`), bound to the
+thing by `forge_screens::props::rows` and used by
+`sheet::properties_sheet`:
 
 ```yaml
-rows:
-  row.4:
-    kind: value
+props:
+  prop.6:
     text: "Respawn time"
-    help: "How long after it is taken before the item comes back."
+    help: "Seconds before the item comes back."
     on: [spawner]
-    prop: respawn_time
-    open: picker
-    values: [[0, "Map default"], [5, "5 seconds"], [10, "10 seconds"]]
+    prop: "respawn time"
+    open: keyboard
 ```
 
-`on` is the kinds the row is for, `prop` a name in `forge::props`,
-`open` what A does (`picker`, `keyboard`, a screen's name, or `act`),
-and `values` a picker's choices with the number written. A doc that
-names a property `forge::props` lacks is a `DataError`. A property
-whose field is not decoded is not in `forge::props`' answer for the
-map, and its row is then absent, not greyed.
+`on` is the kinds the row is for (`any` when none: `object`, `spawner`,
+`starting-point`, `goal`, `teleporter`), `prop` a name in
+`forge::props` (or `coordinates` and `heading`, which are not fields),
+`open` what A does (`picker`, `keyboard`, or a Forge screen's name), and
+`values` a picker's choices, in order: the choice sent is the index. A
+doc that names a property `forge::props` lacks, a kind or an `open` it
+does not know, or a picker without values is a `DataError` naming the
+row's field (`ScreenDoc::parse`). A property the thing does not have
+(its block lacks the field, or the layout does not let it be edited) has
+no row, and neither does one the binder cannot make, not greyed. The
+rows read their value through `forge::props`; a write is still the
+page's `Choice::Set` and typed number, which the editor turns into the
+op.
 
 A value row shows its value in the skin's value column. No row has
 arrows; left and right on a number row are the Coordinates page's
@@ -84,10 +90,12 @@ nudge and nothing else.
 | own, changed | Restore original | the question | `EntryOp::Reset` | M6 |
 | Object | Object... | a picker of its group's palette | the palette entry | M6 |
 | Object | Game types... | the Game types dialog | the `games` property | G1 |
-| Object | Label... | a picker of the labels the session's script declares, then a number | the label ([rules-engine.md](rules-engine.md#forge-labels)) | P5 |
+| Any thing | Label, Label number, Clear label | the keyboard on the text, the keyboard on the number, and an act; `forge.properties` rows `label`, `label number` and `clear label` (`open: keyboard` and `open: act`) | the label ([rules-engine.md](rules-engine.md#forge-labels)) | built; a picker of a script's declared labels is design |
+| Group member in a local session | Pivot | a picker: Centre, First member | replaces the group op in one undo step | built (P5) |
+| Object the session placed | Save as prefab | the keyboard on the prefab's name; the row `prefab` | `<data>/forge/prefabs/<name>.h2prefab` ([forge-editing.md](forge-editing.md), "Selection, groups and prefabs") | built |
 | Item spawner | Item... | the object menu's item groups, as a picker | `item` | M6 |
 | Item spawner | Respawn time | a picker: Map default, then seconds | `respawn time` | M6 |
-| Item spawner | Return time | a picker of seconds | `abandon limit` | M6 |
+| Item spawner | Return time | the keyboard on a whole number, as Respawn time (`return time`, `open: keyboard`) | `abandon limit` | built (P3) |
 | Item spawner | Place at start | a picker: Yes, No | `respawn mode` | D3 |
 | Item spawner | Game types... | the Game types dialog | the game-type slots | D3 |
 | Item spawner | Team | a picker of teams | the `team` property | D4 |
@@ -113,10 +121,15 @@ nudge and nothing else.
   not in the ladder is listed first, as it is.
 - **Game types dialog** (`forge.games`, a large dialog laid out as a
   list). **All game types** first, then a row an engine. A on a row
-  ticks or unticks it; the tick is the row's value column. **Done**
+  ticks or unticks it; the tick is the row's value column (On, Off), and
+  A on **All game types** ticks every engine, or clears them when all
+  are ticked. **Done**
   writes the set as one undo step. A set the entry cannot hold is
   refused when Done is pressed, with the document's sentence as the
   dialog's status line
+  (`forge_screens/games.rs`; a tick row is `Act::Tick`, Done is `Act::Done`
+  and sends `Choice::Games`, which the session writes with
+  `Session::set_games`)
   ([forge-map-variants.md](forge-map-variants.md), "Game types").
 - The built page's Heading row goes when Coordinates lands; Heading is
   its Yaw.
@@ -124,7 +137,8 @@ nudge and nothing else.
 ### The readout
 
 A HUD kit `Hud` named `forge-readout`
-(`crates/rewrites/hud-kit-core/src/huds/forge_readout.rs`),
+(`crates/rewrites/hud-kit-core/src/views/forge_readout.rs` for its states,
+`content/forge/huds/forge-readout.hud.yaml` for its elements),
 beside the monitor's `forge` HUD
 ([forge-firefight-ui.md](forge-firefight-ui.md), "The monitor HUD").
 It copies the superbounce readout's place and build: three rows of
@@ -190,6 +204,22 @@ set each tick (`Handle::world_mark`).
   map has none the mark is in the HUD colour, so a mark's team stays in
   its label. No colour is a constant of ours but the preview's
   stand-ins.
+- **The runtime** (`forge_readout.rs`): `Editor::readout_scene` builds a
+  `Scene` each tick (`forge_glue/editing.rs`), the `forge` feature's tick
+  hook turns it into the view's values and the poses (`frame`), and
+  nothing is published again while neither changed. With the monitor
+  off every element is hidden and no mark has a pose. The twelve near
+  marks are the nearest things with no body within 12 world units, by
+  distance then identity, without the thing aimed at (`choose_near`).
+  A held thing's `under` is on the ground its height below it, its
+  `from` where it was picked up. The zone is the aimed hill corner's hill: the goals of type 11 to 18
+  sharing its identifier, in corner order, closed (`zone_of`). The hold
+  line's height is a ray down from the carried thing to the structure
+  (`Editor::hold_height`), absent with none in reach. Not fed yet, so
+  absent: a ring (no kind's radius is traced). The guide row's refusal is
+  the editor's last refused edit (`Editor::refuse`), kept for
+  `REFUSAL_TICKS`; its budget is `Session::budget_for` of a held added
+  thing's block, given by `budget_of` from a tenth left.
 - **A pool, not a mark a thing.** One layout means a fixed set of
   elements: twelve near marks and eight zone lines. The runtime gives
   the nearest things the poses and leaves the rest without one; a
@@ -206,19 +236,34 @@ set each tick (`Handle::world_mark`).
 
 ### The budget
 
-One number has one source: `Session::budget_for(kind)` (new), which
-gives what is left, the limit and which limit binds: the session's
-object budget, the kind's block (its count against the engine's
-limit, or the kit rows left for a kind that needs the kit), or the
-object pool (`forge.capacity`).
+One number has one source: `Session::budget_for(block)`
+(`extensions/forge/src/session/budget.rs`), which gives what is left, the
+limit and which limit binds: the session's object budget (for a block
+whose entries make objects) or the block's count against the engine's
+limit (`map::scenario_layout`), whichever has less left; a tie binds the
+block, and a block with neither has no budget. A removal gives its row
+back, and a move or a field of an own entry costs nothing. Kit additions
+also check their reserved rows through `Session::kit_left`. The live object
+pool is measured separately through `forge.capacity`.
+
+`Session::place` refuses an add to a full block with the budget's
+sentence (`Budget::full`: "Item spawners are full (100).").
 
 | Where | Shows |
 |---|---|
 | `forge.budget.count`, `.meter` (the monitor HUD's pill) | with nothing held, the session's objects left and the share used; holding or aiming, the same for that thing's kind. It flashes from 90% (`Pulse::TimeWarning`) |
 | `fgr.guide` | when a hold starts with a tenth or less left: the binding limit by name, "3 item spawners left" |
 | The object menu's description | placed and left, by the object's kind ([forge-editing.md](forge-editing.md), "The object menu") |
-| **Map limits** (Forge options, slice P4) | a row a limit with used and limit in the value column: Objects, Scenery, Crates, Machines, Item spawners, Starting points, Goals |
+| **Map limits** (Forge options, P4) | Objects, Scenery, Crates, Machines, Item spawners, Starting points and Goals, with each count and its engine limit where known |
 | A refused edit | `forge.notice` with the limit named: "Item spawners are full (100)." |
+
+**Map limits** (`forge.map-limits`, `forge_screens/map_limits.rs`)
+opens a read-only list over Forge options. It shares the live object pool
+and scenario block readers with `forge.capacity`. Objects counts live
+datums across the game. The scenario rows count entries in their respective
+blocks, with Goals counting the netgame flags block. Starting points and
+Goals show their counts alone. A failed read shows **Unavailable** in its
+row. Each opening takes the latest published counts.
 
 The budget is a count, as Halo 3's is a counter
 ([forge-editing.md](forge-editing.md), "The object menu"). Moving,
@@ -229,33 +274,52 @@ one gives its row back to the kind.
 
 GAME MENU keeps its five Forge rows
 ([forge-firefight-ui.md](forge-firefight-ui.md), "The screens"); they
-act on the variant store (`forge::files`).
+act on the variant store (`forge::files::variants`).
 
 | Screen | Doc | Opened by | Is |
 |---|---|---|---|
-| Name | the game's keyboard (`Effect::Keyboard`) | Save as; Rename; Save on a variant with no name | titled NAME MAP VARIANT, 16 characters |
-| Map variant picker | `kit.picker.map-variant` | Load; the lobby's Map Variant... | a picker: Original, then this map's variants by name; the description block has the author, the counts by kind and the game types with goals |
-| Map variants | `forge.variants` | **Map variants...** on Forge options | a list page: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) or why it cannot be used in the value column |
-| A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top: **Load**, **Rename**, **Duplicate**, **Upload to Xbox Live**, **Delete** |
+| Name | the game's keyboard (`Effect::Keyboard`) | Save as; Rename; Save on a variant with no name | 16 characters (the title NAME MAP VARIANT is not set: the keyboard's open call takes none yet) |
+| Map variant picker | `kit.picker.map-variant` | the lobby's Map Variant... | a picker: Original, then this map's saved variants by name; the description block has the author and the counts by kind of what a variant adds (`forge_screens::variants::detail`), or the sentence of one that cannot be used, which A does not choose (`Pick::blocked`) |
+| Map variants | `forge.variants` | **Map variants...** on Forge options | a dialog (`forge_screens::variants::list_sheet`) on the large dialog, so each row's line shows beside it: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) in the value column, or `Unusable` and its sentence as the row's line |
+| A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top (`variant_sheet`): **Load**, **Rename**, **Duplicate** and **Delete**, each only where it can act. A row that is only a fact (the page's "No map variants", the open variant's "Open now") takes no A: while it is focused the legend is Back alone: the footer is set as the screen opens and again on each focus change (`ForgeScreen::prompts_at`, `focused_footer`; `spec` takes the same legend) |
 | Questions | `forge.question` | below | Yes and No, No focused |
 
-- **Save** writes the open variant under its name and shows "Saved
-  <name>" as a notice. A variant opened from Original has no name, so
-  Save is Save as.
-- **Save as** opens the keyboard on the current name. A name another
-  variant of this map has asks "Replace <name>?".
-- **Load** asks "Load without saving?" when there are unsaved edits,
-  then opens the picker. The pick opens at a fresh log head, and the
-  world is reconciled to it: every own entry the old variant touched
-  is restored first.
-- **Rename** opens the keyboard. A name that is taken is refused with
-  the store's sentence as the dialog's status line; nothing is
-  replaced by a rename. The name is part of the document, so a renamed
+- **Save** writes the open variant under its name
+  (`Session::save_variant`, which is `forge::files::variants::save` of
+  the session's play form) and shows "Saved <name>." as a notice. A
+  variant opened from Original has no name, so Save opens the keyboard,
+  as Save as does.
+- **Save as** opens the keyboard on the current name, 16 characters
+  (`forge_screens::NAME_CHARS`). The open variant's own name, with any
+  case, saves over it. A name another variant of this map has comes
+  back from the store as `NameTaken` and asks "Replace <name>?", No
+  focused; Yes writes over that file, No ends in "Not saved.". A name
+  the store refuses (blank, over 16 characters) is the notice and
+  writes nothing.
+- **Load** picks among this map's saved variants that pass the store's
+  checks (a Live copy or a variant with a problem is listed on Map
+  variants, not offered here), then, when there are unsaved edits, asks
+  "Load without saving?" before it loads; No ends in "Not loaded.". The
+  load opens at a fresh log head, and the world is reconciled to it
+  (`Session::load_variant`: the document is checked against the
+  session's limits, and the kit put back, before the game is asked to
+  change): every own entry the old variant touched is restored first.
+  Each flow's decisions are `forge_screens::variants`; the editor
+  (`forge_glue::editing`) runs the store calls off the game thread.
+- **Rename** opens the keyboard (`NumberField::RenameVariant`; the
+  screens hold the dialog's file stem, `forge_screens::target_variant`).
+  A name that is taken is refused with the store's sentence as the
+  notice; nothing is replaced by a rename. Renaming the open variant
+  renames the session. **Duplicate** types the copy's name the same way
+  and copies the file (`variants::duplicate`). The name is part of the document, so a renamed
   variant has a new id and a copy already on Live keeps the old name.
-- **Delete** asks "Delete <name>?". The open variant cannot be
-  deleted; its row says so.
-- **Upload to Xbox Live** is present for a signed-in player on a
-  variant Live does not have. It ends in a notice with Live's answer.
+- **Delete** asks "Delete <name>?" (`Ask::DeleteVariant`, No focused);
+  Load and Delete close Map variants first, so the question opens over
+  the world. The open variant cannot be deleted: an info row says so in
+  place of Delete.
+- **Upload to Xbox Live** joins the dialog for a signed-in player on a
+  variant Live does not have, when the game has a Live client for it. It
+  is not built.
 - **Unsaved edits** show as the Save row's value on GAME MENU and in
   `forge.status`. Leave Game asks before it leaves.
 - A variant that fails a check
@@ -290,7 +354,9 @@ h2 hud preview forge-all --out DIR
   as `superbounce-all` does for its two
   (`huds::forge_all::MOMENTS`): the moments of one edit, from flying
   with nothing aimed at, through aim, pick up, a snapped hold, a
-  refused drop, a drop, a field change and a save.
+  refused drop, a drop, a field change and a save. It is the
+  monitor's and fullscreen only, as the readout is; the save's notice
+  is "Saved <name>.".
 - The HUD kit's checks hold in every state: fit, glyphs, frame,
   retail, own, one layout, prompt, modes, drawn and world
   ([hud-kit.md](hud-kit.md), "The preview and the checks").
@@ -341,15 +407,15 @@ they start with `assets/` or `docs/`.
 | # | Slice | Owns | Tests | Done when |
 |---|---|---|---|---|
 | **K5** | World marks: `Shape::Line`, `Style::Team`, `Describe::never_with`. The team colour's source is traced first and written into hud-kit.md, "Colours" | `rewrites/hud-kit-core/src/{world.rs, model.rs, tests.rs}`, `tools/hud-kit/src/{check.rs, preview.rs, tests.rs}`, `extensions/game/src/hud_kit_world.rs`, `docs/game/hud-kit.md` | `world::edges` of a line is one segment; the world check refuses `Team` off a world mark; two HUDs that declare each other are not compared by `own`; the preview draws both | the synthetic sheet passes |
-| **H1** | The readout's description: elements, `View`, `values`, the states and their sample poses | `rewrites/hud-kit-core/src/huds/{forge_readout.rs (new), mod.rs}`, `rewrites/hud-kit-core/src/tests.rs` | every state passes every check on the synthetic source; a table of views and their three texts; no state's text is wider than its `longest`; an overrun drops the last fact whole | `h2 hud preview forge-readout --state all --synthetic` writes every state |
-| **H2** | `forge-all`: the moments of an edit, both HUDs in one frame | `rewrites/hud-kit-core/src/huds/{forge_all.rs (new), mod.rs}` | each moment names a state of each HUD that exists; the sheet passes | `h2 hud preview forge-all --synthetic` writes the moments. Needs U3 |
+| **H1** | The readout's description: elements, `View`, `values`, the states and their sample poses | `rewrites/hud-kit-core/src/views/{forge_readout.rs (new), mod.rs}`, `rewrites/hud-kit-core/src/tests.rs` | every state passes every check on the synthetic source; a table of views and their three texts; no state's text is wider than its `longest`; an overrun drops the last fact whole | `h2 hud preview forge-readout --state all --synthetic` writes every state |
+| **H2** (built) | `forge-all`: the moments of an edit, both HUDs in one frame | `rewrites/hud-kit-core/src/views/{forge_all.rs (new), mod.rs}` | each moment names a state of each HUD that exists; the sheet passes | `h2 hud preview forge-all --synthetic` writes the moments. Needs U3 |
 | **H3** | The runtime: register after the `forge` HUD, feed the view, choose the near pool, set the poses | `extensions/game/src/forge_readout.rs` (new), `extensions/game/src/forge_glue.rs` | a table from `Facts` to `View`; the twelve nearest of thirty things, by distance then identity; a held thing's `under` and `from` poses; with the monitor off every element is hidden | tests pass. Needs H1, M5, M7 |
-| **S1** | Properties from its doc: the row keys, the binder, the page's states, `sheet::PROPERTIES` removed | `assets/ui/screens/forge.properties.yaml`, `extensions/game/src/ui_kit/data.rs`, `extensions/game/src/forge_screens/{props.rs (new), sheet.rs, pages.rs, tests.rs}` | the doc loads and round-trips through `data::to_yaml`; an unknown `prop` is a `DataError` naming the row; a `Page` table a kind; a property the map lacks has no row; the content check passes in every state | `h2 ui preview forge.properties --state all` writes a state a kind. Needs M6 |
-| **S2** | The Game types dialog | `assets/ui/screens/forge.games.yaml`, `extensions/game/src/forge_screens/games.rs` (new), one line of `ui_kit/screens.rs` | a `Page` table: ticks, All game types, Done writes one step, five engines show the refusal as the status line and write nothing | preview in every state. Needs D2, S1 |
-| **S3** | The map variant picker and the lobby's row | `assets/ui/screens/kit.picker.map-variant.yaml` (in place of `kit.picker.forge-map.yaml`), `extensions/game/src/{lobby_mode.rs, lobby_options.rs}`, one line of `ui_kit/screens.rs` | `Page` tables for Game Setup in CUSTOM GAMES and FORGE; Original is first; an unusable variant shows its sentence and cannot be chosen; a map change clears the panel line | `h2 ui preview kit.picker.map-variant`. Needs V1, V2 |
-| **S4** | Save, Save as and Load on the store, with their questions and notices | `extensions/game/src/forge_screens/{variants.rs (new), game_menu.rs}`, `extensions/game/src/forge_glue/editing.rs`, `assets/ui/screens/forge.question.yaml` | a table of flows: unnamed Save opens the keyboard; a taken name asks; No is focused; Load with edits asks first; each ends in its notice | tests pass. Needs V1 |
-| **S5** | Map variants and a variant's actions | `assets/ui/screens/{forge.variants.yaml, forge.variant.yaml}`, `extensions/game/src/forge_screens/variants.rs`, `forge_screens/sheet.rs` (`OPTIONS`), two lines of `ui_kit/screens.rs` | `Page` tables; rename to a taken name writes nothing; the open variant's Delete is absent; Upload is absent when signed out | previews in every state. Needs S4 |
-| **S6** | The budget by kind: `Session::budget_for`, the pill's feed, the guide line, the refusal's sentence | `extensions/forge/src/session.rs`, `extensions/forge/src/tests.rs`, `extensions/game/src/forge_readout.rs` | a table of counts and which limit binds; the sentence names it; an own entry's move costs nothing | tests pass. Needs M5, H3 |
+| **S1** | Properties from its doc: the row keys, the binder, the page's states, `sheet::PROPERTIES` removed | `content/ui/screens/forge.properties.yaml`, `extensions/game/src/ui_kit/data.rs`, `extensions/game/src/forge_screens/{props.rs (new), sheet.rs, pages.rs, tests.rs}` | the doc loads and round-trips through `data::to_yaml`; an unknown `prop` is a `DataError` naming the row; a `Page` table a kind; a property the map lacks has no row; the content check passes in every state | `h2 ui preview forge.properties --state all` writes a state a kind. Needs M6 |
+| **S2** (built) | The Game types dialog | `content/ui/screens/forge.games.yaml`, `extensions/game/src/forge_screens/games.rs` (new), one line of `ui_kit/screens.rs` | a `Page` table: ticks, All game types, Done writes one step, five engines show the refusal as the status line and write nothing | preview in every state. Needs D2, S1 |
+| **S3** (built) | The map variant picker and the lobby's row | `content/ui/screens/kit.picker.map-variant.yaml` (in place of `kit.picker.forge-map.yaml`), `extensions/game/src/{lobby_mode.rs, lobby_options.rs}`, one line of `ui_kit/screens.rs` | `Page` tables for Game Setup in CUSTOM GAMES and FORGE; Original is first; an unusable variant shows its sentence and cannot be chosen; a map change clears the panel line | `h2 ui preview kit.picker.map-variant`. Needs V1, V2 |
+| **S4** | Save, Save as and Load on the store, with their questions and notices | `extensions/game/src/forge_screens/{variants.rs (new), game_menu.rs}`, `extensions/game/src/forge_glue/editing.rs`, `content/ui/screens/forge.question.yaml` | a table of flows: unnamed Save opens the keyboard; a taken name asks; No is focused; Load with edits asks first; each ends in its notice | tests pass. Needs V1 |
+| **S5** (built) | Map variants and a variant's actions | `content/ui/screens/{forge.variants.yaml, forge.variant.yaml}`, `extensions/game/src/forge_screens/variants.rs`, `forge_screens/sheet.rs` (`OPTIONS`), two lines of `ui_kit/screens.rs` | `Page` tables; rename to a taken name writes nothing; the open variant's Delete is absent; Upload is absent when signed out | previews in every state. Needs S4 |
+| **S6** (built) | The budget by kind: `Session::budget_for`, the pill's feed, the guide line, the refusal's sentence | `extensions/forge/src/session.rs`, `extensions/forge/src/tests.rs`, `extensions/game/src/forge_readout.rs` | a table of counts and which limit binds; the sentence names it; an own entry's move costs nothing | tests pass. Needs M5, H3 |
 
 K5 and H1 need nothing built here and can start at once. S2, S3 and
 S5 each add a name to `ui_kit::screens::NAMES`, which shifts later
@@ -365,7 +431,7 @@ they land one after another.
 - **Code**: world marks, their shapes, styles and check,
   `crates/rewrites/hud-kit-core/src/world.rs` and
   `crates/tools/hud-kit/src/check.rs`; the superbounce readout,
-  `huds/superbounce_readout.rs` and `huds/superbounce_guide.rs`.
+  `views/superbounce_readout.rs` and `views/superbounce_guide.rs`.
 - **Design**: the readout's rows, the mark pool, the row keys, the
   save and rename flows.
 

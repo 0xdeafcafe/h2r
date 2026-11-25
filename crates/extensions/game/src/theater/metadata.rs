@@ -16,6 +16,15 @@ use crate::{
     telemetry::{self, layout},
 };
 
+/// A game's name for the tape's header (docs/game/film-format.md, "An exit
+/// without a teardown still seals").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Described {
+    pub(super) map: String,
+    pub(super) variant: String,
+    pub(super) players: Vec<film::Player>,
+}
+
 pub(super) struct Capture {
     descriptor: MatchHeader,
     map_digest: Option<std::thread::JoinHandle<Result<MapIdentity>>>,
@@ -28,7 +37,6 @@ pub(super) struct Capture {
     quitting: BTreeSet<u32>,
     result_order: Vec<u32>,
     host_machine: Option<String>,
-    pub(super) archived_on_live: bool,
     lease_mode: Option<Mode>,
     /// A default recording cuts each game into a film of its own and keeps
     /// recording ([`super::autorecord`]): it describes one game after another.
@@ -63,7 +71,6 @@ impl Capture {
         });
         Self {
             descriptor: MatchHeader::default(),
-            archived_on_live: false,
             map_digest: None,
             lease_mode,
             variant_name: String::new(),
@@ -97,7 +104,6 @@ impl Capture {
         self.quitting.clear();
         self.result_order.clear();
         self.host_machine = None;
-        self.archived_on_live = false;
         self.between_games = true;
         self.on_map = false;
     }
@@ -133,6 +139,28 @@ impl Capture {
             self.descriptor.map = job.join().map_err(|_| anyhow::anyhow!("film map digest worker panicked"))??;
         }
         Ok(())
+    }
+
+    /// The game on the tape as a session's header names it: its map,
+    /// variant and the players seen so far (scores are left out; they are
+    /// in the cut's own header). None outside a game.
+    pub(super) fn description(&self) -> Option<Described> {
+        let map = &self.descriptor.map.name;
+        if map.is_empty() {
+            return None;
+        }
+        Some(Described {
+            map: map.clone(),
+            variant: self.variant_name.clone(),
+            players: self
+                .result_order
+                .iter()
+                .map(|id| {
+                    let p = &self.results[id];
+                    film::Player { name: p.name.clone(), team: p.team, score: 0 }
+                })
+                .collect(),
+        })
     }
 
     pub(super) fn summary(&self, tick: u64) -> Summary {
@@ -205,7 +233,6 @@ impl Capture {
                 &mut self.descriptor.variant_blob,
                 1,
             )?;
-            self.archived_on_live = s.is_some() && self.live.upgrade().is_some_and(|h| h.archived_session());
             self.descriptor.match_start_tick = Some(tick);
             self.descriptor.ticks_per_second = Some(info.tick_rate.max(1));
 

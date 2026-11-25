@@ -38,9 +38,11 @@ pub mod events;
 pub mod hashes;
 pub mod objects;
 pub mod pause;
+pub mod recording;
 pub mod quit;
 pub mod shot;
 pub mod state;
+pub mod window;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -223,6 +225,9 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::SESSION, Access::Read, Sim::session_method);
     add(method::GIVE, Access::Act, Sim::give);
     add(method::SPAWN, Access::Act, Sim::spawn);
+    add(method::AUDIO_PLAY, Access::Act, Sim::audio_play);
+    add(method::OBJECT_ANIMATE, Access::Act, Sim::object_animate);
+    add(method::RECORDING_PLAY, Access::Act, Sim::recording_play);
     add(method::OBJECTS, Access::Read, Sim::objects_method);
     add(method::EVENTS, Access::Read, Sim::events_method);
     add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
@@ -230,6 +235,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     pause::install(agent, agent_proto::host_pause::hub());
     quit::install(agent, agent_proto::host_quit::hub());
     shot::install(agent, agent_proto::host_shot::hub());
+    window::install(agent, agent_proto::host_window::hub());
     h
 }
 
@@ -658,6 +664,112 @@ impl Sim {
                         "held": held.as_deref() == Some(object.as_str()),
                         "session": session,
                     }))
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `audio.play`: queue the game's own sound start for a sound tag at
+    /// a player's unit. Presentation only, so a co-op session may ask.
+    fn audio_play(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::PlayParams = params(v)?;
+        let index = self.target(p.player.as_deref().unwrap_or("player.0"))?;
+        let q = self.calls()?;
+        let tag = self.find_tag(&p.sound, &["snd!"])?;
+        if tag.group != "snd!" {
+            return Err(invalid(format!(
+                "{}: a {} tag, not a sound (snd!)",
+                p.sound, tag.group
+            )));
+        }
+        let unit = ctx.with_guest(|m| state::unit_handle(m, index))?;
+        let ticket = calls::submit(
+            &q,
+            Call::Sound {
+                unit,
+                sound: tag.datum,
+            },
+        )
+        .map_err(unavailable)?;
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_ctx: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|made| {
+                    json!({
+                        "player": format!("player.{index}"),
+                        "sound": tag.json(),
+                        "instance": made["instance"],
+                    })
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `world.object.animate`: queue the start of a named animation of an
+    /// object's own graph. Host only: the object's pose is simulation
+    /// state.
+    fn object_animate(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::AnimateParams = params(v)?;
+        let id = edits::object_id(&p.id)?;
+        let session = self.host_write(ctx)?;
+        let q = self.calls()?;
+        let name = self
+            .tags
+            .as_mut()
+            .and_then(|tags| tags.string_id(&p.animation))
+            .ok_or_else(|| {
+                invalid(format!("loaded map has no unique string ID for {:?}", p.animation))
+            })?;
+        let ticket = calls::submit(&q, Call::Animate { id, name }).map_err(unavailable)?;
+        let session = serde_json::to_value(session).expect("serialises");
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|mut made| {
+                    made["object"] = json!(id.to_string());
+                    made["session"] = session.clone();
+                    made
+                }))
+            }),
+        );
+        Ok(Value::Null)
+    }
+
+    /// `recording.play`: queue the engine's recording player for a named
+    /// recording on a player's unit. The unit moves as the recording's
+    /// control stream drives it, so a co-op session may not ask.
+    fn recording_play(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: wire::RecordingPlayParams = params(v)?;
+        self.host_write(ctx)?;
+        let flags = recording::flags(p.mode.as_deref())?;
+        let index = self.target(p.player.as_deref().unwrap_or("player.0"))?;
+        let q = self.calls()?;
+        let (slot, name) = ctx.with_guest(|m| recording::find(m, &p.recording))?;
+        let unit = ctx.with_guest(|m| state::unit_handle(m, index))?;
+        let ticket = calls::submit(
+            &q,
+            Call::Recording {
+                unit,
+                index: slot,
+                flags,
+            },
+        )
+        .map_err(unavailable)?;
+        ctx.defer(
+            CALL_TICKS,
+            Box::new(move |_ctx: &mut GameCtx<'_>| {
+                let out = ticket.outcome()?;
+                Some(out.map(|started| {
+                    json!({
+                        "player": format!("player.{index}"),
+                        "recording": name,
+                        "index": slot,
+                        "unit": started["unit"],
+                    })
                 }))
             }),
         );

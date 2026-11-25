@@ -16,7 +16,7 @@ pub struct PackedVertices {
 /// Packs the draw's actual declarations into one GPU-ready raw stream.
 /// Vertex and index numbering are unchanged. A malformed, ambiguous or
 /// incomplete declaration leaves the caller's original binding in place.
-pub fn pack(layout: &VertexLayout, streams: &[VertexStream<'_>], count: u32) -> Option<PackedVertices> {
+pub fn pack(layout: &VertexLayout, streams: &[VertexStream<'_>], count: u32, max_bytes: usize) -> Option<PackedVertices> {
     if layout.pretransformed || count == 0 || streams.len() != layout.streams.len() || streams.len() < 2 {
         return None;
     }
@@ -51,7 +51,11 @@ pub fn pack(layout: &VertexLayout, streams: &[VertexStream<'_>], count: u32) -> 
     if !packed.streams[0].identity || packed.input_fetch() != plan.input_fetch() {
         return None;
     }
-    let mut bytes = vec![0; (stride as usize).checked_mul(count as usize)?];
+    let len = (stride as usize).checked_mul(count as usize)?;
+    if len > max_bytes {
+        return None;
+    }
+    let mut bytes = vec![0; len];
     for (v, dest) in bytes.chunks_exact_mut(stride as usize).enumerate() {
         for &(s, from, to, n) in &copies {
             let source = &streams[s];
@@ -153,7 +157,8 @@ mod tests {
             VertexStream { data: &positions, stride: 6 },
             VertexStream { data: &frames, stride: 4 },
         ];
-        let p = pack(&declarations(), &sources, 2).unwrap();
+        let p = pack(&declarations(), &sources, 2, usize::MAX).unwrap();
+        assert!(pack(&declarations(), &sources, 2, p.bytes.len() - 1).is_none());
         assert_eq!(p.stride, 12);
         assert_eq!(&p.bytes[..6], &positions[..6]);
         assert_eq!(&p.bytes[6..8], &[0; 2]);
@@ -174,11 +179,11 @@ mod tests {
             VertexStream { data: &bytes, stride: 4 },
         ];
         let mut layout = declarations();
-        assert!(pack(&layout, &sources, 3).is_none());
+        assert!(pack(&layout, &sources, 3, usize::MAX).is_none());
         layout.streams[1].attributes[0].register = V(0);
-        assert!(pack(&layout, &sources, 2).is_none());
+        assert!(pack(&layout, &sources, 2, usize::MAX).is_none());
         layout = declarations();
         layout.streams[0].attributes[0].offset = 2;
-        assert!(pack(&layout, &sources, 1).is_none());
+        assert!(pack(&layout, &sources, 1, usize::MAX).is_none());
     }
 }

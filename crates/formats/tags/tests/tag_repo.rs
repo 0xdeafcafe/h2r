@@ -159,6 +159,17 @@ fn run(
             r.raw_new.1 >> 20,
             t.elapsed()
         );
+        if let Some(k) = &r.skeleton {
+            println!(
+                "  skeleton {} KB ({} KB compressed), {} named extents ({} MB), {} unnamed ({} KB)",
+                k.skeleton.0 >> 10,
+                k.skeleton.1 >> 10,
+                k.named.0,
+                k.named.1 >> 20,
+                k.unnamed.0,
+                k.unnamed.1 >> 10
+            );
+        }
         for (k, why) in r.refused.iter().take(5) {
             println!("  refused {k}: {why}");
         }
@@ -185,6 +196,14 @@ fn run(
     // same build plans nothing.
     let again = tags::repo::plan(repo, &layouts, &disc, false)?;
     assert!(again.is_empty(), "--update after an extraction: {again:?}");
+    // Every map is given back byte for byte by its skeleton and extents
+    // (docs/engine/asset-store.md, AS1; `update` checked each as it went).
+    if !count_only {
+        for (stem, hash) in &disc {
+            repo.check_reassembly(stem, hash)?;
+        }
+        println!("{} maps reassemble to the disc's SHA-256", disc.len());
+    }
     let mut groups = std::collections::BTreeMap::<String, (usize, usize)>::new();
     for m in maps {
         let man = repo.manifest(&m.0)?;

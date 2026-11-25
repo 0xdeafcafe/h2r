@@ -1,6 +1,6 @@
 # The tag workspace: Studio as the whole tools suite
 
-Status: Design. The tag repository it stands on is built ([tag-repo.md](../formats/tag-repo.md)); the workspace, its projects, the build and Studio's side are not. "Open questions" lists what the owner still has to choose.
+Status: Design. The tag repository it stands on is built, with its extraction versions ([tag-repo.md](../formats/tag-repo.md)), and Studio's first start is built (W3: the start page, `workspace.status`, `workspace.extract` and `workspace.prune`, the game's `maps.load` rescan). The workspace's projects, the build and the rest of Studio's side are not. "Open questions" lists what the owner still has to choose.
 Code: `crates/formats/tags/src/repo` (the tree, extraction, the build), `crates/tools/workspace` (layers, projects, the incremental build), `crates/apps/studio/src/api/workspace.rs` (`workspace.*`, `project.*`), `crates/apps/h2-tools/src/tag_repo_cmd.rs` (`h2 tags`). Tests: `crates/formats/tags/src/repo/tests.rs`, `crates/tools/workspace/src/tests.rs`, `crates/formats/tags/tests/tag_repo.rs` (`#[ignore]`, the disc).
 Switch: none.
 
@@ -86,11 +86,14 @@ raw resources. The generated and imported layers, build caches and
 outputs add to it under `<data>/workspace/`. The builds volume has a
 quota, so the workspace accounts for itself: `workspace.status` gives
 the bytes of the tree, each layer, each project's cache and each
-output; `workspace.prune` removes raw resources no manifest names,
-generated layers whose fingerprint no project asks for, build caches
-unused for a week and outputs of deleted projects, and `cargo xtask
-prune` calls it. The tree itself is never pruned in part: it is
-deleted whole and extracted again.
+output; `workspace.prune` removes raw resources no tag file or
+manifest names, generated layers no project asks for (with no project
+files, all of them; a project file's own fingerprints are the
+projects', W2) and build caches unused for a week — the outputs of
+deleted projects are named by the project files that build them and
+wait for those (W2) — and `cargo xtask prune` calls it. The tree
+itself is never pruned in part: it is deleted whole and extracted
+again.
 
 ### Layers
 
@@ -121,7 +124,9 @@ of the tag:
 # assets/tag-edits/<name>.yaml (ours, in Git) or <data>/workspace/edits/ (the user's)
 - tag: <group>:<path>
   was: <content hash of the tag the edit was made on>   # local files only
-  set:   [{path: "barrels[0].rounds_per_second.upper", value: 12.0}]
+  set:
+    - {path: "barrels[0].rounds_per_second.upper", value: 12.0}
+    - {path: rounds_per_second, from: 8.0, value: 10.0}   # a mod's line: the value it replaces
   block: [{path: "magazines", op: add, like: 0}]
 ```
 
@@ -129,8 +134,13 @@ of the tag:
 field paths as `tag.set` (`tags::defs`, `tags::schema`). An edit whose
 path no longer resolves, or whose `was` no longer matches after a
 re-extraction, is reported with the tag and line and the build stops:
-no edit is dropped quietly. Files in Git hold our own numbers and names
-only, as `assets/ui/retail-edits/` does for screens
+no edit is dropped quietly. A line's `from` is checked against the tag
+as the build first found it, so two mods that set different fields of one
+asset both apply and the later of two that set one field wins; a `from`
+that the field does not hold is for other content, and in the game's
+build it turns the package off for that map with its reason
+([asset-store.md](../engine/asset-store.md), "Mods and packages"). Files in Git hold our own numbers and names
+only, as `content/ui/retail-edits/` does for screens
 ([ui-in-maps.md](../game/ui-in-maps.md), "Retail edits as data").
 
 Studio's document stays what it is, an open map with a journal and
@@ -140,7 +150,9 @@ edits are edit lines on the `scnr`.
 
 ### Projects
 
-A project is a small file naming one map to build:
+A project is a small file naming one map to build. In the package
+model of [studio-redesign.md](studio-redesign.md), "Packages", it is a
+`map` item of a package and its fields are these:
 
 ```toml
 # art/stage/project.toml, or <data>/workspace/projects/<name>.toml
@@ -181,7 +193,10 @@ loads it by its id, or as a play copy of a disc level
 
 ### Kits are build steps
 
-`content::kit::ContentKit` is the one shape for content added by code:
+`content::kit::ContentKit` is the one shape for content added by code.
+A package names one as a builder, and `KitRewrite` runs the whole
+package set ([studio-redesign.md](studio-redesign.md), "How the game
+consumes packages"):
 
 ```rust
 pub trait ContentKit {
@@ -262,7 +277,7 @@ Studio ([agent-api.md](agent-api.md)):
 | `project.build` | act | `{project, sources?}` builds; `{map_id, file, took_ms, rebuilt, reused, costs, problems}` |
 | `project.play` | act | builds, then loads the output in the paired game |
 | `doc.open {project}` | act | opens a project's last build as the document; saves write edit lines |
-| `import.model`, `import.bitmap`, `import.sound` | act | an importer on a source file, into the authored layer |
+| `import.model`, `import.bitmap`, `import.sound` | act | an importer on a source file, into the authored layer (`import.bitmap` and `import.sound` are built) |
 
 The CLI gains `h2 tags extract --update`, `h2 tags build --project
 FILE` and `h2 tags import`, over the same crate, for the coordinator
@@ -338,7 +353,7 @@ One lane each. A lane writes code and tests; the coordinator runs them.
 | W1 | Extraction versions: `extract.toml`, per-group layout hashes, the plan, resumable per map, `h2 tags extract --update` | `crates/formats/tags/src/repo/{store.rs, extract.rs}`, `crates/formats/tags/src/schema` (the hash), `tag_repo_cmd.rs`, [tag-repo.md](../formats/tag-repo.md) | on invented maps: a moved layout hash re-extracts that group only; an interrupted run redoes one map; unchanged input is a no-op | the disc test extracts, then `--update` does nothing |
 | S1, S2 | The stage's geometry and its map, built `fresh` from a `TagSource` | see the stage page | | the stage loads in the game |
 | W2 | `Layered` and projects: the crate, the project file, `fresh` and `onto` builds, the package output, `h2 tags build --project` | `crates/tools/workspace/{Cargo.toml, src/lib.rs, layer.rs, project.rs, build.rs, tests.rs}`, `h1convert/src/scratch.rs` (onto `Layered`) | invented tree and layers: first hit wins; a lossy tag refuses `fresh` by name; `onto` output differs from its base only in changed tags; the stage's project builds the bytes S2 built | `h2 tags build --project art/stage/project.toml` writes the stage package |
-| W3 | Studio's first start and `workspace.*`: the start page, the background plan, `tags_root`, status with sizes, `workspace.prune`, the game's `maps.load` rescan | `crates/apps/studio/src/{api/workspace.rs, ui/workspace.rs, app/workspace.rs}`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), [editor-guide.md](editor-guide.md) | headless: no tree shows the start page; `workspace.extract` on an invented disc; a Git checkout refused; every method's example | a fresh data root extracts from the disc in the window, with progress |
+| W3 | Studio's first start and `workspace.*` (built): the start page, the background plan, `tags_root`, status with sizes, `workspace.prune`, the game's `maps.load` rescan | `crates/apps/studio/src/{api/workspace.rs, ui/workspace.rs, app/workspace.rs}`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), [editor-guide.md](editor-guide.md) | headless: no tree shows the start page; `workspace.extract` on an invented disc; a Git checkout refused; every method's example | a fresh data root extracts from the disc in the window, with progress |
 | W4 | `ContentKit`, `KitRewrite`, the Pogo as the first kit, sources from a directory | `crates/formats/content/src/kit.rs`, `crates/tools/pogo-kit/src/{kit.rs, source.rs, rewrite.rs, inject.rs}`, `crates/apps/boot/src/lib.rs` (the chain), [pogo-stick.md](../game/pogo-stick.md) | baked and directory sources install the same tags; a map holding the kit is skipped; the rewrite's cache key is unchanged for unchanged input | the stage project with `kits = ["stage", "pogo"]` holds the Pogo |
 | S3 to S8 | The stage's flow: game methods, `stage.*`, checks | see the stage page | | `stage.run` gives a verdict on the Pogo |
 | W5 | Edit files and Studio's save: the format, `apply`, the journal to edit lines, `doc.open {project}`, `project.*` | `workspace/src/edits.rs`, `studio/src/{api/project.rs, app/project_doc.rs}`, [tag-editing.md](tag-editing.md), [scenario-editor.md](scenario-editor.md) | apply then diff gives the edit back; a stale `was` and a dead path stop with the line; the window's save and the API's write the same file; undo across a save | a field changed in the Tags tool is in the edit file, in the built map and in the paired game |
@@ -418,6 +433,7 @@ A wave's slices are independent of each other.
 
 ## Related
 
+- [studio-redesign.md](studio-redesign.md): packages, the unit this build runs on, and the window around it
 - [content-stage.md](content-stage.md): the first project, and how content is checked on it
 - [live-editors.md](live-editors.md), [game-view.md](game-view.md), [playtest.md](playtest.md): the rest of the suite
 - [tag-repo.md](../formats/tag-repo.md), [tag-schema.md](../formats/tag-schema.md), [map-builder.md](../formats/map-builder.md), [tag-definitions.md](../formats/tag-definitions.md): the tree, layouts, the builder, typed fields

@@ -743,7 +743,7 @@ fn resolve_forge(
             why: "document hash or base differs from the manifest".into(),
         });
     }
-    let id = MapId::forge(want, header.id);
+    let id = MapId::forge_game(want, header.id, layer.game);
     if let Some(expected) = header.expect
         && expected.map_id != id
     {

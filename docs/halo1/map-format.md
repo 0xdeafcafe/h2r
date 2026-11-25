@@ -14,13 +14,14 @@ Evidence labels, as in map-format.md:
   by the ignored tests `real_maps_read_and_their_multiplayer_parts_and_collision_check_out`
   (maps as stored, from `$H1_MAP_DIR`) and `real_disc_every_map_reads` (the
   whole disc, `$H1_ISO`).
-- **S — unverified:** the reader relies on this, but it has not yet been
+- **S — unverified:** the reader relies on this, but it is not
   checked on the disc.
 - **Design:** an implementation choice, not a format fact.
 
-**Status:** the multiplayer parts and the collision BSP were checked on two
-retail maps (`beavercreek`, `carousel`) cut from a partial download of the
-disc. The whole disc (24 maps, [bitmaps.md](bitmaps.md)) is read by
+**Status:** Built. The multiplayer parts and the collision BSP are checked
+on two retail maps (`beavercreek`, `carousel`, by
+`real_maps_read_and_their_multiplayer_parts_and_collision_check_out`). The
+whole disc (24 maps, [bitmaps.md](bitmaps.md)) is read by
 `real_disc_every_map_reads`, and the converter ([multiplayer.md](multiplayer.md))
 reads all 13 multiplayer maps. What those confirm is marked V; the rest
 stays S.
@@ -255,7 +256,7 @@ both maps every ring closes and every ring vertex lies within 1 cm of its
 surface's (flip-applied) plane. That one check confirms the plane, flip,
 surface, edge and vertex layouts together. `CollisionBsp::validate` runs it.
 
-**The converted collision answers as Halo 1's (V;
+**The converted collision answers as Halo 1's (V,
 `crates/tools/h1convert/tests/collision_engine.rs`).** All 81 collision BSPs of
 the nineteen multiplayer maps and ten campaign levels, converted
 (`h1convert::collision`), encoded as a structure BSP holds them and read

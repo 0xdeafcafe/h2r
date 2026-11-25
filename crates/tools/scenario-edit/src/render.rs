@@ -1390,6 +1390,22 @@ impl Viewport {
         done
     }
 
+    /// Redraw bitmap `bitmap`'s image 0 (`width` by `height`, `rgba`) as
+    /// the base map of every native world's material that took it: the
+    /// Textures tool's painted pixels in the level
+    /// ([`crate::native_view::NativeWorld::repaint_base`]). Returns how
+    /// many textures were written.
+    pub fn set_native_base_map(
+        &mut self,
+        queue: &wgpu::Queue,
+        bitmap: map::TagId,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> usize {
+        self.native.iter().map(|w| w.repaint_base(queue, bitmap, width, height, rgba)).sum()
+    }
+
     /// Whether the level draws through the native renderer.
     pub fn has_native(&self) -> bool {
         !self.native.is_empty()
@@ -2081,6 +2097,20 @@ impl Viewport {
     /// were its encoded one: a linear 0.05 (a dim wall, sRGB 63) shows as 13.
     pub fn ui_view(&self) -> Option<&wgpu::TextureView> {
         self.target.as_ref().map(|t| &t.ui_view)
+    }
+
+    /// Draw with another sun and fog than the scene was built with: a
+    /// `sky ` edited after the map opened (its sun direction, colour or
+    /// fog). Nothing is re-uploaded; the next frame reads the new words.
+    pub fn set_atmosphere(&mut self, atmosphere: &Atmosphere) {
+        if self.scene.is_some() {
+            self.atmosphere = AtmosphereUniforms::of(atmosphere);
+        }
+    }
+
+    /// The sun and fog words the scene shader draws with.
+    pub fn atmosphere(&self) -> AtmosphereUniforms {
+        self.atmosphere
     }
 
     /// Whether the scene uploaded has a sky model to draw.

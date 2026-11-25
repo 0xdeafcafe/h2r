@@ -53,12 +53,54 @@ pub struct Light {
     pub guest_weight: Option<f32>,
     /// View-candidate inputs and constants, when its record reads.
     pub candidate: Option<LightCandidate>,
+    /// A host light (docs/game/forge-monitor-appearance.md, ML5): a light
+    /// the host process adds after extraction, with no light datum and no
+    /// `ligh` tag; the seat whose body carries it. `None` for the game's
+    /// own lights.
+    pub host: Option<u8>,
 }
+
+/// The datum word of a light that has none: a [`Light::host_light`]'s
+/// `handle` and `definition`.
+pub const NO_DATUM: u32 = u32::MAX;
 
 impl Light {
     /// Whether the light casts its shadow (flag bit 2).
     pub fn shadowed(&self) -> bool {
         self.flags & 4 != 0
+    }
+
+    /// A host light at `origin`: a sphere of `radius` in `colour` (linear
+    /// RGB, 0 to 1), carried by `seat`'s body. It has no datum, no `ligh`
+    /// tag and no guest steps, casts no shadow (flag bit 2 clear) and is
+    /// in its view by the host's choice, so it is always eligible. Its
+    /// priority is zero: a renderer that ranks by score puts it after
+    /// every game light.
+    pub fn host_light(seat: u8, origin: [f32; 3], colour: [f32; 3], radius: f32) -> Light {
+        Light {
+            handle: NO_DATUM,
+            definition: NO_DATUM,
+            host: Some(seat),
+            candidate: Some(LightCandidate {
+                position: origin,
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                colour_a: colour,
+                colour_b: colour,
+                intensity: 1.0,
+                bounds: (origin, radius),
+                owner: None,
+                definition_kind: 0,
+                volume: Some(LightVolume::Sphere { origin, radius }),
+                view_eligible: Some(true),
+                priority: Some(0.0),
+                weight: 1.0,
+                gel_bitmap: None,
+                gel_shader: None,
+                constants: None,
+            }),
+            ..Default::default()
+        }
     }
 }
 

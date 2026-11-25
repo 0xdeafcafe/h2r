@@ -60,6 +60,7 @@ fn key_then_deltas_equals_host_set() {
             log_head: [7; 32],
             state_hash: 3,
             actor_count: 2,
+            show_hash: 0,
         },
     ];
     for change in &changes {

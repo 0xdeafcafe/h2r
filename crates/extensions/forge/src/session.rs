@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use forge_doc::{
-    ActiveLink, Before, BlockKind, Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, Forge,
-    ForgeDoc, Limits, Link, Links, LogHead, Op, Placement, Proposal, Sha256, Value,
+    ActiveLink, Area, Before, BlockKind, Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, Forge,
+    ForgeDoc, Limits, Link, Links, LogHead, MarkerArea, Op, Placement, Proposal, Sha256, Value,
 };
 
 use crate::things::{self, Kept, Own, OwnMap};
@@ -12,8 +13,22 @@ use crate::{
     World, files, links, props, scene,
 };
 
+mod area;
+mod budget;
+mod entries;
+mod ground;
+mod groups;
+mod prefabs;
+mod nav;
 mod shared;
 
+pub use area::{Goal, flag_label};
+
+pub use ground::{
+    GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, PlacedMarker,
+};
+pub use groups::{GroupInfo, carried};
+pub use nav::{NavBuilder, NavLine, NavProblem, NavReport, NavState};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
 
 #[derive(Clone, Debug)]
@@ -50,6 +65,12 @@ pub struct Session {
     /// Set in a synchronous network game ([`Session::share`]): edits queue
     /// for the host instead of applying here.
     shared: Option<shared::Shared>,
+    /// The AI ground's recipe and last build, beside the document.
+    ground: ground::Track,
+    /// The last **Generate nav**, beside the document.
+    nav: nav::Track,
+    /// The kit of the map the session runs on, when it has one.
+    kit: Option<entries::Kit>,
 }
 
 impl Session {
@@ -94,6 +115,9 @@ impl Session {
             repair: None,
             own_repair: None,
             shared: None,
+            ground: ground::Track::default(),
+            nav: nav::Track::default(),
+            kit: None,
         })
     }
 
@@ -104,6 +128,9 @@ impl Session {
     /// things and an edit naming one is refused.
     pub fn with_base(mut self, base: BaseRows) -> Self {
         self.base = Arc::new(Kept::new(base, &self.limits.base_counts));
+        if let Some(types) = self.base.flag_types() {
+            self.limits.base_flag_types = types;
+        }
         self
     }
 
@@ -118,22 +145,29 @@ impl Session {
     /// added ones in scenario order. A removed entry is not listed.
     pub fn things(&self) -> Vec<Thing> {
         let mut out = things::own_things(&self.base, &self.own);
-        out.extend(self.added().iter().map(added_thing));
+        if let Ok(scene) = scene::project(&self.doc, &self.limits, &self.palette, self.budget) {
+            out.extend(scene.objects.iter().map(added_thing));
+            out.extend(scene.markers.iter().map(added_flag));
+            out.extend(scene.entries.iter().map(added_entry));
+        }
         out
-    }
-
-    /// The added objects as the document leaves them.
-    fn added(&self) -> Vec<scene::Object> {
-        scene::project(&self.doc, &self.limits, &self.palette, self.budget)
-            .map(|scene| scene.objects)
-            .unwrap_or_default()
     }
 
     /// The thing `id` names, by identity: an own entry with or without its
     /// print, or an added one.
     pub fn thing(&self, id: Endpoint) -> Option<Thing> {
         match id.identity() {
-            Endpoint::Added(op) => self.added().iter().find(|o| o.id == op).map(added_thing),
+            Endpoint::Added(op) => {
+                let scene =
+                    scene::project(&self.doc, &self.limits, &self.palette, self.budget).ok()?;
+                scene
+                    .objects
+                    .iter()
+                    .find(|o| o.id == op)
+                    .map(added_thing)
+                    .or_else(|| scene.markers.iter().find(|m| m.id == op).map(added_flag))
+                    .or_else(|| scene.entries.iter().find(|e| e.id == op).map(added_entry))
+            }
             Endpoint::Base { block, index, .. } => {
                 let row = self.base.row(block, index).ok()?;
                 things::own_thing(row, self.own.get(&(block, index)))
@@ -159,6 +193,11 @@ impl Session {
     pub fn document(&self) -> &ForgeDoc {
         &self.doc
     }
+    /// The ID of the newest operation applied: the copy a Duplicate made.
+    pub fn last_op_id(&self) -> OpId {
+        OpId(self.last_id)
+    }
+
     pub fn log(&self) -> &[Entry] {
         &self.log
     }
@@ -268,6 +307,11 @@ impl Session {
             .palette
             .get(item_index)
             .ok_or("Choose a tag from the map palette.")?;
+        if let Some(budget) = self.budget_for(item.block)
+            && budget.left == 0
+        {
+            return Err(budget.full());
+        }
         let fields = vec![
             FieldWrite {
                 field: "palette index".into(),
@@ -286,6 +330,64 @@ impl Session {
         Ok(id)
     }
 
+    /// Duplicate an object (docs/game/forge-map-variants-ui.md, "The
+    /// Properties page"): one `Placement::Add` with the source's fields —
+    /// the palette tag it places, at `frame` — and the copy's op id. The
+    /// fields a placement cannot carry yet (its flags and scale) wait for
+    /// their rows. A kind the session cannot add — the kit's, until slice
+    /// P2 — is refused by its sentence, and a full block by the budget's.
+    pub fn duplicate(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        frame: Frame,
+    ) -> Result<OpId, String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind != ThingKind::Object {
+            let article = if thing.kind == ThingKind::ItemSpawner {
+                "an"
+            } else {
+                "a"
+            };
+            return Err(format!(
+                "Duplicating {article} {} needs a kit session.",
+                thing.kind.name()
+            ));
+        }
+        if let Some(budget) = self.budget_for(thing.block)
+            && budget.left == 0
+        {
+            return Err(budget.full());
+        }
+        let tag = thing
+            .fields
+            .iter()
+            .find(|(name, _)| *name == "palette index")
+            .and_then(|(_, value)| match value {
+                Value::Tag(Some(tag)) => Some(tag.clone()),
+                _ => None,
+            })
+            .ok_or("This object names no palette tag.")?;
+        let fields = vec![
+            FieldWrite {
+                field: "palette index".into(),
+                value: Value::Tag(Some(tag)),
+            },
+            vector("position", frame.position)?,
+            vector("rotation", frame.rotation)?,
+        ];
+        let ops = self.ops(vec![Edit::Placement(Placement::Add {
+            block: thing.block,
+            like: None,
+            fields,
+        })])?;
+        let new = ops[0].id;
+        self.edit(world, tick, ops, None)?;
+        Ok(new)
+    }
+
     pub fn move_object(
         &mut self,
         world: &mut impl World,
@@ -293,6 +395,9 @@ impl Session {
         id: OpId,
         frame: Frame,
     ) -> Result<(), String> {
+        if self.group_of(Endpoint::Added(id)).is_some() {
+            return self.move_thing(world, tick, Endpoint::Added(id), frame);
+        }
         self.restore(world)?;
         let (object, index) = self.target(id)?;
         let mut edits = vec![];
@@ -325,6 +430,8 @@ impl Session {
             .into_iter()
             .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
             .collect();
+        edits.extend(self.leave_group(Endpoint::Added(id)));
+        edits.extend(self.leave_label(Endpoint::Added(id)));
         edits.push(Edit::Placement(Placement::Remove {
             block: object.item.block,
             index,
@@ -336,7 +443,9 @@ impl Session {
     /// Move and turn a thing, own or added, to where a drop leaves it: one
     /// `EntryOp::Set` for its position and one for its rotation or facing,
     /// each only when it changes, in one undo step. An own entry is named by
-    /// its print, which the session checks against the row it kept.
+    /// its print, which the session checks against the row it kept. A thing
+    /// in a group takes the group with it: each member's sets are in the
+    /// same step ([`Session::group_frames`]).
     pub fn move_thing(
         &mut self,
         world: &mut impl World,
@@ -345,14 +454,17 @@ impl Session {
         frame: Frame,
     ) -> Result<(), String> {
         self.restore(world)?;
-        let thing = self.thing(id).ok_or(NO_THING)?;
+        let frames = self.group_frames(id, frame)?;
         let mut edits = vec![];
-        for write in things::frame_writes(thing.block, frame)? {
-            if field(&thing, &write.field) != Some(&write.value) {
-                edits.push(Edit::Entry(EntryOp::Set {
-                    target: thing.id,
-                    write,
-                }));
+        for (member, frame) in frames {
+            let thing = self.thing(member).ok_or(NO_THING)?;
+            for write in things::frame_writes(thing.block, frame)? {
+                if field(&thing, &write.field) != Some(&write.value) {
+                    edits.push(Edit::Entry(EntryOp::Set {
+                        target: thing.id,
+                        write,
+                    }));
+                }
             }
         }
         if edits.is_empty() {
@@ -369,7 +481,7 @@ impl Session {
     /// Carry a thing while it is held: the world moves it, and the document
     /// and the log do not change until the drop ([`Self::move_thing`]). A
     /// hold moves at most once a tick; a second move in the same tick is
-    /// dropped.
+    /// dropped. A thing in a group carries the group.
     pub fn hold(
         &mut self,
         world: &mut impl World,
@@ -382,7 +494,21 @@ impl Session {
         }
         self.restore(world)?;
         let thing = self.thing(id).ok_or(NO_THING)?;
+        for (member, frame) in self.group_frames(id, frame)? {
+            let member = self.thing(member).ok_or(NO_THING)?;
+            self.carry(world, &member, frame)?;
+        }
+        self.held = Some((thing.id.identity(), tick));
+        Ok(())
+    }
+
+    /// Move one thing in the world, and not in the document.
+    fn carry(&mut self, world: &mut impl World, thing: &Thing, frame: Frame) -> Result<(), String> {
         match thing.id {
+            Endpoint::Added(_) if crate::kit::is_block(thing.block) => {
+                scene::in_bounds(&self.limits, frame)?;
+                things::frame_writes(thing.block, frame)?;
+            }
             Endpoint::Added(op) => {
                 scene::in_bounds(&self.limits, frame)?;
                 things::frame_writes(thing.block, frame)?;
@@ -420,7 +546,6 @@ impl Session {
                 }
             }
         }
-        self.held = Some((thing.id.identity(), tick));
         Ok(())
     }
 
@@ -450,8 +575,87 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// Give an item spawner the game types `set` ([`props::games_ops`]):
+    /// one `EntryOp::Set` of each slot that changes, in one undo step. A
+    /// set it already has writes nothing.
+    pub fn set_games(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        set: forge_doc::games::GameSet,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        let edits: Vec<_> = props::games_ops(&thing, set)?
+            .into_iter()
+            .map(Edit::Entry)
+            .collect();
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let ops = self.ops(edits)?;
+        self.edit(world, tick, ops, None)
+    }
+
+    /// An item spawner's team, by the document's `Property` ops
+    /// ([`forge_doc::teams`]); none when it has none.
+    pub fn team(&self, id: Endpoint) -> Option<u8> {
+        forge_doc::teams(&self.doc.ops).get(&id.identity()).copied()
+    }
+
+    /// Give an item spawner a team, or none: one `EntryOp::Property`, which
+    /// writes nothing to the world. A thing that is no spawner is refused
+    /// by the sentence of the property's rule.
+    pub fn set_team(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        team: Option<u8>,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind != ThingKind::ItemSpawner {
+            return Err(format!("This {} has no team.", thing.kind.name()));
+        }
+        if self.team(thing.id) == team {
+            return Ok(());
+        }
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Property {
+            target: thing.id,
+            property: forge_doc::Property::Team(team),
+        })])?;
+        self.edit(world, tick, ops, None)
+    }
+
+    /// Active areas keyed by the flag identity used in this session.
+    pub fn areas(&self) -> Result<BTreeMap<Endpoint, Area>, String> {
+        self.doc
+            .area_targets(&self.limits.base_counts)
+            .map_err(reason)
+    }
+
+    /// Set or clear a flag's area in one edit and one undo step.
+    pub fn set_area(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        area: Option<MarkerArea>,
+    ) -> Result<(), String> {
+        let target = self.thing(id).ok_or(NO_THING)?.id;
+        let area = area
+            .as_ref()
+            .map(Area::try_from)
+            .transpose()
+            .map_err(reason)?;
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Area { target, area })])?;
+        self.edit(world, tick, ops, None)
+    }
+
     /// Remove a thing, own or added. A linked entry cannot be removed, so
-    /// its links end in the same undo step. In the world an own entry's row
+    /// its links end in the same undo step; so does its place in a group. In the world an own entry's row
     /// is made inert, and an undo writes the kept row back.
     pub fn remove(
         &mut self,
@@ -466,6 +670,8 @@ impl Session {
             .into_iter()
             .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
             .collect();
+        edits.extend(self.leave_group(thing.id));
+        edits.extend(self.leave_label(thing.id));
         edits.push(Edit::Entry(EntryOp::Remove { target: thing.id }));
         let ops = self.ops(edits)?;
         self.edit(world, tick, ops, None)
@@ -480,7 +686,7 @@ impl Session {
             return Err("Only the map's own things can be restored.".into());
         };
         let row = self.base.row(block, index)?;
-        if !self.own.contains_key(&(block, index)) {
+        if !self.own.contains_key(&(block, index)) && !self.areas()?.contains_key(&id.identity()) {
             return Err("This is already as the map has it.".into());
         }
         let target = Endpoint::Base {
@@ -733,7 +939,9 @@ impl Session {
         doc: &ForgeDoc,
         respawn: bool,
     ) -> Result<(), String> {
-        let desired = scene::project(doc, &self.limits, &self.palette, self.budget)?.objects;
+        let scene = scene::project(doc, &self.limits, &self.palette, self.budget)?;
+        let kit_want = self.kit_want(&scene)?;
+        let desired = scene.objects;
         let own = things::desired(doc, &self.limits.base_counts, &self.base)?;
         // A removed flag's row is inert: no channel is written to it.
         let channels: Vec<_> = self
@@ -747,9 +955,15 @@ impl Session {
         self.restore(world)?;
         let before: Vec<_> = self.objects.iter().map(scene::Object::from).collect();
         let own_before = self.own_live.clone();
+        let kit_before = self.kit.as_ref().map(|kit| kit.live.clone());
         let mut result = scene::reconcile(world, &mut self.objects, &desired, respawn);
         if result.is_ok() {
             result = things::reconcile(world, &mut self.own_live, &own, &self.base);
+        }
+        if result.is_ok()
+            && let (Some(kit), Some(want)) = (&mut self.kit, &kit_want)
+        {
+            result = entries::reconcile(world, &mut kit.live, want, &self.limits.base_counts);
         }
         if result.is_ok() {
             for (i, &(flag, new, _)) in channels.iter().enumerate() {
@@ -766,7 +980,13 @@ impl Session {
         if let Err(error) = result {
             let objects_repair = scene::reconcile(world, &mut self.objects, &before, true);
             let own_repair = things::reconcile(world, &mut self.own_live, &own_before, &self.base);
-            if objects_repair.is_ok() && own_repair.is_ok() {
+            let kit_repair = match (&mut self.kit, &kit_before) {
+                (Some(kit), Some(before)) => {
+                    entries::reconcile(world, &mut kit.live, before, &self.limits.base_counts)
+                }
+                _ => Ok(()),
+            };
+            if objects_repair.is_ok() && own_repair.is_ok() && kit_repair.is_ok() {
                 return Err(error);
             }
             let mut message = error;
@@ -778,6 +998,12 @@ impl Session {
                 self.own_repair = Some(own_before);
                 message +=
                     &format!(" Restoring the map's own entries also failed: {repair_error}.");
+            }
+            if let Err(repair_error) = kit_repair {
+                if let Some(kit) = &mut self.kit {
+                    kit.repair = kit_before;
+                }
+                message += &format!(" Restoring the kit's entries also failed: {repair_error}.");
             }
             return Err(message + " Retry to restore them.");
         }
@@ -813,28 +1039,56 @@ impl Session {
             })?;
             self.own_repair = None;
         }
+        if let Some(kit) = &mut self.kit
+            && let Some(repair) = &kit.repair
+        {
+            let repair = repair.clone();
+            entries::reconcile(world, &mut kit.live, &repair, &self.limits.base_counts)
+                .map_err(|e| format!("Restoring the kit's entries after an interrupted edit: {e}"))?;
+            kit.repair = None;
+        }
         Ok(())
     }
 
-    /// Allocate a new file without overwriting another session's save.
-    pub fn save_new(&self, data_dir: &Path, base: &str) -> Result<String, String> {
-        files::save_new(data_dir, base, &self.doc)
+    /// The document a save writes under `title`: the play form with the
+    /// ground recipe and without the session's kit.
+    pub fn variant_form(&self, title: &str) -> ForgeDoc {
+        let mut doc = self.ground_form();
+        doc.title = title.to_owned();
+        doc.expect = None;
+        forge_doc::play_form(&doc)
     }
 
-    pub fn save(&self, data_dir: &Path, name: &str) -> Result<(), String> {
-        files::save(data_dir, name, &self.doc)
+    /// Save the session as the map variant `title` in the variant store
+    /// and answer the file's stem. A name another variant of the map has
+    /// is `NameTaken` unless `replace` is set.
+    pub fn save_variant(
+        &self,
+        data_dir: &Path,
+        title: &str,
+        replace: bool,
+    ) -> Result<String, files::variants::Error> {
+        files::variants::save(data_dir, &self.variant_form(title), replace)
     }
 
-    /// Load the folded document as a fresh log checkpoint. Verify the whole
-    /// file and project its final objects before asking the game to change.
-    pub fn load(
+    /// Load a variant read from the store (`files::variants::load`) as a
+    /// fresh log checkpoint. Verify the whole document and project its
+    /// final objects before asking the game to change. The document is in
+    /// its play form; it takes the session's kit state, with the kit
+    /// recipe if the session's document has it and without if not.
+    pub fn load_variant(
         &mut self,
         world: &mut impl World,
         _tick: u32,
-        data_dir: &Path,
-        name: &str,
+        doc: ForgeDoc,
     ) -> Result<(), String> {
-        let doc = files::load(data_dir, name, &self.limits)?;
+        let loaded = if self.doc.recipes.contains(&forge_doc::kit()) {
+            forge_doc::session_form(&doc)
+        } else {
+            forge_doc::play_form(&doc)
+        };
+        forge_doc::validate(&loaded, &self.limits).map_err(reason)?;
+        let (doc, ground) = Self::take_ground(loaded.clone())?;
         if doc.base != self.doc.base
             || doc.builder != self.doc.builder
             || doc.recipes != self.doc.recipes
@@ -844,8 +1098,11 @@ impl Session {
             return Err("The document requires another base map, builder or kit.".into());
         }
         let head = LogHead::genesis(&doc).map_err(reason)?;
-        if let Some(expect) = doc.expect {
-            let actual = forge_doc::MapId::forge(doc.base.sha256, head.hash);
+        // The expectation was made over the document as saved, with the
+        // ground recipe in it.
+        if let Some(expect) = loaded.expect {
+            let saved = LogHead::genesis(&loaded).map_err(reason)?;
+            let actual = forge_doc::MapId::forge(loaded.base.sha256, saved.hash);
             if actual != expect.map_id {
                 return Err(format!(
                     "forge_expect_map_id: document expects {}, computed {actual}",
@@ -858,6 +1115,8 @@ impl Session {
         self.last_id = doc.ops.iter().map(|op| op.id.0).max().unwrap_or(0);
         self.doc = doc;
         self.head = head;
+        self.restart_ground(ground);
+        self.restart_nav();
         self.log.clear();
         self.log_bytes = 0;
         self.undo.clear();
@@ -867,6 +1126,41 @@ impl Session {
 }
 
 const NO_THING: &str = "Aim at a thing of the map.";
+
+fn added_flag(marker: &scene::Marker) -> Thing {
+    let float = |value| F32::new(value).expect("validated flag transform");
+    Thing {
+        id: Endpoint::Added(marker.id),
+        block: BlockKind::NetgameFlags,
+        kind: ThingKind::flag(marker.kind),
+        own: false,
+        frame: marker.frame,
+        fields: vec![
+            ("position", Value::Vec3(marker.frame.position.map(float))),
+            ("facing", Value::Float(float(marker.frame.rotation[0]))),
+            ("type", Value::Int(marker.kind.into())),
+            ("team", Value::Int(marker.team.into())),
+            ("identifier", Value::Int(marker.identifier.into())),
+        ],
+        changed: true,
+    }
+}
+
+/// An added starting location or item spawner as a thing: the layout's
+/// fields, those it has not written as a zeroed row has them.
+fn added_entry(entry: &scene::Entry) -> Thing {
+    let fields = entries::fields_of(entry.block, &entry.set);
+    let values: Vec<Value> = fields.iter().map(|(_, value)| value.clone()).collect();
+    Thing {
+        id: Endpoint::Added(entry.id),
+        block: entry.block,
+        kind: ThingKind::of(entry.block, &[]).unwrap_or(ThingKind::Object),
+        own: false,
+        frame: things::frame_of(entry.block, &values),
+        fields,
+        changed: true,
+    }
+}
 
 /// An added object as a thing: its palette entry, position and rotation.
 fn added_thing(object: &scene::Object) -> Thing {

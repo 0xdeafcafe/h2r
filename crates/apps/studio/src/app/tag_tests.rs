@@ -97,6 +97,39 @@ pub(crate) fn app_titled(t: &Path) -> (App, PathBuf, Vec<u8>) {
     app_with_registry(t, map(), titled_registry())
 }
 
+/// [`registry`] with `speed` described, so a search has a description to
+/// match.
+pub(crate) fn described_registry() -> &'static Registry {
+    static R: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let schema = tags::schema::Schema::parse(
+            "group scnr 0x10 align 4\ngroup weap 0x10 align 4\n  0x8 block 0xc align 4\n    0x0 tagref\n",
+        )
+        .unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into(
+            "test",
+            "\
+group weap 0x10
+  0x0 f32 speed doc=\"How fast the trigger repeats.\"
+  0x4 flags16 flags bits=loud|quiet
+  0x6 enum16 mode values=off|on|auto
+  0x8 block parts 0xc align 4
+    0x0 tagref item groups=itmc
+    0x8 u32 value
+",
+        )
+        .unwrap();
+        Registry::build(&schema, &defs)
+    })
+}
+
+/// An app with the invented map open in the Tags tool, over
+/// [`described_registry`].
+pub(crate) fn app_described(t: &Path) -> (App, PathBuf, Vec<u8>) {
+    app_with_registry(t, map(), described_registry())
+}
+
 /// An app with the invented map open in the Tags tool, over
 /// [`partial_registry`].
 pub(crate) fn app_partial(t: &Path) -> (App, PathBuf, Vec<u8>) {
@@ -249,7 +282,7 @@ fn scene_owned_scenario_blocks_are_read_only_in_the_panel() {
     assert!(shown["fields"]["weapons"][0]["position"].is_array());
 }
 
-fn bsp_fixture() -> (Vec<u8>, [TagId; 3]) {
+pub(crate) fn bsp_fixture() -> (Vec<u8>, [TagId; 3]) {
     use map::CacheType;
     use map::build::{Block, BspField, FixupKind, TagPayload, TagSet};
 

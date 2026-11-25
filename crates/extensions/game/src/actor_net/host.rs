@@ -1,6 +1,7 @@
 //! Read the distributed host's presentation state once per completed tick.
 //! A transport peer owns its budget for the duration of its connection.
 
+use ::actor_net::digest::state_hash;
 use ::actor_net::wire::MAX_ACTORS;
 use ::actor_net::{
     Actor, ActorChange, ActorSet, Budget, BudgetError, Control, DIGEST_PERIOD_TICKS, Packet,
@@ -20,6 +21,13 @@ pub struct Host {
     /// The show channel's cues for this tick
     /// (`crate::rules::world::show::take_cues`).
     cues: Vec<Record>,
+    /// The script's show state this tick
+    /// (`crate::rules::world::show::take_state`), encoded: `None` when no
+    /// script runs.
+    show: Option<Vec<u8>>,
+    /// The show state the last packet that carried one had, so a state the
+    /// budget dropped is offered again the next tick.
+    last_show: std::sync::Mutex<Option<Vec<u8>>>,
     controls: Vec<(u32, [f32; 3], Control)>,
     /// The head of the host log the running mode writes, for the digest;
     /// all zeros when no mode keeps one.
@@ -116,8 +124,7 @@ impl Host {
         Ok(())
     }
 
-    /// The mode state for this tick, as the Firefight HUD reads it
-    /// (`crate::firefight::hud`; empty when no mode runs): a `State` record
+    /// The Firefight HUD and script role state for this tick: a `State` record
     /// in this tick's changes when it differs from the last, and whole in
     /// every key. Call after [`Host::capture`], which starts the tick's
     /// changes afresh.
@@ -138,6 +145,16 @@ impl Host {
     /// audience and to no one else. Call after [`Host::capture`].
     pub(super) fn set_cues(&mut self, cues: Vec<Record>) {
         self.cues = cues;
+    }
+
+    /// The script's show state for this tick
+    /// (`crate::rules::world::show::take_state`, `None` when no script
+    /// runs): offered to every peer when it changes, at most five times a
+    /// second, and whole in every key. The state carries each audience as
+    /// a mask of player slots, and the peer's own machines show a record
+    /// only to their players in it. Call after [`Host::capture`].
+    pub(super) fn set_show(&mut self, show: Option<Vec<u8>>) {
+        self.show = show;
     }
 
     /// The running mode's host log head for this tick's digest
@@ -165,19 +182,33 @@ impl Host {
         let Some(tick) = self.tick else {
             return Ok(None);
         };
+        let with_key = budget.key_due(tick) || request_key;
         let mut offers = Vec::new();
-        if budget.key_due(tick) || request_key {
+        if with_key {
             offers.push(self.set.key());
         } else {
             offers.extend_from_slice(&self.changes);
+        }
+        // The script's show state: whole in every key, and otherwise when
+        // it changed since the peer was last sent one. A state the budget
+        // dropped (the five a second) is offered again the next tick, and
+        // a script that stopped retracts the last state with an empty
+        // record.
+        let last_show = self.last_show.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if self.show.is_some() && (with_key || self.show != last_show) {
+            offers.push(Record::Show(self.show.clone().unwrap_or_default()));
+        } else if self.show.is_none() && last_show.is_some() {
+            offers.push(Record::Show(Vec::new()));
         }
         offers.extend_from_slice(&self.lines);
         offers.extend_from_slice(&self.cues);
         // The set after this tick's changes, which the client checks once
         // the whole packet is applied (docs/game/ai-networking.md,
-        // "Determinism and digests").
+        // "Determinism and digests"), with the show state's hash beside
+        // the actor set's.
         if Self::digest_due(tick) {
-            offers.push(self.set.digest(self.log_head));
+            let show_hash = state_hash(self.show.as_deref().unwrap_or(&[]));
+            offers.push(self.set.digest(self.log_head, show_hash));
         }
         if let Some(origin) = position.filter(|p| p.iter().all(|v| v.is_finite())) {
             let mut ranked: Vec<_> = self
@@ -196,7 +227,16 @@ impl Host {
                     .map(|(_, entity, control)| Record::Control { entity, control }),
             );
         }
-        budget.schedule(tick, &offers)
+        let packet = budget.schedule(tick, &offers)?;
+        // Only a state the peer was actually sent counts as the last one,
+        // so a state the budget dropped is offered again.
+        if packet
+            .as_ref()
+            .is_some_and(|packet| packet.records.iter().any(|r| matches!(r, Record::Show(_))))
+        {
+            *self.last_show.lock().unwrap_or_else(|e| e.into_inner()) = self.show.clone();
+        }
+        Ok(packet)
     }
 }
 

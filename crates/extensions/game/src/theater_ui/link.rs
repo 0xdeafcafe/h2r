@@ -518,7 +518,7 @@ mod tests {
         .unwrap();
         let mut features = hooks::Registry::new(hooks::Switches::defaults());
         crate::join_link::install(&mut features, Some(live), false, None).unwrap();
-        crate::lab_takeover::install(&mut features, &agent::Agent::new()).unwrap();
+        crate::lab_takeover::install(&mut features, &agent::Agent::new(), true).unwrap();
         features
             .add(&super::Driver(crate::theater_ui::Theater::default()))
             .unwrap();

@@ -97,6 +97,9 @@ pub const NAVPOINT_NUMBER_GAP: f32 = 2.0;
 /// The message and training font: font id 6 fullscreen, 5 in split
 /// screen (E `0x0024cfaf`..`0x0024cfc9`, `0x001e71d7`).
 pub const MESSAGE_FONT: [i16; 2] = [6, 5];
+/// The banner's top above the frame's bottom, in every screen mode (E
+/// `0x0024d554`: the frame's height less 40).
+pub const BANNER_UP: f32 = 40.0;
 /// The retail HUD's state words the sheet starts from: word A `0x1000`,
 /// the retail shield meter's show word. Each source adds the word the
 /// widget on the motion tracker's rectangle shows on
@@ -242,6 +245,13 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
             let [r, g, b] = PREVIEW_TEAMS[usize::from(n) % PREVIEW_TEAMS.len()];
             [r, g, b, base[3]]
         }
+        // A gizmo axis' colour (`world::AXIS_COLOURS`), a world mark's
+        // alone.
+        Style::Axis(n) => {
+            let [r, g, b] = world::AXIS_COLOURS[usize::from(n) % world::AXIS_COLOURS.len()]
+                .map(|v| (v * 255.0).round() as u8);
+            [r, g, b, base[3]]
+        }
     }
 }
 
@@ -263,7 +273,7 @@ pub const PREVIEW_TEAMS: [[u8; 3]; world::TEAMS as usize] = [
 /// (`Normal`, `Flash`), faded (`Dim`), greyed (`Inactive`).
 pub fn style_look(style: Style) -> Option<Look> {
     match style {
-        Style::Normal | Style::Flash(_) | Style::Go | Style::Team(_) => None,
+        Style::Normal | Style::Flash(_) | Style::Go | Style::Team(_) | Style::Axis(_) => None,
         Style::Dim => Some(Look {
             alpha: DIM_ALPHA,
             grey: false,
@@ -508,6 +518,13 @@ fn channel_rect(kind: &Kind, frame: &Frame, mode: Mode, size: [f32; 2]) -> Rect 
                 y1: y + size[1],
             }
         }
+        // Centred across the frame, its top BANNER_UP above the frame's
+        // bottom (E 0x0024d52a..0x0024d554; S: that the line's top, not
+        // its baseline, is there).
+        Kind::Banner { .. } => {
+            let cx = (f32::from(frame.left) + f32::from(frame.right)) / 2.0;
+            centred(cx, f32::from(frame.bottom) - BANNER_UP, size)
+        }
         // Centred on the frame's centre, half the text plus the margin
         // each way (E 0x001e72e9..0x001e7373).
         _ => {
@@ -590,7 +607,9 @@ fn channel(
     let rect = channel_rect(&e.kind, frame, mode, block_size(&lines));
     let base = match e.kind {
         Kind::Prompt { .. } => src.colours.prompt,
-        Kind::Message { .. } => src.colours.message,
+        // The banner is in the user's HUD text colour too (E `0x0024d557`
+        // calls `0x0013927e`, as the notifications do).
+        Kind::Message { .. } | Kind::Banner { .. } => src.colours.message,
         _ => src.colours.training,
     };
     let colour = style_colour(base, v.style, &src.colours);
@@ -619,7 +638,9 @@ fn channel(
     };
     for (line, size) in v.text.split('\n').zip(&lines) {
         let x = match e.kind {
-            Kind::Training { .. } => (rect.x0 + rect.x1) / 2.0 - (size[0] / 2.0).floor(),
+            Kind::Training { .. } | Kind::Banner { .. } => {
+                (rect.x0 + rect.x1) / 2.0 - (size[0] / 2.0).floor()
+            }
             _ => rect.x0,
         };
         blit(canvas, &mut cover, fonts, font, line, colour, [x, y]);
@@ -953,19 +974,35 @@ fn world_mark(
     d
 }
 
+/// The retail player HUD as a user in monitor mode sees it: the bitmap
+/// widgets `model::MONITOR_KEEPS` names alone (the motion tracker), as the
+/// runtime's gate leaves them (`hud_kit::retail_gate` in the game crate).
+pub fn monitor_retail(retail: &mut hud_edit::Hud) {
+    retail.widgets.retain(|w| {
+        w.key.kind == hud_edit::model::WidgetKind::Bitmap
+            && crate::model::MONITOR_KEEPS.contains(&w.name.as_str())
+    });
+}
+
 /// `hud` (compiled as `compiled`) at `values` over the retail player HUD
-/// at `st`, its world marks at the sample poses `world`
-/// (`Describe::world` for the state).
+/// at `st` (for a `monitor` HUD, `Describe::monitor`, its motion tracker
+/// alone: [`monitor_retail`]), its world marks at the sample poses
+/// `world` (`Describe::world` for the state).
+#[allow(clippy::too_many_arguments)]
 pub fn shot(
     src: &mut Source,
     hud: &Hud,
     compiled: &Compiled,
+    monitor: bool,
     state: &str,
     values: &Values,
     world: &[(&'static str, Pose)],
     st: &HudState,
 ) -> Result<Shot> {
-    let retail = hud_edit::model::read(&mut src.map, src.player)?;
+    let mut retail = hud_edit::model::read(&mut src.map, src.player)?;
+    if monitor {
+        monitor_retail(&mut retail);
+    }
     let kit = compiled.as_hud_edit(KIT_BASE);
     let mode = st.mode;
     let answers = KitAnswers {
@@ -1102,6 +1139,7 @@ pub fn shot_json(s: &Shot, src: &Source, findings: &[crate::check::Finding]) -> 
                 "at": w.pose.map(|p| p.at),
                 "along": w.pose.map(|p| p.along),
                 "half": w.pose.map(|p| p.half),
+                "to": w.pose.and_then(|p| p.to),
                 "strength": w.pose.map(|p| p.strength),
                 "edges": w.edges,
                 "bounds": rect_json(&w.bounds),

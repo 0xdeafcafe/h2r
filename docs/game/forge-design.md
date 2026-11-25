@@ -14,8 +14,8 @@ Code: `crates/formats/forge-doc` defines the document and log.
 owns the local session and its tools ([forge-editing.md](forge-editing.md)), and its
 `net` module the synchronous protocol. The host is
 `crates/extensions/game/src/forge_glue.rs`, the screens are in
-`crates/extensions/game/src/forge_screens.rs`, the HUD strip is in
-`crates/extensions/game/src/ui_kit/forge.rs`, and the game calls and API
+`crates/extensions/game/src/forge_screens.rs`, the monitor HUD's feed is
+`crates/extensions/game/src/forge_hud.rs`, and the game calls and API
 are in `crates/extensions/agent/src/forge`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md).
 
@@ -150,8 +150,9 @@ integer-only implementation of RFC 8785. Floats are eight lowercase
 hexadecimal digits of their `f32` bits. The document's identity is the
 SHA-256 of its canonical form with the entire `expect` block omitted.
 Use `ForgeDoc::from_bytes` to read the 8 MiB
-bounded format and `ForgeDoc::canonical_json` to write it. The saved
-file is `<data>/forge/<name>.h2forge`. A draft can omit `expect`.
+bounded format and `ForgeDoc::canonical_json` to write it. The editor saves
+map variants in the variant store ([forge-map-variants.md](forge-map-variants.md),
+"The map variant file"); `h2 forge build` reads a `.h2forge` path. A draft can omit `expect`.
 The `format` is 1, or 2 when an op sets or clears a label; validation
 refuses the other number, so a document has one spelling and every
 document without labels keeps its identity.
@@ -188,7 +189,9 @@ and each named source hash. The later geometry and paint slices use
   `content::MapId` gains a `forge` list in its canonical form (manifest
   format 2). Format 2 hashes the base map's SHA-256 and the Forge
   document's identity. Its canonical JSON is
-  `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+  `{"base":"<base hash>","forge":["<document hash>"],"format":2}`, with
+  a `game` member for a document whose objects have game types
+  ([maps.md](maps.md), "Identity: `MapId`").
   Build and load compare `expect.map_id`, when present, with that
   computed ID and report `forge_expect_map_id` on a mismatch. The
   resolver verifies the packaged document, disc base and built map
@@ -480,16 +483,16 @@ Halo Infinite's that fit, and looks like Halo 2. Three pages hold it:
   retail Forges do, with sources.
 
 **Entering Forge.** Forge is a mode of the party lobby
-([party-lobby.md](party-lobby.md)), beside Custom Games and Firefight,
+([party-lobby.md](party-lobby.md)), beside Custom Games,
 in Split Screen, in a hosted System Link game and in an Xbox Live
 custom game, which the Xbox Live menu's Forge row opens in it
 (forge-firefight-ui.md, "The lobbies"). In Forge Game Setup has
-**Change Map...** (the original maps), **Forge Map...** (New, or a
-draft saved under `<data>/forge`, `forge::saved_names`) and the game
+**Change Map...** (the installed multiplayer maps), **Map Variant...** (Original, or a
+map variant of the lobby's map, `forge::files::variants::list`) and the game
 type, which picks the goals the session edits. Start Game is the
 game's; the draft is loaded as the session opens
-(`forge_glue::request_draft`), and one saved on another map is refused
-with the editor's notice. The main menu has no Forge row: its six rows
+(`forge_glue::request_draft`), and a variant that fails the store's checks is refused with the
+editor's notice. The main menu has no Forge row: its six rows
 are the retail five and Theater.
 
 **In a session** there are three layers.
@@ -504,6 +507,11 @@ are the retail five and Theater.
    monitors and on a link's ends, the axis gizmo, and the volume, nav
    and barrier overlays.
 
+A Forge lobby with the default Slayer variant starts with an unscored
+game record. The lobby keeps its selected variant when the player switches
+back to Custom Games. Explicit rules scripts remain available for testing
+in the editor.
+
 The buttons are Halo 3's: D-pad Up swaps monitor and player, A picks up
 and drops, X opens the object menu or the Properties of the thing aimed
 at, hold Y deletes, B cancels, RT held turns and pushes a held object,
@@ -513,11 +521,9 @@ is in forge-editing.md, "Controls".
 Forge is a mode of the custom game lobby, picked in the lobby's GAME
 MODE picker ([party-lobby.md](party-lobby.md);
 [forge-firefight-ui.md](forge-firefight-ui.md), "The lobbies").
-The screens are the game's (`forge_screens`, slice U4). Until slices U3
-and U7 land, the HUD strip is painted by the play window's compositor
-(`crates/extensions/game/src/ui_kit/forge.rs`,
-`crates/apps/cli/src/play_cmd/forge.rs`). forge-firefight-ui.md's audit
-lists every difference.
+The screens are the game's (`forge_screens`, slice U4) and the monitor
+HUD is the HUD kit's `forge` HUD (`forge_hud`, slices U3 and U6); the
+play window draws no Forge page (forge-firefight-ui.md, "Audit").
 
 Rules: every pending Rebuild edit shows the same count in the HUD and
 on the Forge menu; a refused proposal shows its reason as a HUD notice
@@ -540,7 +546,7 @@ every Forge test, lane and later tool drives a session through it.
 | `forge.log {since?}` | read | entries after a position |
 | `forge.rebuild` | act | the host's rebuild; `{map_id, seconds}` |
 | `forge.capacity` | read | tag headroom, object pool use, each block's count and limit, kit pools left |
-| `forge.nav {generate?}` | act | build state, counts, problems |
+| `forge.nav {generate?}` | act | build state, counts, problems, overlay ([forge-nav.md](forge-nav.md)) |
 | `forge.probe {what}` | act | one of the F3 measurements |
 
 **Editor API.** `mirror.edit` in a Forge session routes the editor's
@@ -617,12 +623,12 @@ and the game. Sizes as under Features.
 | **F1** | `forge-doc`: the document, placement and tag-field ops, canonical form and hash, validator with caps, fold of a log into a document, inverse ops | M | nothing | golden vectors for the hash; fold then unfold through inverses gives the start; every validator rule has a refusing case; a seeded fuzz of 10,000 random documents never panics; applying placement ops to a `scenario_edit::fixture` equals the same edits made through `Session` |
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
-| **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the compositor until U3 | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
+| **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the HUD kit (U3) | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link offers its lanes (`game/src/forge_glue/link.rs`) and the game's run of it is unproven |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, except the generator half: `bots::autonav`'s teleporter reader is private, so the test checks the bytes it reads (below) |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
 | **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
-| **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported |
+| **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported. **Built**, but for the Nav tool, drawing the sectors and links in the game, and the bots walking the generated mesh in a match ([forge-nav.md](forge-nav.md)) |
 | **F10** | Transplant recipes and monitor bodies | L | F2, F3's headroom | on invented maps, a transplanted closure reads back and references resolve; a recipe over the headroom is refused with its cost; the census and the body runs go in notes |
 | **F11** | AI: squads, the AI tool, sectors at materialise | L | F7, F10, a synchronous session from F5 | squad blocks on a fixture read back through `h1campaign`'s decoder; a wave graph places squads on the table's ticks |
 | **F12** | `asset-import`: glTF props, then skins on a chassis, then FBX | L | modeling slices 2, 6, 8 | invented glTF files in, tags out that `tags` decodes to the same mesh within quantisation; a mapping that drops a chassis node is refused; a missing bundle materialises with aliases and equal tag indices |
@@ -633,10 +639,10 @@ and the game. Sizes as under Features.
 | **F17** | Custom models on Live: the `model_uploads` flag and request, the `model-bundle` kind, the upload and publish checks in both homes, reports with `third_party_asset`, the Models queue in Halo Admin, the gate's bundle download, **Show other players' models** | M | F12, F14 | each refusal in the check's table, in both homes through the parity suite; approval and revocation replay from the log; three reports hide a bundle; a taken-down bundle makes a joiner draw the chassis; an unapproved account's publish naming a bundle is refused |
 
 | **P1** | Precision in `forge::tool`: the settings (movement snap, rotation snap, axes, fine movement) in the profile's store, thrust, Halo 3's manipulate (push, pull, roll), Coordinates with typed numbers and nudges, Reset orientation, Duplicate; their rows and the Coordinates screen; `forge.input` and `forge.status` carry them | M | F4, U4 | `tool_tests` tables: a held frame rounds to each grid in World and Local axes; the turn since pickup rounds and pickup never turns an object; a Coordinates visit is one `Placement::Set` and one undo step; a typed number outside the bounds is refused; Duplicate is one `Placement::Add`; `Page` tables for Tool settings and Coordinates |
-| **P2** | Kit sessions: a Forge-mode start materialises the draft with `forge_kit` and loads the package; netgame equipment entries, starting locations, netgame flags and teleporter flags as Kit edits; the Weapons, Vehicles, Equipment, Teleporters, Spawns and Goals groups; Team, Role and Order rows; goals listed by the session's game type | L | F2, F3's kit and capacity results, U2 | over a fake game on a kit fixture: an added entry raises the root count and writes the reserved row; a goal of a type the game type does not read is not offered; undo restores the count and the bytes; a map without the kit refuses the add with the reason; the materialised start resolves to the package |
+| **P2** | Kit sessions (**built**: `forge::kit`, `forge::session::entries`, `map_variant::pick_kit`): a Forge-mode start materialises the draft with `forge_kit` and loads the package; netgame equipment entries, starting locations, netgame flags and teleporter flags as Kit edits; the Weapons, Vehicles, Equipment, Teleporters, Spawns and Goals groups; Team, Role and Order rows; goals listed by the session's game type | L | F2, F3's kit and capacity results, U2 | over a fake game on a kit fixture: an added entry raises the root count and writes the reserved row; a goal of a type the game type does not read is not offered; undo restores the count and the bytes; a map without the kit refuses the add with the reason; the materialised start resolves to the package |
 | **P3** | Item properties: Respawn time; Game types and Place at start once their fields are decoded in [scenario-editor.md](../editor/scenario-editor.md) | S | P2 | a table of `properties(kind)`; each row's write is one typed `FieldWrite` with its `was`; a row whose field is not decoded is absent |
-| **P4** | Placed objects browser and Map limits: lists over `Session::objects` and `forge.capacity` on the Forge options page; fly to a chosen object | S | U4 | `Page` tables; `the_browser_lists_groups_then_objects`; a chosen row sets the camera and the aim |
-| **P5** | Selection, groups with a pivot and a lock, prefabs as local files, labels ([rules-engine.md](rules-engine.md#forge-labels)): one step of `forge_doc::FORMAT` for all three | M | P1 | golden vectors for the new ops and the prefab file; a group move is one undo step; a member's removal is refused while grouped; a prefab naming a tag the map lacks is refused by name; the seeded fuzz covers the new ops; a document of the older format still reads |
+| **P4** (built) | Forge options opens Placed objects over `Session::objects` and Map limits over the live counts shared with `forge.capacity` | S | U4 | `Page` tables; browser group order and fly-to; a synthetic guest supplies pool and block counts to the read-only limits page |
+| **P5** (built) | Selection (Properties and Hold A), groups with a local pivot picker and a lock, prefabs as local files, labels ([rules-engine.md](rules-engine.md#forge-labels)): one step of `forge_doc::FORMAT` for groups and labels, and a prefab file with its own number | M | P1 | golden vectors for the group ops and the prefab file; a pivot change or group move is one undo step; a member's removal is refused while grouped; a prefab naming a tag the map lacks is refused by name; the seeded fuzz covers the ops; a document of the older format still reads; gate, tool and picker tests cover the selection gesture and pivot choice |
 | **P6** | Lights: a generated light piece in the kit, the Lights group, Colour, Size and Brightness as tag field writes | M | F8, P2 | the generated tags decode through `tags`; each property is one `TagWrite`; a light over the per-map cap is refused |
 
 F2 and F3 can proceed independently of each other. F4 needs F2 and
@@ -716,9 +722,10 @@ RT or the right mouse button manipulates it: the right stick turns it,
 and the left stick's forward and back push it out from that distance
 and pull it in (`forge::tool::PUSH_RATE`), from where it shows, so a
 push stops at a nearer wall and a pull at the same near limit. In the native
-renderer the gizmo shows the proposed frame's three axes and a dashed
-outline of the bounding sphere (`forge_glue::gizmo`), drawn by the
-compositor: the renderer has no translucent preview of an object, and
+renderer the gizmo shows the proposed frame's three axes
+(`forge_glue::gizmo`), drawn as the HUD kit's `forge.gizmo` world marks
+(forge-firefight-ui.md, "The monitor HUD"): the renderer has no
+translucent preview of an object, and
 the object in the world moves only when the player confirms. A drop that
 changes position and rotation is one undo step. Properties exposes
 heading and the rotation increment.
@@ -731,9 +738,9 @@ skip"). The hook is ordered first, ahead of the native scene lists'
 setup, so the biped has no layer-3 items and the native objects stage,
 which draws only the walk of those items, never meets it. The biped stays
 in the visibility list, so its shadow is still chosen as a caster.
-`forge.status` gives the parked unit as `parked`. The Forge lobby's Start
-and an ordinary local game open the same session: the player starts in
-the biped and D-pad Up or Tab enters the monitor.
+`forge.status` gives the parked unit as `parked`. Start Game in a Forge lobby opens the monitor with its HUD and tools.
+A local level boot starts in the biped. D-pad Up or Tab switches between
+the biped and the monitor.
 
 `forge::Session` validates edits against the loaded map and folds their
 entries with F1. Its `World` interface resolves each placement to a

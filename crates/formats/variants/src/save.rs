@@ -421,7 +421,7 @@ impl SaveStore {
                 continue;
             }
             if let Some(n) = &self.names
-                && n.game_type_of(&file) != Some(ty)
+                && n.game_type_of(&file) != Some(ty.menu_template())
             {
                 continue;
             }
@@ -468,7 +468,8 @@ impl SaveStore {
     /// (and so the directory) follows the variant name.
     pub fn update(&self, old: &SavedVariant, v: &GameVariant) -> Result<SavedVariant, SaveError> {
         check_saveable(v)?;
-        let same_type = old.contents.variant.game_type() == v.game_type();
+        let same_type =
+            old.contents.variant.game_type().content_type() == v.game_type().content_type();
         let same_name = old.contents.variant.name() == v.name();
         if same_type && same_name {
             let mut bytes = encode_file(v, &self.key);
@@ -682,6 +683,36 @@ mod tests {
 
         store.delete(&c).unwrap();
         assert!(store.list().unwrap().is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_script_record_round_trips_through_its_save_file() {
+        let root = temp("script");
+        let store = SaveStore::new(&root, Some(names()));
+        let mut v = GameVariant::blank(GameType::Script);
+        let ext = crate::ext::Ext {
+            script: crate::ext::Script {
+                mode: crate::ext::Mode::Rules,
+                prefix: *b"madeupIR",
+                options: 37,
+            },
+            ..Default::default()
+        };
+        v.set_name("Test script").unwrap();
+        v.set_ext(&ext).unwrap();
+        let saved = store.create(&v).unwrap();
+        assert_eq!(saved.file, "type1");
+        assert_eq!(saved.contents.variant, v);
+        assert_eq!(store.list().unwrap(), vec![saved.clone()]);
+        assert_eq!(SaveStore::new(&root, None).list().unwrap(), vec![saved.clone()]);
+
+        v.set_name("Renamed").unwrap();
+        let renamed = store.update(&saved, &v).unwrap();
+        assert!(renamed.contents.signed);
+        assert_eq!(renamed.contents.variant.game_type(), GameType::Script);
+        assert_eq!(renamed.contents.variant.ext(), ext);
+        assert!(!saved.dir.exists());
         fs::remove_dir_all(&root).unwrap();
     }
 

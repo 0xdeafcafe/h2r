@@ -44,7 +44,7 @@ impl GfxBackend {
         id: SurfaceId,
         colour: SurfaceId,
         desc: AuxTarget,
-        scale: u32,
+        grid: RenderScale,
         bound: &HostTexture,
     ) -> bool {
         let (Ok(source), Ok(destination)) = (self.store.get(id), self.store.get(colour)) else {
@@ -52,7 +52,7 @@ impl GfxBackend {
         };
         let texture = source.texture();
         source.kind() == SurfaceKind::Color
-            && self.scene_target_matches(id, desc, scale)
+            && self.scene_target_matches(id, desc, grid)
             && texture.mip_level_count() == 1
             && texture.dimension() == wgpu::TextureDimension::D2
             && texture.depth_or_array_layers() == 1
@@ -78,9 +78,8 @@ impl GfxBackend {
             ) else {
                 return false;
             };
-            let Some(scale) = self.integral_scale(id) else { return false };
             images.reference.device == self.ctx.device
-                && self.live_view_matches(id, dest, desc, scale, &images.reference.texture)
+                && self.live_view_matches(id, dest, desc, self.surface_grid(id), &images.reference.texture)
         })
     }
 }

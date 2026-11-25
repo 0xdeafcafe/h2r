@@ -1,7 +1,7 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
-Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training and navpoint channels, and the superbounce HUD on them with its medals ("The medals"). Not built: the colour hook and the flash, the pointer's turn, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
-Code: `crates/rewrites/hud-kit-core` (the model, the HUDs, the templates, the record compiler), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/h2-tools/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
+Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, message (notification), training, banner and navpoint channels, the superbounce HUD on them with its medals ("The medals"), the Firefight HUD ([firefight.md](firefight.md), "The HUD") and the display HUDs of the scripted game types ([game-types-without-carriers.md](game-types-without-carriers.md), "The display"; `views/objective.rs`, their feed from the script's replicated state not built). Not built: the colour hook and the flash, the pointer's turn, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
+Code: `crates/rewrites/hud-kit-core` (the model, the HUDs' states, `data` which reads a HUD's YAML, the templates, the record compiler), `content/{superbounce,forge,modes}/huds/` (the HUDs' elements as YAML), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/h2-tools/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
 A feature of ours that wants something on the in-game HUD describes it as
@@ -97,8 +97,11 @@ to bottom from one starting point, then two centred lines:
    the drawn height times `hudg +0x80` lower
    (`0x0024d33a`..`0x0024d516`).
 5. **Two centred lines** 40 pixels above the frame's bottom, 18 apart:
-   a timed text at `+0x454` (start `+0x4d8`, duration `+0x4dc`) and the
-   text of `0x0015f120` (`0x0024d51f`..`0x0024d6bb`).
+   a timed text at `+0x454` (start `+0x4d8`, duration `+0x4dc`, both in
+   game ticks; drawn while the tick is from the start to the start plus
+   the duration, its alpha falling over it, `0x0024d58a`..`0x0024d5cf`)
+   and the text of `0x0015f120` (`0x0024d51f`..`0x0024d6bb`). Its colour
+   is the user's HUD text colour (`0x0013927e`, `0x0024d557`).
 
 Who writes the state (E):
 
@@ -108,10 +111,10 @@ Who writes the state (E):
 | `0x0024ca1d` (EAX user, ECX text, key, sound) | copies the text to `+0x220`, sets `+0x444`, clears `+0x440`; a new key (`+0x448`) restarts the fade at `+0x446` and plays the sound |
 | `0x0024c98c` (EAX user, shown) | shows or hides the prompt each frame, from `0x00191976` |
 | `0x0024cbbf` (EDI string id, user) | queues a notification; called for an item's pickup text (`0x00191fcf`) and by `0x001df40d`. It looks the id up (`0x0013925f`) and calls `0x0024cbee` |
-| `0x0024cbee` (EAX user, text) | queues a notification from UTF-16 text: takes a slot (`0x0024ccdb`), copies up to 63 characters to `+4`, sets the start tick, `+0x82`, clears `+0x84` and `+0x85`, gives `+0x83` the next value of the byte at `[0x005023f4] + 0x1385`, and clears the user's `+0x44e`. Ten callers; the game-event one is `0x0019e9c0` (below) |
+| `0x0024cbee` (EAX user, text) | queues a notification from UTF-16 text: takes a slot (`0x0024ccdb`), copies up to 62 characters and a zero to `+4` (through `0x0013fac0` with 63, `0x0024cc24`), sets the start tick, `+0x82`, clears `+0x84` and `+0x85`, gives `+0x83` the next value of the byte at `[0x005023f4] + 0x1385`, and clears the user's `+0x44e`. Ten callers; the game-event one is `0x0019e9c0` (below) |
 | `0x0024caac` (EAX user, singular, plural, count) | the same for a line that counts: adds the count to `+0x86`, sets `+0x84`, and shows the plural once the count is over 1 |
 | `0x0024ccdb` (state, singular, plural) | the slot: the first of the four that is not active; with both texts, an active counting entry already showing that text (the repeat); else the active entry with the oldest start tick, which it ends |
-| `0x0024cc73` (EAX user, ECX text, ticks) | sets the timed centred text at `+0x454` |
+| `0x0024cc73` (EAX user, ECX text, ticks) | sets the timed centred text: copies the text to `+0x454` through `0x0013fac0` with 63 (62 units and a zero), the game tick (`[0x00510c54] +8`) to `+0x450` and `+0x4d8`, 1 to `+0x4d2`, the next value of the byte at `[0x005023f4] + 0x1385` to `+0x4d3` (stepping it), and the ticks, its one stack argument, to `+0x4dc`; `ret 4` |
 
 Code that already uses them: `h1_hud_text/prompts.rs` (`show`) writes the
 prompt fields, and `skulls_custom.rs` queues "our text" through
@@ -218,11 +221,14 @@ disc or the running game.
 | Flash records | `hudg +0xa4`..`+0xbc` (help), `+0xcc`..`+0xe4` (objective), `+0x318`, `+0x338` (timer): a rest colour, a peak colour, period, delay, count, flags, duration | Code `defs/hudg.txt`; E the help and objective reads above |
 | A team's colour | the loaded map's `matg +0x16c` is the datum of its `mulg`; the `mulg`'s first `universal` record (block at `+0`, element address at `+4`) has the team colour block at `+0x10`: one `real_rgb_color` of 12 bytes per team, 8 teams. `0x0007f720` is the game's lookup of it (`0x0007f790` gives it a player's slot 0 in a team game). `pad_lightbar::team_rgb` reads it; `Style::Team(n)` draws in it | E `0x0007f720` ([objects.md](../halo1/objects.md), "Change colours"); Code `crates/extensions/game/src/pad_lightbar.rs` (`team_palette`, synthetic-guest tests) |
 | Widget art | the widget's shader: a meter's fill and a panel's tint are shader colours | [health.md](../halo1/health.md) |
-| Text widget colour | not read: how `0x0022aa16` gets from the widget's shader to the colour it hands `0x0013edb0` | decoding needed (4) |
+| Text widget colour | the text draw hands `0x0013edb0` (`HUD_TEXT_SETUP`) the static colour `[0x004686d4]` points at, the one the message draw copies as its shadow, and the static `[0x004686cc]` as the shadow; `0x0013edb0` copies the colour to `0x004e73c4`..`0x004e73d0` and sets `0x004e73c0`. So the widget's own colour is not set at that call: the HUD material it binds (`0x00131bb0` on `0x004e6950`, `0x0022aabb`) gives it (S) | E `0x0022aa5b`..`0x0022aa6e`, `0x0013edcb`..`0x0013edf7`; decoding needed (4) |
 
-The flash curve of such a record is `strength` in
-`crates/extensions/game/src/h1_hud_text/flash.rs` (Halo 1's, which
-Halo 2's help text is drawn with on converted maps). That Halo 2's own
+A record's colour over its flash is `hud_kit_core::flash::colour`
+(`crates/rewrites/hud-kit-core/src/flash.rs`), its curve `strength`:
+Halo 1's, which Halo 2's help text is drawn with on converted maps
+(`h1_hud_text/flash.rs` calls it). Where each `Pulse`'s record starts
+comes from the `hudg` definition (`flash::record_at`), and a test reads
+the six fields after it at the offsets the curve reads. That Halo 2's own
 curve is the same is S: read the caller of `hudg +0xac`..`+0xb8`.
 
 ### Fonts
@@ -304,7 +310,12 @@ The kit names retail art by the widget that draws it, never by pixels.
 3. **The training box's pieces.** The ten quads of
    `0x001e9140`..`0x001e95c5`: each one's rectangle and which bitmap,
    for the preview. The game draws them without this.
-4. **A text widget's colour.** `0x0022aa16` to its `0x0013edb0` call.
+4. **A text widget's colour.** The colour `0x0022aa16` hands
+   `0x0013edb0` is a static one ("Colours"), so a colour written there
+   does not flash a kit text. Not read: how the HUD material bound at
+   `0x0022aabb` colours the text (the shader's colour, a material
+   input, or the static colour times either), and so where a kit text's
+   colour can be set per widget.
 5. **Widget effects.** The `0x68`-byte effect record and `0x0022bcaf`,
    for a retail widget's own flash and scale.
 6. **The notification list's order.** The insert is read (above). Not
@@ -341,7 +352,7 @@ HUD"). The second is used only offline, by the preview, where
 
 ### The model (`crates/rewrites/hud-kit-core`)
 
-The model, the HUDs of ours, the template resolver and the record
+The model, the HUDs' states, the template resolver and the record
 compiler are in `hud-kit-core` (`rewrites` domain, guest-free), which
 both the offline preview (`crates/tools/hud-kit`) and the game's runtime
 use; `hud_edit::Mode` is its `Mode`. A HUD of ours is a `Hud`: a name
@@ -350,6 +361,29 @@ is a `Values`: per element its text, fill, angle, style and whether it
 shows. One layout per HUD: a state never adds, removes or moves an
 element (the UI kit's rule, for the same reasons: the runtime only
 answers hooks, and the checks cover every state).
+
+### HUDs as data
+
+A HUD's elements (its layout) are YAML, the `hud` item of a package
+([studio-redesign.md](../editor/studio-redesign.md), "Contents"); its
+states (`View`, `values`, the preview's samples) are Rust, in
+`hud-kit-core/src/views/`. The YAML is `name` and `elements`, each with an
+`id`, a `kind`, and what the kind takes (`art`, `font`, `justify`,
+`longest`, `glyphs`, `shape`), `at` (anchor, the offsets for each screen
+mode, registration, origin), `over`, `hide_when_d` and `outside`; the
+keys and what each kind needs are in `hud-kit-core/src/data.rs`, which
+reads one into a `Hud` and refuses an unknown key or an incomplete element
+by name. The first-party HUDs are in `content/superbounce/huds/`
+(`superbounce`, `superbounce-readout`, `pill-block`), `content/forge/huds/`
+(`forge`, `forge-readout`) and `content/modes/huds/` (`firefight`); `data::BUILTIN`
+embeds them and each `views::*::hud()` reads its own, so the preview, the
+checks and the runtime all see the YAML. The `hud` builder
+(`crates/tools/workspace/src/hud.rs`) refuses a source that is not a HUD
+and adds no tag: the game compiles a HUD's records against the map it
+loads, so a package of HUDs alone leaves every map unchanged
+(`workspace::changes_map`). `workspace::huds` lists a set's HUDs.
+`hud-kit-core/src/expected.rs` keeps the Rust each HUD was built with and
+`data_tests.rs` holds the YAML to it element by element.
 
 ```rust
 pub struct Hud { pub name: &'static str, pub elements: Vec<Element> }
@@ -443,6 +477,9 @@ pub trait Describe {
     /// The sample poses of the HUD's world marks in a state, for the
     /// preview and the checks.
     fn world(&self, _state: &str) -> Vec<(&'static str, Pose)> { Vec::new() }
+    /// A monitor's HUD: the retail widgets but MONITOR_KEEPS are off for
+    /// its user, and its grenade row origins are the row's first place.
+    fn monitor(&self) -> bool { false }
 }
 ```
 
@@ -513,8 +550,8 @@ of shown, fill or motion is stamped from the fill the old value was
 showing then (0 if it was not showing); the same value again keeps its
 stamp and its `from`. Text and style alone are no change.
 
-Five more elements are not widgets. Four are channels into the game's
-message, training and navpoint parts, one text each, and the fifth is a
+Six more elements are not widgets. Five are channels into the game's
+message, training and navpoint parts, one text each, and the sixth is a
 world mark, drawn by the window ("World marks"):
 
 | Element | What the player sees | Through |
@@ -522,6 +559,7 @@ world mark, drawn by the window ("World marks"):
 | `Message` | a notification in the pickup list, top left, that fades | the notification queue (`0x0024cbbf`) |
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
+| `Banner` | one line centred above the frame's bottom, for three seconds, fading | each local user's timed centred text (`+0x454`, `+0x4d8`, `+0x4dc`), when the text changes |
 | `Navpoint` | the game's arrow pointing down at a point of the world and its waypoint marker above | the navpoint list (`0x0024da7d`, below in "The navpoint") |
 | `WorldMark` | lines lying on the level's geometry, a label over them | the window's world-line pass (`hud_kit_world`, below in "World marks") |
 
@@ -534,12 +572,25 @@ the same text. So a `Message` is sent with `Handle::notify(user, text)`,
 once per line, for a local user, and not by `publish`. Its element is in
 the `Hud` for the checks and the preview, whose states give it a text
 (`Value::text`); `longest` is the widest line it is ever sent. A text
-of at most 63 UTF-16 units and one line is sent whole; a longer one, or
+of at most 62 UTF-16 units and one line is sent whole; a longer one, or
 one with a line break, is refused by the `prompt` check and by
 `Handle::notify` (`hud_kit_core::model::message_fault`; E `0x0024cbee`
-copies 63). A sender with no HUD of its own, such as a rules script's `message`
+keeps 62). A sender with no HUD of its own, such as a rules script's `message`
 ([rules-world-api.md](rules-world-api.md#the-show-channel)), queues the
 same line through `hud_kit::notify(user, text)`.
+
+A `Banner` is a state, unlike a notification: the HUD publishes its
+text while the line should show (a wave's number while the wave is
+being placed), and the runtime writes the line each time the shown text
+changes. The game draws it for `model::BANNER_TICKS` (90, three seconds;
+Design), fading, and then it is gone; the same text published again
+keeps the line it started, and a hidden value lets it run out. A text of
+at most 62 UTF-16 units (`model::BANNER_UNITS`: the game's copy keeps
+one fewer than the 63 it is given) and one line is written whole, as a notification's; a
+longer one, or a line break, is refused by the `prompt` check and not
+written (`model::banner_fault`). The preview draws it centred across the
+frame with its top 40 pixels above the frame's bottom
+(`preview::BANNER_UP`), in the notifications' colour.
 
 ### World marks
 
@@ -551,13 +602,14 @@ the checks and the preview cover it. `hud_kit_core::world` has its
 shapes and its pose:
 
 ```rust
-pub enum Shape { Pipper, Bracket, Arrow, Ticks, Bar, Line }
+pub enum Shape { Pipper, Bracket, Arrow, Ticks, Bar, Line, Segment }
 
 pub struct Pose {
     pub at: Vec3,          // the point on the geometry
     pub along: [f32; 2],   // the heading, flat: a bracket's long side, an arrow's way
     pub half: [f32; 2],    // the size, world units
     pub strength: f32,     // 0 to 1: the lines' alpha, for a mark that fades
+    pub to: Option<Vec3>,  // a Segment's far end
 }
 ```
 
@@ -569,9 +621,10 @@ pub struct Pose {
 | `Ticks` | three dashes from the point along the heading | the run they take, unused |
 | `Bar` | a line across the heading through the point; with a band, its two ends as lines half as long either side along the heading | the band's half along the heading (0: none), the line's half across |
 | `Line` | one segment through the point along the heading, an edge of an outline | half its length, unused |
+| `Segment` | one segment from the point to `Pose::to`, at any slope and not lifted: an axis of a gizmo | unused |
 
 `world::edges(shape, &pose)` gives the line segments in world space,
-flat and 0.02 above the pose's point. The game and the preview draw the
+flat and 0.02 above the pose's point (a `Segment` is the pose's two points as given). The game and the preview draw the
 same segments: the game through the window's world-line pass, from each
 view's camera, under the HUD and with no depth test
 ([superbounce.md](superbounce.md#the-superbounce-game-type), the pass
@@ -587,7 +640,9 @@ present, and only while a shown mark has the style
 team the mark is in the user's HUD colour. The preview has no map to read
 it from and draws the stand-ins `preview::PREVIEW_TEAMS` (**S**: not the
 game's, apart enough to tell on the sheet). The `world` check refuses
-`Team` on any other kind, and a team of `world::TEAMS` (8) or more. One
+`Team` on any other kind, and a team of `world::TEAMS` (8) or more. `Axis(n)` (`0..world::AXES`) draws in the colour of axis X, Y or Z
+(`world::AXIS_COLOURS`, ours), for a gizmo's three segments; the `world`
+check refuses it on any other kind and an axis of 3 or more. One
 more style is a world mark's alone: `Go`, a
 green (`world::GO_GREEN`, [0.35, 0.95, 0.45]) for a mark that says "this
 will work": the approach guide's "this fall will bounce"
@@ -616,7 +671,9 @@ memory.
 
 A feature registers its `Describe` once (`hud_kit::register`, which
 returns a `Handle`), then publishes a `Values` whenever its state changes
-(`Handle::publish`), the world point of each of its navpoints
+(`Handle::publish`), and, for a split-screen player whose widgets differ,
+that local user's own (`Handle::publish_for(user, Some(values))`, `None`
+to draw the shared ones again), the world point of each of its navpoints
 (`Handle::navpoint` for its first, `Handle::navpoint_at(id, point)` for
 any) and the pose of each of its world marks
 (`Handle::world_mark(id, pose)`, "World marks"). The feature `hud-kit`
@@ -649,7 +706,26 @@ does the rest:
    view fullscreen, two half, more quarter: `player_globals +8`), and
    none of its element's `hide_when_d` bits is set in the game's word D,
    the gate's third stack argument (`[esp+12]`, its low 16 bits). The
-   retail gate is skipped for it; a retail widget costs two loads.
+   retail gate is skipped for it; a retail widget costs two loads and
+   one more, of the monitor users' bits. For a local user in monitor
+   mode (`Handle::retail(user, false)`) every widget that is not the
+   kit's is hidden, the player `nhdt`'s retail records and the weapon's,
+   but the motion tracker's: the bitmap widgets named in
+   `model::MONITOR_KEEPS` (`motion_sensor`, V: docs/halo1/hud.md, "The
+   motion sensor's centre"), whose records' addresses the install keeps
+   in `Table::kept` (`hud_kit::kept_records`: the copy when the root
+   points at it, else the tag's own). The tracker's blips are not a
+   widget (`0x1a2823`) and draw as before. Another user's widgets are
+   left to the game's gate (`hud_kit::retail_gate`; tests
+   `a_monitor_user_draws_no_retail_widget_but_the_motion_tracker`,
+   `the_kept_records_follow_the_root`). Each install shows every user's
+   retail widgets again.
+   The gate, the inputs, the string and the scale read the values of
+   the local user whose HUD is being drawn: `[0x004b9ed8]`, which
+   `UI_HUD_DRAW` reads and hands to its per-user draws (E `0x001917ed`,
+   `0x0019186a`; `hud_kit::draw_user`): that user's own values if it has
+   them, else the shared ones (`hud_kit::values_for`). The channels read
+   the shared values alone.
 3. **Inputs** (`HUD_WIDGET_INPUTS`, before): `hud_input1` is
    `records::Widget::input(fill)`, the other three 0.
 
@@ -710,7 +786,10 @@ does the rest:
      put back as the widget blocks are, and only while the loaded
      scenario is the one it changed). The kit's navpoints are the
      `Navpoint` elements of the registered HUDs, in registration order,
-     the first four (`hud_kit::navpoints_now`); an element keeps its
+     the first four (`hud_kit::navpoints_now`); a HUD starts after the
+     navpoints of the earlier HUDs it can show with, and starts again at
+     the first slot after those it never shows with
+     (`Describe::never_with`, `hud_kit::slot_bases`); an element keeps its
      place in that list whatever shows, so it keeps its point. Each tick
      each point is set to its element's navpoint and one slot of the
      first local player's navpoint list is kept on it: the slot already
@@ -723,6 +802,13 @@ does the rest:
      skipped (kind 15): the draw does not check a kind-0 slot's index
      against the block's count. The game draws its own arrow and marker
      there; no number is drawn with it.
+   - `Banner`: the first shown banner of the registered HUDs whose place
+     has the screen mode (`hud_kit::banner_of`), compared with the last
+     tick's (`hud_kit::banner_due`): a new text is written into each
+     local user's timed line (users 0 to the local view count less one,
+     `hud_kit::local_users`) with the fields as `0x0024cc73` leaves them
+     and a duration of `BANNER_TICKS` (`hud_kit::write_banner`). With no
+     game time (`[0x00510c54]`) or no HUD state yet nothing is written.
    - `Message`: `Handle::notify(user, text)` queues the line (a user
      under 4, a text `message_fault` passes; else refused and logged).
      At the top of the next tick a before-hook on `GAME_TICK` writes
@@ -902,10 +988,10 @@ the check, the elements and the state and mode:
 | own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over`; two HUDs one of which names the other in `Describe::never_with` (a monitor's and a biped's, which are never shown together) are not compared with each other |
 | one layout | every state has a value for every element and for nothing else, and every element id is used once |
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
-| prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
+| prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` or `Banner` one (the game's prompt line draws no line break; the banner is one centred line), and fits the frame's width (less the training box's margin); a `Message` or a `Banner` has at most 62 UTF-16 units |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding. A gauge shown puts pixels down: one whose picture no code of ours draws, or draws at another size, is a finding |
-| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go` and `Team` are on world marks alone, `Team` of a team the game has. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
+| world | every sample pose is for a world mark of the HUD and has no fault (a number that is not finite, a negative size, a strength outside 0 to 1); a world mark shown in a state has a sample pose there, draws lines and keeps them inside the HUD frame; and `Go`, `Team` and `Axis` are on world marks alone, `Team` of a team the game has and `Axis` of one of the three. A world mark's lines are not compared with the widgets' (`own`): they are under the HUD, on the geometry |
 
 The synthetic source has no fonts, so it skips the glyph check and says
 so, and its retail check is against the flat disc and boxes, not the disc's art.
@@ -917,8 +1003,9 @@ the preview's JSON, with `render.frame` for the pixels.
 
 ## The superbounce HUD on the kit
 
-`crates/rewrites/hud-kit-core/src/huds/superbounce.rs` describes it:
-the elements, `View` (what the HUD shows of `superbounce_mode`'s state),
+`crates/rewrites/hud-kit-core/src/views/superbounce.rs` describes it
+(its elements are `content/superbounce/huds/superbounce.hud.yaml`):
+`View` (what the HUD shows of `superbounce_mode`'s state),
 `values(&View)`, the preview's states and the tutorial's step machine.
 It is multiplayer only (`Describe::multiplayer_only`): the disc test
 skips campaign maps for it by that reason. It is shown to the first
@@ -940,7 +1027,7 @@ h2 hud preview superbounce --state all --synthetic --out DIR
 The kit can put a pill of its own in the grenade row. No registered HUD
 has one: the superbounce HUD's priming indicator is the readout's
 charge segments. The pieces are held under test by `huds::pill_block`
-(`crates/rewrites/hud-kit-core/src/huds/pill_block.rs`), a HUD of the
+(`crates/rewrites/hud-kit-core/src/views/pill_block.rs`), a HUD of the
 kit's own tests that is not registered (`huds::all`) and is never
 compiled into a map.
 
@@ -1319,7 +1406,7 @@ h2 hud preview superbounce --state medal-chain --mode all --out DIR
 
 The `glyphs` check covers the eight code points in both fonts (the disc
 test also reads them from the patched `conduit-13` and `conduit-12`:
-`the_glyphs_are_in_the_fonts`), `prompt` the line's width and its 63
+`the_glyphs_are_in_the_fonts`), `prompt` the line's width and its 62
 units, and `drawn` that the line puts pixels down.
 
 ### The runtime, for this HUD
@@ -1401,7 +1488,7 @@ tutorial's step waits.
 ## The superbounce readout
 
 A second HUD on the kit, `superbounce-readout`
-(`crates/rewrites/hud-kit-core/src/huds/superbounce_readout.rs`): nine
+(`crates/rewrites/hud-kit-core/src/views/superbounce_readout.rs`): nine
 charge segments round the motion tracker ("The charge segments"), three
 rows right of them and a fourth over the arming bar,
 three navpoints and the approach guide's five world marks ("The
@@ -1536,7 +1623,7 @@ segments. With the mode off every element is hidden.
 ### The charge segments
 
 The priming indicator
-(`crates/rewrites/hud-kit-core/src/huds/superbounce_segments.rs`): nine
+(`crates/rewrites/hud-kit-core/src/views/superbounce_segments.rs`): nine
 arcs round the motion tracker's left, bottom and right sides, three a
 side, concentric with its rim (`rects::TRACKER`, (47, 360) to (130, 443),
 83 across) and 4 pixels (`GAP`) clear of it, so they are apart from the
@@ -1632,7 +1719,7 @@ h2 hud preview superbounce-all --state 24-charge-warning --out DIR
 ### The approach guide
 
 Five world marks of the readout
-(`crates/rewrites/hud-kit-core/src/huds/superbounce_guide.rs`) on the
+(`crates/rewrites/hud-kit-core/src/views/superbounce_guide.rs`) on the
 seam the player is going for and the ground before it, so the line-up
 is read off the geometry. What they mean, the prediction, the depth
 rule and the jump cue are in
@@ -1675,13 +1762,21 @@ chance field and shows no percentage beside the call.
 ## Interfaces
 
 - A feature calls `hud_kit::register(describe) -> Handle`, then
-  `Handle::publish(values)`, `Handle::navpoint(Option<point>)` or
+  `Handle::publish(values)`, `Handle::publish_for(user, Option<values>)`
+  for a local user's own, `Handle::navpoint(Option<point>)` or
   `Handle::navpoint_at(id, Option<point>)` for its navpoints, and
   `Handle::world_mark(id, Option<pose>)` for its world marks. A
   `Prompt` or `Training` element's shown text is the channel's text.
 - A feature whose HUD is never shown with another's names it in
   `Describe::never_with`; the runtime hides the one whose user is not in
   its mode.
+- A monitor's HUD says so (`Describe::monitor`): it is compiled with the
+  grenade row's origins at the row's first place
+  (`Templates::for_monitor`, `GrenadeRow::first`: the frag pill's and
+  count's places less one step, the plasma's), and the preview and the
+  `retail` check draw it over the motion tracker alone
+  (`preview::monitor_retail`). Its feature turns the retail widgets of
+  its user off while the monitor is up, `Handle::retail(user, shown)`.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
   `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,
   `HUD_INTERACTION_VISIBLE`,
@@ -1689,8 +1784,9 @@ chance field and shows no percentage beside the call.
   through `community_variants`' override.
 - Guest memory written: the two block fields of each player `nhdt` root,
   the scenario's point block field, the kit's two allocations, the first
-  local player's prompt fields and navpoint list, the training id and
-  show byte.
+  local player's prompt fields and navpoint list, each local user's timed
+  line and the order byte it shares with the notifications, the training
+  id and show byte.
 - Agent API: none yet (`hud.kit` is planned with slice 6's run checks).
 
 ## Rules and limits
@@ -1737,6 +1833,8 @@ particular:
   bounds times the image's size).
 - That `player_globals +8` is the count of local views the HUD's screen
   mode follows.
+- That `[0x004b9ed8]` is the user whose HUD the widget loop draws, for
+  every user's pass of a split frame.
 - That writing the prompt fields at `HUD_INTERACTION_VISIBLE`'s
   interaction call shows the verb and hides it again when the kit stops,
   and that U+E110 is redrawn as the bound crouch key.
@@ -1803,6 +1901,12 @@ particular:
   captured).
 - Where a notification is drawn against the first message line (the
   preview puts it below the line's five-line box).
+- The banner: that the timed line's top, not its baseline, is 40 pixels
+  above the frame's bottom (the preview's place), that it draws in a
+  multiplayer game with the HUD up, that writing the fields directly at
+  the tick's end draws as a call to `0x0024cc73` does, and that
+  `player_globals +8` counts the users whose state the line is read
+  from.
 - The notifications: that a guest call to `0x0024cbee` at the tick's top
   draws as the game-event caller's does, that running the tick again
   from the hook (as `skulls_custom` does) leaves the frame as it was,
@@ -1840,8 +1944,7 @@ Each slice is code and tests only; the coordinator compiles and runs.
    Pinned and Centered, fullscreen and split; the widget cap and the
    text shader's colour.
 2. **Styles and the pointer.** The colour hook (`HUD_TEXT_SETUP`,
-   `HUD_SHADER_QUAD`) and the flash (move `strength` into
-   `hud-kit-core` and have `h1_hud_text/flash.rs` call it), so `Dim`,
+   `HUD_SHADER_QUAD`) and the flash (`hud_kit_core::flash`), so `Dim`,
    `Inactive` and `Flash` draw; the corner turn. Before coding, decodings
    4 and 7. Tests: a `Dim` text's alpha; a flash at the record's phases;
    four corners turned by a quarter turn.

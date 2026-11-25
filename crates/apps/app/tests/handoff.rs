@@ -259,7 +259,7 @@ fn present_hook_copies_the_back_buffer() {
     assert!((126..=129).contains(&px[3]));
     assert_eq!(source.stats().published, 3);
     // Flags 0 are the presents of frames the host made between the guest's
-    // (`d3d::interp`); a guest `Swap` presents with its own flags. The
+    // (display frames between scenes); a guest `Swap` presents with its own flags. The
     // title's guest rate counts only the latter.
     assert_eq!(source.stats().made, 3);
     hook(&ctx, &store, argb, 4, None);

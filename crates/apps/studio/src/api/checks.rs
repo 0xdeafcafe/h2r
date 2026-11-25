@@ -79,7 +79,7 @@ pub struct ContentCheck {
 }
 
 /// The areas `what` may name, besides `all`.
-pub const AREAS: [&str; 4] = ["models", "sounds", "ui", "hud"];
+pub const AREAS: [&str; 5] = ["models", "sounds", "ui", "hud", "markers"];
 
 /// Every content check, in the order they run. One row each.
 pub const CHECKS: &[ContentCheck] = &[
@@ -108,6 +108,11 @@ pub const CHECKS: &[ContentCheck] = &[
         name: "hud.kit",
         run: super::ui_check::hud_kit_check,
     },
+    ContentCheck {
+        area: "markers",
+        name: "markers.check",
+        run: super::markers_check::check,
+    },
 ];
 
 /// The provider.
@@ -116,8 +121,8 @@ pub struct Checks;
 
 const RUN: MethodDef = def(
     m::CHECK_RUN,
-    "Run every registered content check (or one area's: models, sounds, ui, hud) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (an object tag, a clip id or prefix, a snd! tag, a screen, a HUD). A check that cannot run says why under `skipped`",
-    r#"{"what?":"all|models|sounds|ui|hud","target?":"string"}"#,
+    "Run every registered content check (or one area's: models, sounds, ui, hud, markers) over the open map and document and our own content, in one list: each finding's area, code, severity (error, warning, note), message, target and file. `target` narrows each check to one thing (an object tag, a clip id or prefix, a snd! tag, a screen, a HUD). `asset` (an asset id) reads the Problems list again and answers only the rows about that asset, as the header's Check count and `problems.list {asset}` do (`what` and `target` are then not used). For a package item it refreshes package checks and open-script diagnostics. A check that cannot run says why under `skipped`",
+    r#"{"what?":"all|models|sounds|ui|hud|markers","target?":"string","asset?":"string"}"#,
     r#"{"findings":"[{area,code,severity,message,target,path?}]","counts":"{error,warning,note,total,by_area:{area:integer}}","ran":"[{area,check,findings}]","skipped":"[{area,check?,why}]"}"#,
     r#"{"what":"ui","target":"$SCREEN"}"#,
 );
@@ -140,6 +145,9 @@ pub fn run(app: &mut App, p: &P, checks: &[ContentCheck]) -> Reply {
             code::INVALID_PARAMS,
             format!("what: all, {} (not {what:?})", AREAS.join(", ")),
         ));
+    }
+    if let Some(asset) = p.opt_str("asset")? {
+        return of_asset(app, asset, checks);
     }
     let target = p.opt_str("target")?;
     let mut findings: Vec<Finding> = Vec::new();
@@ -179,6 +187,33 @@ pub fn run(app: &mut App, p: &P, checks: &[ContentCheck]) -> Reply {
         "counts": counts(&findings),
         "ran": ran,
         "skipped": skipped,
+    }))
+}
+
+/// `check.run {asset}`: refresh the Problems list and return the rows
+/// about `asset` ([`App::refresh_asset_problems`]).
+fn of_asset(app: &mut App, asset: &str, checks: &[ContentCheck]) -> Reply {
+    let problems = app
+        .refresh_asset_problems(asset, None, checks)
+        .map_err(|e| err(code::INVALID_PARAMS, e))?;
+    let rows = &problems.rows;
+    let n = |s: Severity| rows.iter().filter(|p| p.severity == s).count();
+    let by_area: serde_json::Map<String, Value> = AREAS
+        .iter()
+        .map(|a| ((*a).to_owned(), json!(rows.iter().filter(|p| p.area == *a).count())))
+        .collect();
+    Ok(json!({
+        "asset": asset,
+        "findings": rows.iter().map(crate::app::problems::Problem::json).collect::<Vec<_>>(),
+        "counts": {
+            "error": n(Severity::Error),
+            "warning": n(Severity::Warning),
+            "note": n(Severity::Note),
+            "total": rows.len(),
+            "by_area": by_area,
+        },
+        "ran": problems.ran,
+        "skipped": problems.skipped,
     }))
 }
 

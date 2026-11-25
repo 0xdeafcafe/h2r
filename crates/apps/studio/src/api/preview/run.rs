@@ -23,6 +23,15 @@ pub enum Task {
         pos: Option<[f64; 3]>,
         distance: f64,
     },
+    /// `sim.spawn` the object as `Object` does, `world.object.animate` it
+    /// to play `animation` (a name in the object's own graph), let
+    /// `ticks` run and capture. `tag` carries its group (`scen:name`).
+    Animation {
+        tag: String,
+        animation: String,
+        pos: Option<[f64; 3]>,
+        distance: f64,
+    },
     /// Read the menu shown; `screen` is the one expected.
     Ui { screen: Option<String> },
     /// Show the HUD (`hide_hud` off for the capture); `state` names a
@@ -57,6 +66,9 @@ pub struct Plan {
     pub capture: Capture,
     /// Where the capture is copied.
     pub out: Option<PathBuf>,
+    /// What Studio measured itself, put in the report as `editor` (a
+    /// sound's `sound.measure`).
+    pub editor: Option<Value>,
 }
 
 /// Starts `plan` on its own thread; the report arrives on the receiver.
@@ -84,6 +96,9 @@ pub fn run(plan: &Plan, steps: &Arc<Mutex<Vec<String>>>) -> Value {
         out: Map::new(),
         warnings: Vec::new(),
     };
+    if let Some(editor) = &plan.editor {
+        g.out.insert("editor".into(), editor.clone());
+    }
     let outcome = g.connect(&plan.endpoint).and_then(|()| g.task(plan));
     let mut report = Value::Object(std::mem::take(&mut g.out));
     match outcome {
@@ -167,6 +182,9 @@ impl Game {
         match &plan.task {
             Task::Weapon { weapon, keep } => self.weapon(plan, &player, weapon, *keep),
             Task::Object { tag, pos, distance } => self.object(plan, &player, tag, *pos, *distance),
+            Task::Animation { tag, animation, pos, distance } => {
+                self.animation(plan, &player, tag, animation, *pos, *distance)
+            }
             Task::Ui { screen } => self.ui(plan, screen.as_deref()),
             Task::Hud { state } => self.hud(plan, state.as_deref()),
             Task::Audio {
@@ -239,6 +257,64 @@ impl Game {
         pos: Option<[f64; 3]>,
         distance: f64,
     ) -> Step {
+        let (made, at) = self.spawn(player, tag, pos, distance)?;
+        self.out.insert("applied".into(), made.clone());
+        self.settle(plan.ticks)?;
+        let found = self.find_made(&made, at);
+        let mut reads = json!({"object": found});
+        if let Some(camera) = self.camera() {
+            reads["camera"] = camera;
+        }
+        self.out.insert("reads".into(), reads);
+        self.capture(plan)
+    }
+
+    fn animation(
+        &mut self,
+        plan: &Plan,
+        player: &str,
+        tag: &str,
+        animation: &str,
+        pos: Option<[f64; 3]>,
+        distance: f64,
+    ) -> Step {
+        // Before anything is made: a game without the method gets no object.
+        self.need(agent_proto::sim::method::OBJECT_ANIMATE, "starting an animation")?;
+        let kind = tag
+            .split_once(':')
+            .and_then(|(group, _)| kind_of_group(group))
+            .ok_or_else(|| {
+                format!(
+                    "an animation preview spawns scen, vehi, mach, bloc or crea objects: name the tag with its group ({tag:?} has none of those)"
+                )
+            })?;
+        let (made, at) = self.spawn(player, tag, pos, distance)?;
+        let handle = made["object"].as_str().unwrap_or_default().to_ascii_lowercase();
+        let id = format!("{kind}.{handle}");
+        let started = self.call(
+            agent_proto::sim::method::OBJECT_ANIMATE,
+            json!({"id": id, "animation": animation}),
+        )?;
+        self.out.insert("applied".into(), json!({"spawn": made, "animate": started}));
+        self.settle(plan.ticks)?;
+        let found = self.find_made(&made, at);
+        let mut reads = json!({"object": found, "animation": started});
+        if let Some(camera) = self.camera() {
+            reads["camera"] = camera;
+        }
+        self.out.insert("reads".into(), reads);
+        self.capture(plan)
+    }
+
+    /// `sim.spawn` the tag at `pos`, else `distance` in front of the
+    /// player facing them: the game's answer and where it was made.
+    fn spawn(
+        &mut self,
+        player: &str,
+        tag: &str,
+        pos: Option<[f64; 3]>,
+        distance: f64,
+    ) -> Result<(Value, Value), String> {
         self.need(agent_proto::sim::method::SPAWN, "making an object")?;
         let (pos, yaw) = match pos {
             Some(pos) => (pos, None),
@@ -254,10 +330,13 @@ impl Game {
             params["yaw"] = json!(yaw);
         }
         let made = self.call(agent_proto::sim::method::SPAWN, params)?;
-        self.out.insert("applied".into(), made.clone());
-        self.settle(plan.ticks)?;
-        let handle = made["object"].as_str().unwrap_or_default().to_ascii_lowercase();
         let at = made["pos"].as_array().map_or(json!(pos), |_| made["pos"].clone());
+        Ok((made, at))
+    }
+
+    /// The made object's row in `world.query` near `at`, or a warning.
+    fn find_made(&mut self, made: &Value, at: Value) -> Option<Value> {
+        let handle = made["object"].as_str().unwrap_or_default().to_ascii_lowercase();
         let found = self
             .read(
                 agent_proto::method::WORLD_QUERY,
@@ -274,12 +353,7 @@ impl Game {
                 "object {handle} is not in world.query near where it was made: gone, moved away, or a kind world.query does not list"
             ));
         }
-        let mut reads = json!({"object": found});
-        if let Some(camera) = self.camera() {
-            reads["camera"] = camera;
-        }
-        self.out.insert("reads".into(), reads);
-        self.capture(plan)
+        found
     }
 
     fn ui(&mut self, plan: &Plan, screen: Option<&str>) -> Step {
@@ -357,6 +431,9 @@ impl Game {
     fn audio(&mut self, seconds: f64, every: Duration, call: Option<&(String, Value)>) -> Step {
         self.need(agent_proto::method::AUDIO_VOICES, "the mixer's voices")?;
         if let Some((method, params)) = call {
+            if method == agent_proto::sim::method::AUDIO_PLAY {
+                self.need(method, "starts the sound")?;
+            }
             let answer = self.call(method, params.clone())?;
             self.out.insert("applied".into(), answer);
         }
@@ -554,6 +631,19 @@ fn hex_of(v: &Value) -> Option<String> {
     let s = v.as_str()?.trim();
     let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
     u32::from_str_radix(s, 16).ok().map(|n| format!("{n:08x}"))
+}
+
+/// The `world.object` id prefix of the objects `sim.spawn` makes from a
+/// tag of `group`, for the kinds `world.object.animate` can name.
+fn kind_of_group(group: &str) -> Option<&'static str> {
+    Some(match group {
+        "scen" => "scenery",
+        "vehi" => "vehicle",
+        "mach" => "machine",
+        "bloc" => "crate",
+        "crea" => "creature",
+        _ => return None,
+    })
 }
 
 /// `distance` in front of a unit (`world.object`'s `pos` and `forward`),

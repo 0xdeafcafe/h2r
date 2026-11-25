@@ -56,7 +56,7 @@ fn the_real_tokens_of_a_builtin_colour_its_keywords() {
 
 #[test]
 fn problems_list_errors_first_at_the_place_they_point_to() {
-    let text = "rules \"x\" 1\ncarrier slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
+    let text = "rules \"x\" 1\ntype slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
     let rows = problems(text, &ide::diagnostics(text));
     let first = rows.first().expect("a problem");
     assert_eq!(first.severity, "error");
@@ -204,8 +204,8 @@ fn snippets_expand_to_their_defaults_with_the_first_selected() {
     assert_eq!((e.text.as_str(), e.cursor, e.select), ("a b", 2, None));
 
     // Choices give their first; nesting and escapes read through.
-    assert_eq!(expand_snippet("list ${1|research,party|}", "").text, "list research");
-    assert_eq!(expand_snippet("carrier ${1|slayer,ctf|}", "").text, "carrier slayer");
+    assert_eq!(expand_snippet("points \"${1:Points}\"", "").text, "points \"Points\"");
+    assert_eq!(expand_snippet("type ${1|slayer,ctf|}", "").text, "type slayer");
     let e = expand_snippet("${1:outer ${2:inner}}", "");
     assert_eq!((e.text.as_str(), e.select), ("outer inner", Some((0, 11))));
     assert_eq!(expand_snippet(r"\$x", "").text, "$x");
@@ -239,7 +239,7 @@ fn completions_rank_by_the_word_then_the_languages_order() {
 
 #[test]
 fn typing_opens_narrows_takes_and_closes_the_completions() {
-    let text = "rules \"T\" 1\ncarrier slayer\non kill(victim, killer) {\n    sco\n}\n";
+    let text = "rules \"T\" 1\ntype slayer\non kill(victim, killer) {\n    sco\n}\n";
     let at = text.find("sco").unwrap() + 3;
     let mut ed = RulesEditor { text: text.into(), cursor: at, ..Default::default() };
     ed.after_typing(Some('o'));
@@ -304,7 +304,7 @@ fn text_edits_apply_together_and_carry_the_cursor() {
 
 #[test]
 fn quick_fixes_at_the_cursor_and_on_the_problem_rows() {
-    let src = "rules \"T\" 1\ncarrier slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
+    let src = "rules \"T\" 1\ntype slayer\nlabel barrier: objects\non tick { for each barier b { } }\n";
     let mut ed = RulesEditor { text: src.into(), cursor: src.find("barier").unwrap() + 2, ..Default::default() };
     ed.open_fixes().unwrap();
     let menu = ed.menu.clone().unwrap();
@@ -375,7 +375,7 @@ fn hovers_read_as_code_and_prose_and_find_their_problems() {
             HoverBlock { code: false, text: "Adds points to p.".into() },
         ]
     );
-    let text = "rules \"x\" 1\ncarrier slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
+    let text = "rules \"x\" 1\ntype slayer\n\non kill(victim, killer) {\n    score(victim, nope)\n}\n";
     let diags = ide::diagnostics(text);
     let d = diags.iter().find(|d| d.message.contains("nope")).unwrap();
     assert!(diagnostics_at(&diags, d.range.start).contains(&d));
@@ -384,7 +384,7 @@ fn hovers_read_as_code_and_prose_and_find_their_problems() {
 
 #[test]
 fn format_hands_the_widget_the_laid_out_text() {
-    let src = "rules \"T\" 1\ncarrier slayer\non kill(victim, killer) {\nif killer != none {\nscore(killer, 1)\n}\n}\n";
+    let src = "rules \"T\" 1\ntype slayer\non kill(victim, killer) {\nif killer != none {\nscore(killer, 1)\n}\n}\n";
     let want = ide::format(src).unwrap();
     let mut ed = RulesEditor { text: src.into(), ..Default::default() };
     ed.format().unwrap();

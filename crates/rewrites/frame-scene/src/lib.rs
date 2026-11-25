@@ -8,8 +8,10 @@
 //! it from guest memory; `native_render` draws it. The camera, the carried
 //! part and the view and instance keys are `frame_types`', re-exported.
 
+pub mod blend;
 pub mod builder;
 pub mod decorator;
+pub mod display;
 pub mod late;
 pub mod layer;
 pub mod light;
@@ -17,6 +19,8 @@ pub mod light_group;
 pub mod mailbox;
 pub mod node;
 pub mod object;
+pub mod pace;
+pub mod overlay;
 pub mod scene;
 pub mod summary;
 
@@ -42,7 +46,7 @@ pub use layer::{
 };
 pub use light::{
     Light, LightCandidate, LightConstants, LightProjection, LightStep, LightTarget, LightVariants,
-    LightVolume, SceneLight,
+    LightVolume, NO_DATUM, SceneLight,
 };
 pub use light_group::{
     GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow,
@@ -50,9 +54,14 @@ pub use light_group::{
 };
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};
 pub use object::{Defaults, ItemKey, LIGHTING_BYTES, LIGHTING_WORDS, Lighting, ObjectFrame, Owner};
+pub use overlay::{
+    ClipRect, Combiner, Overlay, OverlayBlend, OverlayBlur, OverlayCamera, OverlayCounts,
+    OverlayError, OverlayGlyph, OverlayItem, OverlayKind, OverlayMaterial, OverlayModelView,
+    OverlayTexture, OverlayVertex, Program, Sampler,
+};
 pub use scene::{
-    AuxDepth, Cut, FrameScene, Instance, InstanceKey, PartDraw, PartFlags, Row, SceneId, Stamp,
-    Subparts, View, ViewCounts, ViewKey, ViewKind, WorldState,
+    AuxDepth, Cut, DisplayVisibility, FrameScene, Instance, InstanceKey, NearbyCaster, PartDraw, PartFlags, Row,
+    SceneId, Stamp, Subparts, View, ViewCounts, ViewKey, ViewKind, VisibilitySource, WorldState,
 };
 pub use summary::summary_hash;
 

@@ -1,14 +1,14 @@
 # The Announcer: announcer lines from text, in Studio
 
 Status: Built, unproven against the live service (the tests use a fake voice).
-Code: `crates/apps/studio/src/voice.rs` (the `VoiceSource` trait, the request, the cache), `voice/fish.rs` (Fish Audio), `voice/key.rs` (the Keychain), `voice/audio.rs` (trim, normalise, WAV), `crates/apps/studio/src/app/announcer.rs` (the pipeline), `api/voice.rs` (`voice.*`), `ui/announcer.rs` (the window). Tests: `voice/tests.rs`, `api/voice/tests.rs`.
+Code: `crates/apps/studio/src/voice.rs` (the `VoiceSource` trait, the request, the cache), `voice/fish.rs` (Fish Audio), `voice/key.rs` (the Keychain), `voice/audio.rs` (trim, normalise, WAV), `crates/apps/studio/src/app/announcer.rs` (the pipeline), `api/voice.rs` (`voice.*`), `ui/voices.rs` and `ui/voices/lines.rs` (the voice document). Tests: `voice/tests.rs`, `api/voice/tests.rs`.
 Switch: none. The key is read from the Keychain; there is no environment variable.
 
 Studio makes an announcer line from text: a voice says it, Studio trims
 it, brings it to the loudness of the retail announcer, saves it in the
 format of our announcer clips (`art/announcer/README.md`), plays it and
-says how it sits against the retail lines. The Voices window (View >
-Voices, the announcer engine) and the agent API (`voice.say`, `voice.list`,
+says how it sits against the retail lines. The announcer's voice document (the Browser's **Voices** kind, or Go to
+anything; the announcer engine) and the agent API (`voice.say`, `voice.list`,
 `voice.commit`, in [agent-api.md](agent-api.md)) go through the same `App`
 methods. The same pipeline says a game character's lines with a local
 clone (`Engine::Clone`, `voice.clone.say`); that engine, its dataset and
@@ -94,10 +94,13 @@ checkout.
 Committing is a separate, explicit step. The announcer's clips are
 `art/announcer/<id>.wav` (Git LFS), embedded by
 `boot::medal_announcer::CLIPS`. `voice.say` with `clip: "<id>"` says what
-that takes (`ready`). `voice.commit {clip}` then copies the saved line to
-`art/announcer/<clip>.wav` in the checkout. It refuses to replace a clip
-that exists unless `replace` is set, does not run `git`, and does not edit
-`CLIPS`: for a new clip the reply gives the entry to add, and a medal
+that takes (`ready`). `voice.commit {tag}` adds the saved line to the edit target as a
+`sound` item of that `snd!`, and a dataset or weights path is refused.
+The document header's **Save** and `voice.commit {clip}` make a
+standalone `sound` item of the edit target. For bundled announcer art,
+`voice.commit {clip, repo}` exports a clip to
+`art/announcer/<clip>.wav` in the specified checkout. An existing
+export needs `replace`. The reply gives the `CLIPS` entry to add, and a medal
 needs its id in `hud_kit_core::huds::superbounce::MEDALS` as well
 ([superbounce.md](../game/superbounce.md), "Medals"). `git add` and the
 commit are the user's.

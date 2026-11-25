@@ -45,7 +45,7 @@ pub mod path;
 pub mod raw;
 pub mod value;
 
-pub use notice::{TagWrite, TagWriteSink};
+pub use notice::{BlockRepoint, TagWrite, TagWriteSink};
 pub use raw::{RawBatch, RawFiles, RawWrite, Refresh, RefreshSink, Was};
 
 use std::collections::BTreeMap;
@@ -849,10 +849,7 @@ impl Editor {
         // moved block is undone before the block moves back), then raw: a
         // grown section's block info points at its old block again before
         // the section is evicted to page it in.
-        let moved = self.revert_moves(g, id, scenario, &mut reverted, &mut dropped);
-        for (tag, root) in moved.as_deref().unwrap_or_default() {
-            notices.root(*tag, *root);
-        }
+        let moved = self.revert_moves(g, id, scenario, &mut reverted, &mut dropped, &mut notices);
         // What was put back is in the guest even when a later step fails.
         self.send_notices(g, notices);
         moved?;

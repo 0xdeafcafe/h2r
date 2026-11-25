@@ -142,6 +142,13 @@ crate::globals! { GLOBALS;
     /// Pointer to the Havok world (`0x001c2f07` stores it after
     /// `0x003101c0`).
     HAVOK_WORLD @ 0x0051_e9a4; "docs/engine/havok-runtime.md";
+    /// The engine table: one engine object pointer per record engine
+    /// index (`+0x44`), read at `[ENGINE_TABLE + 4 * E+0xc14]`. Filled by
+    /// `0x378500`; 5, 6 and 10 are zero. An object's only dword is its
+    /// vtable of 51 thiscall slots.
+    ENGINE_TABLE @ 0x0055_e4d0; "docs/game/game-types-without-carriers.md";
+    /// Slayer's engine vtable (51 slots); its object is `0x47fc80`.
+    SLAYER_VTABLE @ 0x0045_c6d8; "docs/engine/notes/2026-11-21-engine-vtables.md";
 }
 
 /// The global at `base`, if the table names one.

@@ -20,6 +20,8 @@ use std::fmt::Write as _;
 use std::io::{Read, Seek};
 
 pub const COLL: FourCC = FourCC(*b"coll");
+pub mod shape_edit;
+
 pub const PHMO: FourCC = FourCC(*b"phmo");
 
 /// Decoding a hostile payload may alias blocks over each other. Total decoded

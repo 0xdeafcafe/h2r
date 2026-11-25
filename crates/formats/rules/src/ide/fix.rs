@@ -78,7 +78,7 @@ pub(crate) fn fixes(m: &Model, d: &lang::Diagnostic) -> Vec<Fix> {
         "cap.unused" => remove_requires(m, at, &mut out),
         "setting.unknown" => change_name(m, msg, d.pos, &mut out),
         "setting.twice" => remove_setting(m, d.pos, &mut out),
-        "setting.carrier" => {
+        "setting.type" => {
             if m.script.quick.as_ref().is_some_and(|(names, _)| names.iter().any(|(_, p)| *p == d.pos)) {
                 remove_mark(m, d.pos, &mut out);
             } else {
@@ -91,13 +91,13 @@ pub(crate) fn fixes(m: &Model, d: &lang::Diagnostic) -> Vec<Fix> {
         }
         "quick.twice" => remove_mark(m, d.pos, &mut out),
         "quick.many" => drop_extra_marks(m, d.pos, &mut out),
-        "scoring.none" => add_scoring(m, &mut out),
-        "scoring.handlers" => {
-            if let Some((_, p)) = &m.script.scoring {
-                remove_line(m, m.byte(*p), "Remove `scoring carrier` (the script scores)", &mut out);
+        "scoring.none" => add_uses(m, msg, &mut out),
+        "uses.handlers" => {
+            if let Some((_, p)) = &m.script.uses {
+                remove_line(m, m.byte(*p), "Remove the `uses` line (the script scores)", &mut out);
             }
         }
-        "list.carrier" => remove_line(m, at, "Remove the `list` line", &mut out),
+        "header.retired" => replace_retired(m, msg, at, &mut out),
         _ => {}
     }
     out
@@ -379,7 +379,7 @@ fn add_requires(m: &Model, msg: &str, out: &mut Vec<Fix>) {
         }
         None => {
             let mut last = script.pos;
-            for p in [script.carrier.as_ref().map(|c| c.1), script.teams.map(|t| t.1), script.list.as_ref().map(|l| l.1)]
+            for p in [script.game_type.as_ref().map(|c| c.1), script.teams.map(|t| t.1), script.points.as_ref().map(|p| p.1)]
                 .into_iter()
                 .flatten()
             {
@@ -511,15 +511,24 @@ fn drop_extra_marks(m: &Model, pos: Pos, out: &mut Vec<Fix>) {
     out.push(fix(title, vec![edit(m, m.code[first - 1].s, end, "")]));
 }
 
-/// A script that scores nothing: `scoring carrier` after the header's
-/// last line.
-fn add_scoring(m: &Model, out: &mut Vec<Fix>) {
+/// The first code span of a message: the line it says to write.
+fn written(msg: &str) -> Option<&str> {
+    // "write `" or "Write `".
+    let start = msg.find("rite `")? + "rite `".len();
+    let len = msg[start..].find('`')?;
+    Some(&msg[start..start + len])
+}
+
+/// A script that scores nothing: the message's `uses` line after the
+/// header's last line.
+fn add_uses(m: &Model, msg: &str, out: &mut Vec<Fix>) {
+    let Some(line) = written(msg).filter(|l| l.starts_with("uses ")) else { return };
     let script = m.script;
     let mut last = script.pos;
     for p in [
-        script.carrier.as_ref().map(|c| c.1),
+        script.game_type.as_ref().map(|c| c.1),
         script.teams.map(|t| t.1),
-        script.list.as_ref().map(|l| l.1),
+        script.points.as_ref().map(|p| p.1),
     ]
     .into_iter()
     .flatten()
@@ -527,10 +536,17 @@ fn add_scoring(m: &Model, out: &mut Vec<Fix>) {
         last = last.max(p);
     }
     let (off, before) = line_after(m, m.byte(last));
-    out.push(fix(
-        "Add `scoring carrier`",
-        vec![edit(m, off, off, format!("{before}scoring carrier\n"))],
-    ));
+    out.push(fix(format!("Add `{line}`"), vec![edit(m, off, off, format!("{before}{line}\n"))]));
+}
+
+/// A retired header line: the line the message names in its place.
+fn replace_retired(m: &Model, msg: &str, at: usize, out: &mut Vec<Fix>) {
+    let Some(new) = written(msg).filter(|l| !l.ends_with(' ') && l.contains(' ')) else { return };
+    let line = m.li.line_of(at);
+    let (from, to) = (m.li.line_start(line), m.li.line_start(line + 1));
+    let old = m.src[from..to].trim_end_matches('\n');
+    let start = from + (old.len() - old.trim_start().len());
+    out.push(fix(format!("Write `{new}`"), vec![edit(m, start, from + old.len(), new)]));
 }
 
 // ---------- rename ----------

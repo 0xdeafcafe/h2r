@@ -1,0 +1,19 @@
+# The Assault HUD (docs/game/game-types-without-carriers.md, "The display"):
+# rows of text from the frame's bottom left, as the superbounce readout's,
+# a navpoint over the objective and the timed banner. Elements in draw order.
+name: assault
+elements:
+  - id: asl.bomb
+    kind: text
+    font: hud
+    justify: start
+    longest: "Bomb: Armed 99:59"
+    at: {anchor: bottom-left, full: [101, -26]}
+  - id: asl.mark
+    kind: navpoint
+    longest: "999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: asl.banner
+    kind: banner
+    longest: "BOMB DETONATED"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}

@@ -3,6 +3,7 @@
 //! guest state, including on a malformed or partially readable list.
 
 use crate::native_world::Mem;
+use engine::render::light_gather::{object_shadows, passes};
 use engine::{memory::GuestMemory, points, shadow_constants};
 use hooks::{BuildError, Builder, Feature, Manifest};
 use native_render::{
@@ -58,6 +59,9 @@ pub trait Host: Send + Sync {
     fn finish_filter(&self, _mem: &mut dyn GuestMemory, _esp: u32) -> Result<(), &'static str> {
         Ok(())
     }
+    /// The filter was refused before the host saw it: its guest quads run.
+    /// A private chain hands its casters back to target 10 first.
+    fn filter_kept(&self, _mem: &mut dyn GuestMemory) {}
     /// Draw a whole layer-10 group from the scene before its handlers.
     /// Refusal issues nothing and names the counter's category.
     fn draw_alone(
@@ -167,8 +171,48 @@ pub fn alone_counters() -> Vec<(&'static str, u64)> {
         };
         (name, count.load(std::sync::atomic::Ordering::Relaxed))
     }))
-    .chain(std::iter::once(("scene_dropped_shadow_layers", 0)))
+    .chain(std::iter::once((
+        "scene_dropped_shadow_layers",
+        DROPPED.load(std::sync::atomic::Ordering::Relaxed),
+    )))
     .collect()
+}
+
+static CHAINS_PRIVATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CHAINS_SPILLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An object chain whose casters went into the stage's private pair
+/// (native-shadow-layers.md, "A private chain").
+pub fn chain_private() {
+    CHAINS_PRIVATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A private chain whose filter stayed with the guest: its mask was copied
+/// back into target 10 before the guest's quads.
+pub fn chain_spilled() {
+    CHAINS_SPILLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A committed shadow pass that failed while recording on the render side.
+/// Its generation draws no shadow. The caller logs the cause once.
+pub fn dropped_layer() {
+    DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `render.scene` counters for private chains.
+pub fn chain_counters() -> Vec<(&'static str, u64)> {
+    use std::sync::atomic::Ordering;
+    vec![
+        (
+            "scene_shadow_chains_private",
+            CHAINS_PRIVATE.load(Ordering::Relaxed),
+        ),
+        (
+            "scene_shadow_chains_spilled",
+            CHAINS_SPILLED.load(Ordering::Relaxed),
+        ),
+    ]
 }
 
 const FILTER_REFUSALS: [&str; 5] = ["program", "state", "target", "callback", "device"];
@@ -184,11 +228,25 @@ fn filter_refused(why: &'static str) {
     FILTER_REFUSED[n].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The filter wrapper pushes ten words and calls the blur at
+/// `0x000222c2`. Its physical return site identifies that call even
+/// after the pipelined renderer hands a native caster back to the game
+/// thread. D3D scopes the swallow to the enclosing wrapper's after hook.
+fn filter_entry(mem: &dyn GuestMemory, blur_esp: u32) -> Option<u32> {
+    if mem.u32(blur_esp).ok()? != 0x0002_22c7 {
+        return None;
+    }
+    blur_esp.checked_add(4 + 10 * 4)
+}
+
 /// Replace the current object shadow's filter with its scene's native
 /// quads. Refusal leaves every guest quad in place.
 pub fn filter(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16) -> bool {
-    let Some(filter) = crate::scene_step::shadow_filter(mem, esp, mxcsr, x87_control) else {
+    let Some(filter) = crate::scene_step::shadow_filter(mem, mxcsr, x87_control) else {
         filter_refused("program");
+        if let Some(host) = host() {
+            host.filter_kept(mem);
+        }
         return false;
     };
     let result = HOST
@@ -305,7 +363,21 @@ fn read_entry(mem: &dyn GuestMemory, esp: u32) -> Option<Entry> {
 fn host() -> Option<Arc<dyn Host>> {
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
-thread_local! { static OBJECT_LIST: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) }; }
+/// The list calls the caster with two stack arguments below its three
+/// saved registers. The ranked rows sit directly above those registers.
+fn object_owner(mem: &dyn GuestMemory, esp: u32, cursor: u32, remaining: u32) -> Option<[u32; 2]> {
+    if passes::caller(mem, esp)? != object_shadows::site::CASTER {
+        return None;
+    }
+    let rows = esp.checked_add(4 + 8 + 12)?;
+    shadows::object_candidate(rows, cursor, remaining)?;
+    if mem.u8(0x0050_9413).ok()? != 1 || mem.u8(0x0048_5a46).ok()? != 1 {
+        return None;
+    }
+    let identity = [mem.u32(cursor).ok()?, mem.u32(cursor.checked_add(4)?).ok()?];
+    let args = [mem.u32(esp + 4).ok()?, mem.u32(esp + 8).ok()?];
+    (identity == args).then_some(identity)
+}
 
 pub struct NativeShadows;
 
@@ -344,57 +416,25 @@ impl Feature for NativeShadows {
             .context_only();
         b.raw()
             .observe_before(&points::OBJECT_SHADOW_LIST, "object shadow list", |_| {
-                OBJECT_LIST.set(None);
                 if let Some(h) = host() {
                     h.parent(None, None);
                 }
             })
             .context_only();
         b.raw()
-            .observe_before(
-                &points::GATHER_OBJECT_SHADOWS,
-                "object shadow candidates",
-                |o| {
-                    let m = o.guest();
-                    let esp = o.cpu.esp;
-                    OBJECT_LIST.set(
-                        (m.u32(esp).ok() == Some(0x0003_3632))
-                            .then(|| m.u32(esp.wrapping_add(4)).ok())
-                            .flatten(),
-                    );
-                },
-            )
-            .context_only();
-        b.raw()
             .observe_before(&points::OBJECT_SHADOW, "object shadow owner", |o| {
                 let m = o.guest();
-                let esp = o.cpu.esp;
-                let address = o.cpu.esi;
-                let args = [
-                    m.u32(esp.wrapping_add(4)).ok(),
-                    m.u32(esp.wrapping_add(8)).ok(),
-                ];
-                let index = OBJECT_LIST
-                    .get()
-                    .and_then(|base| shadows::object_candidate(base, address, o.cpu.edi));
-                let matched = index.is_some()
-                    && m.u32(esp).ok() == Some(0x0003_364c)
-                    && m.u8(0x0050_9413).ok() == Some(1)
-                    && m.u8(0x0048_5a46).ok() == Some(1)
-                    && args.iter().all(Option::is_some)
-                    && args == [m.u32(address).ok(), m.u32(address.wrapping_add(4)).ok()];
-                let identity = args[0].zip(args[1]).map(|(a, b)| [a, b]);
-                crate::scene_step::object_shadow(&*m, identity.filter(|_| matched));
+                let identity = object_owner(&*m, o.cpu.esp, o.cpu.esi, o.cpu.edi);
+                crate::scene_step::object_shadow(&*m, identity);
                 if let Some(h) = host() {
-                    h.parent(matched.then_some(Site::Object), identity);
+                    h.parent(identity.map(|_| Site::Object), identity);
                 }
             })
             .context_only();
         b.raw()
-            .observe_before(&points::OBJECT_SHADOW_FILTER, "object shadow filter", |o| {
-                let esp = o.cpu.esp;
+            .observe_before(&points::SCREEN_CONVOLUTION_BLUR, "object shadow filter", |o| {
                 let mut mem = o.guest();
-                if o.cpu.eax == 10 && mem.u32(esp).ok() == Some(0x0003_29de) {
+                if let Some(esp) = filter_entry(&*mem, o.cpu.esp) {
                     filter(&mut *mem, esp, o.cpu.mxcsr, o.cpu.x87.control);
                 }
             })
@@ -404,7 +444,8 @@ impl Feature for NativeShadows {
             "object shadow filter end",
             |o| {
                 let mut mem = o.guest();
-                finish_filter(&mut *mem, o.cpu.esp);
+                // The wrapper's bare RET pops its return slot.
+                finish_filter(&mut *mem, o.cpu.esp.wrapping_sub(4));
             },
         );
         b.raw()
@@ -439,9 +480,7 @@ impl Feature for NativeShadows {
                 let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else {
                     return;
                 };
-                let Some(site) = mem
-                    .u32(o.cpu.esp)
-                    .ok()
+                let Some(site) = passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret))
                 else {
                     return;
@@ -463,9 +502,7 @@ impl Feature for NativeShadows {
                     return;
                 };
                 // Both calls have a five-byte direct CALL instruction.
-                let Some(site) = mem
-                    .u32(o.cpu.esp)
-                    .ok()
+                let Some(site) = passes::caller(&*mem, o.cpu.esp)
                     .and_then(|ret| shadows::site(layer, ret.checked_sub(5)?))
                 else {
                     return;
@@ -487,6 +524,36 @@ impl Feature for NativeShadows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caster_owner_requires_a_live_row_in_its_own_frame() {
+        let mut m = engine::FlatMemory::new(0, 0x510000);
+        let esp = 0x1000;
+        let last = esp + 24 + 8 + 31 * 20;
+        m.set_u32(esp, object_shadows::site::CASTER).unwrap();
+        m.set_u8(0x0050_9413, 1).unwrap();
+        m.set_u8(0x0048_5a46, 1).unwrap();
+        for (offset, word) in [(0, 123), (4, 0.5f32.to_bits())] {
+            m.set_u32(esp + 4 + offset, word).unwrap();
+            m.set_u32(last + offset, word).unwrap();
+        }
+        assert_eq!(object_owner(&m, esp, last, 1), Some([123, 0.5f32.to_bits()]));
+        assert_eq!(object_owner(&m, esp, last, 2), None);
+        m.set_u32(last, 124).unwrap();
+        assert_eq!(object_owner(&m, esp, last, 1), None);
+    }
+
+    #[test]
+    fn only_the_wrappers_blur_scopes_a_filter_to_its_after_hook() {
+        let mut mem = engine::FlatMemory::new(0x1000, 0x100);
+        let wrapper = 0x1080;
+        let blur = wrapper - 44;
+        mem.set_u32(wrapper, 0xbd00_0100).unwrap(); // synthetic after-hook token
+        mem.set_u32(blur, 0x0002_22c7).unwrap();
+        assert_eq!(filter_entry(&mem, blur), Some(wrapper));
+        mem.set_u32(blur, 0x1004).unwrap();
+        assert_eq!(filter_entry(&mem, blur), None);
+    }
 
     struct Stub(Result<(), &'static str>);
     impl Host for Stub {
@@ -520,8 +587,12 @@ mod tests {
         }
     }
 
+    /// The host is one global: tests that set it take turns.
+    static HOST_TURN: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_whole_caster_group_commits_and_a_refusal_keeps_its_handlers_and_counts() {
+        let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
         let mut mem = engine::FlatMemory::new(0, 0x1000);
         let group = group();
         set_host(Arc::new(Stub(Ok(()))));
@@ -543,5 +614,49 @@ mod tests {
         );
         clear_host();
         assert!(!draw_alone(&mut mem, 10, &group));
+    }
+
+    fn counter(rows: &[(&'static str, u64)], name: &str) -> u64 {
+        rows.iter()
+            .find(|(n, _)| *n == name)
+            .map_or(u64::MAX, |r| r.1)
+    }
+
+    #[test]
+    fn chain_and_drop_counters_are_rows_of_the_scene() {
+        let private = counter(&chain_counters(), "scene_shadow_chains_private");
+        let spilled = counter(&chain_counters(), "scene_shadow_chains_spilled");
+        let dropped = counter(&alone_counters(), "scene_dropped_shadow_layers");
+        chain_private();
+        chain_private();
+        chain_spilled();
+        dropped_layer();
+        // Other tests may count too: the rows rise by at least ours.
+        assert!(counter(&chain_counters(), "scene_shadow_chains_private") >= private + 2);
+        assert!(counter(&chain_counters(), "scene_shadow_chains_spilled") > spilled);
+        assert!(counter(&alone_counters(), "scene_dropped_shadow_layers") > dropped);
+    }
+
+    struct Kept(std::sync::atomic::AtomicU32);
+    impl Host for Kept {
+        fn parent(&self, _: Option<Site>, _: Option<[u32; 2]>) {}
+        fn entry(&self, _: &mut dyn GuestMemory, _: Option<Entry>) {}
+        fn begin(&self, _: &mut dyn GuestMemory, _: Layer) {}
+        fn end(&self, _: &mut dyn GuestMemory, _: Site, _: u32) {}
+        fn filter_kept(&self, _: &mut dyn GuestMemory) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn a_filter_refused_before_the_host_tells_it_so_a_private_chain_can_spill() {
+        let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        // No open frame step: the scene has no filter, so `program` refuses.
+        let mut mem = engine::FlatMemory::new(0, 0x1000);
+        let host = Arc::new(Kept(std::sync::atomic::AtomicU32::new(0)));
+        set_host(host.clone());
+        assert!(!filter(&mut mem, 0x800, 0x1f80, 0x027f));
+        assert_eq!(host.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+        clear_host();
     }
 }

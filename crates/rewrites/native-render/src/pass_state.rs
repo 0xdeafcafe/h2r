@@ -46,13 +46,30 @@ pub enum StateRefusal {
     DepthBias,
 }
 
-/// The pipeline state of an implementation with `states` applied on entry.
-pub fn pass_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
-    pass_state_with_fog(states, false)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StateSource {
+    Implementation,
+    Geometry,
+    LiveObject,
 }
 
-/// Objects carry the fog unit in their program uniforms.
-pub(crate) fn pass_state_with_fog(states: &[RenderStateValue], fog: bool) -> Result<PassState, StateRefusal> {
+/// The pipeline state of an implementation with `states` applied on entry.
+pub fn pass_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
+    decode_states(states, StateSource::Implementation)
+}
+
+/// Geometry with an explicit empty colour mask only updates depth and stencil.
+pub(crate) fn geometry_pass_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
+    decode_states(states, StateSource::Geometry)
+}
+
+/// An object program compiles its alpha test at load. At issue the object
+/// planner resolves its blend, depth and stencil from the live device.
+pub(crate) fn object_program_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal> {
+    decode_states(states, StateSource::LiveObject)
+}
+
+fn decode_states(states: &[RenderStateValue], source: StateSource) -> Result<PassState, StateRefusal> {
     let table = RenderStateTable::for_build(HALO2_BUILD);
     let mut rs = RenderState::default();
     let mut set = Vec::with_capacity(states.len());
@@ -65,25 +82,31 @@ pub(crate) fn pass_state_with_fog(states: &[RenderStateValue], fog: bool) -> Res
         }
     }
     let has = |t: RenderStateType| set.contains(&t);
-    if !has(RenderStateType::AlphaBlendEnable) {
+    let live_object_state = source == StateSource::LiveObject;
+    let masked = source == StateSource::Geometry && has(RenderStateType::ColorWriteEnable)
+        && gfx::translate::color_writes(rs.color_write).is_empty();
+    if masked {
+        rs.blend_enable = false;
+    }
+    if !live_object_state && !masked && !has(RenderStateType::AlphaBlendEnable) {
         return Err(StateRefusal::Unset("ALPHABLENDENABLE"));
     }
-    if rs.blend_enable && !has(RenderStateType::SrcBlend) {
+    if !live_object_state && rs.blend_enable && !has(RenderStateType::SrcBlend) {
         return Err(StateRefusal::Unset("SRCBLEND"));
     }
-    if rs.blend_enable && !has(RenderStateType::DestBlend) {
+    if !live_object_state && rs.blend_enable && !has(RenderStateType::DestBlend) {
         return Err(StateRefusal::Unset("DESTBLEND"));
     }
     // A pass that turns the depth buffer off (`ZENABLE` 0, the screen
     // effects') neither tests nor writes it, whatever ZWRITEENABLE holds.
     let depth_off = has(RenderStateType::ZEnable) && rs.depth_mode == DepthBufferMode::Disabled;
-    if !has(RenderStateType::ZWriteEnable) && !depth_off {
+    if !live_object_state && !has(RenderStateType::ZWriteEnable) && !depth_off {
         return Err(StateRefusal::Unset("ZWRITEENABLE"));
     }
-    if rs.fog_enable && !fog {
+    if rs.fog_enable && !live_object_state {
         return Err(StateRefusal::Fog);
     }
-    if rs.stencil.enable {
+    if rs.stencil.enable && !live_object_state {
         return Err(StateRefusal::Stencil);
     }
     if rs.solid_offset_enable && (rs.depth_bias != 0.0 || rs.depth_bias_slope_scale != 0.0) {
@@ -145,6 +168,20 @@ mod tests {
         assert_eq!(s.primitive.cull_mode, None);
         assert_eq!(s.alpha_test, None);
         assert_eq!(s.color_writes, wgpu::ColorWrites::ALL);
+    }
+
+    #[test]
+    fn geometry_without_colour_writes_can_inherit_blending() {
+        use RenderStateType as R;
+        let mut states = vec![v(R::ColorWriteEnable, 0), v(R::ZWriteEnable, 1)];
+        for enable in [None, Some(1)] {
+            if let Some(value) = enable { states.push(v(R::AlphaBlendEnable, value)); }
+            let state = geometry_pass_state(&states).unwrap();
+            assert!(state.color_writes.is_empty() && state.depth_write);
+            assert_eq!(state.blend, None);
+        }
+        states.push(v(R::ColorWriteEnable, 1));
+        assert_eq!(geometry_pass_state(&states), Err(StateRefusal::Unset("SRCBLEND")));
     }
 
     #[test]

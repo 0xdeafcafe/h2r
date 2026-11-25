@@ -269,7 +269,6 @@ pub(super) async fn gather(
                 Err(cold) => (2, vec![cold.for_film().to_vec()]),
             };
             film.record(
-                film::tape::BTAP,
                 film::tape::Call {
                     index: 0,
                     op: OP.into(),

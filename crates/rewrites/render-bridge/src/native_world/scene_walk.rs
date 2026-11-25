@@ -3,6 +3,7 @@
 
 use engine::memory::GuestMemory;
 use engine::points;
+use engine::render::light_gather::{LIGHT_VIS, object_shadows::caster, passes};
 use engine::render_loop::world_walk::{self, Walk};
 use native_render::skip;
 use timeline::native::{Metric, Stage};
@@ -17,7 +18,6 @@ pub(super) fn install(b: &mut Builder) {
         b.raw().before(point, "native_world_visible_sections", move |c| {
             let visited = {
                 let mut m = c.ctx.runtime().memory();
-                if m.u32(c.cpu.esp).ok() != Some(site) { return Ok(Flow::Continue); }
                 let vis = match walk {
                     Walk::Clusters => c.cpu.ebx,
                     Walk::Placements => match m.u32(c.cpu.esp.wrapping_add(4)) {
@@ -25,6 +25,10 @@ pub(super) fn install(b: &mut Builder) {
                         Err(_) => return Ok(Flow::Continue),
                     },
                 };
+                let sp = c.cpu.esp;
+                if m.u32(sp).ok() != Some(site) && !caster_walk(&*m, sp, walk, vis) {
+                    return Ok(Flow::Continue);
+                }
                 world_walk::publish(&mut *m, vis, walk, c.cpu.mxcsr, c.cpu.x87.control)
             };
             if let Some(sections) = visited {
@@ -175,6 +179,18 @@ pub(super) fn install(b: &mut Builder) {
 
 // Return addresses of the standard emitter, item builder and layer dispatcher.
 const EMITTER_RETURN: u32 = 0x0004_d626;
+/// The caster calls `0x0002cbc0`, which saves EBX before both walks and
+/// pushes one argument for the placement walk. Match both return slots.
+fn caster_walk(m: &dyn GuestMemory, sp: u32, walk: Walk, vis: u32) -> bool {
+    let (inner, outer_offset) = match walk {
+        Walk::Clusters => (0x0002_cbd1, 8),
+        Walk::Placements => (0x0002_cbd7, 12),
+    };
+    vis == LIGHT_VIS && m.u32(sp).ok() == Some(inner)
+        && sp.checked_add(outer_offset).and_then(|slot| passes::caller(m, slot))
+            == Some(caster::RECORDS_RETURN)
+}
+
 const BUILD_RETURN: u32 = 0x0003_bb2e;
 const ENTRIES_RETURN: u32 = 0x0004_45b7;
 
@@ -211,6 +227,20 @@ fn all_masked(m: &dyn GuestMemory, list: u32, layer: u32) -> Option<bool> {
 mod tests {
     use super::*;
     use engine::memory::FlatMemory;
+    #[test]
+    fn shadow_record_walks_require_the_caster_and_the_correct_visibility() {
+        let sp = 0x1000;
+        let mut m = FlatMemory::new(sp, 16);
+        for (walk, inner, offset) in [(Walk::Clusters, 0x2cbd1, 8), (Walk::Placements, 0x2cbd7, 12)] {
+            m.set_u32(sp, inner).unwrap();
+            m.set_u32(sp + offset, caster::RECORDS_RETURN).unwrap();
+            assert!(caster_walk(&m, sp, walk, LIGHT_VIS));
+            assert!(!caster_walk(&m, sp, walk, engine::render::light_gather::MAIN_VIS));
+            m.set_u32(sp + offset, 0).unwrap();
+            assert!(!caster_walk(&m, sp, walk, LIGHT_VIS));
+        }
+    }
+
     #[test]
     fn whole_pass_requires_every_remaining_item_to_have_lost_this_layer() {
         let mut m = FlatMemory::new(0x1000, 256);

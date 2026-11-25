@@ -12,11 +12,25 @@ use studio_proto::{code, method as m};
 use super::*;
 use crate::app::{Action, PlaylistEdit, Selection};
 
+mod anim_save_tests;
 mod bitmaps_tests;
+mod game_tests;
 mod playtest_tests;
 mod image_gen_tests;
+mod markers_tests;
 mod script_variants_tests;
+mod assets_tests;
+mod links_tests;
+mod mods_tests;
+mod packages_tests;
+mod edit_target_tests;
+mod doc_save_tests;
+mod problems_tests;
+mod import_tests;
+mod sound_edit_tests;
+mod shell_tests;
 mod ui_export_tests;
+mod shader_tests;
 
 struct Temp(PathBuf);
 impl Temp {
@@ -101,6 +115,16 @@ fn example(d: &MethodDef, t: &Temp, app: &mut App) -> Value {
     let out = t.path("out");
     std::fs::create_dir_all(&out).unwrap();
     text = text.replace("$MAP", &t.path("example.map").display().to_string());
+    if text.contains("$DISC") {
+        let disc = t.path("disc");
+        std::fs::create_dir_all(&disc).unwrap();
+        std::fs::write(
+            disc.join("example.map"),
+            crate::app::workspace::tests::invented_map("example"),
+        )
+        .unwrap();
+        text = text.replace("$DISC", &disc.display().to_string());
+    }
     text = text.replace("$OUT", &out.display().to_string());
     if text.contains("$SCREEN") {
         let first = crate::app::UiScreens::tree()[0].0;
@@ -164,6 +188,59 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
+        m::ASSET_LIST | m::ASSET_THUMB | m::ASSET_COPY | m::ASSET_LINKS => {
+            // An invented tags tree of two maps and a package `kit-test`.
+            assets_tests::tree(&app.tags_root());
+            assets_tests::package(&t.path("data/packages/kit-test"));
+        }
+        m::ASSET_FORK | m::ASSET_REVERT => {
+            // The invented tree and package `kit-test`, whose edit item
+            // sets the rifle for every map; a revert has a fork to take out.
+            assets_tests::tree(&app.tags_root());
+            assets_tests::package(&t.path("data/packages/kit-test"));
+            if name == m::ASSET_REVERT {
+                call(
+                    api,
+                    app,
+                    m::ASSET_FORK,
+                    json!({"tag": "weap:objects\\weapons\\rifle", "map": "example", "package": "kit-test"}),
+                );
+            }
+        }
+        m::PACKAGE_EXPORT => c(m::PACKAGE_NEW, json!({"id": "export-example", "name": "Export example"})),
+        n if n.starts_with("package.") => {
+            // The invented package `kit-test`, and the file its example adds.
+            let dir = t.path("data/packages/kit-test");
+            assets_tests::package(&dir);
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::fs::write(dir.join("data/note.txt"), "a note\n").unwrap();
+        }
+        m::IMPORT_SOUND => {
+            // An empty local package `mine` and a WAV of an invented tone.
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            std::fs::create_dir_all(t.path("out")).unwrap();
+            std::fs::write(t.path("out/clip.wav"), import_tests::tone(1, 22_050, 640)).unwrap();
+        }
+        m::SOUND_EDIT | m::SOUND_RENDER | m::SOUND_PERMUTATION => {
+            // A package `mine` with the invented tone imported as a sound.
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            std::fs::create_dir_all(t.path("out")).unwrap();
+            std::fs::write(t.path("out/clip.wav"), import_tests::tone(1, 22_050, 640)).unwrap();
+            c(
+                m::IMPORT_SOUND,
+                json!({"file": t.path("out/clip.wav").display().to_string(), "package": "mine", "tag": "sounds\\clip"}),
+            );
+        }
+        m::IMPORT_MODEL => {
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            import_tests::model_files(&t.path("out"));
+        }
+        m::IMPORT_BITMAP => {
+            // An empty local package `mine` and a PNG of invented pixels.
+            import_tests::package(&t.path("data/packages/mine"), "mine");
+            std::fs::create_dir_all(t.path("out")).unwrap();
+            std::fs::write(t.path("out/pic.png"), import_tests::png(3, 2)).unwrap();
+        }
         m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP | m::SOUND_MEASURE => {
             // A map with a sound, played to the headless output.
             let map = t.path("sound.map");
@@ -171,11 +248,84 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
             app.audition.headless = true;
         }
+        m::SOUND_MOUTH => {
+            // The same sound with a mouth curve on permutation 0.
+            let map = t.path("mouth.map");
+            std::fs::write(&map, super::sound::tests::mouth_map()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
+        m::FUNCTION_READ | m::FUNCTION_SET | m::FUNCTION_SAMPLE => {
+            // A map whose weapon tag has invented function fields.
+            let map = t.path("curve.map");
+            std::fs::write(&map, super::curves::tests::curve_map()).unwrap();
+            app.tags = crate::app::TagDoc::new(super::curves::tests::registry());
+            call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
+        m::SHADER_READ
+        | m::SHADER_SET
+        | m::SHADER_PREVIEW
+        | m::SHADER_CODE
+        | m::SHADER_OVERRIDE
+        | m::SHADER_PUSH
+        | m::SHADER_REVERT => {
+            // The invented material: the floor shader with a colour its
+            // template's one pass in layer 5 reads.
+            let map = t.path("shader.map");
+            std::fs::write(&map, shader_tests::material_map(fixture::LAYERED_LAYER)).unwrap();
+            call(
+                api,
+                app,
+                m::SOURCE_OPEN,
+                json!({"path": map.display().to_string()}),
+            );
+            // A push sends a draft and a revert removes what one sent: the
+            // linked program is the draft, pushed to a directory of the test's.
+            if matches!(name, m::SHADER_PUSH | m::SHADER_REVERT) {
+                let r = call(
+                    api,
+                    app,
+                    m::SHADER_OVERRIDE,
+                    json!({"tag": shader_tests::SHADER}),
+                );
+                let base = r["base"].as_str().expect("the pass links").to_owned();
+                call(
+                    api,
+                    app,
+                    m::SHADER_OVERRIDE,
+                    json!({"tag": shader_tests::SHADER, "text": base}),
+                );
+            }
+            if name == m::SHADER_REVERT {
+                call(
+                    api,
+                    app,
+                    m::SHADER_PUSH,
+                    json!({
+                        "tag": shader_tests::SHADER,
+                        "program": "00abcdef01234567",
+                        "dir": t.path("out/overrides").display().to_string(),
+                    }),
+                );
+            }
+        }
+        m::TAG_COLOURS => {
+            // A map whose weapon tag has an invented colour field of
+            // every form.
+            let map = t.path("colour.map");
+            std::fs::write(&map, super::colours::tests::colour_map()).unwrap();
+            app.tags = crate::app::TagDoc::new(super::colours::tests::registry());
+            call(api, app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::VOICE_CHARACTERS | m::VOICE_DATASET_BUILD | m::VOICE_DATASET_STATUS => {
             // Invented maps and the fake sidecar (never Python).
             super::voice_clone::test_setup(app, false, false);
         }
-        m::VOICE_CLONE_TRAIN | m::VOICE_CLONE_SAY => {
+        m::VOICE_CLONE_TRAIN
+        | m::VOICE_CLONE_SAY
+        | m::VOICE_SAY_BATCH
+        | m::VOICE_BATCH_STATUS
+        | m::VOICE_BATCH_RUN
+        | m::VOICE_BATCH_SAVE => {
             // The fake sidecar installed and Cortana's dataset built.
             super::voice_clone::test_setup(app, true, true);
         }
@@ -205,6 +355,15 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::SCRIPT_BUILTINS
         | m::SCRIPT_DOC
         | m::SCRIPT_EXTERNAL
+        | m::SCRIPT_COMPILE
+        | m::SCRIPT_UNDO
+        | m::SCRIPT_EVAL
+        | m::RECORDING_LIST
+        | m::RECORDING_READ
+        | m::RECORDING_PLAY
+        | m::RECORDING_WRITE
+        | m::RECORDING_REMOVE
+        | m::RECORDING_UNDO
         | m::SCRIPT_WORKING => {
             // The invented map with scripts and the invented executable.
             let dir = t.path("scripts");
@@ -230,11 +389,24 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, level_collision_map()).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
+        m::MODEL_PHYSICS_SHAPES | m::MODEL_PHYSICS_SET => {
+            let map = t.path("physics.map");
+            std::fs::write(&map, fixture::fixture_with_object_collision()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map}));
+        }
+        m::MODEL_COLLISION_FROM_RENDER => {
+            let map = t.path("render-and-collision.map");
+            std::fs::write(&map, fixture::fixture_with_render_and_collision()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            c(m::GEOMETRY_OPEN, json!({"target": "cluster:e1000004:0"}));
+            c(m::GEOMETRY_OPEN, json!({"target": "coll_bsp:e100000a:0"}));
+        }
         m::GEOMETRY_LIST
         | m::GEOMETRY_OPEN
         | m::GEOMETRY_CLOSE
         | m::GEOMETRY_READ
         | m::GEOMETRY_CHECK
+        | m::GEOMETRY_LOWER_LODS
         | m::MESH_MODE
         | m::MESH_SELECT
         | m::MESH_TRANSFORM
@@ -264,7 +436,14 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::BITMAP_SPANS
         | m::BITMAP_IMAGE_ADD
         | m::BITMAP_IMAGE_RESIZE
-        | m::BITMAP_SEQUENCE_ADD => {
+        | m::BITMAP_SEQUENCE_ADD
+        | m::BITMAP_SEQUENCE_SET
+        | m::BITMAP_SPRITES
+        | m::BITMAP_SPRITE_ADD
+        | m::BITMAP_SPRITE_SET
+        | m::BITMAP_SPRITE_REMOVE
+        | m::BITMAP_CHANNEL_COPY
+        | m::BITMAP_TURN => {
             // The invented textured map: its floor bitmap is 4 by 4,
             // one `A8R8G8B8` colour.
             let map = t.path("textured.map");
@@ -274,6 +453,19 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 let png = bitmap_edit::encode_png(2, 2, &[10, 20, 30, 255].repeat(4)).unwrap();
                 std::fs::create_dir_all(t.path("out")).unwrap();
                 std::fs::write(t.path("out/in.png"), png).unwrap();
+            }
+            if matches!(
+                name,
+                m::BITMAP_SEQUENCE_SET
+                    | m::BITMAP_SPRITES
+                    | m::BITMAP_SPRITE_ADD
+                    | m::BITMAP_SPRITE_SET
+                    | m::BITMAP_SPRITE_REMOVE
+            ) {
+                c(m::BITMAP_SEQUENCE_ADD, json!({"bitmap": "floor", "first": 0, "label": "icons"}));
+            }
+            if matches!(name, m::BITMAP_SPRITE_SET | m::BITMAP_SPRITE_REMOVE) {
+                c(m::BITMAP_SPRITE_ADD, json!({"bitmap": "floor", "sequence": 0}));
             }
         }
         m::IMAGE_GENERATE | m::IMAGE_RESULT | m::IMAGE_APPLY | m::IMAGE_ACCEPT | m::IMAGE_DISCARD => {
@@ -306,13 +498,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             );
             c(m::DOC_OPEN, new_variant);
         }
-        m::VARIANT_GET | m::VARIANT_SET | m::VARIANT_RENAME | m::VARIANT_EXPORT => {
+        m::VARIANT_GET | m::VARIANT_SET | m::VARIANT_RENAME | m::VARIANT_EXPORT | m::VARIANT_MAPS => {
             c(m::DOC_OPEN, new_variant)
         }
         m::VARIANT_COPY => c(m::DOC_OPEN, json!({"variant": {"builtin": 0}})),
         m::VARIANT_DELETE => {
             c(m::DOC_OPEN, new_variant);
-            c(m::DOC_SAVE, json!({"doc": "variant"}));
+            app.dispatch(Action::SaveVariant);
         }
         m::VARIANT_IMPORT => {
             c(m::DOC_OPEN, new_variant);
@@ -338,6 +530,19 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         }
         // A sibling of the loose map stands in for the disc's shared.map.
         m::TAG_BROWSE => std::fs::write(t.path("shared.map"), fixture::fixture()).unwrap(),
+        // An invented disc, its tree already extracted, so the example's
+        // own run is the plan's no-op.
+        m::WORKSPACE_EXTRACT => {
+            let disc = t.path("disc");
+            std::fs::create_dir_all(&disc).unwrap();
+            std::fs::write(
+                disc.join("example.map"),
+                crate::app::workspace::tests::invented_map("example"),
+            )
+            .unwrap();
+            c(m::WORKSPACE_EXTRACT, json!({"disc": disc.display().to_string()}));
+            app.wait_workspace();
+        }
         m::TAG_IMPORT => c(
             m::TAG_EXPORT,
             json!({"tag": "itmc", "out": t.path("out/kit.h2tag").display().to_string()}),
@@ -376,6 +581,56 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         m::MODEL_LIST | m::MODEL_READ | m::MODEL_RENDER | m::MODEL_CHECK => {
             super::models::tests::open_court(app, &t.path("court.map"), &pogo_kit::fixture::kitted().bytes);
         }
+        // The invented two-bone model and its graph, as pose.map; the
+        // face preview's example poses its biped.
+        m::ANIM_LIST | m::ANIM_POSE | m::SOUND_FACE => {
+            let map = t.path("pose.map");
+            std::fs::write(&map, super::anim::tests::anim_map(true)).unwrap();
+            app.dispatch(Action::OpenSource(map));
+        }
+        // The invented two-bone model and graph, with a document to
+        // retarget or a glTF file to import.
+        m::ANIM_RETARGET | m::ANIM_IMPORT => {
+            let map = t.path("pose.map");
+            std::fs::write(&map, super::anim::tests::anim_map(true)).unwrap();
+            app.dispatch(Action::OpenSource(map));
+            if name == m::ANIM_IMPORT {
+                let out = t.path("out");
+                std::fs::create_dir_all(&out).unwrap();
+                super::anim::transfer_tests::gltf(&out, ["body", "arm"], 1);
+            } else {
+                let opened = call(
+                    api,
+                    app,
+                    m::ANIM_NEW,
+                    json!({"tag": r"jmad:invented\stickman", "name": "wave", "frames": 30}),
+                );
+                assert_eq!(opened["doc"], 1, "the example's document");
+            }
+        }
+        // The invented two-bone graph for the animation editor.
+        m::ANIM_READ
+        | m::ANIM_NEW
+        | m::ANIM_DUPLICATE
+        | m::ANIM_KEY
+        | m::ANIM_CHECK
+        | m::ANIM_SAVE => {
+            let map = t.path("timeline.map");
+            std::fs::write(&map, super::anim::read_tests::read_map()).unwrap();
+            app.dispatch(Action::OpenSource(map));
+            if name == m::ANIM_SAVE {
+                import_tests::package(&t.path("data/packages/mine"), "mine");
+            }
+            if matches!(name, m::ANIM_KEY | m::ANIM_CHECK | m::ANIM_SAVE) {
+                let opened = call(
+                    api,
+                    app,
+                    m::ANIM_NEW,
+                    json!({"tag": r"jmad:invented\stickman", "name": "wave", "frames": 30}),
+                );
+                assert_eq!(opened["doc"], 1, "the example's document");
+            }
+        }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
             let map = t.path("hudtest.map");
@@ -396,19 +651,45 @@ fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
     let map = t.path("blaster.map");
     std::fs::write(&map, fixture::fixture()).unwrap();
     app.dispatch(Action::OpenSource(map));
+    // The tag rows are asset.list's: a tree whose one tag is the blaster
+    // weapon the fixture map also holds, in a manifest under the open
+    // map's name, so the row opens on the map that is open.
+    use ::tags::repo::store::Manifest;
+    use ::tags::repo::{TagKey, TagRepo};
+    let key = TagKey::new(map::FourCC(*b"weap"), r"objects\test\blaster");
+    TagRepo::create(app.tags_root())
+        .unwrap()
+        .put_manifest(
+            &Manifest {
+                map: "blaster".into(),
+                name: "blaster".into(),
+                tags: vec![(key, None)],
+                ..Default::default()
+            },
+            b"header",
+        )
+        .unwrap();
     let mut api = Api::new();
 
     let list = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"blast"}));
     let entries = list["entries"].as_array().unwrap();
     let kinds: Vec<_> = entries.iter().map(|e| e["kind"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["map", "tag", "placement", "placement"]);
-    assert_eq!(list["totals"], json!({"map":1, "tag":1, "placement":2, "command":0}));
+    assert_eq!(
+        list["totals"],
+        json!({"map":1, "tag":1, "package":0, "item":0, "voice":0, "placement":2, "command":0})
+    );
     assert_eq!(entries[0]["label"], "blaster");
-    assert_eq!(entries[1]["label"], "objects\\test\\blaster");
+    // The tag row: the file name as its label, the path in its detail.
+    assert_eq!(entries[1]["label"], "blaster");
+    assert_eq!(entries[1]["detail"], "weap · objects\\test\\blaster");
     assert_eq!(entries[2]["label"], "0: blaster");
 
     let filtered = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"WEAP bla"}));
-    assert_eq!(filtered["totals"], json!({"map":0, "tag":1, "placement":2, "command":0}));
+    assert_eq!(
+        filtered["totals"],
+        json!({"map":0, "tag":1, "package":0, "item":0, "voice":0, "placement":2, "command":0})
+    );
     let result = call(
         &mut api, &mut app, m::UI_PALETTE, json!({"query":"blast", "run":1}),
     );
@@ -443,7 +724,7 @@ fn doc_save_rewrites_the_open_package() {
     let mut app = app(&t);
     let mut api = Api::new();
     let form = app.session.form_defaults();
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     call(
         &mut api, &mut app, m::SCENARIO_MOVE,
         json!({"block":"netgame_flags", "index":0, "position":[7, 3, 3]}),
@@ -452,7 +733,6 @@ fn doc_save_rewrites_the_open_package() {
     let result = call(&mut api, &mut app, m::DOC_SAVE, json!({"doc":"map"}));
     assert_eq!(result["saved"], true);
     assert_eq!(result["path"], path.display().to_string());
-    assert!(app.package_form.is_none());
     assert!(!app.is_dirty());
     app.dispatch(Action::SelectMap("example".into()));
     app.dispatch(Action::OpenPackageEntry("example-edit".into()));
@@ -491,6 +771,7 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
     assert_eq!(respawn["label"], "Respawn time");
     assert_eq!(respawn["type"], "Whole number");
     assert_eq!(respawn["path"], "respawn_time");
+    assert!(respawn["view"].is_null(), "a field with no view= word");
     assert_eq!(respawn["named"], true);
     assert_eq!(respawn["edited"], false);
     assert!(respawn["file_value"].is_null());
@@ -700,6 +981,14 @@ fn tag_elements_are_titled_and_an_element_opens_alone() {
     // Open alone, as the panel's button does.
     let alone = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "path": "parts[1]"}));
     assert_eq!(alone["path"], "parts[1]");
+    // No tag view is registered for a weapon: Fields is its only tab, and
+    // another tab is refused by name.
+    assert_eq!(alone["tabs"], json!([{"id": "fields", "label": "Fields"}]));
+    assert_eq!(alone["tab"], "fields");
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_VIEW, json!({"tab": "sound"}))),
+        code::REFUSED
+    );
     assert_eq!(alone["breadcrumbs"], json!(["weap: objects\\test\\blaster", "Parts 1"]));
     let paths: Vec<&str> = alone["rows"]
         .as_array()
@@ -811,10 +1100,18 @@ fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
     let changed = call(&mut api, &mut app, m::TAG_VIEW, json!({}));
     assert_eq!(changed["unnamed_hidden"], 0);
     assert_eq!(changed["rows"][3]["edited"], true);
-    assert_eq!(
-        code_of(api.call(&mut app, m::TAG_VIEW, json!({"search": "speed"}))),
-        code::INVALID_PARAMS
-    );
+    // The filter row's search drives the hit list; an empty one clears it.
+    let searched = call(&mut api, &mut app, m::TAG_VIEW, json!({"search": "speed"}));
+    assert_eq!(searched["search"], "speed");
+    let hit_paths: Vec<&str> = searched["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(hit_paths, ["speed"]);
+    let back = call(&mut api, &mut app, m::TAG_VIEW, json!({"search": ""}));
+    assert_eq!(back["rows"].as_array().unwrap().len(), 4, "the changed unnamed row is shown");
 
     // A tag nothing names shows its group open: every field is reachable.
     let scenario = format!("{:#010x}", fixture::id(1).0);
@@ -823,6 +1120,224 @@ fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
     let rows = unnamed["rows"].as_array().unwrap();
     assert!(!rows.is_empty());
     assert!(rows.iter().all(|r| r["named"] == false && r["editable"] == false));
+}
+
+/// `tag.find` matches the label, the name, the description, the type
+/// words, choice and switch names and the referenced tag's row text, and
+/// `changed` lists the fields that differ from the file — gone after the
+/// edit's undo. `tag.view`'s `search` and `changed` drive the same hit
+/// list, and `field` clears it.
+#[test]
+fn tag_find_matches_words_and_changed_follows_edits() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-find");
+    let (mut app, ..) = tag_tests::app_described(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let find = |api: &mut Api, app: &mut App, query: Option<&str>, path: Option<&str>, changed: bool| {
+        let mut p = json!({ "tag": weap, "changed": changed });
+        if let Some(q) = query {
+            p["query"] = json!(q);
+        }
+        if let Some(e) = path {
+            p["path"] = json!(e);
+        }
+        call(api, app, m::TAG_FIND, p)
+    };
+    let paths = |v: &Value| -> Vec<String> {
+        v["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["path"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // The label (and the name); the description; a choice name; a switch
+    // name; the referenced tag's row text; the type words. Words may sit
+    // in different places, but every word must match somewhere.
+    assert_eq!(paths(&find(&mut api, &mut app, Some("speed"), None, false)), ["speed"]);
+    assert_eq!(
+        find(&mut api, &mut app, Some("speed"), None, false)["hits"][0]["matched"],
+        "Speed"
+    );
+    assert_eq!(paths(&find(&mut api, &mut app, Some("repeats"), None, false)), ["speed"]);
+    assert_eq!(
+        find(&mut api, &mut app, Some("repeats"), None, false)["hits"][0]["matched"],
+        "How fast the trigger repeats."
+    );
+    assert_eq!(paths(&find(&mut api, &mut app, Some("auto"), None, false)), ["mode"]);
+    assert_eq!(paths(&find(&mut api, &mut app, Some("QUIET"), None, false)), ["flags"]);
+    assert_eq!(paths(&find(&mut api, &mut app, Some("kit"), None, false)), ["parts[0].item"]);
+    assert_eq!(
+        paths(&find(&mut api, &mut app, Some("decimal number"), None, false)),
+        ["speed"]
+    );
+    assert_eq!(paths(&find(&mut api, &mut app, Some("fast trigger"), None, false)), ["speed"]);
+    assert!(paths(&find(&mut api, &mut app, Some("speed kit"), None, false)).is_empty());
+    // A hit carries its crumbs and its row.
+    let hit = &find(&mut api, &mut app, Some("kit"), None, false)["hits"][0];
+    assert_eq!(hit["breadcrumbs"], json!(["weap: objects\\test\\blaster", "Parts 0  kit"]));
+    assert_eq!(hit["label"], "Item");
+    assert_eq!(hit["type"], "Tag reference");
+    assert_eq!(hit["matched"], "itmc  kit");
+    // Searching within an element.
+    let inside = find(&mut api, &mut app, Some("value"), Some("parts[0]"), false);
+    assert_eq!(paths(&inside), ["parts[0].value"]);
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_FIND, json!({"tag": weap, "path": "parts[2]"}))),
+        code::INVALID_PARAMS
+    );
+
+    // Changed only: nothing, the edit, then nothing again after its undo.
+    assert!(paths(&find(&mut api, &mut app, None, None, true)).is_empty());
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": weap, "path": "speed", "value": 4.0}));
+    assert_eq!(paths(&find(&mut api, &mut app, None, None, true)), ["speed"]);
+    // Both filters together intersect.
+    assert_eq!(paths(&find(&mut api, &mut app, Some("speed"), None, true)), ["speed"]);
+    assert!(paths(&find(&mut api, &mut app, Some("flags"), None, true)).is_empty());
+    // The panel shows the same hit list.
+    let view = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "changed": true}));
+    assert_eq!(view["changed"], true);
+    let rows: Vec<&str> = view["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(rows, ["speed"]);
+    // Focusing a field clears the filters: its rows are shown.
+    let focused = call(&mut api, &mut app, m::TAG_VIEW, json!({"field": "speed"}));
+    assert_eq!((focused["search"].as_str(), focused["changed"].as_bool()), (Some(""), Some(false)));
+    assert!(focused["rows"].as_array().unwrap().iter().any(|r| r["path"] == "flags"));
+    app.dispatch(Action::Undo);
+    assert!(paths(&find(&mut api, &mut app, None, None, true)).is_empty());
+}
+
+/// The search walk stops at 5,000 list items and says so: `tag.find`
+/// answers `truncated` with the sentence, and `tag.view`'s `header`
+/// carries it over the cut rows.
+#[test]
+fn the_field_search_stops_at_its_budget() {    use crate::app::tag_tests;
+    use scenario_edit::fixture::{META, META_FILE, put};
+    let t = Temp::new("tag-find-budget");
+    // The weapon's parts grown to 6,000 elements of invented data: the
+    // metadata region grows with them.
+    let mut src = tag_tests::map();
+    let w = META_FILE + 0x1100;
+    let size = 0x2000 + 0x20000;
+    src.resize(META_FILE + size, 0);
+    put(&mut src, 0x8, (META_FILE + size) as u32);
+    put(&mut src, 0x18, size as u32);
+    put(&mut src, w + 8, 6_000);
+    put(&mut src, w + 0xc, META + 0x2000);
+    let (mut app, ..) = tag_tests::app_with_registry(&t.0, src, tag_tests::registry());
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+
+    let found = call(
+        &mut api,
+        &mut app,
+        m::TAG_FIND,
+        json!({"tag": weap, "query": "value", "limit": 10}),
+    );
+    assert_eq!(found["hits"].as_array().unwrap().len(), 10);
+    assert_eq!(found["hits"][0]["path"], "parts[0].value");
+    assert_eq!(found["truncated"], true);
+    assert_eq!(
+        found["why"],
+        "Search stopped after 5,000 list items. Open a list and search there."
+    );
+    // The panel's rows are the walk's hits, and the header carries the
+    // budget's sentence.
+    let view = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "search": "value"}));
+    assert_eq!(view["rows"].as_array().unwrap().len(), 5_000);
+    assert_eq!(
+        view["header"].as_array().unwrap().last(),
+        Some(&json!("Search stopped after 5,000 list items. Open a list and search there."))
+    );
+}
+
+/// `tag.uses` answers from the reverse index: the two placements on one
+/// palette entry are both listed (and `highlight` outlines them), the
+/// item collection is reached through the weapon and placed by the
+/// netgame item, and the index rebuilds after a block edit and after a
+/// reference edit. `tag.chain`'s nodes count their uses.
+#[test]
+fn tag_uses_lists_the_placements_and_tags_that_reach_a_tag() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-uses");
+    let (mut app, ..) = tag_tests::app(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let itmc = format!("{:#010x}", fixture::id(3).0);
+    let blocks = |v: &Value| -> Vec<(String, usize)> {
+        v["placements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (p["block"].as_str().unwrap().to_owned(), p["index"].as_u64().unwrap() as usize))
+            .collect()
+    };
+    let tags = |v: &Value| -> Vec<String> {
+        v["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["tag"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Two placements share one palette entry: both listed, and nothing
+    // refers to the weapon itself (the scenario's reference is the
+    // placements', not a tag's).
+    let weapon = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap }));
+    assert_eq!(blocks(&weapon), [("weapons".to_owned(), 0), ("weapons".to_owned(), 1)]);
+    assert!(tags(&weapon).is_empty());
+    assert_eq!(weapon["objects"], json!([]));
+
+    // The item collection is referred to by the weapon's first part and
+    // placed by the netgame item; the placements whose palette chain
+    // runs through the weapon are named too.
+    let kit = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
+    assert_eq!(tags(&kit), [weap.clone()]);
+    assert_eq!(kit["tags"][0]["via"], "parts[0].item");
+    assert_eq!(
+        blocks(&kit),
+        [
+            ("netgame_equipment".to_owned(), 0),
+            ("weapons".to_owned(), 0),
+            ("weapons".to_owned(), 1),
+        ]
+    );
+
+    // highlight outlines the placements; the next highlight clears them.
+    call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap, "highlight": true }));
+    assert_eq!(app.highlighted.len(), 2);
+    call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap, "highlight": false }));
+    assert!(app.highlighted.is_empty());
+
+    // The chain's nodes carry the count.
+    let chain = call(&mut api, &mut app, m::TAG_CHAIN, json!({ "block": "weapons", "index": 0 }));
+    assert_eq!(
+        chain["root"]["uses"],
+        json!({ "placements": 2, "tags": 0 }),
+        "the weapon node counts its two placements"
+    );
+
+    // The index rebuilds after a block edit (a placement removed) and
+    // after a reference edit (the part no longer names the collection);
+    // undo restores both.
+    call(&mut api, &mut app, m::SCENARIO_DELETE, json!({ "block": "weapons", "index": 1 }));
+    let after = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": weap }));
+    assert_eq!(blocks(&after), [("weapons".to_owned(), 0)]);
+    call(&mut api, &mut app, m::TAG_SET, json!({ "tag": weap, "path": "parts[0].item", "value": null }));
+    let cut = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
+    assert!(tags(&cut).is_empty());
+    assert_eq!(blocks(&cut), [("netgame_equipment".to_owned(), 0)]);
+    app.dispatch(Action::Undo);
+    let back = call(&mut api, &mut app, m::TAG_USES, json!({ "tag": itmc }));
+    assert_eq!(tags(&back), [weap.clone()]);
 }
 
 #[test]
@@ -859,7 +1374,7 @@ fn every_method_in_methods_has_a_test() {
             (Some(_), Ok(v)) => panic!("{} is planned but answered {v}", d.name),
             // No renderer on this machine: the snapshot says so.
             (None, Err(e))
-                if matches!(d.name, m::VIEW_SNAPSHOT | m::MODEL_RENDER) && e.code == code::NO_GPU => {}
+                if matches!(d.name, m::VIEW_SNAPSHOT | m::MODEL_RENDER | m::MARKERS_RENDER) && e.code == code::NO_GPU => {}
             // These reads need an active watchdog, recorded samples or sampling.
             (None, Err(e))
                 if matches!(d.name, mem::HISTORY | mem::HEAP | mem::DIFF | mem::POSTMORTEM)
@@ -877,13 +1392,54 @@ fn every_method_in_methods_has_a_test() {
                         | m::PAIR_PREVIEW
                         | m::PAIR_AUDIO
                         | m::PAIR_RESULT
+                        // No game, so no picture to save.
+                        | m::GAME_SNAPSHOT
+                        | m::GAME_START
+                        | m::GAME_STOP
+                        | m::GAME_MODE
+                        | m::PACKAGE_PLAY
+                        | m::RECORDING_PLAY
+                        | m::SCRIPT_EVAL
+                        // No sim runner is wired to Studio's own API.
+                        | m::PLAYTEST_RUN
                 ) && e.code == code::REFUSED => {}
+            // The invented map has no hill with corners to convert
+            // (markers_tests.rs makes one).
+            (None, Err(e)) if d.name == m::MARKERS_AREA_CONVERT && e.code == code::REFUSED => {}
+            // The invented map has no render model: its example names a
+            // model section that is not open (the refusal of any other
+            // target is `use_for_lower_lods_is_for_model_sections`).
+            (None, Err(e)) if d.name == m::GEOMETRY_LOWER_LODS && e.code == code::NO_DOCUMENT => {}
             // Retail tag edits need the disc's screens: ours are refused.
             (None, Err(e))
                 if matches!(d.name, m::UI_HIDE | m::UI_DUPLICATE | m::UI_SET_STRING)
                     && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
-            (None, Ok(v)) => assert!(!v.is_null() || matches!(d.name, m::METHODS | m::MIRROR_PICK), "{}", d.name),
+            (None, Ok(v)) => {
+                assert!(
+                    !v.is_null() || matches!(d.name, m::METHODS | m::MIRROR_PICK),
+                    "{}",
+                    d.name
+                );
+                if d.name.starts_with("anim.") {
+                    let fields = shape_keys(d.result);
+                    let result = v.as_object().expect("an animation result object");
+                    for (name, required) in &fields {
+                        assert!(
+                            !*required || result.contains_key(name),
+                            "{}: missing {name}",
+                            d.name
+                        );
+                    }
+                    for name in result.keys() {
+                        assert!(
+                            fields.iter().any(|(field, _)| field == name),
+                            "{}: undeclared {name}",
+                            d.name
+                        );
+                    }
+                }
+            }
         }
         ran.push(d.name);
     }
@@ -2132,10 +2688,10 @@ fn outputs_stay_out_of_git_and_off_the_source() {
         std::fs::read(t.path("example.map")).unwrap(),
         fixture::fixture()
     );
-    let save = call(&mut api, &mut app, m::DOC_SAVE, json!({"doc": "map"}));
-    assert_eq!(save["saved"], false);
-    assert_eq!(save["package_form"], json!({"name":"example edit", "dir":"example-edit"}));
-    assert_eq!(app.package_form.as_ref().unwrap().dir, "example-edit");
+    assert_eq!(
+        code_of(api.call(&mut app, m::DOC_SAVE, json!({"doc": "map"}))),
+        code::NO_TARGET
+    );
     assert_eq!(std::fs::read(t.path("example.map")).unwrap(), fixture::fixture());
     let first = crate::app::UiScreens::tree()[0].0;
     call(&mut api, &mut app, m::UI_PICK, json!({"screen": first}));
@@ -3775,6 +4331,153 @@ fn a_geometry_edit_saves_only_with_the_unverified_switch_on() {
 }
 
 #[test]
+fn use_for_lower_lods_is_for_model_sections() {
+    let t = Temp::new("geometry-lods");
+    let (mut api, mut app, _) = textured(&t);
+    // A cluster has no levels of detail: refused, nothing recorded.
+    let e = api
+        .call(&mut app, m::GEOMETRY_LOWER_LODS, json!({"target": "cluster:e1000004:0"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS, "{e}");
+    assert!(e.message.contains("levels of detail"), "{e}");
+    // A model section that is not open is not found.
+    let e = api
+        .call(&mut app, m::GEOMETRY_LOWER_LODS, json!({"target": "mode_section:e1000002:0"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::NO_DOCUMENT, "{e}");
+    // `on` must be a boolean.
+    assert!(
+        api.call(&mut app, m::GEOMETRY_LOWER_LODS, json!({"target": "cluster:e1000004:0", "on": 3}))
+            .is_err()
+    );
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "unchanged");
+    assert_eq!(check["save_refusal"], Value::Null);
+}
+
+#[test]
+fn a_coll_bsp_opens_as_a_mesh_and_a_compile_that_cannot_hold_is_named() {
+    let t = Temp::new("geometry-coll");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let map = t.path("objects.map");
+    std::fs::write(&map, fixture::fixture_with_object_collision()).unwrap();
+    call(&mut api, &mut app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+    let list = call(&mut api, &mut app, m::GEOMETRY_LIST, Value::Null);
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "coll_bsp")
+        .expect("the object's collision BSP is listed")
+        .clone();
+    let id = entry["target"].as_str().unwrap().to_owned();
+    assert!(id.starts_with("coll_bsp:"), "{id}");
+    let cube = fixture::collision_cube();
+    assert_eq!(entry["triangles"], json!(cube.surfaces.len()));
+    let open = call(&mut api, &mut app, m::GEOMETRY_OPEN, json!({"target": id}));
+    assert_eq!(open["faces"], json!(cube.surfaces.len()));
+    // An unedited BSP has nothing to write.
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "unchanged");
+    // Moving it recompiles it; the invented tag has no collision
+    // materials, so the compile is refused with the reason.
+    call(&mut api, &mut app, m::MESH_MODE, json!({"mode": "vert"}));
+    call(&mut api, &mut app, m::MESH_SELECT, json!({"all": true}));
+    call(&mut api, &mut app, m::MESH_TRANSFORM, json!({"translate": [0.0, 0.0, 1.0]}));
+    let check = call(&mut api, &mut app, m::GEOMETRY_CHECK, Value::Null);
+    assert_eq!(check["targets"][0]["class"], "grown_blocks");
+    assert!(check["targets"][0]["refused"].is_string(), "{check}");
+    assert!(check["save_refusal"].is_string(), "{check}");
+}
+
+#[test]
+fn physics_shape_edit_undoes_and_saves_with_the_map() {
+    let t = Temp::new("physics-shape-edit");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    setup(&mut api, &mut app, &t, m::MODEL_PHYSICS_SHAPES);
+    let query = json!({"tag": "phmo"});
+    let before = call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone());
+    let set_radius = |value| json!({
+        "tag": "phmo", "kind": "sphere", "index": 0, "field": "radius", "value": value
+    });
+    let bad = api.call(&mut app, m::MODEL_PHYSICS_SET, set_radius(-1.0)).unwrap_err();
+    assert_eq!(bad.code, code::REFUSED);
+    assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone()), before);
+    assert!(!app.session.is_dirty());
+
+    let result = call(&mut api, &mut app, m::MODEL_PHYSICS_SET, set_radius(1.25));
+    assert!(result["warning"].is_string());
+    let edited = call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone());
+    assert_eq!(edited["spheres"][0]["radius"], 1.25);
+    let repeat = call(&mut api, &mut app, m::MODEL_PHYSICS_SET, set_radius(1.25));
+    assert!(repeat["warning"].is_null());
+    assert_eq!(call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "tags"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query.clone()), before);
+    assert_eq!(call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "tags"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::MODEL_PHYSICS_SHAPES, query), edited);
+
+    let out = t.path("physics-edited.map");
+    call(&mut api, &mut app, m::DOC_SAVE_AS, json!({"doc": "map", "path": out}));
+    let mut map = map::Map::open(out).unwrap();
+    let tag = fixture::id(7);
+    let model = ::tags::collision::PhysicsModel::read(&mut map, tag).unwrap();
+    assert_eq!(model.spheres[0].radius, 1.25);
+    let mut original = map::Map::open(t.path("physics.map")).unwrap();
+    let mut expected = original.read_tag_bytes(tag).unwrap();
+    expected[0x13c..0x140].copy_from_slice(&1.25f32.to_le_bytes());
+    assert_eq!(map.read_tag_bytes(tag).unwrap(), expected);
+}
+
+#[test]
+fn from_render_replaces_collision_as_one_replayable_and_saveable_edit() {
+    let t = Temp::new("collision-from-render");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    setup(&mut api, &mut app, &t, m::MODEL_COLLISION_FROM_RENDER);
+    let render = "cluster:e1000004:0";
+    let target = "coll_bsp:e100000a:0";
+    let before = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(before["faces"].as_array().unwrap().len(), 6);
+    let bad = api.call(&mut app, m::MODEL_COLLISION_FROM_RENDER, json!({
+        "render": render, "materials": [6]
+    })).unwrap_err();
+    assert_eq!(bad.code, code::REFUSED, "{bad}");
+    assert!(bad.message.contains("uses material 6"), "{bad}");
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), before);
+    assert!(!app.session.is_dirty());
+
+    let result = call(&mut api, &mut app, m::MODEL_COLLISION_FROM_RENDER, json!({
+        "render": render, "materials": [1]
+    }));
+    assert_eq!(result, json!({"target": target, "verts": 4, "faces": 1}));
+    let edited = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(edited["faces"][0]["material"], 1);
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null)["ops"].clone();
+    assert_eq!(ops.as_array().unwrap().len(), 1);
+    assert_eq!(call(&mut api, &mut app, m::DOC_UNDO, json!({"doc":"map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), before);
+    assert_eq!(call(&mut api, &mut app, m::DOC_REDO, json!({"doc":"map"}))["done"], true);
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), edited);
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc":"map"}));
+    call(&mut api, &mut app, m::MESH_APPLY, json!({"ops": ops}));
+    assert_eq!(call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null), edited);
+
+    app.dispatch(Action::SetAllowUnverifiedGeometry(true));
+    let out = t.path("converted-collision.map");
+    call(&mut api, &mut app, m::DOC_SAVE_AS, json!({"doc":"map", "path":out}));
+    let mut map = map::Map::open(out).unwrap();
+    let collision = ::tags::collision::Collision::read(&mut map, fixture::id(10)).unwrap();
+    assert!(collision.validate().is_empty(), "{:?}", collision.validate());
+    let bsp = collision.bsps().next().unwrap();
+    assert_eq!(bsp.surfaces.len(), 1);
+    assert_eq!(bsp.surfaces[0].material, 1);
+    assert_eq!(bsp.surface_ring(0).len(), 4);
+    assert!(bsp.vertices.iter().all(|v| v.point[2] == 0.0));
+}
+
+#[test]
 fn doc_undo_on_the_map_undoes_the_geometry_edit_and_the_op_log_replays_it() {
     let t = Temp::new("geometry-undo");
     let (mut api, mut app, _) = textured(&t);
@@ -3994,8 +4697,13 @@ const UI_EDIT_SCREEN: &str = "kit.example";
 /// Points our screens' files at a temporary checkout, never the repo's.
 fn ui_edit_checkout(app: &mut App, t: &Temp) -> PathBuf {
     let checkout = t.path("checkout");
-    std::fs::create_dir_all(checkout.join(crate::app::ui_screens::edit::ours::SCREENS_DIR))
-        .unwrap();
+    use crate::app::ui_screens::edit::ours::{SCREENS_DIR, UI_MANIFEST};
+    std::fs::create_dir_all(checkout.join(SCREENS_DIR)).unwrap();
+    std::fs::write(
+        checkout.join(UI_MANIFEST),
+        include_str!("../../../../../content/ui/package.toml"),
+    )
+    .unwrap();
     app.ui_screens.edit.ours.set_checkout(Some(checkout.clone()));
     checkout
 }
@@ -4162,7 +4870,7 @@ fn ui_edits_refuse_rust_owned_widgets_and_bad_rects() {
 }
 
 #[test]
-fn ui_save_writes_the_yaml_into_the_checkout() {
+fn ui_save_writes_the_yaml_into_the_ui_package() {
     let t = Temp::new("uiedit-save");
     let (mut api, mut app, checkout) = ui_edit_app(&t);
     call(&mut api, &mut app, m::UI_SET_TEXT, json!({"id": "title", "text": "Saved by the API"}));
@@ -5041,4 +5749,180 @@ fn scenario_scripts_open_as_a_working_copy_and_its_saves_read_back() {
     assert_eq!(v["changed"], json!([]));
     assert_eq!(v["stale"], false);
     assert!(v["summary"].as_str().unwrap().contains("invented_added added"), "{v}");
+}
+
+/// `workspace.*` over an invented disc (docs/editor/agent-api.md, "The
+/// tag workspace"): no game data, and the tree goes under the test's
+/// data root, never the checkout.
+#[test]
+fn the_workspace_reports_the_start_page_and_extracts_an_invented_disc() {
+    let t = Temp::new("workspace");
+    // No source open: the first start's page shows with no tree.
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let mut api = Api::new();
+    let status = call(&mut api, &mut app, m::WORKSPACE_STATUS, json!({}));
+    assert_eq!(status["start_page"], true);
+    assert_eq!(status["has_tree"], false);
+    assert_eq!(status["tree"], Value::Null);
+    assert_eq!(status["sizes"]["total"], json!(0));
+
+    // Extract every map of an invented disc.
+    let disc = t.path("disc");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::write(
+        disc.join("example.map"),
+        crate::app::workspace::tests::invented_map("example"),
+    )
+    .unwrap();
+    let started = call(
+        &mut api,
+        &mut app,
+        m::WORKSPACE_EXTRACT,
+        json!({"disc": disc.display().to_string()}),
+    );
+    assert_eq!(started["maps"], json!(["example"]));
+    assert_eq!(started["root"], json!(app.tags_root().display().to_string()));
+    app.wait_workspace();
+
+    let status = call(&mut api, &mut app, m::WORKSPACE_STATUS, json!({}));
+    assert_eq!(status["start_page"], false);
+    assert_eq!(status["has_tree"], true);
+    assert_eq!(status["tree"]["maps"], json!(1));
+    assert_eq!(status["tree"]["tags"], json!(4));
+    assert_eq!(status["stale"]["maps"], json!([]));
+    assert_eq!(status["last"]["maps"], json!(1));
+    assert!(status["sizes"]["tree"].as_u64().unwrap() > 0);
+    assert_eq!(status["extracting"], Value::Null);
+
+    // An unchanged disc is a no-op.
+    call(&mut api, &mut app, m::WORKSPACE_EXTRACT, json!({}));
+    app.wait_workspace();
+    let status = call(&mut api, &mut app, m::WORKSPACE_STATUS, json!({}));
+    assert_eq!(status["last"]["maps"], json!(0));
+
+    // Prune on the invented tree: nothing to remove, and the answer says
+    // what it looked at.
+    let pruned = call(&mut api, &mut app, m::WORKSPACE_PRUNE, json!({}));
+    assert_eq!(pruned["raw_removed"], json!(0));
+    assert_eq!(pruned["bytes"], json!(0));
+    assert_eq!(pruned["outputs_removed"], json!([]));
+}
+
+#[test]
+fn the_tags_tree_is_refused_inside_a_git_checkout() {
+    let t = Temp::new("workspace-git");
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let mut api = Api::new();
+    let disc = t.path("disc");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::write(
+        disc.join("example.map"),
+        crate::app::workspace::tests::invented_map("example"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(t.path("repo/.git")).unwrap();
+    let e = api
+        .call(
+            &mut app,
+            m::WORKSPACE_EXTRACT,
+            json!({
+                "disc": disc.display().to_string(),
+                "root": t.path("repo/tags").display().to_string(),
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert!(e.message.contains("Git checkout"), "{}", e.message);
+    // The root was not recorded, and nothing runs.
+    assert_eq!(app.tags_root(), t.path("data").join("tags"));
+    assert!(app.workspace_start_page());
+    // A bad map name is a bad parameter.
+    let e = api
+        .call(
+            &mut app,
+            m::WORKSPACE_EXTRACT,
+            json!({"disc": disc.display().to_string(), "maps": ["nope"]}),
+        )
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    assert!(e.message.contains("nope.map"), "{}", e.message);
+}
+
+/// A map variant document of an invented map, for `variant.maps`.
+fn map_variant_doc(title: &str) -> forge_doc::ForgeDoc {
+    use forge_doc::{BlockKind as B, BuilderVersions, Edit, ForgeDoc, MapRef, Op, OpId, Placement, Sha256};
+    let mut doc = ForgeDoc {
+        format: forge_doc::FORMAT,
+        builder: BuilderVersions::CURRENT,
+        base: MapRef {
+            map: "fixture".into(),
+            sha256: Sha256::of(b"an invented map"),
+        },
+        sources: vec![],
+        title: title.into(),
+        author: "Editor".into(),
+        description: String::new(),
+        recipes: vec![],
+        imports: vec![],
+        ops: vec![Op {
+            id: OpId(1),
+            edit: Edit::Placement(Placement::Add {
+                block: B::NetgameFlags,
+                like: None,
+                fields: vec![],
+            }),
+        }],
+        expect: None,
+    };
+    doc.format = doc.required_format();
+    doc
+}
+
+#[test]
+fn variant_export_suggests_the_map_variants_variant_maps_lists() {
+    let t = Temp::new("variant-maps");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let data = t.path("data");
+    // None on a machine with none.
+    let none = call(&mut api, &mut app, m::VARIANT_MAPS, json!({}));
+    assert_eq!(none["maps"], json!([]));
+    let castle = map_variant_doc("Castle");
+    forge::files::variants::save(&data, &castle, false).unwrap();
+    forge::files::variants::save(&data, &map_variant_doc("Tower"), false).unwrap();
+    let listed = call(&mut api, &mut app, m::VARIANT_MAPS, json!({}));
+    let maps = listed["maps"].as_array().unwrap();
+    assert_eq!(maps.len(), 2);
+    assert_eq!((maps[0]["name"].as_str(), maps[0]["map"].as_str()), (Some("Castle"), Some("fixture")));
+    assert_eq!(maps[0]["variant"], castle.id().unwrap().to_string());
+    assert_eq!(maps[0]["base"], castle.base.sha256.to_string());
+    assert_eq!(maps[0]["source"], "saved");
+
+    call(&mut api, &mut app, m::DOC_OPEN, json!({"variant": {"new": "slayer"}, "discard": true}));
+    let out = t.path("out/suggest.h2variant");
+    let r = call(
+        &mut api,
+        &mut app,
+        m::VARIANT_EXPORT,
+        json!({"path": out.display().to_string(), "maps": [maps[1]["variant"], maps[0]["variant"]]}),
+    );
+    assert_eq!(r["maps"], 2);
+    let b = ::variants::portable::read(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let got: Vec<_> = b.maps.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(got, ["Tower", "Castle"], "in the order asked");
+    assert_eq!(b.maps[1].base, castle.base.sha256.to_string());
+    // Without maps it is the version-1 file it was.
+    let plain = t.path("out/plain.h2variant");
+    call(&mut api, &mut app, m::VARIANT_EXPORT, json!({"path": plain.display().to_string()}));
+    assert!(std::fs::read_to_string(&plain).unwrap().contains("\"version\": 1"));
+    // An id this machine has no map variant of is refused by name.
+    let bad = api.call(
+        &mut app,
+        m::VARIANT_EXPORT,
+        json!({"path": t.path("out/bad.h2variant").display().to_string(), "maps": ["0".repeat(64)]}),
+    );
+    assert_eq!(code_of(bad), code::INVALID_PARAMS);
+    assert!(!t.path("out/bad.h2variant").exists());
 }

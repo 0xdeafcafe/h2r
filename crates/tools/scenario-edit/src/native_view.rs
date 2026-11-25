@@ -91,6 +91,39 @@ impl Lighting {
     }
 }
 
+/// `rgba` (`width` by `height`) with `mips` further levels, each a box
+/// filter of the one before (rounded to nearest, an odd edge repeating
+/// its last row or column); `None` when `rgba` is not that size.
+pub fn box_chain(width: u32, height: u32, rgba: &[u8], mips: usize) -> Option<Image> {
+    if width == 0 || height == 0 || rgba.len() != width as usize * height as usize * 4 {
+        return None;
+    }
+    let mut levels: Vec<Vec<u8>> = Vec::with_capacity(mips);
+    let (mut w, mut h) = (width as usize, height as usize);
+    for _ in 0..mips {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let prev: &[u8] = levels.last().map_or(rgba, Vec::as_slice);
+        let mut next = Vec::with_capacity(nw * nh * 4);
+        for y in 0..nh {
+            for x in 0..nw {
+                let xs = [(x * 2).min(w - 1), (x * 2 + 1).min(w - 1)];
+                let ys = [(y * 2).min(h - 1), (y * 2 + 1).min(h - 1)];
+                for c in 0..4 {
+                    let sum: u32 = ys
+                        .iter()
+                        .flat_map(|&yy| xs.iter().map(move |&xx| (yy, xx)))
+                        .map(|(yy, xx)| u32::from(prev[(yy * w + xx) * 4 + c]))
+                        .sum();
+                    next.push(((sum + 2) / 4) as u8);
+                }
+            }
+        }
+        levels.push(next);
+        (w, h) = (nw, nh);
+    }
+    Some(Image::from_rgba(width, height, rgba.to_vec(), levels))
+}
+
 /// `image` with its colour (not alpha) times `num / den`, every level.
 /// Its BC blocks are dropped: they no longer match the pixels.
 fn scaled(image: &Image, num: u16, den: u16) -> Image {
@@ -102,13 +135,12 @@ fn scaled(image: &Image, num: u16, den: u16) -> Image {
             })
             .collect()
     };
-    Image {
-        width: image.width,
-        height: image.height,
-        rgba: scale(&image.rgba),
-        mips: image.mips.iter().map(|m| scale(m)).collect(),
-        blocks: None,
-    }
+    Image::from_rgba(
+        image.width,
+        image.height,
+        scale(&image.rgba),
+        image.mips.iter().map(|m| scale(m)).collect(),
+    )
 }
 
 /// The depth rule the editor's world writes: view depth over the far
@@ -176,6 +208,10 @@ pub struct NativeLoad {
     pub bsp: TagId,
     world: World,
     base: HashMap<u16, Image>,
+    /// The bitmap each material's base map came from
+    /// ([`NativeLoad::read`]; none for a load built from images), so the
+    /// viewport follows a painted bitmap ([`NativeWorld::repaint_base`]).
+    base_bitmaps: HashMap<u16, TagId>,
     pages: HashMap<LightmapKey, Image>,
     stats: NativeStats,
     /// Why the lightmap did not read, when it did not.
@@ -226,14 +262,16 @@ impl NativeLoad {
     ) -> Result<Self, String> {
         let loaded = load::load_world(map, &mut Files(files), index).map_err(|e| e.to_string())?;
         let mut base = HashMap::new();
+        let mut base_bitmaps = HashMap::new();
         for m in loaded.world.materials() {
-            let image = loaded
+            let bitmap = loaded
                 .shaders
                 .get(usize::from(m))
-                .and_then(|&shader| load::base_map(map, shader))
-                .and_then(|bitmap| load::decode_first(map, files, bitmap));
-            if let Some(image) = image {
+                .and_then(|&shader| load::base_map(map, shader));
+            let image = bitmap.and_then(|bitmap| load::decode_first(map, files, bitmap));
+            if let (Some(bitmap), Some(image)) = (bitmap, image) {
                 base.insert(m, image);
+                base_bitmaps.insert(m, bitmap);
             }
         }
         let bitmap = loaded
@@ -265,6 +303,7 @@ impl NativeLoad {
             loaded.lightmap_bitmap.is_none(),
         );
         let mut out = Self::new(loaded.bsp, loaded.world, base, pages);
+        out.base_bitmaps = base_bitmaps;
         out.layers = Some(Arc::new(layers));
         out.stats.failed_sections = loaded.failed_sections;
         out.lightmap_error = loaded.lightmap_error;
@@ -296,6 +335,7 @@ impl NativeLoad {
             bsp,
             world,
             base,
+            base_bitmaps: HashMap::new(),
             pages,
             stats,
             lightmap_error: None,
@@ -403,6 +443,7 @@ pub fn editor_plan(layer: u8, mut plan: StaticLayer) -> StaticLayer {
             .entry(LAYER_1_UNCHECKED.to_owned())
             .or_default() += plan.drawn.len();
         plan.drawn.clear();
+        plan.constants.clear();
         plan.parts.clear();
     }
     plan
@@ -415,8 +456,7 @@ pub fn editor_plan(layer: u8, mut plan: StaticLayer) -> StaticLayer {
 /// (`program::CAMERA_GIVEN`: a pass reading another is refused, named
 /// with the register) and no stage palettes (a palettized stage bitmap is
 /// refused, named). Each layer is planned with no game
-/// (`layers_load::plan_without_game` at render time 0: an animated pass
-/// is refused, so the time reaches no draw), and layer 1 is refused
+/// (`layers_load::plan_without_game` at the requested render time), and layer 1 is refused
 /// whole ([`editor_plan`]). Layer 3 is loaded with its own translated
 /// passes too (`layers_load::load_layer3`, planned by
 /// `layers_load::plan_layer3`), drawn in the Game mode in the base look's
@@ -442,6 +482,21 @@ impl NativeLayers {
         world: &World,
         pages: &HashMap<LightmapKey, Image>,
         unlit_bsp: bool,
+    ) -> Self {
+        Self::read_at(map, files, shaders, world, pages, unlit_bsp, 0.0)
+    }
+
+    /// [`Self::read`] with each layer planned at render time `time`
+    /// seconds (the Shader tab's preview clock): the plan evaluates a
+    /// pass's animated properties there.
+    pub fn read_at<R: Read + Seek>(
+        map: &mut Map<R>,
+        files: &mut ResourceFiles,
+        shaders: &[TagId],
+        world: &World,
+        pages: &HashMap<LightmapKey, Image>,
+        unlit_bsp: bool,
+        time: f64,
     ) -> Self {
         let world = World {
             draws: world.draws.clone(),
@@ -476,11 +531,11 @@ impl NativeLayers {
         let mut plans: BTreeMap<u8, StaticLayer> = native_render::layer_pass::LAYERS
             .into_iter()
             .map(|layer| {
-                let plan = layers_load::plan_without_game(&view, shaders, layer, 0.0);
+                let plan = layers_load::plan_without_game(&view, shaders, layer, time);
                 (layer, editor_plan(layer, plan))
             })
             .collect();
-        plans.insert(layers_load::LAYER_3, layers_load::plan_layer3(&layer3));
+        plans.insert(layers_load::LAYER_3, layers_load::plan_layer3(&layer3, time));
         Self {
             view,
             world,
@@ -568,6 +623,9 @@ pub struct NativeWorld {
     base: Option<DrawnLayer>,
     /// The uploaded layers (the Game mode only): what each draws.
     layers: Vec<DrawnLayer>,
+    /// The materials whose base map came from each bitmap, with the level
+    /// count of the image uploaded for each ([`NativeWorld::repaint_base`]).
+    base_of: HashMap<TagId, Vec<(u16, usize)>>,
 }
 
 /// The key the base look's set is held under in the `GpuWorld` (the
@@ -689,6 +747,7 @@ fn base_set(
         set,
         DrawnLayer {
             layer: BASE_LAYER,
+            constants: Default::default(),
             selected,
             fogs,
         },
@@ -699,6 +758,7 @@ fn base_set(
 /// with.
 struct DrawnLayer {
     layer: u8,
+    constants: native_render::fog_gpu::LayerSamples,
     selected: Vec<(Owner, u8)>,
     fogs: layers_load::Fogs,
 }
@@ -755,11 +815,19 @@ impl NativeWorld {
                 gpu.set_layer(layer, set.set);
                 layers.push(DrawnLayer {
                     layer,
+                    constants: plan.constants.clone(),
                     selected: set.selected,
                     fogs: set.fogs,
                 });
             }
         }
+        let mut base_of: HashMap<TagId, Vec<(u16, usize)>> = HashMap::new();
+        for (&m, &bitmap) in &load.base_bitmaps {
+            if let Some(image) = load.base.get(&m) {
+                base_of.entry(bitmap).or_default().push((m, image.mips.len()));
+            }
+        }
+        base_of.values_mut().for_each(|v| v.sort_unstable());
         Self {
             bsp: load.bsp,
             gpu,
@@ -767,7 +835,40 @@ impl NativeWorld {
             pool: Default::default(),
             base,
             layers,
+            base_of,
         }
+    }
+
+    /// Whether some material's base map came from `bitmap`.
+    pub fn draws_bitmap(&self, bitmap: TagId) -> bool {
+        self.base_of.contains_key(&bitmap)
+    }
+
+    /// Redraw `bitmap`'s image 0 (`width` by `height`, `rgba` rows) as the
+    /// base map of every material that took it, through the same Lighting
+    /// mode's transform the upload used and with a box-filtered chain of
+    /// the level count the upload had: the viewport follows a painted
+    /// bitmap (docs/editor/realtime-edits.md, R15). Returns how many
+    /// textures were written; an image of another size is refused by the
+    /// GPU side and writes none. The mode that draws white keeps it.
+    pub fn repaint_base(
+        &self,
+        queue: &wgpu::Queue,
+        bitmap: TagId,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> usize {
+        if self.lighting == Lighting::LightmapOnly {
+            return 0;
+        }
+        let mut written = 0;
+        for &(material, mips) in self.base_of.get(&bitmap).into_iter().flatten() {
+            let Some(image) = box_chain(width, height, rgba, mips) else { continue };
+            let image = self.lighting.base(&image);
+            written += self.gpu.rewrite_base_map(queue, material, &image).unwrap_or(0);
+        }
+        written
     }
 
     /// The BSP this world draws.
@@ -860,7 +961,7 @@ impl NativeWorld {
             let inputs = ViewInputs::from_camera(&view, (size[0], size[1]));
             for l in self.base.iter().chain(&self.layers) {
                 self.gpu
-                    .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs);
+                    .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs, &l.constants);
             }
             self.gpu.prepare(&mut uploads, &view, DEPTH_RULE)
         };
@@ -1009,6 +1110,77 @@ pub fn rest_nodes(model: &Model, placement: &NodeMatrix) -> Vec<NodeMatrix> {
     } else {
         model.inverse_binds.iter().map(rest).collect()
     }
+}
+
+/// One node of a render model's skeleton, as a pose needs it: the parent
+/// link and the node's own default channels (`mode` node `+4` parent,
+/// `+0xc` translation, `+0x18` orientation, `+0x28` scale).
+/// [`super::native_view::preview::Piece`] carries one per node, in model
+/// node order, which is the animation graph's node order too (the engine
+/// writes an animation's channels by node index into the object's nodes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkeletonNode {
+    pub parent: i16,
+    pub translation: [f32; 3],
+    /// Unit quaternion `[x, y, z, w]`, the node's default orientation.
+    pub rotation: [f32; 4],
+    /// The channel's default scale: the `mode` node stores none (the
+    /// words at `+0x28` are its inverse rest frame), so 1.
+    pub scale: f32,
+}
+
+/// A column-major `T·R·S` matrix, as `tags::anim_sample` composes one, as
+/// a node matrix: the rotation's columns as the axes, the uniform scale
+/// their length, the translation the position.
+fn mat4_node(m: &tags::anim_sample::Mat4) -> NodeMatrix {
+    let length =
+        |c: usize| (m[c][0] * m[c][0] + m[c][1] * m[c][1] + m[c][2] * m[c][2]).sqrt();
+    let scale = length(0).max(length(1)).max(length(2));
+    let axis = |c: usize| {
+        let s = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+        [m[c][0] * s, m[c][1] * s, m[c][2] * s]
+    };
+    NodeMatrix {
+        scale,
+        forward: axis(0),
+        left: axis(1),
+        up: axis(2),
+        position: [m[3][0], m[3][1], m[3][2]],
+    }
+}
+
+/// A model's nodes under a sampled pose, in place of [`rest_nodes`]: the
+/// animation's channels over the node defaults, composed up the render
+/// model's node tree, then placed. `pose` is a clip's sample at a frame
+/// ([`tags::anim_sample::AnimationClip::sample`]), merged with
+/// `skeleton`'s defaults first (a channel the animation supplies none for
+/// is the node's own); an overlay can have been applied to it already
+/// with [`tags::anim_sample::Pose::add_overlay`]. This is the engine's
+/// own composition (docs/engine/anim-sampling.md; the Halo 1 converter
+/// writes rotations in this convention and its disc round-trip
+/// `h1-assets/src/models/skin_tests.rs` checks it), settled for the pose
+/// viewer by slice M1 of docs/editor/rich-editors.md.
+pub fn posed_nodes(
+    skeleton: &[SkeletonNode],
+    pose: &tags::anim_sample::Pose,
+    placement: &NodeMatrix,
+) -> Result<Vec<NodeMatrix>, String> {
+    let defaults: Vec<tags::anim_sample::NodeDefault> = skeleton
+        .iter()
+        .map(|n| tags::anim_sample::NodeDefault {
+            parent: n.parent,
+            rotation: n.rotation,
+            translation: n.translation,
+            scale: n.scale,
+        })
+        .collect();
+    let merged = pose.merged(&defaults).map_err(|e| e.to_string())?;
+    let parents: Vec<i16> = skeleton.iter().map(|n| n.parent).collect();
+    let worlds = merged.world_matrices(&parents).map_err(|e| e.to_string())?;
+    Ok(worlds
+        .iter()
+        .map(|w| placement.compose(&mat4_node(w)))
+        .collect())
 }
 
 /// A model's bounding sphere under `placement`: its box's centre and
@@ -1239,6 +1411,23 @@ impl NativeObjects {
             .collect();
     }
 
+    /// The placements to draw with their node matrices given (a posed
+    /// model, as [`posed_nodes`] builds them), in place of the rest pose
+    /// [`Self::place`] computes: one per entry whose object tag has been
+    /// uploaded, with the sphere the posed vertices lie in.
+    pub fn place_posed<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (&'a TagId, &'a [NodeMatrix], ([f32; 3], f32))>,
+    ) {
+        self.placed = entries
+            .into_iter()
+            .filter_map(|(object, nodes, sphere)| {
+                let index = *self.uploaded.get(object)?;
+                Some((index, nodes.to_vec(), sphere, [0; 4]))
+            })
+            .collect();
+    }
+
     /// How many placements are drawn.
     pub fn placed(&self) -> usize {
         self.placed.len()
@@ -1311,6 +1500,8 @@ impl NativeObjects {
     }
 }
 
+pub mod animate;
+pub mod code;
 pub mod preview;
 
 #[cfg(test)]

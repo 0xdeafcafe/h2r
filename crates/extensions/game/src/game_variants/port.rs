@@ -79,7 +79,7 @@ pub fn port_saves(store: &mut Store, saves: &SaveStore, script: &PortScript) -> 
             continue;
         }
         let name = s.contents.variant.name();
-        let ported = port(&s.contents.variant, &name, "", script.clone())
+        let ported = port_saved(store, &s.contents.variant, &name, script)
             .and_then(|b| store.put_ported(&key, b));
         match ported {
             Ok(_) => report.ported += 1,
@@ -87,6 +87,33 @@ pub fn port_saves(store: &mut Store, saves: &SaveStore, script: &PortScript) -> 
         }
     }
     report
+}
+
+/// A renamed copy of a scripted variant already names the blob and its
+/// option bits. Use that reference when automatically porting the save.
+fn port_saved(store: &Store, v: &GameVariant, name: &str, script: &PortScript) -> Result<Bundle, String> {
+    let saved = v.ext().script;
+    if saved.mode == variants::ext::Mode::Rules && *script == PortScript::Builtin {
+        let blob = crate::rules::runtime::compiled_in(saved.prefix)
+            .map(|b| b.blob.as_slice())
+            .or_else(|| store.script(saved.prefix))
+            .ok_or_else(|| format!("no local rules script with prefix {}", super::hex(&saved.prefix)))?;
+        let attach = variants::portable::Attach {
+            ir: blob.to_vec(),
+            source: None,
+            options: Some(saved.options),
+        };
+        let mut bundle = Bundle::new(v, name, "", Some(attach)).map_err(|e| e.to_string())?;
+        // Attaching a new script starts with its defaults. This save already
+        // names the script and can carry the player's edits to those extras.
+        let saved_hex = super::hex(v.bytes());
+        if bundle.record_hex != saved_hex {
+            bundle.record_hex = saved_hex;
+            bundle.check().map_err(|e| e.to_string())?;
+        }
+        return Ok(bundle);
+    }
+    port(v, name, "", script.clone())
 }
 
 /// The retail built-ins in `schema` and the listed scripts' variants as
@@ -105,8 +132,8 @@ pub fn port_builtins(
                 .map_err(|why| (b.name.clone(), why)),
         );
     }
-    for b in ::rules::builtin::LISTED {
-        out.push(listed_bundle(b.source).map_err(|why| (b.name.to_owned(), why)));
+    for b in crate::community_variants::scripts() {
+        out.push(listed_bundle(&b.source).map_err(|why| (b.name.clone(), why)));
     }
     out
 }

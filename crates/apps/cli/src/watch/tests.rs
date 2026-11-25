@@ -47,9 +47,10 @@ fn the_classifier_table() {
         ("BUCK", Nothing),
         // Rules scripts.
         (
-            "crates/formats/rules/src/builtin/slayer.rules",
+            "content/core/rules/slayer.rules",
             BuiltinRules,
         ),
+        ("content/modes/rules/matchmaking/team_slayer.rules", BuiltinRules),
         ("scratch/my_mode.rules", Rules),
         // The web app.
         ("web/src/dash/page.tsx", Web),
@@ -70,8 +71,8 @@ fn the_classifier_table() {
         ("crates/apps/cli/Cargo.toml", Host),
         ("crates/extensions/game/build.rs", Host),
         ("crates/rewrites/hud-kit-core/src/lib.rs", Host),
-        ("assets/ui/screens/settings.yaml", Host),
-        ("assets/ui/design.yaml", Host),
+        ("content/ui/screens/settings.yaml", Host),
+        ("content/ui/design.yaml", Host),
         ("Cargo.toml", Host),
         ("Cargo.lock", Host),
         ("rust-toolchain.toml", Host),
@@ -86,13 +87,13 @@ fn the_classifier_table() {
 fn a_plan_gathers_what_its_paths_ask_for() {
     let p = Plan::of([
         "docs/a.md",
-        "crates/formats/rules/src/builtin/ctf.rules",
+        "content/core/rules/ctf.rules",
         "web/src/x.ts",
         "target/release/h2",
     ]);
     assert_eq!(
         p.rules,
-        BTreeSet::from(["crates/formats/rules/src/builtin/ctf.rules".to_string()])
+        BTreeSet::from(["content/core/rules/ctf.rules".to_string()])
     );
     assert!(p.web && p.host && !p.image);
     assert_eq!(
@@ -295,7 +296,7 @@ fn a_rules_script_is_hot_with_no_restart() {
 fn a_built_in_script_reloads_and_rebuilds_h2() {
     let mut s = Supervisor::new(build("local-0"));
     let a = s.handle(Event::Changes(Plan::of([
-        "crates/formats/rules/src/builtin/slayer.rules",
+        "content/core/rules/slayer.rules",
     ])));
     assert!(matches!(&a[0], Action::Hot(p) if p.rules.len() == 1 && !p.builds()));
     assert!(
@@ -381,7 +382,7 @@ fn changes_during_a_build_merge_into_one_queued_build() {
         "crates/recompiler/emit/src/c.rs",
     ])));
     assert_eq!(a, vec![Action::Status(Some(info("Rebuilding h2\u{2026}")))]);
-    s.handle(Event::Changes(Plan::of(["assets/ui/design.yaml"])));
+    s.handle(Event::Changes(Plan::of(["content/ui/design.yaml"])));
     let a = s.handle(Event::Built(Ok(Some(build("local-1")))));
     assert!(matches!(&a[0], Action::StartBuild { id: 2, plan, .. } if plan.host && plan.image));
     let n = status_of(&a).unwrap().unwrap();

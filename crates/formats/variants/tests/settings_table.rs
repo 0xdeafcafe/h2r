@@ -38,6 +38,7 @@ fn ext_takes(field: ExtField, value: i32) -> bool {
         ExtField::Damage => e.damage = n,
         ExtField::Shield => e.shield = n,
         ExtField::Health => e.health = n,
+        ExtField::Speed => e.speed = n,
         ExtField::UnlimitedGrenades => {
             if n > 1 {
                 return false;
@@ -76,7 +77,9 @@ fn the_table_matches_the_record() {
                 assert!(!row.is_record());
                 let want = match field {
                     ExtField::Gravity => Some(ext::GRAVITY),
-                    ExtField::Damage | ExtField::Shield | ExtField::Health => Some(ext::PERCENT),
+                    ExtField::Damage | ExtField::Shield | ExtField::Health | ExtField::Speed => {
+                        Some(ext::PERCENT)
+                    },
                     ExtField::UnlimitedGrenades => None,
                 };
                 match want {
@@ -228,9 +231,10 @@ fn the_named_rows_are_the_records_settings() {
     assert_eq!(stock.get(SettingId(94)), Some(0));
 }
 
-/// The record of a script of `carrier` whose settings block is `block`.
-fn record_of_block(carrier: &str, block: &str) -> GameVariant {
-    let src = format!("rules \"T\" 1\ncarrier {carrier}\nscoring carrier\n\nsettings {{\n{block}\n}}\n");
+/// The record of a script of the retail type `ty` whose settings block is
+/// `block`.
+fn record_of_block(ty: &str, block: &str) -> GameVariant {
+    let src = format!("rules \"T\" 1\ntype {ty}\nuses {ty}\n\nsettings {{\n{block}\n}}\n");
     let ir = rules::compile(&src).unwrap_or_else(|e| panic!("{block}: {e}"));
     variants::portable::record_for(&ir, &[]).unwrap_or_else(|e| panic!("{block}: {e}"))
 }
@@ -266,7 +270,8 @@ fn the_matchmaking_rows_round_trip_through_a_script_record() {
         assert_eq!(at(&v), i64::from(value), "{name}: its own bytes");
         // Nothing else changed but the name, the script reference and
         // the one setting (setting 12 starts on in the stock record).
-        let mut was = stock(ty);
+        let stock_type = if ty == GameType::Slayer { GameType::Script } else { ty };
+        let mut was = stock(stock_type);
         let id = SettingId(row.setting(engine).unwrap());
         was.set(id, value).unwrap();
         was.set_name("T").unwrap();
@@ -285,7 +290,7 @@ fn the_matchmaking_rows_round_trip_through_a_script_record() {
         "respawn_modifier = 3",
         "second_heavy_vehicle = 5",
     ] {
-        let src = format!("rules \"T\" 1\ncarrier slayer\nscoring carrier\n\nsettings {{\n    {block}\n}}\n");
+        let src = format!("rules \"T\" 1\ntype slayer\nuses slayer\n\nsettings {{\n    {block}\n}}\n");
         assert!(rules::compile(&src).is_err(), "{block}");
     }
 }

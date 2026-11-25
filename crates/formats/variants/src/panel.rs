@@ -55,6 +55,8 @@ enum Target {
     Setting(SettingId),
     /// One row of the script settings table.
     Row(u16),
+    /// The other weapon of one slot (true: the secondary).
+    Weapon(bool),
     /// One of the script's options (its index in the IR): dragging it is
     /// one step, and a different option is another.
     ScriptOption(u8),
@@ -65,7 +67,7 @@ impl Target {
     fn merges(self) -> bool {
         matches!(
             self,
-            Target::Name | Target::Row(_) | Target::ScriptOption(_)
+            Target::Name | Target::Row(_) | Target::Weapon(_) | Target::ScriptOption(_)
         )
     }
 }
@@ -74,6 +76,7 @@ impl Target {
 struct Doc {
     origin: Origin,
     variant: GameVariant,
+    package_source: Option<PathBuf>,
     /// The variant as last loaded or saved.
     base: GameVariant,
     undo: Vec<GameVariant>,
@@ -164,7 +167,7 @@ impl VariantEditor {
     pub fn is_dirty(&self) -> bool {
         self.doc
             .as_ref()
-            .is_some_and(|d| d.origin == Origin::New || d.variant != d.base)
+            .is_some_and(|d| (d.origin == Origin::New && d.package_source.is_none()) || d.variant != d.base)
     }
 
     /// The last status message, `true` for an error.
@@ -197,6 +200,7 @@ impl VariantEditor {
     fn open(&mut self, origin: Origin, v: GameVariant) {
         self.doc = Some(Doc {
             origin,
+            package_source: None,
             base: v.clone(),
             variant: v,
             undo: Vec::new(),
@@ -333,6 +337,23 @@ impl VariantEditor {
         Ok(())
     }
 
+    /// Sets the weapon of ours the block names for the starting weapon
+    /// (`secondary` false) or the secondary weapon: an id of
+    /// [`crate::ext_weapons::TABLE`], or 0 for the record's own weapon.
+    /// The id's table has no settings row, so it is edited here rather
+    /// than through [`Self::set_row`].
+    pub fn set_other_weapon(&mut self, secondary: bool, id: u16) -> Result<(), EditError> {
+        self.edit(Target::Weapon(secondary), |v| {
+            let mut e = v.ext();
+            if secondary {
+                e.secondary = id;
+            } else {
+                e.primary = id;
+            }
+            v.set_ext(&e)
+        })
+    }
+
     pub fn set_setting(&mut self, id: SettingId, value: i32) -> Result<(), EditError> {
         self.edit(Target::Setting(id), |v| v.set(id, value))
     }
@@ -456,6 +477,21 @@ impl VariantEditor {
         Ok(())
     }
 
+    /// The package source the open variant was loaded from or saved to.
+    pub fn package_source(&self) -> Option<&std::path::Path> {
+        self.doc.as_ref()?.package_source.as_deref()
+    }
+
+    /// Keep undo history and set the saved baseline to the open record.
+    pub fn mark_packaged(&mut self, path: PathBuf) {
+        if let Some(doc) = &mut self.doc {
+            doc.package_source = Some(path);
+            doc.origin = Origin::New;
+            doc.base = doc.variant.clone();
+            doc.last = None;
+        }
+    }
+
     /// Deletes the open saved variant.
     pub fn delete(&mut self) -> Result<(), EditError> {
         let store = self.store.as_ref().ok_or(EditError::NoStore)?;
@@ -474,6 +510,31 @@ impl VariantEditor {
         let mut v = self.current()?.clone();
         v.set_builtin_flag(false);
         Some(portable::export(&v))
+    }
+
+    /// The open variant as a version-2 file suggesting `maps`
+    /// ([`portable::Bundle::with_maps`]; at most [`portable::MAX_MAPS`]).
+    /// With none it is [`Self::export_current`]'s version-1 text, so a
+    /// variant that suggests nothing exports as it did. A record that names
+    /// a built-in script carries it
+    /// ([`portable::builtin_attach`]); one that names another is refused by
+    /// name ([`portable::Bundle::new`]). `None` when no variant is open.
+    pub fn export_current_with(
+        &self,
+        maps: Vec<portable::MapSuggestion>,
+    ) -> Option<Result<String, EditError>> {
+        if maps.is_empty() {
+            return self.export_current().map(Ok);
+        }
+        let mut v = self.current()?.clone();
+        v.set_builtin_flag(false);
+        let bundle = portable::builtin_attach(&v)
+            .and_then(|attach| portable::Bundle::new(&v, &v.name(), "", attach))
+            .and_then(|b| b.with_maps(maps));
+        Some(match bundle {
+            Ok(b) => Ok(serde_json::to_string_pretty(&b).expect("plain data serializes")),
+            Err(e) => Err(e.into()),
+        })
     }
 
     /// Opens a portable file as a new, unsaved variant.
@@ -602,7 +663,8 @@ pub struct MarkView {
 pub struct ScriptView {
     pub name: String,
     pub about: String,
-    /// `scoring carrier`: the script only sets settings.
+    /// A `uses` line: the script only sets settings, and the built-in game
+    /// it uses scores.
     pub carrier_scoring: bool,
     pub options: Vec<OptionView>,
     /// The Quick Options rows, in the script's order.
@@ -616,9 +678,9 @@ pub struct ScriptView {
 /// The Script section's model for the script `ir` in the record `v`.
 pub fn script_view(ir: &rules::Ir, v: &GameVariant) -> ScriptView {
     use rules::Ty;
-    use rules::ir::{Quick, Scoring};
+    use rules::ir::Quick;
     let bits = v.ext().script.options;
-    let carrier = ir.header.carrier;
+    let engine = u8::try_from(v.game_type().engine()).ok();
     let string = |i: u16| ir.strings.get(usize::from(i)).cloned().unwrap_or_default();
     let options: Vec<OptionView> = ir
         .options
@@ -659,6 +721,9 @@ pub fn script_view(ir: &rules::Ir, v: &GameVariant) -> ScriptView {
                 let Some(row) = rules::settings::row_at(i) else {
                     continue;
                 };
+                let Some(carrier) = engine.filter(|e| row.applies(*e)) else {
+                    continue;
+                };
                 let text = portable::setting_value(v, row, carrier)
                     .map_or_else(|| "stock".to_string(), |x| rules::settings::value_label(i, x));
                 marks.push(MarkView {
@@ -684,7 +749,7 @@ pub fn script_view(ir: &rules::Ir, v: &GameVariant) -> ScriptView {
     ScriptView {
         name: ir.header.name.clone(),
         about: ir.header.about.clone(),
-        carrier_scoring: ir.header.scoring == Scoring::Carrier,
+        carrier_scoring: ir.header.uses.is_some(),
         options,
         marks,
         marked_settings,
@@ -865,6 +930,38 @@ mod tests {
     }
 
     #[test]
+    fn the_other_weapons_edit_per_slot_and_undo() {
+        use crate::ext_weapons::TABLE;
+        let mut e = VariantEditor::new(schema(), None);
+        e.open_builtin(0);
+        assert!(matches!(
+            e.set_other_weapon(false, TABLE[0].id),
+            Err(EditError::ReadOnly)
+        ));
+        e.new_variant(GameType::Slayer);
+        let start = e.current().unwrap().ext();
+        e.set_other_weapon(false, TABLE[0].id).unwrap();
+        e.set_other_weapon(false, TABLE[1].id).unwrap();
+        e.set_other_weapon(true, TABLE[2].id).unwrap();
+        let now = e.current().unwrap().ext();
+        assert_eq!((now.primary, now.secondary), (TABLE[1].id, TABLE[2].id));
+        assert_eq!(now.script, start.script, "the script reference stays");
+        // A run on one slot is one step; the other slot is another.
+        assert!(e.undo());
+        let was = e.current().unwrap().ext();
+        assert_eq!((was.primary, was.secondary), (TABLE[1].id, 0));
+        assert!(e.undo());
+        assert_eq!(e.current().unwrap().ext(), start);
+        // An id the table lacks is refused and changes nothing.
+        assert!(e.set_other_weapon(true, 999).is_err());
+        assert_eq!(e.current().unwrap().ext(), start);
+        // 0 puts the record's own weapon back.
+        e.set_other_weapon(true, TABLE[0].id).unwrap();
+        e.set_other_weapon(true, 0).unwrap();
+        assert_eq!(e.current().unwrap().ext(), start);
+    }
+
+    #[test]
     fn every_way_in_gives_a_scripted_record() {
         let mut e = VariantEditor::new(schema(), None);
         let named = |e: &VariantEditor| e.script_prefix().is_some();
@@ -888,6 +985,63 @@ mod tests {
         e.import(&portable::export(&plain)).unwrap();
         assert_eq!(e.script_prefix(), Some(prefix));
         assert_eq!(e.current().unwrap().ext().script.mode, Mode::Rules);
+    }
+
+    #[test]
+    fn export_with_maps_writes_a_version_2_file_that_suggests_them() {
+        let suggestion = |n: u8, name: &str| portable::MapSuggestion {
+            base: format!("{:064x}", 1),
+            variant: format!("{n:064x}"),
+            name: name.into(),
+        };
+        let mut e = VariantEditor::new(schema(), None);
+        assert!(e.export_current_with(vec![suggestion(2, "Castle")]).is_none());
+        let mut plain = GameVariant::blank(GameType::Slayer);
+        plain.set_name("Plain").unwrap();
+        e.import(&portable::export(&plain)).unwrap();
+        // None suggested: the version-1 text it always wrote.
+        assert_eq!(
+            e.export_current_with(Vec::new()).unwrap().unwrap(),
+            e.export_current().unwrap()
+        );
+        let text = e
+            .export_current_with(vec![suggestion(2, "Castle"), suggestion(3, "Tower")])
+            .unwrap()
+            .unwrap();
+        let b = portable::read(&text).unwrap();
+        assert_eq!(b.version, portable::VERSION);
+        assert_eq!(b.name, "Plain");
+        assert_eq!(b.maps, [suggestion(2, "Castle"), suggestion(3, "Tower")]);
+        // The same map variant twice is refused by name, nothing written.
+        let twice = e.export_current_with(vec![suggestion(2, "A"), suggestion(2, "B")]).unwrap();
+        assert!(matches!(twice, Err(EditError::Import(PortableError::MapSuggestion(_)))));
+    }
+
+    #[test]
+    fn a_new_variant_on_the_script_index_exports_with_maps_and_carries_its_built_in() {
+        let castle = portable::MapSuggestion {
+            base: format!("{:064x}", 1),
+            variant: format!("{:064x}", 2),
+            name: "Castle".into(),
+        };
+        let mut e = VariantEditor::new(schema(), None);
+        e.new_variant(GameType::Slayer);
+        // Slayer's built-in writes nothing in Slayer's type area, so its
+        // record rides the script index: no engine names the script by.
+        assert_eq!(e.current().unwrap().game_type(), GameType::Script);
+        let text = e
+            .export_current_with(vec![castle.clone()])
+            .expect("a variant is open")
+            .expect("the export carries the built-in");
+        let b = portable::read(&text).unwrap();
+        assert_eq!(b.maps, [castle]);
+        assert_eq!(b.engine, crate::record::SCRIPT_INDEX);
+        assert_eq!(
+            b.script.as_ref().map(|s| s.name.as_str()),
+            Some("Slayer"),
+            "the file carries the script the record names"
+        );
+        assert!(b.integrity().unwrap().script.is_some());
     }
 
     #[test]

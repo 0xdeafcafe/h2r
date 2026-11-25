@@ -4,7 +4,7 @@
 use agent_proto::RpcError;
 use map::{FourCC, TagId};
 use scenario_edit::layout::{self, FieldType, Role};
-use scenario_edit::{BlockKind, Scenario, TagRef, Value as FieldValue};
+use scenario_edit::{BlockKind, LabelKind, Scenario, TagRef, Value as FieldValue};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
@@ -251,6 +251,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 json!({ "value": value_json(s, s.get(block, index, field).map_err(|e| err(code::FAILED, e.to_string()))?) }),
             )
         }
+        m::SCENARIO_ADD if p.opt_str("block")? == Some("label") => add_label(app, p),
         m::SCENARIO_ADD => {
             let kind = p.block()?;
             add(app, kind, p.opt_usize("like")?, p.opt_vec3("position")?)
@@ -561,5 +562,48 @@ pub fn add(
     let r = perform(app, action);
     app.session.camera_mut().target = keep;
     r?;
+    Ok(json!({ "index": index }))
+}
+
+/// `scenario.add {block: "label"}`: the label the Scene tab's AI and
+/// objectives group places, by the same action.
+fn add_label(app: &mut App, p: &P) -> Reply {
+    let text = p.str("label")?;
+    let kind = LabelKind::of(text).ok_or_else(|| {
+        let names: Vec<_> = LabelKind::ALL.iter().map(|l| l.text()).collect();
+        err(
+            code::INVALID_PARAMS,
+            format!("label: {} (not {text:?})", names.join(", ")),
+        )
+    })?;
+    let team = p.opt_u64("team")?.unwrap_or(0);
+    let phase = p.opt_u64("phase")?.unwrap_or(0);
+    let team = u8::try_from(team)
+        .ok()
+        .filter(|t| *t < 2)
+        .ok_or_else(|| err(code::INVALID_PARAMS, "team: 0 (red) or 1 (blue)"))?;
+    let phase = u16::try_from(phase)
+        .map_err(|_| err(code::INVALID_PARAMS, "phase: 0 to 65535"))?;
+    let s = open(app)?;
+    if let Some(why) = app.session.add_refusal(BlockKind::NetgameFlags) {
+        let mut e = err(code::REFUSED, format!("label: {why}"));
+        e.data = Some(json!({
+            "count": s.block(BlockKind::NetgameFlags).len(),
+            "capacity": s.block(BlockKind::NetgameFlags).capacity(),
+        }));
+        return Err(e);
+    }
+    let at = p.opt_vec3("position")?.unwrap_or(app.session.camera().target);
+    let index = s.block(BlockKind::NetgameFlags).len();
+    perform(
+        app,
+        Action::PlaceLabelAt {
+            kind,
+            at,
+            facing: p.opt_f32("facing")?.unwrap_or(0.0),
+            team,
+            phase,
+        },
+    )?;
     Ok(json!({ "index": index }))
 }

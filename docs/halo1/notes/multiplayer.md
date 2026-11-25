@@ -1,9 +1,45 @@
-# Multiplayer maps: measurements and game runs
+# Halo 1 multiplayer conversion: measurements
 
 Evidence for [../multiplayer.md](../multiplayer.md).
 
-The numbers come from the ignored tests named in the entries, run
-against the owner's discs, and from game runs by the owner.
+## 2026-11-19: teleporter receiver brightness against Halo 1
+
+Commit `ea154e2cc`. Method: the ignored disc test
+`teleporter_receiver_brightness_against_halo1` in
+`crates/tools/h1convert/tests/shad_rebuild.rs` computes, from the disc's
+bitmaps and the shader constants, the face-on brightness per channel (red,
+green, blue) of Halo 1's receiver shaders and of the conversion's. Run it
+with `H1_ISO` and `H2_DISC` set and `--ignored`.
+
+The cone (Halo 1 `dust x dust x ramp`, no doubling):
+
+| | Mean | Peak |
+|---|---|---|
+| Halo 1 | (0.012, 0.030, 0.014) | (0.148, 0.362, 0.175) |
+| Conversion | equal by construction (the dropped dust is folded in as its mean) | (0.062, 0.154, 0.073) |
+
+The folded dust's peak is averaged away. Drawn as its least tiled map alone
+(the grey dust), the cone's peak was 0.61 in every channel.
+
+The shield, lit, over the picture (simulated before DXT5; the test decodes
+the mask the converter writes):
+
+| | Peak | Mean |
+|---|---|---|
+| Halo 1 | (0.063, 1.0, 0.134) | (0.005, 0.269, 0.047) |
+| Conversion | (0.020, 1.0, 0.173) | (0.005, 0.269, 0.046) |
+
+The shield's glow on a dark line:
+
+| | Peak | Mean |
+|---|---|---|
+| Halo 1 | (0, 0.262, 0.040) | (0, 0.067, 0.014) |
+| Conversion | (0, 0.247, 0.051) | (0, 0.066, 0.014) |
+
+Rebuilds that lost: the first plasma rebuild drew the picture's mean colour
+masked by its alpha (0.10 to 0.13, nearly flat), peak (0.0005, 0.027,
+0.004), 37 times too dim, shapeless and with no glow. Before that the
+plasma drew `energy plasma`, white, peak 1.0 in every channel.
 
 ## 2026-11-19: the tag memory of a pinned Halo 1 sandbox
 
@@ -41,34 +77,6 @@ test with `H1_MAP_DIR` and `disc/halo2.iso` present.
   Creek's BSP space (its `sbsp` and `ltmp` are 655,344 bytes on the
   disc); a `--pinned` Boarding Action is refused with "BSP space
   outgrew the pinned metadata base".
-
-## 2026-11-19: game runs behind the shader rebuilds
-
-Commits: `c8248825d` (detail tiling, converter version 84),
-`78d2887c5` (cut-out depth pass), `5d1fe496d` (chicago chains and
-plasma, converter version 90), `6b33f0e49` and `2852e09a8` (the plasma
-rebuild's brightness). Method: live frames and detail-vector edits
-through the agent API, and the ignored tests
-`bloodgulch_leaves_cut_out_and_details_tile_by_their_scale`,
-`bloodgulch_sniper_metal_reflects_its_cube_map` and
-`teleporter_receiver_brightness_against_halo1`.
-
-- Detail tiling, proven live by setting the Ghost's hull detail vector
-  to 8 and the Warthog's to 16: each turned the flat panels into Halo
-  1's fine corroded metal. Tiled once over the base, the corroded metal
-  lay over each hull as a few large dark smears.
-- The broadleaf's leaves drew as dark green cards on the opaque
-  `tex_bump` copy before the cut-out rebuild.
-- The teleporter cone before the chain rebuild: a static grey speckled
-  shell at full brightness (the lone grey dust peaks at 0.61 in every
-  channel), back faces culled, its silhouette hard and none of Halo
-  1's green. The shield before the plasma rebuild drew its least tiled
-  map alone on `one_add_illum`: `energy plasma`, white, added over the
-  base as a blown-out white square (capture `before-receiver-close.png`,
-  peak 1.0 in every channel).
-- The first plasma rebuild (unreleased) drew the picture's mean colour
-  masked by its alpha (0.10 to 0.13, nearly flat): peak (0.0005,
-  0.027, 0.004), 37 times too dim, shapeless and with no glow.
 
 ## 2026-11-19: a10's cryo bay under sky 0
 

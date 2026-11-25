@@ -58,7 +58,6 @@ impl LobbyFilm {
         let value = live();
         match serde_json::to_vec(&value) {
             Ok(bytes) if bytes.len() <= MAX_OBSERVATION => self.tap.record(
-                ::film::NETR,
                 Call {
                     index: 0,
                     op: op.into(),
@@ -265,8 +264,7 @@ mod tests {
         fn replaying(&self) -> bool {
             self.playback
         }
-        fn record(&self, tag: ::film::Tag, c: Call) {
-            assert_eq!(tag, ::film::NETR);
+        fn record(&self, c: Call) {
             self.calls.lock().unwrap().push_back(c);
         }
         fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {

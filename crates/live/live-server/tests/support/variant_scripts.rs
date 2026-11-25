@@ -16,12 +16,12 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-/// A script that scores through its carrier, with settings, quick marks
+/// A script that scores through Slayer (`uses slayer`), with settings, quick marks
 /// and an `about` (a copy of the listed Duel, so the Worker's tests need
 /// no `rules` dependency).
 const DUEL: &str = r#"rules "Duel" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about "One on one, magnum and a random weapon, nothing on the map. Winner stays on. Try Lockout or Ascension."
 quick score_limit, time_limit, starting_weapon, secondary_weapon, weapons_on_map
 
@@ -103,7 +103,7 @@ pub async fn exercise(live: Arc<Live>) {
     .await;
     assert_eq!(status, 201, "{made}");
     assert_eq!(made["description"], v["about"]);
-    assert_eq!(made["game_type"], "Slayer");
+    assert_eq!(made["game_type"], "Script");
     assert_eq!(made["script_name"], "Duel");
     assert!(!made["settings"].as_array().unwrap().is_empty());
     // The same fields on a read.

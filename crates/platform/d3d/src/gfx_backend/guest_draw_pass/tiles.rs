@@ -221,6 +221,7 @@ impl ShadowTiles {
                 of,
                 id,
                 how: ReplaySample::Depth | ReplaySample::InPlace,
+                ..
             } if self.depths.contains(of) => {
                 self.samples.insert(*id);
             }
@@ -327,6 +328,7 @@ mod tests {
             of: LEVEL,
             id,
             how: ReplaySample::Depth,
+            into: None,
         }
     }
 
@@ -384,6 +386,7 @@ mod tests {
             draw: packet(),
             textures: [texture.map(ReplayTexture::Sample), None, None, None],
             camera: frame_types::carried::CameraUse::Unknown,
+            external: None,
         }
     }
 

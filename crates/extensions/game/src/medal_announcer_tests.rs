@@ -2,7 +2,7 @@
 //! guest: what is queued, in what order, and when it may start.
 
 use engine::memory::{FlatMemory, GuestMemory};
-use hud_kit_core::huds::superbounce::{MEDALS, Medal};
+use hud_kit_core::views::superbounce::{MEDALS, Medal};
 
 use super::*;
 use crate::superbounce_chain::{Award, bounce_medals_with};
@@ -164,7 +164,7 @@ fn every_medal_but_bounced_has_a_clip() {
         assert_eq!(clip_for_line(&m.line()), want, "{m:?}");
     }
     for (id, _) in CLIPS {
-        assert!(Medal::from_id(id).is_some(), "{id} is a medal id");
+        assert!(Medal::from_id(id).is_some() || matches!(id, "firefight" | "siege"), "{id}");
     }
 }
 
@@ -328,6 +328,18 @@ fn every_embedded_clip_is_a_wav_or_its_lfs_pointer() {
             Err(e) => panic!("art/announcer/{id}.wav: {e}"),
         }
     }
+}
+
+/// Both round starts contain audible PCM even in a source-only checkout.
+#[test]
+fn each_custom_type_has_a_playable_start_line() {
+    for id in ["firefight", "siege"] {
+        let clip = parse_wav(clip_bytes(id).expect("start line")).unwrap();
+        let samples = clip.data.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]));
+        assert!(samples.map(i16::unsigned_abs).max().unwrap_or(0) > 0, "{id}");
+        assert!(clip.data.len() >= clip.rate as usize * usize::from(clip.channels) / 2, "{id}");
+    }
+    assert_ne!(clip_bytes("firefight"), clip_bytes("siege"));
 }
 
 /// The mixer speaker plays a clip as a buffer and reports it ended once

@@ -19,6 +19,9 @@ use super::tag_doc::{Access, BlockOp, TagAction, TagDoc, TagWrite};
 
 mod chain;
 pub use chain::{Chain, DEFAULT_DEPTH, MAX_DEPTH, Node, chain, placement_root};
+mod uses;
+pub use uses::{Uses, uses};
+pub(crate) use uses::{Index as UsesIndex, build as build_uses_index};
 
 /// Elements of a block [`read_tag`] lists at most.
 pub const ELEMENTS: u32 = 64;
@@ -384,11 +387,27 @@ fn resolve_path(
 /// [`read_tag`] gives for it): numbers or arrays of them, enum names or
 /// values, flag-name lists, strings the map has for string IDs,
 /// `"group:name"` or null for tag references, hex for data of the same
-/// length.
+/// length; for a colour field also `"#aarrggbb"` or `{rgba, intensity?}`.
 pub fn set_field(doc: &TagDoc, tag: TagId, path: &str, v: &Value) -> Result<TagAction, String> {
     let (at, _, f) = resolve(doc, tag, path)?;
     let a = at + f.offset;
     let w = f.kind.width();
+    // A colour field also takes "#aarrggbb" or {rgba, intensity?}
+    // (fields::colour), converted to its stored form.
+    if let Some(form) = crate::fields::colour::form(&f) {
+        let old = doc.read(tag, a, w).ok_or("unreadable")?;
+        if let Some(bytes) = crate::fields::colour::from_json(form, v, &old)
+            .map_err(|e| format!("{}: {e}", f.name))?
+        {
+            return Ok(TagAction::Write(TagWrite {
+                tag,
+                address: a,
+                bytes,
+                label: f.name.clone(),
+                merge: None,
+            }));
+        }
+    }
     let nums = |n: usize| -> Result<Vec<f64>, String> {
         let list: Vec<&Value> = match v {
             Value::Array(a) => a.iter().collect(),

@@ -1,6 +1,7 @@
 //! Each request advances one film by a bounded amount of validation or import.
 //! Accepted bytes and the inspection cursor survive process and Worker restarts.
 mod cleanup;
+pub(super) mod film_file;
 mod state;
 
 pub(crate) use cleanup::cleanup_published;
@@ -36,6 +37,8 @@ const WINDOW: u64 = 1 << 20;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UploadQuery {
+    /// `film` for the film file; the stats stream otherwise.
+    object: Option<String>,
     part: Option<u64>,
     complete: Option<u64>,
     sha256: Option<String>,
@@ -432,6 +435,11 @@ pub(crate) async fn upload_host_film(
 ) -> ApiResult<StatusCode> {
     let grant = live.host_claims(bearer(&headers), TELEMETRY_INGEST)?;
     game_id(&id)?;
+    let film_object = match query.object.as_deref() {
+        None | Some("stats") => false,
+        Some("film") => true,
+        Some(_) => return Err(invalid("object must be film or stats")),
+    };
     let request = query.request(method)?;
     let client_continues = headers.get("x-h2-film-continue").is_some_and(|v| v == "1");
     let legacy_seal =
@@ -451,6 +459,10 @@ pub(crate) async fn upload_host_film(
         .blobs()
         .ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "the film store is unavailable"))?
         .private;
+    if film_object {
+        let _ingest = live.film_uploads.lock(&format!("{id}/film")).await;
+        return film_file::upload(&live, store, &id, &grant, request, body, declared).await;
+    }
     let upload = Upload {
         live: &live,
         store,

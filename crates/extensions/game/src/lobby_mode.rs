@@ -12,8 +12,9 @@
 //!
 //! **Rows by mode** ([`arrange`]): an `after` on the list's constructor,
 //! after every other row of ours is added, rewrites the list
-//! ([`crate::h1_options_row::rewrite_rows`]): in Forge,
-//! **Forge Map...** ([`FORGE_MAP_ACTION`]) after Change Map, the game type
+//! ([`crate::h1_options_row::rewrite_rows`]): in Forge and in a custom
+//! game with the `forge` feature on, **Map Variant...**
+//! ([`MAP_VARIANT_ACTION`]) after Change Map; in Forge, the game type
 //! row and Clanker Options kept, Firefight Options hidden; in Firefight,
 //! Firefight Options after Change Map and the game type row hidden. In a
 //! matchmaking lobby (MULTIPLAYER) action 9 stays, drawn as
@@ -21,9 +22,12 @@
 //! playlist screen with the Clanker and the human playlists on one page
 //! (`crate::clankermatch::Scope::All`).
 //!
-//! **Forge Map...** opens the picker of New and the maps saved under
-//! `<data>/forge` ([`forge_map_pick`]); the Forge session loads the choice
-//! as it opens ([`crate::forge_glue`]).
+//! **Map Variant...** opens the picker of Original and the map variants of
+//! the lobby's map ([`map_variant_list`], [`map_variant_pick`]), a variant
+//! that cannot be used listed with its sentence and not chosen. In Forge the
+//! choice is what the Forge session opens ([`crate::forge_glue`]); in a
+//! custom game it is the variant the game is built from
+//! ([`crate::map_variant`]), and the panel's line under the map's is its name.
 //!
 //! **The panel** ([`panel_ids`]): the lobby's variant panel update
 //! (`crate::lobby_options`) adds the mode's lines. The lobby's header
@@ -54,7 +58,7 @@
 //! ([`crate::lobby_start::clear`]), as does building the main menu or the
 //! Xbox Live menu again (`crate::layout_glue`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -79,26 +83,32 @@ use crate::ui_kit::view::Opener;
 /// X's GAME MODE picker. It has no switch ([`hooks::Manifest::always_on`]):
 /// it is how the lobby works (docs/game/party-lobby.md).
 pub const FEATURE: &str = "party-lobby";
-/// The Forge Map row's action: past Firefight Options' 13 (retail uses 0
+/// The Map Variant row's action: past Firefight Options' 13 (retail uses 0
 /// to 9; the row-chosen jump table has no bounds check, so the press never
 /// reaches the original).
-pub const FORGE_MAP_ACTION: i16 = 15;
+pub const MAP_VARIANT_ACTION: i16 = 15;
+const THEATER_ACTION: i16 = 16;
 /// Retail's game type row, "Change Rules...".
 pub const CHANGE_RULES: i16 = 1;
 
 /// The rows' texts, the help lines and the panel lines.
 pub const IDS: Family = ids::family("lobby mode");
-const FORGE_MAP_LABEL_SLOT: u32 = 1;
+const MAP_VARIANT_LABEL_SLOT: u32 = 1;
 const CHANGE_PLAYLIST_SLOT: u32 = 2;
-const FORGE_MAP_HELP_SLOT: u32 = 3;
+const MAP_VARIANT_HELP_SLOT: u32 = 3;
+const THEATER_LABEL_SLOT: u32 = 4;
 const PANEL_SLOTS: u32 = 5;
 /// The most panel lines a mode has (Firefight's three).
 pub const MAX_PANEL_LINES: usize = 3;
 /// The status line's text while the start gate holds Start Game, after
 /// the panel lines' slots.
 const GATE_SLOT: u32 = PANEL_SLOTS + MAX_PANEL_LINES as u32 + 1;
+/// The status line's text while the lobby's map variant builds or is
+/// refused ([`variant_text_id`]).
+const VARIANT_SLOT: u32 = GATE_SLOT + 1;
+const THEATER_HELP_SLOT: u32 = VARIANT_SLOT + 1;
 
-pub const FORGE_MAP_LABEL: &str = "Forge Map...";
+pub const MAP_VARIANT_LABEL: &str = "Map Variant...";
 /// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
 pub const CHANGE_PLAYLIST_LABEL: &str = "Change Playlist...";
 /// The rows that change the lobby's mode, which the GAME MODE picker does
@@ -108,8 +118,8 @@ pub const CHANGE_PLAYLIST_LABEL: &str = "Change Playlist...";
 /// Clankermatch". Action 9 is dropped only from a custom game's list,
 /// where it is "Switch To: Matchmaking" too.
 pub const SWITCH_ROWS: [i16; 4] = [6, 7, 8, crate::clankermatch::SWITCH_ACTION];
-/// The Forge Map picker's first choice: no saved map.
-pub const NEW_MAP: &str = "New";
+/// The Map Variant picker's first choice: the map as it is.
+pub const ORIGINAL: &str = "Original";
 /// Why Start Game does nothing in a Forge lobby with a member on another
 /// console, on the lobby's status line.
 pub const REMOTE_REFUSAL: &str = "Forge with players on other consoles is not available.";
@@ -153,10 +163,13 @@ pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
         Mode::Multiplayer
     };
     let firefight_row = mode == Mode::Firefight && actions.contains(&ff::ROW_ACTION);
+    // Map Variant... is in CUSTOM GAMES and FORGE; without the `forge`
+    // feature the lobby is retail's.
+    let variant_row = custom && offer.forge && mode != Mode::Firefight;
     let mut out = Vec::new();
     for &a in actions
         .iter()
-        .filter(|a| **a != FORGE_MAP_ACTION && !switches_mode(**a, custom) && shown(mode, **a))
+        .filter(|a| **a != MAP_VARIANT_ACTION && !switches_mode(**a, custom) && shown(mode, **a))
     {
         if firefight_row && a == ff::ROW_ACTION {
             continue;
@@ -164,8 +177,8 @@ pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
         out.push(a);
         if a == CHANGE_MAP {
             match mode {
-                Mode::Forge => out.push(FORGE_MAP_ACTION),
                 Mode::Firefight if firefight_row => out.push(ff::ROW_ACTION),
+                _ if variant_row => out.push(MAP_VARIANT_ACTION),
                 _ => {}
             }
         }
@@ -173,51 +186,185 @@ pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
     (out != actions).then_some(out)
 }
 
-/// The Forge Map row's help line: the map's description.
-pub fn forge_map_help(name: Option<&str>) -> String {
+/// The Map Variant row's help line: what the lobby's pick plays.
+pub fn map_variant_help(name: Option<&str>) -> String {
     match name {
-        None => "New starts from the map as it is.".into(),
-        Some(name) => format!("Loads the saved map {name} and its edits."),
+        None => "Original plays the map as it is.".into(),
+        Some(name) => format!("Plays the map variant {name}."),
     }
 }
 
-/// The Forge Map row's pick over `saved` (`forge::saved_names`): New, then
-/// each saved map; the lobby's held. A list that cannot be read is named in
-/// the description, and New still starts a fresh map.
-pub fn forge_map_pick(saved: Result<Vec<String>, String>, current: Option<&str>) -> Pick {
-    let (names, description) = match saved {
-        Ok(names) => (
-            names,
-            "New starts from the map as it is. A saved map loads its edits.".to_owned(),
+/// One map variant the picker lists: a saved variant of the lobby's map,
+/// usable or not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VariantEntry {
+    /// The file stem the store takes.
+    pub file: String,
+    pub name: String,
+    /// Why it cannot be used: the picker shows it as the variant's line
+    /// and does not choose it.
+    pub sentence: Option<String>,
+    /// The line of a usable one: its author and what it adds.
+    pub detail: String,
+    /// The variant's document id; `None` when the file does not parse.
+    pub id: Option<content::Sha256>,
+    /// The game variant that suggests it ([`crate::map_variant::suggest`]).
+    pub suggested_for: Option<String>,
+}
+
+/// The map variants of the lobby's map `map` (its list id) the picker
+/// lists, saved on this machine, by name: those that pass the store's
+/// checks (`forge::files::variants::list`, against the installed map's
+/// hash) with their detail, the rest with their sentence.
+pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntry>, String> {
+    let base = map
+        .and_then(crate::map_select::short_name_of)
+        .ok_or("the lobby's map is not known")?;
+    let installed = crate::map_variant::installed(&base);
+    let listed = ::forge::files::variants::list(data, &base, installed.as_ref())
+        .map_err(|e| e.to_string())?;
+    Ok(listed
+        .into_iter()
+        .filter(|l| l.source == ::forge::files::variants::Source::Saved)
+        .map(|l| {
+            let detail = match &l.sentence {
+                Some(_) => String::new(),
+                None => ::forge::files::variants::load(data, &base, &l.file, installed.as_ref())
+                    .map(|doc| crate::forge_screens::variants::detail(&doc))
+                    .unwrap_or_default(),
+            };
+            VariantEntry {
+                file: l.file,
+                name: l.name,
+                sentence: l.sentence,
+                detail,
+                id: l.id,
+                suggested_for: None,
+            }
+        })
+        .collect())
+}
+
+/// [`map_variant_list`] with the suggestions of `game`, the lobby's game
+/// variant, marked on the map variants it names
+/// ([`crate::map_variant::suggest`]).
+pub fn map_variant_list_for(
+    data: &Path,
+    map: Option<u32>,
+    game: Option<&variants::portable::Bundle>,
+) -> Result<Vec<VariantEntry>, String> {
+    let mut listed = map_variant_list(data, map)?;
+    let base = map.and_then(crate::map_select::short_name_of);
+    if let (Some(game), Some(base)) = (game, base.and_then(|b| crate::map_variant::installed(&b))) {
+        crate::map_variant::suggest(&mut listed, game, &base);
+    }
+    Ok(listed)
+}
+
+/// The store's bundle of the game variant the lobby plays, found by the
+/// record's name and engine (as `game_variants::inject` finds its block);
+/// `None` for a variant that is not one of our files.
+fn lobby_game_bundle(m: &dyn GuestMemory) -> Option<variants::portable::Bundle> {
+    let v = crate::pause_change_map::lobby_variant(m)?;
+    let (name, engine) = (v.name(), v.game_type().engine());
+    let store = crate::game_variants::store();
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    store
+        .entries()
+        .iter()
+        .find(|e| e.bundle.name == name && e.bundle.engine == engine)
+        .map(|e| e.bundle.clone())
+}
+
+/// What choosing in the picker does: `None` is Original, `Some(file)` a
+/// variant's file stem. Answers what to log.
+pub type Choose = Arc<dyn Fn(Option<&str>) -> String + Send + Sync>;
+
+/// The choice a lobby on map `map` makes: in FORGE the pick is what the
+/// session opens, and in CUSTOM GAMES the variant the game is built from
+/// (`crate::map_variant::pick_installed`, which builds off the game
+/// thread).
+pub fn choose_in_lobby(data: PathBuf, map: Option<u32>) -> Choose {
+    Arc::new(move |file| {
+        if lobby_start::mode() == Mode::Forge {
+            lobby_start::set_forge_map(file.map(str::to_owned));
+            return match file {
+                Some(file) => format!("lobby mode: Forge map variant {file}"),
+                None => "lobby mode: a new Forge map".into(),
+            };
+        }
+        let Some(file) = file else {
+            crate::map_variant::clear();
+            return "lobby mode: the original map".into();
+        };
+        match map.and_then(crate::map_select::short_name_of) {
+            Some(base) => {
+                crate::map_variant::pick_installed(&data, &base, map, file);
+                format!("lobby mode: map variant {file}")
+            }
+            None => "lobby mode: the lobby's map is not known".into(),
+        }
+    })
+}
+
+/// The Map Variant row's pick over `listed` ([`map_variant_list`]):
+/// Original, then each variant by name, the lobby's held (a file stem)
+/// focused. A variant that cannot be used is listed with its sentence and
+/// cannot be chosen. A list that cannot be read is named in the
+/// description, and Original still plays the map as it is.
+pub fn map_variant_pick(
+    listed: Result<Vec<VariantEntry>, String>,
+    current: Option<&str>,
+    choose: Choose,
+) -> Pick {
+    let (listed, description) = match listed {
+        Ok(listed) => (
+            listed,
+            "Original plays the map as it is. A map variant plays its edits.".to_owned(),
         ),
         Err(why) => (
             Vec::new(),
-            format!("The saved maps cannot be listed: {why}. New still starts a fresh map."),
+            format!("The map variants cannot be listed: {why}. Original still plays the map."),
         ),
     };
-    let mut values = vec![NEW_MAP.to_owned()];
-    values.extend(names);
+    let mut values = vec![ORIGINAL.to_owned()];
+    values.extend(listed.iter().map(|v| v.name.clone()));
+    let mut details = vec!["Play the map as it is.".to_owned()];
+    details.extend(listed.iter().map(|v| match (&v.sentence, &v.suggested_for) {
+        (Some(why), _) => why.clone(),
+        (None, None) => v.detail.clone(),
+        (None, Some(game)) => format!("{} Made for {game}.", v.detail).trim().to_owned(),
+    }));
+    let mut blocked = vec![false];
+    blocked.extend(listed.iter().map(|v| v.sentence.is_some()));
+    // The held pick; else the game variant's suggestion, so the picker
+    // opens on it (docs/game/forge-map-variants.md, "How a pick names a map variant"); else
+    // Original. The order stays Original, then by name.
     let held = current
-        .and_then(|c| values.iter().skip(1).position(|v| v == c).map(|i| i + 1))
+        .and_then(|c| listed.iter().position(|v| v.file == c).map(|i| i + 1))
+        .or_else(|| {
+            listed
+                .iter()
+                .position(|v| v.suggested_for.is_some() && v.sentence.is_none())
+                .map(|i| i + 1)
+        })
         .unwrap_or(0);
-    let chosen = values.clone();
+    let files: Vec<String> = std::iter::once(String::new())
+        .chain(listed.into_iter().map(|v| v.file))
+        .collect();
     Pick::new(
-        "Forge Map",
+        "Map Variant",
         values,
         held,
         &description,
-        Arc::new(move |i: usize| match chosen.get(i) {
-            Some(name) if i > 0 => {
-                lobby_start::set_forge_map(Some(name.clone()));
-                format!("lobby mode: Forge map {name}")
-            }
-            Some(_) => {
-                lobby_start::set_forge_map(None);
-                "lobby mode: a new Forge map".into()
-            }
-            None => format!("Forge map {i} is not in the list"),
+        Arc::new(move |i: usize| match files.get(i) {
+            Some(file) if i > 0 => choose(Some(file)),
+            Some(_) => choose(None),
+            None => format!("Map variant {i} is not in the list"),
         }),
     )
+    .details(details)
+    .blocked(blocked)
     .over(Opener::GAME_SETUP_FORGE)
 }
 
@@ -242,7 +389,7 @@ pub fn panel_lines(
             None => vec!["No settings store holds Firefight's options".into()],
             Some(Err(why)) => vec![format!("Firefight options unread ({why})")],
             Some(Ok(o)) => {
-                let wave = choice_label(&ff::WAVE_SET, o.wave_set as i64);
+                let wave = o.wave_set_label();
                 let waves = match o.player_teams() {
                     1 => format!("{wave} waves"),
                     n => format!("{wave} waves, {n} teams"),
@@ -302,6 +449,9 @@ fn choice_label(def: &settings::Def, value: i64) -> String {
 /// without the kit says so in place of the options
 /// ([`firefight_map_lines`]).
 pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, MemFault> {
+    // The Firefight page's Wave set row reads the lobby's kit map between
+    // redraws (`lobby_start::kit_map`); this is where the memory is.
+    lobby_start::set_kit_map(lobby_start::kit_map_name(&*m));
     let state = lobby_start::state();
     let no_map = (state.mode == Mode::Firefight)
         .then(|| firefight_map_lines(KitMaps::now(&*m)))
@@ -309,8 +459,16 @@ pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, Mem
     let lines = match no_map {
         Some(lines) => lines,
         None => {
-            let firefight = (state.mode == Mode::Firefight).then(|| ff::Options::read(store));
-            panel_lines(state.mode, state.forge_map.as_deref(), firefight)
+            let firefight = (state.mode == Mode::Firefight)
+                .then(|| ff::Options::for_map(store, lobby_start::kit_map().as_deref()));
+            let mut lines = panel_lines(state.mode, state.forge_map.as_deref(), firefight);
+            // In CUSTOM GAMES the variant's name is the line under the map's.
+            if state.mode == Mode::Multiplayer
+                && let Some(picked) = crate::map_variant::picked()
+            {
+                lines.push(format!("Map variant {}", picked.name));
+            }
+            lines
         }
     };
     let ids = lines
@@ -383,10 +541,18 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
     if !state.lobby {
         return None;
     }
-    match state.mode {
+    let variant = crate::pause_change_map::lobby_variant(m);
+    let mode = crate::map_select::variant_mode(state.mode, variant.as_ref());
+    match mode {
         Mode::Multiplayer => None,
         Mode::Forge => refusal(state.mode, remote_members(m), KitMaps::default()),
-        Mode::Firefight => refusal(state.mode, Some(0), KitMaps::now(m)),
+        Mode::Firefight => {
+            let catalogue = crate::map_select::current();
+            let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
+            let wave = variant.as_ref().map(|v| v.ext().script)
+                .filter(|s| s.mode == variants::ext::Mode::Firefight).map(|s| s.prefix);
+            refusal(mode, Some(0), KitMaps::for_wave(catalogue.as_deref(), id, wave))
+        }
     }
 }
 
@@ -394,7 +560,36 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
 /// start gate holds it ([`gate_blocked`]).
 pub fn start_refused(m: &dyn GuestMemory) -> bool {
     let state = lobby_start::state();
-    state.lobby && (gate_blocked().is_some() || start_refusal(m).is_some())
+    state.lobby
+        && (gate_blocked().is_some() || start_refusal(m).is_some() || variant_hold(m).is_some())
+}
+
+/// What holds Start Game on the lobby's map variant: it builds, or a check
+/// of the table failed ([`crate::map_variant::hold`]). A pick made on
+/// another map is cleared first.
+pub fn variant_hold(m: &dyn GuestMemory) -> Option<String> {
+    let map = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
+    crate::map_variant::sync(map);
+    // A Forge lobby's map is built with the kit before Start.
+    crate::map_variant::follow_mode(
+        lobby_start::mode() == Mode::Forge,
+        map,
+        // The kit builder materialises disc bases by basename. An offer
+        // may share that basename; edit the offer in its own cache slot.
+        map.filter(|&id| crate::map_select::selected_category(id) == Some(crate::map_select::Category::Halo2))
+            .and_then(crate::map_select::short_name_of).as_deref(),
+        || crate::skulls::profile_or_default(&crate::layout_glue::ReadGm(m), 0),
+    );
+    crate::map_variant::hold()
+}
+
+/// The status line's text while the map variant holds Start Game, written
+/// to its slot. `None` while it does not.
+pub fn variant_text_id(m: &mut dyn GuestMemory) -> Option<u32> {
+    let text = variant_hold(&*m)?;
+    let id = TEXTS.set(VARIANT_SLOT, &text);
+    TEXTS.write(m).ok()?;
+    Some(id)
 }
 
 /// The status line's text while the start gate holds Start Game: the
@@ -441,9 +636,10 @@ fn after_rows(h: hooks::HookRef<'_>) {
         .after_feature(ff::ROW_FEATURE);
 }
 
-/// The Forge Map row, the rows by mode, the header, X's GAME MODE picker,
+/// The Map Variant row, the rows by mode, the header, X's GAME MODE picker,
 /// the start refusal and the leave.
 pub struct LobbyMode {
+    pub theater: Option<crate::theater_ui::Theater>,
     pub offer: Offer,
     /// The settings store Firefight's choices live in.
     pub store: Option<Arc<Store>>,
@@ -464,7 +660,8 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
         let custom = h1row::setup_actions(&*mem, c.cpu.ecx)
             .is_ok_and(|actions| actions.contains(&CHANGE_MAP));
         let slot = match action {
-            Some(FORGE_MAP_ACTION) => FORGE_MAP_LABEL_SLOT,
+            Some(MAP_VARIANT_ACTION) => MAP_VARIANT_LABEL_SLOT,
+            Some(THEATER_ACTION) => THEATER_LABEL_SLOT,
             Some(crate::clankermatch::CHANGE_PLAYLIST) if !custom => CHANGE_PLAYLIST_SLOT,
             _ => return Ok(Flow::Continue),
         };
@@ -488,7 +685,7 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
 }
 
 fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, GuestFault> {
-    let (action, player, stack) = {
+    let (action, player, stack, lobby_map) = {
         let mem = c.ctx.runtime().memory();
         let row = mem.u32(c.cpu.esp + 8).ok().and_then(|p| mem.u32(p).ok());
         let action = row.and_then(|row| h1row::row_action(&*mem, c.cpu.ecx, row));
@@ -500,16 +697,34 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
                 mem.u32(s + crate::ui_kit::lifecycle::SCREEN_SLOT).ok()?,
             ))
         });
-        (action, player, stack)
+        let lobby_map = mem.u32(crate::h1_options_row::LOBBY_MAP).ok();
+        (action, player, stack, lobby_map)
     };
-    if action != Some(FORGE_MAP_ACTION) {
+    if action == Some(THEATER_ACTION) {
+        if let (Some(theater), Some(player)) = (&me.theater, player) {
+            let profile = crate::skulls_menu::profile_of(&*c.ctx.runtime().memory(), player);
+            theater.open(player, profile);
+        }
+        return h1row::open_from_setup(c, request_at, h1row::SetupPress { action, player, stack },
+            crate::theater_ui::FILMS, "theater");
+    }
+    if action != Some(MAP_VARIANT_ACTION) {
         return Ok(Flow::Continue);
     }
-    let pick = forge_map_pick(
-        ::forge::saved_names(&me.data),
-        lobby_start::forge_map().as_deref(),
+    let current = match lobby_start::mode() {
+        Mode::Forge => lobby_start::forge_map(),
+        _ => crate::map_variant::picked().map(|p| p.file),
+    };
+    let game = {
+        let mem = c.ctx.runtime().memory();
+        lobby_game_bundle(&*mem)
+    };
+    let pick = map_variant_pick(
+        map_variant_list_for(&me.data, lobby_map, game.as_ref()),
+        current.as_deref(),
+        choose_in_lobby(me.data.clone(), lobby_map),
     );
-    let what = "Forge Map";
+    let what = "Map Variant";
     let loader = picker::offer_list(pick).and_then(list_class_loader);
     let (Some(player), Some((window, slot)), Some(loader)) = (player, stack, loader) else {
         eprintln!(
@@ -565,7 +780,10 @@ fn load_state(bytes: &[u8]) -> Result<(), String> {
         lobby: *lobby != 0,
         mode,
         forge_map: name,
+        map_variant: None,
+        kit_map: None,
     });
+    crate::map_variant::forget();
     TEXTS.rewrite_all();
     // The start gate checks the restored lobby again at its next refresh.
     #[cfg(feature = "rules")]
@@ -591,8 +809,9 @@ impl hooks::Feature for LobbyMode {
         let len = IDS.len * crate::ui_kit::screen::SLOT_LEN;
         let base = b.guest_alloc(len.next_multiple_of(0x1000), Permissions::RW)?;
         TEXTS.base.store(base, Ordering::SeqCst);
-        TEXTS.set(FORGE_MAP_LABEL_SLOT, FORGE_MAP_LABEL);
+        TEXTS.set(MAP_VARIANT_LABEL_SLOT, MAP_VARIANT_LABEL);
         TEXTS.set(CHANGE_PLAYLIST_SLOT, CHANGE_PLAYLIST_LABEL);
+        TEXTS.set(THEATER_LABEL_SLOT, "Theater");
         b.locale().source("lobby mode", |id| TEXTS.address(id));
 
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
@@ -605,6 +824,7 @@ impl hooks::Feature for LobbyMode {
         let scratch = b.guest_alloc(0x1000, Permissions::RW)?;
         crate::lobby_tabs::switch::install(scratch);
         let offer = self.offer;
+        let theater = self.theater.is_some();
         let building: Arc<Mutex<Vec<u32>>> = Arc::default();
         let (noted, live) = (Arc::clone(&building), Arc::clone(&building));
         after_rows(b.raw().before(&CTOR, "note the Game Setup list", move |c| {
@@ -626,11 +846,15 @@ impl hooks::Feature for LobbyMode {
                 };
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
-                let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
+                let Ok(actions) = h1row::setup_actions(&*mem, list) else { return Ok(()) };
                 let mode = lobby_start::mode();
-                let Some(rows) = arrange(mode, offer, &actions) else {
+                let mut rows = arrange(mode, offer, &actions).unwrap_or_else(|| actions.clone());
+                if theater && !actions.is_empty() && !rows.contains(&THEATER_ACTION) {
+                    rows.push(THEATER_ACTION);
+                }
+                if rows == actions {
                     return Ok(());
-                };
+                }
                 match h1row::rewrite_rows(&mut *mem, list, &rows) {
                     Ok(n) => {
                         eprintln!("lobby mode: Game Setup list in {} ({n} rows)", mode.label())
@@ -649,6 +873,7 @@ impl hooks::Feature for LobbyMode {
             move |c| row_text(c, &seen),
         ));
         let me = Arc::new(LobbyMode {
+            theater: self.theater.clone(),
             offer: self.offer,
             store: self.store.clone(),
             data: self.data.clone(),
@@ -743,14 +968,26 @@ impl hooks::Feature for LobbyMode {
 
 /// Adds the rows and registers their help lines.
 pub fn install(registry: &mut hooks::Registry, feature: LobbyMode) -> anyhow::Result<()> {
+    if feature.theater.is_some() {
+        crate::game_setup_help::register(
+            THEATER_ACTION,
+            crate::game_setup_help::image::QUICK_OPTIONS,
+            Arc::new(|m| {
+                let id = TEXTS.set(THEATER_HELP_SLOT, "Watch a film of a recent or saved game.");
+                TEXTS.write(m).ok()?;
+                Some(id)
+            }),
+        );
+    }
     crate::game_setup_help::register(
-        FORGE_MAP_ACTION,
+        MAP_VARIANT_ACTION,
         crate::game_setup_help::image::QUICK_OPTIONS,
         Arc::new(|m: &mut dyn GuestMemory| {
-            let id = TEXTS.set(
-                FORGE_MAP_HELP_SLOT,
-                &forge_map_help(lobby_start::forge_map().as_deref()),
-            );
+            let name = match lobby_start::mode() {
+                Mode::Forge => lobby_start::forge_map(),
+                _ => crate::map_variant::picked().map(|p| p.name),
+            };
+            let id = TEXTS.set(MAP_VARIANT_HELP_SLOT, &map_variant_help(name.as_deref()));
             TEXTS.write(m).ok()?;
             Some(id)
         }),

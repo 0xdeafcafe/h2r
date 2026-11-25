@@ -6,6 +6,17 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// `render.markers`: the game type markers the last present drew
+/// (docs/runtime/agent-api.md, "render.markers").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkersParams {
+    /// Only the markers of this kind (`spawn`, `hill`, `flag_stand`, ...);
+    /// the counts still cover every marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
 /// `render.spawn_view`: select a player starting location, or release the camera.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -93,6 +104,89 @@ impl ViewParams {
             pitch,
             fov: self.fov,
         })
+    }
+}
+
+/// `render.view.current`: read the pose of the view the game draws for a
+/// local player.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CurrentViewParams {
+    /// The local player's seat, `0..4`; omit for seat 0.
+    pub seat: Option<u8>,
+}
+
+impl CurrentViewParams {
+    /// The local seats a view record can belong to.
+    pub const SEATS: u8 = 4;
+
+    /// The seat asked for, within [`CurrentViewParams::SEATS`].
+    pub fn check(&self) -> Result<u8, String> {
+        let seat = self.seat.unwrap_or(0);
+        if seat < Self::SEATS {
+            Ok(seat)
+        } else {
+            Err(format!("seat must be 0..{}", Self::SEATS))
+        }
+    }
+}
+
+/// `render.view.current`'s reply: a pose in the conventions of
+/// [`ViewParams`], so `render.view` takes its `eye`, `yaw`, `pitch` and
+/// `fov` as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CurrentView {
+    pub eye: [f32; 3],
+    /// Heading about +z, from +x towards +y, in `0..TAU`.
+    pub yaw: f32,
+    /// Up is positive, within [`ViewParams::PITCH_LIMIT`].
+    pub pitch: f32,
+    /// The horizontal lens, degrees.
+    pub fov: f32,
+    /// The pose is the private `render.view` or `render.spawn_view` camera.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+}
+
+impl CurrentView {
+    /// The pose of a camera at `eye` looking along `forward` (any length),
+    /// with a horizontal lens of `fov` degrees. `None` for a non-finite
+    /// input or a zero-length `forward`.
+    pub fn looking(eye: [f32; 3], forward: [f32; 3], fov: f32) -> Option<Self> {
+        let [x, y, z] = forward;
+        let length = (x * x + y * y + z * z).sqrt();
+        if !eye.into_iter().chain(forward).chain([fov, length]).all(f32::is_finite)
+            || length < 1e-4
+        {
+            return None;
+        }
+        let tau = std::f32::consts::TAU;
+        let mut yaw = y.atan2(x).rem_euclid(tau);
+        if yaw >= tau {
+            // A tiny negative angle rounds up to TAU: the same heading as 0.
+            yaw = 0.0;
+        }
+        Some(Self {
+            eye,
+            yaw,
+            pitch: (z / length)
+                .clamp(-1.0, 1.0)
+                .asin()
+                .clamp(-ViewParams::PITCH_LIMIT, ViewParams::PITCH_LIMIT),
+            fov,
+            private: false,
+        })
+    }
+
+    /// The `render.view` params that draw this pose.
+    pub fn view_params(&self) -> ViewParams {
+        ViewParams {
+            eye: Some(self.eye),
+            yaw: Some(self.yaw),
+            pitch: Some(self.pitch),
+            fov: Some(self.fov),
+            reset: false,
+        }
     }
 }
 
@@ -384,12 +478,51 @@ pub struct RenderStats {
     /// The latest completed private-target draw while its renderer is installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_frame: Option<crate::frame_graph::FrameGraphStats>,
-    /// In-between frames (`impl.render.interpolate`, `.reproject`):
-    /// `d3d::interp::InterpStats`, every field, including the hold reasons
-    /// (`unsure_*`, `mismatch_*`, `dropped`).
-    pub interp: Value,
+    /// The frame owner's display-rate loop: display frames between sealed
+    /// scenes (docs/graphics/framescene.md, section 7). Absent without a
+    /// paced frame owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rate: Option<DisplayRateStats>,
     /// The frame-stats window's per-frame means of the render counters.
     pub counters: Value,
+}
+
+/// `render.stats`' `display_rate`: counters since the loop was installed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct DisplayRateStats {
+    /// The display rate the frame-rate setting asks for; 0 at 30 fps.
+    pub rate_hz: u32,
+    /// The rate the loop holds after measuring its own frames' cost.
+    pub shown_hz: u32,
+    /// Whether that cost holds the loop below `rate_hz`.
+    pub capped: bool,
+    /// Owned presents the loop saw.
+    pub swaps: u64,
+    /// Display frames drawn with a blended camera, at a Swap or between.
+    pub blended: u64,
+    /// Of `blended`, the ones shown at a Swap in place of its scene.
+    pub swap_blends: u64,
+    /// Display frames between Swaps that drew the newest scene as it is
+    /// (a cut, a gap, or waiting on the next scene).
+    pub between_newest: u64,
+    /// Display frames that failed; the window kept the frame before.
+    pub failed: u64,
+    /// Times the loop dropped its two scenes (a Swap without the graph).
+    pub resets: u64,
+    /// Mean cost of a display frame on the render thread, microseconds.
+    pub avg_cost_us: u64,
+    /// Carried draws moved onto a blended camera.
+    pub moved_draws: u64,
+    /// Typed stages moved onto a blended camera.
+    pub moved_stages: u64,
+    /// Typed stages in a game view drawn as their tick drew them.
+    pub held_stages: u64,
+    /// Views on display frames whose world marks were moved onto the
+    /// camera the frame drew the view with.
+    pub marks_moved: u64,
+    /// Views on display frames whose world marks kept their image's
+    /// camera (no drawn view at their viewport).
+    pub marks_held: u64,
 }
 
 /// `render.compare`: two PNG files compared pixel by pixel
@@ -448,6 +581,10 @@ impl CompareReply {
 pub enum CaptureLighting {
     Retail,
     E3,
+    #[serde(rename = "relight-on")]
+    RelightOn,
+    #[serde(rename = "relight-off")]
+    RelightOff,
 }
 
 /// `render.capture`: the frame of a sim tick as a PNG.
@@ -574,6 +711,22 @@ pub struct SceneReply {
     /// Activation of the requested level on a fresh level boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_activation: Option<SceneCensusActivation>,
+    /// The first view whose Rust visibility differed from the guest's, and
+    /// how (`scene_visibility_*` count them; docs/graphics/native-visibility.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_first_mismatch: Option<String>,
+    /// The first light whose Rust visibility differed from its guest lists
+    /// (`scene_light_visibility_*` count them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light_visibility_first_mismatch: Option<String>,
+    /// First differing slot or replay record of a first-person light view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_person_visibility_first_mismatch: Option<String>,
+    /// The first view whose Rust-built records (camera, projection, start
+    /// cluster, mode) differed from the guest's, and in which field
+    /// (`scene_view_record_*` count them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_record_first_mismatch: Option<String>,
     /// The JSON file written when `dump` was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump: Option<String>,
@@ -726,6 +879,20 @@ pub struct SceneViewRecord {
     pub key: String,
     pub cut: bool,
     pub clusters: u32,
+    /// Upstream cluster counts for this game's camera. The scene dump
+    /// has the corresponding IDs for each view ordinal in cluster_gathers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_clusters: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure_clusters: Option<u32>,
+    /// The game view's object list length, from the same gather.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_objects: Option<u32>,
+    /// Who computed the view's visible clusters and objects: `rust`, or
+    /// `guest` when the Rust visibility declined for the view
+    /// (docs/graphics/native-visibility.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_source: Option<String>,
     pub instances: u32,
     pub parts: u32,
     pub rows: u32,
@@ -918,6 +1085,10 @@ pub struct ResidualTotals {
     pub state_words: u64,
     pub clears: u64,
     pub binds: u64,
+    pub native_guest_binds: u64,
+    pub guest_bind_refused_destroy: u64,
+    pub native_rect_clears: u64,
+    pub clear_refused_rect_count: u64,
     pub copies: u64,
     pub uploads: u64,
     pub locks: u64,
@@ -943,6 +1114,10 @@ pub struct ResidualProducer {
     pub state_words: u64,
     pub clears: u64,
     pub binds: u64,
+    pub native_guest_binds: u64,
+    pub guest_bind_refused_destroy: u64,
+    pub native_rect_clears: u64,
+    pub clear_refused_rect_count: u64,
     pub copies: u64,
     pub uploads: u64,
     pub d3d_ms: f64,
@@ -986,6 +1161,17 @@ pub struct ResidualUnattributed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markers_params_take_a_kind_and_refuse_strays() {
+        let none: MarkersParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(none.kind, None);
+        let one: MarkersParams = serde_json::from_value(serde_json::json!({"kind": "hill"})).unwrap();
+        assert_eq!(one.kind.as_deref(), Some("hill"));
+        for bad in [serde_json::json!({"team": 1}), serde_json::json!({"kind": 3})] {
+            assert!(serde_json::from_value::<MarkersParams>(bad).is_err());
+        }
+    }
 
     #[test]
     fn a_draw_omits_layout_depth_and_constants_when_absent() {
@@ -1191,6 +1377,11 @@ mod tests {
         assert!(!s.dump);
         let c: FrameCaptureParams = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(c, FrameCaptureParams::default());
+        for (name, mode) in [("relight-on", CaptureLighting::RelightOn), ("relight-off", CaptureLighting::RelightOff)] {
+            let p: FrameCaptureParams = serde_json::from_value(serde_json::json!({"lighting": name})).unwrap();
+            assert_eq!(p.lighting, Some(mode));
+            assert_eq!(serde_json::to_value(p).unwrap(), serde_json::json!({"lighting": name}));
+        }
         assert!(serde_json::from_value::<FrameCaptureParams>(serde_json::json!({"tik": 3})).is_err());
         assert!(serde_json::from_value::<CompareParams>(serde_json::json!({"a": "x"})).is_err());
         let v = serde_json::to_value(CaptureReply::default()).unwrap();
@@ -1273,5 +1464,66 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<ViewParams>(unknown).is_err());
         }
+    }
+
+    #[test]
+    fn a_current_view_derives_yaw_and_pitch_from_its_forward() {
+        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+        let at = |forward: [f32; 3]| CurrentView::looking([1.0, 2.0, 3.0], forward, 70.0).unwrap();
+        assert_eq!((at([1.0, 0.0, 0.0]).yaw, at([1.0, 0.0, 0.0]).pitch), (0.0, 0.0));
+        assert!((at([0.0, 1.0, 0.0]).yaw - FRAC_PI_2).abs() < 1e-6);
+        assert!((at([-1.0, 0.0, 0.0]).yaw - PI).abs() < 1e-6);
+        // Wrapped into 0..TAU, not -PI..PI.
+        assert!((at([0.0, -1.0, 0.0]).yaw - 1.5 * PI).abs() < 1e-5);
+        let down = at([2.0, 0.0, -2.0]);
+        assert!((down.pitch + std::f32::consts::FRAC_PI_4).abs() < 1e-5, "length is ignored");
+        // Straight up clamps to the limit instead of failing the check.
+        assert_eq!(at([0.0, 0.0, 1.0]).pitch, ViewParams::PITCH_LIMIT);
+        assert_eq!(at([0.0, 0.0, -1.0]).pitch, -ViewParams::PITCH_LIMIT);
+        // A tiny negative heading must not round up to TAU.
+        let tiny = at([1.0, -1e-9, 0.0]);
+        assert!((0.0..TAU).contains(&tiny.yaw), "{}", tiny.yaw);
+        assert_eq!(tiny.eye, [1.0, 2.0, 3.0]);
+        assert!(!tiny.private);
+        for bad in [[0.0; 3], [f32::NAN, 0.0, 0.0], [f32::INFINITY, 0.0, 0.0]] {
+            assert!(CurrentView::looking([0.0; 3], bad, 70.0).is_none());
+        }
+        assert!(CurrentView::looking([f32::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], 70.0).is_none());
+        assert!(CurrentView::looking([0.0; 3], [1.0, 0.0, 0.0], f32::NAN).is_none());
+    }
+
+    #[test]
+    fn a_current_view_replays_through_render_view() {
+        let view = CurrentView::looking([12.5, -3.0, 2.2], [0.3, -0.8, 0.2], 74.0).unwrap();
+        let wire = serde_json::to_value(view).unwrap();
+        assert!(wire.get("private").is_none(), "{wire}");
+        // The reply's pose fields, as a client passes them on.
+        let params: ViewParams = serde_json::from_value(serde_json::json!({
+            "eye": wire["eye"], "yaw": wire["yaw"], "pitch": wire["pitch"], "fov": wire["fov"],
+        }))
+        .unwrap();
+        assert_eq!(params, view.view_params());
+        assert_eq!(
+            params.check(),
+            Ok(ViewRequest::Pose {
+                eye: view.eye,
+                yaw: view.yaw,
+                pitch: view.pitch,
+                fov: Some(74.0),
+            })
+        );
+        let private = serde_json::to_value(CurrentView { private: true, ..view }).unwrap();
+        assert_eq!(private["private"], true);
+        assert_eq!(serde_json::from_value::<CurrentView>(private).unwrap().private, true);
+    }
+
+    #[test]
+    fn current_view_params_check_the_seat() {
+        let parse = |v: Value| serde_json::from_value::<CurrentViewParams>(v);
+        assert_eq!(parse(serde_json::json!({})).unwrap().check(), Ok(0));
+        assert_eq!(parse(serde_json::json!({"seat": 3})).unwrap().check(), Ok(3));
+        assert!(parse(serde_json::json!({"seat": 4})).unwrap().check().is_err());
+        assert!(parse(serde_json::json!({"seat": -1})).is_err());
+        assert!(parse(serde_json::json!({"player": 1})).is_err());
     }
 }

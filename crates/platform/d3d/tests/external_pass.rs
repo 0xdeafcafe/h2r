@@ -1,9 +1,8 @@
 //! `Device::request_external_pass` (docs/graphics/native-renderer.md): a
 //! host pass drawn into the bound colour target and depth with the
 //! current viewport, recorded after the next drain, on the device's
-//! thread, through the render thread, through the interpolating backend
-//! (which passes it on and holds the frame) and under the render scale
-//! (both copies). Dropped without a backend that can. Synthetic device;
+//! thread, through the render thread and under the render scale (both
+//! copies). Dropped without a backend that can. Synthetic device;
 //! skipped without an adapter or without `DEPTH32FLOAT_STENCIL8`.
 
 use std::sync::{Arc, Mutex};
@@ -11,7 +10,7 @@ use std::time::Duration;
 
 use crate::common::*;
 use d3d::{
-    Backend, Device, ExternalPass, ExternalTarget, GfxBackend, GuestMemory, InterpBackend, RecordingBackend,
+    Backend, Device, ExternalPass, ExternalTarget, GfxBackend, GuestMemory, RecordingBackend,
     SparseMemory, SwapFinish, ThreadedBackend, UploadPolicy,
 };
 use gfx::GfxContext;
@@ -24,6 +23,7 @@ struct Seen {
     depth_is_depth: bool,
     sizes: ((u32, u32), (u32, u32)),
     copy: d3d::TargetCopy,
+    lighting: d3d::Lighting,
 }
 
 type Got = Arc<Mutex<Vec<Seen>>>;
@@ -40,6 +40,7 @@ impl ExternalPass for Probe {
             depth_is_depth: t.depth_format.is_depth_stencil_format(),
             sizes: (t.guest_size, t.size),
             copy: t.copy,
+            lighting: t.lighting,
         });
         drop(t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("probe"),
@@ -167,10 +168,33 @@ fn native_pass_and_deferred_draw_keep_bound_surfaces_after_settings_changes() {
     }
 }
 
+/// A private bake may reach only a display whose guest reference is drawn separately.
 #[test]
-fn the_interpolating_backend_passes_it_on() {
-    let Some(b) = backend() else { return };
-    run(ThreadedBackend::new(InterpBackend::new(b, || 0)).unwrap());
+fn relight_requires_an_isolated_display_copy_at_each_scale() {
+    use d3d::{Lighting, ScaledBackend, TargetCopy};
+    for scale in [1, 2] {
+        for single in [true, false] {
+            let Some(reference) = backend() else { return };
+            let display = GfxBackend::new(app::share_context(&reference.ctx));
+            let mut b = ScaledBackend::with_single_copy(reference, display, scale, single).unwrap();
+            b.set_lighting(Lighting::RelightOff);
+            let (mut device, mut memory) = create(b, UploadPolicy::Always);
+            set_states(&mut device, &mut memory);
+            let got: Got = Arc::default();
+            device.request_external_pass(Box::new(Probe(Arc::clone(&got))));
+            device.drain_until_callback(&mut memory).unwrap();
+            let seen: Vec<_> = got.lock().unwrap().iter().map(|s| (s.copy, s.lighting)).collect();
+            if single {
+                assert!(!seen.is_empty());
+                assert!(seen.iter().all(|s| s.1 == Lighting::Retail));
+            } else {
+                assert_eq!(seen, [
+                    (TargetCopy::Reference, Lighting::Retail),
+                    (TargetCopy::Display, Lighting::RelightOff),
+                ]);
+            }
+        }
+    }
 }
 
 /// Keeps the view constants it is given.
@@ -315,6 +339,34 @@ fn a_backend_that_cannot_drops_it() {
     assert!(got.lock().unwrap().is_empty());
 }
 
+#[test]
+fn untyped_pass_works_without_replay_and_refuses_with_a_captured_slot() {
+    use frame_types::{Slot, SlotAt};
+
+    fn opaque_slot() -> Option<SlotAt> {
+        Some(SlotAt { slot: Slot::Opaque, view: 0 })
+    }
+
+    for recording in [false, true] {
+        let mut backend = RecordingBackend::default();
+        backend.external_passes = true;
+        let mut sink = d3d::SceneSink::new(backend, opaque_slot);
+        if recording {
+            sink = sink.with_replay(|_| {});
+        }
+        let (mut d, mut m) = create(sink, UploadPolicy::Always);
+        set_states(&mut d, &mut m);
+        let pass: Box<dyn ExternalPass> = Box::new(Probe(Arc::default()));
+        assert!(pass.diagnostic_name().ends_with("::Probe"));
+        assert_eq!(d.external_pass_now(&mut m, pass).unwrap(), !recording);
+        assert_eq!(d.backend.inner().external.len(), usize::from(!recording));
+        assert_eq!(
+            d.stats().external_refusals[d3d::ExternalRefusal::Backend.index()],
+            u64::from(recording),
+        );
+    }
+}
+
 /// A [`Probe`] that draws colour only.
 struct ColourOnly(Probe);
 
@@ -415,6 +467,39 @@ fn refusal_of_the_display_discards_even_the_recorded_reference_clear() {
 }
 
 #[test]
+fn a_display_supplement_leaves_the_guest_attachment_unchanged_at_each_scale() {
+    struct Supplement(Counting);
+    impl ExternalPass for Supplement {
+        fn display_only(&self) -> bool { true }
+        fn replays_scene(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites { self.0.writes() }
+        fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
+            self.0.record_ranges(target)
+        }
+    }
+    for scale in [1, 2] {
+        let Some(reference) = backend() else { return };
+        let display = GfxBackend::new(reference.ctx.clone());
+        let mut scaled = d3d::ScaledBackend::with_single_copy(reference, display, scale, false).unwrap();
+        if scale == 1 {
+            scaled.keep_display_copy();
+        }
+        let (mut device, mut mem) = create(scaled, UploadPolicy::Always);
+        let back = device.back_buffer().unwrap();
+        device.clear(&mut mem, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+        let seen = Arc::default();
+        let pass = Supplement(Counting { seen: Arc::clone(&seen), display_ranges: 1 });
+        assert!(device.begin_external_boundary(&mut mem).unwrap());
+        assert!(device.draw_display_stage(&mut mem, plan(1), Box::new(pass)).unwrap());
+        assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Display]);
+        let reference = device.backend.reference_mut().read_color(back.reference).unwrap().0;
+        let display = device.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+        assert_eq!(&reference[..4], &[0, 255, 0, 255]);
+        assert_eq!(display[1], 0, "the supplemental red clear reached the display");
+    }
+}
+
+#[test]
 fn cancel_keeps_pixels_and_commit_preserves_the_deferred_display() {
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create_copy_swap(b, UploadPolicy::Always);
@@ -492,6 +577,11 @@ fn indexed_admission_receives_the_exact_resolved_guest_draw() {
 #[test]
 fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
     indexed_admission_replays_a_refused_packet(timeline::native::Stage::World);
+}
+
+#[test]
+fn sky_admission_replays_refused_strips_in_order() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Sky);
 }
 
 #[test]
@@ -633,17 +723,6 @@ fn validation_refuses_a_complete_range_count() {
     assert_eq!(d.stats().external_passes, 0);
 }
 
-#[test]
-fn a_view_to_be_interpolated_keeps_its_guest_geometry() {
-    let Some(b) = backend() else { return };
-    let (mut d, mut m) = create(InterpBackend::new(b, || 60), UploadPolicy::Always);
-    let seen = Arc::default();
-    let pass = Counting { seen: Arc::clone(&seen), display_ranges: 1 };
-    assert!(d.prepare_external_pass(&mut m, plan(1), Box::new(pass)).unwrap().is_none());
-    assert!(seen.lock().unwrap().is_empty());
-}
-
-
 struct SlotCopy;
 
 impl ExternalPass for SlotCopy {
@@ -674,7 +753,7 @@ impl ExternalPass for SlotCopy {
 }
 
 #[test]
-fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scaled_view() {
+fn an_indexed_intermediate_keeps_its_guest_size_and_is_drawn_and_read_at_every_scale() {
     for scale in [1, 2] {
         let Some(reference) = backend() else { return };
         let ctx = &reference.ctx;
@@ -689,15 +768,13 @@ fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scale
         d.clear(&mut m, 0, 0, 0xf0, 0xff000000, 1., 0).unwrap();
         let mut p = plan(2);
         p.slots = vec![None, Some(d3d::ExternalSlot { header, written: true })];
-        if let Some(ready) = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap() {
-            assert_eq!(scale, 1);
-            ready.commit();
-        } else {
-            assert_eq!(scale, 2);
-        }
+        // Smaller targets keep their guest dimensions in both copies, so
+        // the pass sees the same 16x16 slot at every scale.
+        let ready = d.prepare_external_pass(&mut m, p, Box::new(SlotCopy)).unwrap();
+        ready.expect("guest-size slot at every scale").commit();
         let back = d.back_buffer().unwrap();
         let pixels = d.backend.reference_mut().read_color(back.reference).unwrap().0;
-        assert_eq!(pixels[1], if scale == 1 { 255 } else { 0 });
+        assert_eq!(pixels[1], 255);
     }
 }
 
@@ -986,4 +1063,186 @@ fn single_copy_commits_world_and_objects_once_at_display_size() {
     assert_eq!(&pixels[..4], &[0, 0, 255, 255]);
     let stats = d.backend.with_inner(|b| b.stats()).unwrap();
     assert_eq!((stats.reference_draws, stats.display_draws), (0, 2));
+}
+
+#[test]
+fn a_later_incomplete_display_step_discards_the_whole_light() {
+    let Some(reference) = backend() else { return };
+    let ctx = &reference.ctx;
+    let display = GfxBackend::new(GfxContext {
+        instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
+        queue: ctx.queue.clone(), caps: ctx.caps,
+    });
+    let scaled = d3d::ScaledBackend::with_single_copy(reference, display, 2, false).unwrap();
+    let (mut d, mut m) = create(scaled, UploadPolicy::Always);
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    assert!(d.begin_external_boundary(&mut m).unwrap());
+    let seen = Arc::default();
+    let targets = d.external_targets();
+    let steps = [1, 0].map(|display_ranges| d3d::ExternalStep {
+        targets, plan: plan(1),
+        pass: Box::new(Counting { seen: Arc::clone(&seen), display_ranges }),
+    });
+    assert!(d.prepare_external_sequence(&mut m, Vec::from(steps)).unwrap().is_none());
+    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference, d3d::TargetCopy::Display,
+        d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
+    assert_eq!(d.external_targets(), targets);
+    let back = d.back_buffer().unwrap();
+    let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
+    let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+    for pixels in [reference, display] { assert_eq!(&pixels[..4], &[0, 255, 0, 255]); }
+    assert_eq!(d.stats().external_passes, 0);
+}
+
+#[test]
+fn a_light_step_reads_the_preceding_step_on_another_target_without_rebinding() {
+    struct Mask;
+    impl ExternalPass for Mask {
+        fn colour_only(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+        fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
+            Probe(Arc::default()).encode(t);
+            1
+        }
+    }
+
+    struct Receiver;
+    impl ExternalPass for Receiver {
+        fn colour_only(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+        fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
+            let Some(mask) = t.slots.first().and_then(Option::as_ref) else { return 0; };
+            t.encoder.copy_texture_to_texture(
+                mask.sample.texture().as_image_copy(), t.color.texture().as_image_copy(),
+                wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+            );
+            1
+        }
+    }
+
+    let Some(backend) = backend() else { return };
+    let (mut d, mut m) = create(backend, UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0., 0., W as f32, H as f32, 0xffff_ffff);
+    bind_quad(&mut d, &mut m);
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let header = MISC + 0x7800;
+    d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 16, 64, 0x0021_0000)
+        .write(&mut m, header).unwrap();
+    assert!(d.begin_external_boundary(&mut m).unwrap());
+    let target = d.external_targets();
+    let bound = d.bound_target();
+    let mut sample = plan(1);
+    sample.slots = vec![Some(d3d::ExternalSlot { header, written: false })];
+    let held = d.prepare_external_sequence(&mut m, vec![
+        d3d::ExternalStep {
+            targets: d3d::ExternalTargets { color: header, depth: 0, rect: (0, 0, 16, 16) },
+            plan: plan(1), pass: Box::new(Mask),
+        },
+        d3d::ExternalStep { targets: target, plan: sample, pass: Box::new(Receiver) },
+    ]).unwrap().unwrap();
+    assert!(held.commit_light(&mut m, [0, 1f32.to_bits()], &[0; 36], None, 0, None, []).unwrap());
+    assert_eq!(d.bound_target(), bound);
+    let back = d.back_buffer().unwrap();
+    let (pixels, order) = d.backend.read_color(back).unwrap();
+    let red = match order {
+        gfx::encode::HostPixelOrder::Bgra8 => [0, 0, 255, 255],
+        gfx::encode::HostPixelOrder::Rgba8 => [255, 0, 0, 255],
+    };
+    assert_eq!(&pixels[..4], &red, "the receiver reads this generation");
+    assert_eq!(&pixels[16 * 4..17 * 4], &[0, 255, 0, 255], "outside the receiver");
+}
+
+#[test]
+fn a_sealed_light_survives_the_worker_match_and_submits_once_on_either_route() {
+    use d3d::scene_sink::ReplayFrame;
+    use d3d::threaded::owner::{Candidate, FrameOwner, Submission};
+    use frame_types::{Slot, SlotAt};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Light(Arc<AtomicUsize>);
+    impl ExternalPass for Light {
+        fn replays_scene(&self) -> bool { true }
+        fn colour_only(&self) -> bool { true }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+        fn uses_validated_resources(&self) -> bool { true }
+
+        fn record_encoded(
+            &mut self, target: &d3d::backend::ExternalAttachments, _: d3d::ExternalPassRequest,
+        ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+            let color = target.color.clone();
+            let submissions = self.0.clone();
+            Some(Ok(d3d::backend::ExternalEncoded {
+                ranges: 1, draws: 0, passes: 1,
+                commands: Box::new(move |encoder| {
+                    submissions.fetch_add(1, Ordering::Relaxed);
+                    drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None, color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &color, depth_slice: None, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                                store: wgpu::StoreOp::Store },
+                        })], depth_stencil_attachment: None, timestamp_writes: None,
+                        occlusion_query_set: None, multiview_mask: None,
+                    }));
+                }),
+            }))
+        }
+    }
+
+    let Some(gpu) = backend() else { return };
+    let captured = Arc::new(Mutex::new(None::<Arc<ReplayFrame>>));
+    let received = captured.clone();
+    let adopted = Arc::new(AtomicUsize::new(0));
+    let counted = adopted.clone();
+    let worker = ThreadedBackend::new(gpu).unwrap().with_frame_owner(FrameOwner {
+        events: Arc::new(()),
+        select: Box::new(move |n, _| {
+            let frame = received.lock().unwrap().take().unwrap();
+            let draw_frame = frame.clone();
+            let counted = counted.clone();
+            Some(Submission::Native(Candidate {
+                frame, eligible: Box::new(move |_, _| n == 1), before_original: None,
+                draw: Box::new(move |gpu: &mut GfxBackend, targets| {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                    let mut pass = d3d::gfx_backend::GuestDrawPass::on_existing(gpu, &draw_frame, targets)?;
+                    for (_, op) in &draw_frame.ops { pass.apply(op)?; }
+                    pass.present_with_outputs(0, None)
+                }),
+            }))
+        }),
+    });
+    let mut sink = d3d::SceneSink::new(worker, || Some(SlotAt { slot: Slot::AfterOpaque, view: 0 }))
+        .with_replay(move |frame| *captured.lock().unwrap() = Some(Arc::new(frame)));
+    let physical = sink.create_surface(gfx::D3DFormat::LinA8R8G8B8, 16, 16, false).unwrap();
+    let submissions = Arc::new(AtomicUsize::new(0));
+    for completed in 1..=2 {
+        let green = gfx::Clear { color: Some([0., 1., 0., 1.]), ..gfx::Clear::NONE };
+        sink.clear(physical, None, green).unwrap();
+        let stage = d3d::SceneStage {
+            surfaces: d3d::ExternalSurfaces {
+                color: physical, depth: physical, sampled: vec![], slots: vec![], slot_sizes: vec![],
+            },
+            request: d3d::ExternalPassRequest {
+                rect: (0, 0, 16, 16), surface_size: (16, 16),
+                display_projection_factor: 1., z_scale: 1.,
+            },
+            plan: d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) },
+            pass: Arc::new(Mutex::new(Box::new(Light(submissions.clone())))),
+        };
+        let recordings = sink.prepare_carried_stage(&stage).unwrap().unwrap();
+        sink.commit_carried_stage(stage, recordings);
+        sink.present(physical, 0).unwrap();
+        let green = sink.inner_mut().with_surface(physical, |gpu, surface| {
+            Ok(gpu.read_color(surface)?.0[1])
+        }).unwrap();
+        assert_eq!(green, 0, "the light follows the guest clear on either route");
+        assert_eq!(submissions.load(Ordering::Relaxed), completed);
+    }
+    assert_eq!(adopted.load(Ordering::Relaxed), 1, "recording the stage kept its frame eligible");
 }

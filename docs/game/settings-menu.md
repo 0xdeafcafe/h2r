@@ -175,26 +175,35 @@ and **Voice**. Selecting Video opens the display options below.
 |---|---|---|---|---|
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
-| Resolution | Native (current physical width x height), then sizes at that aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
-| Lighting | Retail, E3 (default Retail) | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
+| Resolution | Native (render width x height), then fixed sizes at the viewport aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
+| Lighting | Retail, E3 (default Retail). A [BSP review launch](../graphics/relighting-review.md) displays its locked lamp state | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | HUD Position | Pinned (default), Centered | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
-| LOD Distance | Retail, 0.5x, 1x (default), 1.5x, 2x, 3x, 4x | `[graphics] lod_distance` (number or `"retail"`) | next view | `H2_LOD_DISTANCE` |
+| LOD Distance | Retail, 0.5x, 1x, 1.5x, 2x, 3x, 4x, Highest (default) | `[graphics] lod_distance` (number, `"retail"` or `"highest"`) | next view | `H2_LOD_DISTANCE` |
 
 A on Resolution, HUD Position or LOD Distance opens a select dialog. A confirms the
 highlighted option and saves it to `<data>/settings.toml`. B cancels. Native
-tracks the physical window size. Choosing a numbered size fixes the render
-target at that size, including after a window resize. At 5120x2880 the
-select dialog offers Native, 1280x720, 1920x1080, 2560x1440, 3840x2160 and
+follows the physical viewport on each frame, including the backing pixels
+on Retina. Choosing a numbered size fixes the render target at that size.
+At 5120x2880 the select dialog offers Native, 1280x720, 1920x1080, 2560x1440, 3840x2160 and
 5120x2880. The saved integer `graphics.render_scale` and its launch override
-select the corresponding fixed multiple of 640x480. Native uses a 4K
-pixel budget. The explicit 5120x2880 option uses the full panel raster.
+select the corresponding fixed multiple of 640x480. In 5K fullscreen, the
+4K pixel budget gives **Native (3840x2160)**. The explicit **5120x2880**
+option uses the full panel raster.
 
-In offline play, LOD Distance at 1x matches the render height. A higher
-multiplier retains model detail farther away. Retail uses 480-line
-distances at every resolution. Menu model previews (Choose Profile, the
-Appearance page) always use retail detail
-([projected size and level of detail](../graphics/occlusion-culling.md#projected-size-and-level-of-detail)). Network and film readback policy is
-described in [determinism](../graphics/high-resolution.md#determinism).
+**Highest** requests the finest model section at any distance. At **1x**, the
+model distance multiplier follows the active render height. Higher
+multipliers keep detail farther away. **Retail** uses the original
+480-line distances at any resolution.
+
+Choose Profile and Appearance sample the same setting as a world view.
+The setting changes only what is drawn: the guest walk, its pose
+evaluation and the lockstep and film digests stay retail whatever the
+choice, so no mode forces retail for it. The native renderer applies the
+choice to supported display draws, and in single-copy rendering the D3D
+fallback swaps its drawn geometry at the draw boundary; the exact
+reference, menu model widgets and every readback keep the retail
+records.
+[Projected size and level of detail](../graphics/occlusion-culling.md#projected-size-and-level-of-detail).
 
 Pinned keeps corner-anchored HUD groups near the edges of each player's
 viewport. Centered keeps those groups inside a centred 4:3 safe area.
@@ -447,7 +456,7 @@ MENU. **Game Setup** opens a list of ours with the lobby's own rows:
   maps directly. The maps are a value picker; picking one closes the
   picker and the categories.
 - **Change Rules** offers the game types and their variants the lobby's
-  Change Rules lists, including Research and Devolution, Party Games,
+  Change Rules lists, including Research and Devolution, Party Games, Firefight, Siege,
   the community variants and the game-variant store's (Live, imported
   and ported variants, rules-script variants among them). A Firefight
   lobby has no Change Rules, as in the lobby.
@@ -762,11 +771,13 @@ is copied, and H2V's addresses and structures differ.
 
 ### Why culling stays right and the simulation does not change
 
-- The value is changed where the game computes it, before the director,
-  the observer and the renderer see it, so the projection, the frustum the
-  renderer culls with, the observer's FOV scale (which particles read at
-  `0x248a31`) and the LOD all follow the same camera. Nothing on the host
-  side knows about FOV.
+- The director and observer apply the setting before the renderer builds
+  the view. The guest projection, portal frustum, particle scale
+  (`0x248a31`) and LOD follow that camera. The native BSP stage uses the
+  captured projection for its part bounds. A widescreen display can widen
+  the horizontal lens after the guest gathers clusters. The extra strip
+  can therefore show only geometry the guest submits.
+  [Display aspect and live visibility](../graphics/high-resolution.md).
 - `0x187130` has one caller, the first-person camera callback, which runs
   from `director_update` in the per-frame, variable-`dt` part of the main
   loop ([high-framerate.md](high-framerate.md), step 9), not in the 30 Hz
@@ -785,10 +796,11 @@ is copied, and H2V's addresses and structures differ.
   position. In `0xbd610`, the `+0x38` load at `0xbd67f` reads the object
   definition. The `+0x4c` load at `0xbd8d2` reads render-model node data.
   Both pointers come through tag instances.
-- Networked state: the observer and the director are per local player and
-  never serialised by the game; nothing here writes simulation memory. The
-  clamp global `0x55e488` is the one guest write, and only the camera
-  callback reads it.
+- The observer and director are local to each player. The camera hook's
+  only guest write is the clamp at `0x55e488`. Object setup during the
+  guest visibility walk can consume shared animation RNG, so the display
+  aspect correction runs after that walk.
+  [Render determinism](../graphics/high-resolution.md#determinism).
 
 Only the first-person camera follows the setting; the following camera
 (vehicles; `0x23bd70` stores `[0x54e854]` itself), dead and scripted

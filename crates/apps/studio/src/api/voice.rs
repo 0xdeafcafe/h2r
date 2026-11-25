@@ -35,9 +35,9 @@ const LIST: MethodDef = def(
 );
 const COMMIT: MethodDef = def(
     m::VOICE_COMMIT,
-    "Copy a saved line to art/announcer/<clip>.wav in the checkout, so it can be committed (the files are in Git LFS). A separate, explicit step: voice.say never writes there. Does not run git and does not edit boot::medal_announcer::CLIPS; the reply gives the CLIPS entry a new clip needs. An existing clip is only replaced with `replace`. `from` is a file voice.say saved (default the last one); `repo` the checkout (default the one the editor runs in)",
-    r#"{"clip":"string","from?":"string","repo?":"string","replace?":"boolean"}"#,
-    r#"{"file":"string","clip":"string","repo_path":"string","clips_entry":"string","exists":"boolean","next":"string"}"#,
+    "Keep a saved line, as a separate, explicit step (voice.say and voice.clone.say never write to a package or the checkout). With `tag` (a snd! path) the line becomes a `sound` item of `package` (default the edit target; NO_TARGET with none): the WAV is copied in unchanged and the package's build encodes it, as import.sound does; `class` as there. A file in a character's dataset or fine-tune folder is REFUSED, and only a .wav is taken. Without `tag` it saves a standalone sound item named by `clip` in the edit target. An explicit `repo` exports it to art/announcer/<clip>.wav for `git add` (Git LFS): that does not run git or edit boot::medal_announcer::CLIPS, the reply gives the CLIPS entry a new clip needs, and an existing clip is only replaced with `replace`. `from` is a file voice.say or voice.clone.say saved (default the last one)",
+    r#"{"tag?":"string (snd! path; into a package)","package?":"string (with tag; default the edit target)","class?":"string|integer (with tag)","clip?":"string (without tag)","from?":"string","repo?":"string (without tag)","replace?":"boolean (without tag)"}"#,
+    r#"{"with tag: package":"string","tag":"string (tag:snd!:<path>)","source":"string","item":"integer","dir":"string","duration_ms":"integer; as import.sound","without tag: file":"string","clip":"string","repo_path":"string","clips_entry":"string","exists":"boolean","next":"string"}"#,
     r#"{"clip":"test-line","repo":"$OUT"}"#,
 );
 
@@ -162,7 +162,44 @@ fn say(app: &mut App, p: &P) -> Reply {
     Ok(said_json(&said))
 }
 
+/// A line into the edit target (or `package`) as a `sound` item.
+fn commit_sound(app: &mut App, p: &P, tag: &str) -> Reply {
+    for k in ["clip", "repo", "replace"] {
+        if p.get(k).is_some() {
+            return Err(err(code::INVALID_PARAMS, format!("{k}: not with tag (it commits into a package)")));
+        }
+    }
+    let package = match p.opt_str("package")? {
+        Some(id) => id.to_owned(),
+        None => app
+            .edit_target()
+            .ok_or_else(|| err(code::NO_TARGET, crate::app::edit_target::NO_TARGET))?,
+    };
+    let class = match p.get("class") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(_) => return Err(err(code::INVALID_PARAMS, "class: a name or a number")),
+    };
+    app.voice_commit_sound(tag, p.opt_str("from")?.map(Path::new), &package, class.as_deref())
+        .map_err(voice_error)
+}
+
 fn commit(app: &mut App, p: &P) -> Reply {
+    if let Some(tag) = p.opt_str("tag")? {
+        return commit_sound(app, p, tag);
+    }
+    if p.get("package").is_some() || p.get("class").is_some() {
+        return Err(err(code::INVALID_PARAMS, "package and class go with tag"));
+    }
+    if p.opt_str("repo")?.is_none() {
+        let target = super::packages::save_target(app, None)?;
+        let clip = crate::app::announcer::check_clip_id(p.str("clip")?).map_err(voice_error)?;
+        let from = p.opt_str("from")?.map(Path::new).or(app.announcer.last.as_deref())
+            .ok_or_else(|| err(code::INVALID_PARAMS, "from: no line has been made yet"))?;
+        let file = app.save_voice_item(&target, from, clip, None).map_err(|why| err(code::REFUSED, why))?;
+        return Ok(json!({"file": file, "clip": clip, "package": target}));
+    }
     let (file, ready) = app
         .voice_commit(
             p.str("clip")?,

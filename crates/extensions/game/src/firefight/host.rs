@@ -18,7 +18,7 @@ use ::firefight::director::{
     Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen, firefight_team,
 };
 use ::firefight::{
-    Command, Def, Director, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason,
+    Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
     Settings, Skull,
 };
 use host_log::{Entry, Log, LogHead, Sha256};
@@ -145,6 +145,8 @@ pub enum Refusal {
     NoZones,
     /// The definition is invalid or names a class the kit lacks.
     Def(::firefight::Refusal),
+    /// The definition's rules script did not build or verify.
+    Script(String),
     /// Every team is held by a player or is a player team.
     NoFreeTeam,
     /// Two player teams, and the kit marks fewer bases than that.
@@ -158,6 +160,7 @@ impl std::fmt::Display for Refusal {
             Refusal::NoKit => f.write_str("the map does not carry the Firefight kit"),
             Refusal::NoZones => f.write_str("the map's Firefight kit has no drop zones"),
             Refusal::Def(refusal) => write!(f, "the Firefight definition: {refusal}"),
+            Refusal::Script(refusal) => write!(f, "the director script: {refusal}"),
             Refusal::NoFreeTeam => f.write_str("every team is held by a player"),
             Refusal::Bases { have, need } => write!(
                 f,
@@ -240,8 +243,9 @@ struct Progress {
 /// One match on one machine.
 pub struct Host {
     role: Role,
-    /// The host's director; none on a replica or a client.
-    director: Option<Director>,
+    /// The host's director (the definition's rules script on the VM); none
+    /// on a replica or a client.
+    director: Option<ScriptDirector>,
     log: Log<Command>,
     /// The sequence number of the last applied entry.
     applied: u32,
@@ -264,6 +268,10 @@ pub struct Host {
     /// The Firefight team each squad slot was last sent at (`Target`; 0
     /// with one team): its cleanup hunt goes to that team's base.
     targets: [u8; SQUAD_SLOTS],
+    /// The mode blob of the last `ModeState` entry applied here.
+    mode: Option<Vec<u8>>,
+    /// The mode blob of the last `ModeState` entry the host appended.
+    mode_sent: Option<Vec<u8>>,
 }
 
 impl Host {
@@ -292,7 +300,10 @@ impl Host {
         let genesis = genesis(&def, settings.seed)?;
         let log = Log::new(LogHead::genesis(genesis)).map_err(|e| Refusal::Log(e.to_string()))?;
         let director = match role {
-            Role::Host => Some(Director::new(def, settings).map_err(Refusal::Def)?),
+            Role::Host => Some(
+                ScriptDirector::new(def, settings)
+                    .map_err(|refusal| Refusal::Script(refusal.to_string()))?,
+            ),
             Role::Replica | Role::Client => None,
         };
         let by_character = kit
@@ -316,6 +327,8 @@ impl Host {
             finished: false,
             respawns: 0,
             targets: [0; SQUAD_SLOTS],
+            mode: None,
+            mode_sent: None,
         })
     }
 
@@ -347,18 +360,47 @@ impl Host {
     }
 
     /// The director's mode blob, on the host.
-    pub fn state(&self) -> Option<&State> {
-        self.director.as_ref().map(Director::state)
+    pub fn state(&self) -> Option<State> {
+        self.director.as_ref().map(ScriptDirector::state)
     }
 
     /// The director, on the host.
-    pub fn director(&self) -> Option<&Director> {
+    pub fn director(&self) -> Option<&ScriptDirector> {
         self.director.as_ref()
     }
 
     /// The sequence number of the last entry applied here.
     pub fn applied(&self) -> u32 {
         self.applied
+    }
+
+    /// The mode blob the last applied `ModeState` entry carried: what a
+    /// replica or a film's playback draws (docs/game/firefight.md, "The
+    /// HUD").
+    pub fn mode_state(&self) -> Option<&[u8]> {
+        self.mode.as_deref()
+    }
+
+    /// On the host, after [`Host::post_tick`]: append the step's mode blob
+    /// as a `ModeState` entry for the next tick, when it differs from the
+    /// last one appended. Returns whether it appended. Elsewhere nothing is
+    /// appended: the host writes the log.
+    pub fn note_mode(&mut self, tick: u32, blob: &[u8]) -> Result<bool, host_log::Error> {
+        if self.role != Role::Host || self.mode_sent.as_deref() == Some(blob) {
+            return Ok(false);
+        }
+        let head = self.log.head();
+        self.log.push(Entry {
+            seq: head.next_seq()?,
+            tick: tick.saturating_add(1).max(head.tick),
+            author: None,
+            op: Command::ModeState {
+                blob: blob.to_vec(),
+            },
+            prev_hash: head.hash,
+        })?;
+        self.mode_sent = Some(blob.to_vec());
+        Ok(true)
     }
 
     pub fn kit(&self) -> &Kit {
@@ -588,6 +630,11 @@ impl Host {
             Command::Score { player, points, .. } => game.credit_score(*player, *points),
             Command::Respawn { player } => game.respawn(*player),
             Command::Finish { outcome } => game.end_game(*outcome),
+            // The game takes no call: the HUD draws the blob.
+            Command::ModeState { blob } => {
+                self.mode = Some(blob.clone());
+                Ok(())
+            }
         }
     }
 }
@@ -647,7 +694,7 @@ fn credits(
 /// Where the director is after a step: the round, whether the last
 /// round's last wave is cleared, and the teams' points. The respawns are
 /// the host's to fill in.
-fn progress(director: &Director) -> Progress {
+fn progress(director: &ScriptDirector) -> Progress {
     let (state, def) = (director.state(), director.def());
     let rounds = def.rounds.len() as u32;
     let round = u32::from(state.round);

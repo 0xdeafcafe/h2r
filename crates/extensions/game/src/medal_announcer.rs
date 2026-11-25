@@ -24,16 +24,16 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points::{self, announcer_queue};
-use hud_kit_core::huds::superbounce::{MEDALS, Medal};
+use hud_kit_core::views::superbounce::{MEDALS, Medal};
 
 /// The feature's id.
 pub const FEATURE: &str = "medal-announcer";
 
-/// Each medal's clip, by medal id: the file `art/announcer/<id>.wav`.
+/// Our medals and game types, by id: the file `art/announcer/<id>.wav`.
 /// Bounced has none, so it is silent. `incel.wav` is not embedded: no line
 /// in the game shows the Incel medal (docs/game/teabag.md), so nothing
 /// would speak it.
-pub const CLIPS: [(&str, &[u8]); 7] = [
+pub const CLIPS: [(&str, &[u8]); 9] = [
     ("superbounce", include_bytes!("../../../../art/announcer/superbounce.wav")),
     ("double-bounce", include_bytes!("../../../../art/announcer/double-bounce.wav")),
     ("triple-bounce", include_bytes!("../../../../art/announcer/triple-bounce.wav")),
@@ -41,6 +41,8 @@ pub const CLIPS: [(&str, &[u8]); 7] = [
     ("chain-bounce", include_bytes!("../../../../art/announcer/chain-bounce.wav")),
     ("bouncetacular", include_bytes!("../../../../art/announcer/bouncetacular.wav")),
     ("monster-bounce", include_bytes!("../../../../art/announcer/monster-bounce.wav")),
+    ("firefight", include_bytes!(concat!(env!("OUT_DIR"), "/firefight.wav"))),
+    ("siege", include_bytes!(concat!(env!("OUT_DIR"), "/siege.wav"))),
 ];
 
 /// The clip id of `medal`, when it has a clip.
@@ -385,6 +387,14 @@ pub fn connect(mixer: Arc<Mutex<audio::Mixer>>) {
 /// each local player who earned it.
 pub fn announce(text: &str) {
     lock(&ANNOUNCER).announce(text);
+}
+
+/// Queue the script type's start line on this console.
+pub(crate) fn announce_clip(id: &'static str) {
+    let mut a = lock(&ANNOUNCER);
+    if a.on {
+        a.queue.push(id);
+    }
 }
 
 fn on_tick(o: &hooks::Obs) {

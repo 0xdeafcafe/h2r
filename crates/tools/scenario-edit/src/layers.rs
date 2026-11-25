@@ -38,8 +38,76 @@ pub enum LayerId {
     /// The superbounce and crouch spots the bots use, by state
     /// ([`crate::nav_view::BotSpot`]).
     BotSpots,
+    /// What headless bot matches measured on the map
+    /// (docs/editor/playtest.md, "What is measured").
+    Playtest(PlaytestLayer),
     Halo1,
     Live,
+}
+
+/// The playtest overlays, one a measure's picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PlaytestLayer {
+    /// Where killers stood.
+    Kills,
+    /// Where players fell.
+    Deaths,
+    /// Each starting location by how fair it played, and the spawn kills.
+    Spawns,
+    /// Time per place.
+    Traffic,
+    /// Crossings between places, with their direction.
+    Flow,
+    /// The polygons no player entered.
+    Unvisited,
+    /// The longest and the commonest fighting lines.
+    Sightlines,
+    /// Each equipment placement sized by use; never-picked ones ringed.
+    WeaponUse,
+    /// Where bots stuck, and the islands no start reaches.
+    Stuck,
+}
+
+impl PlaytestLayer {
+    pub const ALL: [Self; 9] = [
+        Self::Kills,
+        Self::Deaths,
+        Self::Spawns,
+        Self::Traffic,
+        Self::Flow,
+        Self::Unvisited,
+        Self::Sightlines,
+        Self::WeaponUse,
+        Self::Stuck,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Kills => "playtest_kills",
+            Self::Deaths => "playtest_deaths",
+            Self::Spawns => "playtest_spawns",
+            Self::Traffic => "playtest_traffic",
+            Self::Flow => "playtest_flow",
+            Self::Unvisited => "playtest_unvisited",
+            Self::Sightlines => "playtest_sightlines",
+            Self::WeaponUse => "playtest_weapon_use",
+            Self::Stuck => "playtest_stuck",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Kills => "Kills",
+            Self::Deaths => "Deaths",
+            Self::Spawns => "Spawn fairness",
+            Self::Traffic => "Traffic",
+            Self::Flow => "Flow",
+            Self::Unvisited => "Never entered",
+            Self::Sightlines => "Sightlines",
+            Self::WeaponUse => "Weapon use",
+            Self::Stuck => "Stuck spots",
+        }
+    }
 }
 
 impl LayerId {
@@ -53,6 +121,19 @@ impl LayerId {
 
     /// The navigation layers, hidden until shown ([`Layers::default`]).
     pub const NAVIGATION: [Self; 3] = [Self::Pathfinding, Self::BotNav, Self::BotSpots];
+
+    /// The playtest layers, hidden until shown ([`Layers::default`]).
+    pub const PLAYTEST: [Self; 9] = [
+        Self::Playtest(PlaytestLayer::Kills),
+        Self::Playtest(PlaytestLayer::Deaths),
+        Self::Playtest(PlaytestLayer::Spawns),
+        Self::Playtest(PlaytestLayer::Traffic),
+        Self::Playtest(PlaytestLayer::Flow),
+        Self::Playtest(PlaytestLayer::Unvisited),
+        Self::Playtest(PlaytestLayer::Sightlines),
+        Self::Playtest(PlaytestLayer::WeaponUse),
+        Self::Playtest(PlaytestLayer::Stuck),
+    ];
 
     /// Legend order. Every placement block has a row, even on an empty map.
     pub fn all() -> impl Iterator<Item = Self> {
@@ -69,6 +150,7 @@ impl LayerId {
         .chain(VolumeKind::ALL.map(Self::Volume))
         .chain(Self::COLLISION)
         .chain(Self::NAVIGATION)
+        .chain(Self::PLAYTEST)
         .chain([Self::Halo1, Self::Live])
     }
 
@@ -108,6 +190,7 @@ impl LayerId {
             Self::Pathfinding => "pathfinding",
             Self::BotNav => "bot_nav",
             Self::BotSpots => "bot_spots",
+            Self::Playtest(layer) => layer.id(),
             Self::Halo1 => "halo1",
             Self::Live => "live",
         }
@@ -134,6 +217,7 @@ impl LayerId {
             Self::Pathfinding => "AI pathfinding",
             Self::BotNav => "Bot nav mesh",
             Self::BotSpots => "Bot superbounce spots",
+            Self::Playtest(layer) => layer.label(),
             Self::Halo1 => "Halo 1 overlay",
             Self::Live => "Live objects",
         }
@@ -159,6 +243,7 @@ impl LayerId {
             | Self::InstanceCollision
             | Self::ObjectCollision => "Collision",
             Self::Pathfinding | Self::BotNav | Self::BotSpots => "Navigation",
+            Self::Playtest(_) => "Playtest",
             Self::Halo1 => "Reference",
             Self::Live => "Live",
         }
@@ -171,15 +256,17 @@ pub enum Preset {
     Gameplay,
     Collision,
     Navigation,
+    Playtest,
     Everything,
 }
 
 impl Preset {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Art,
         Self::Gameplay,
         Self::Collision,
         Self::Navigation,
+        Self::Playtest,
         Self::Everything,
     ];
 
@@ -189,6 +276,7 @@ impl Preset {
             Self::Gameplay => "gameplay",
             Self::Collision => "collision",
             Self::Navigation => "navigation",
+            Self::Playtest => "playtest",
             Self::Everything => "everything",
         }
     }
@@ -199,6 +287,7 @@ impl Preset {
             Self::Gameplay => "Gameplay",
             Self::Collision => "Collision",
             Self::Navigation => "Navigation",
+            Self::Playtest => "Playtest",
             Self::Everything => "Everything",
         }
     }
@@ -238,14 +327,16 @@ impl Preset {
                 id,
                 Structure | CollisionOnly | Pathfinding | BotNav | BotSpots
             ),
+            // The level and the bots' mesh the results sit on.
+            Self::Playtest => matches!(id, Structure | BotNav | Playtest(_)),
             Self::Everything => true,
         }
     }
 }
 
 /// The viewport's shown layers. Everything starts shown except the
-/// collision and navigation layers, which cover the picture: the
-/// Collision, Navigation and Everything presets show them.
+/// collision, navigation and playtest layers, which cover the picture: the
+/// Collision, Navigation, Playtest and Everything presets show them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layers {
     hidden: BTreeSet<LayerId>,
@@ -258,6 +349,7 @@ impl Default for Layers {
             hidden: LayerId::COLLISION
                 .into_iter()
                 .chain(LayerId::NAVIGATION)
+                .chain(LayerId::PLAYTEST)
                 .collect(),
             xray: false,
         }
@@ -327,7 +419,14 @@ mod tests {
         let want: Vec<_> = LayerId::COLLISION
             .into_iter()
             .chain(LayerId::NAVIGATION)
+            .chain(LayerId::PLAYTEST)
             .collect();
         assert_eq!(hidden, want);
+        // The playtest preset shows the nine layers over the level and the mesh.
+        layers.apply(Preset::Playtest);
+        assert!(LayerId::PLAYTEST.iter().all(|&id| layers.visible(id)));
+        assert!(layers.visible(LayerId::Structure) && layers.visible(LayerId::BotNav));
+        assert!(!layers.visible(LayerId::Objects) && !layers.visible(LayerId::BotSpots));
+        assert_eq!(LayerId::PLAYTEST.len(), PlaytestLayer::ALL.len());
     }
 }

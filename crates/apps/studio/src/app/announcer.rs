@@ -22,6 +22,11 @@
 //!
 //! [`App::voice_commit`] is the separate, explicit step that copies a line
 //! into `art/announcer/<clip>.wav` for `git add`.
+//! [`App::voice_commit_sound`] is the same step into a package: the line
+//! becomes a `sound` item of the edit target (`app::sound_import`), the way
+//! `import.sound` adds a WAV. A path in a character's dataset or fine-tune
+//! is refused ([`check_committable`]): only a line the voice said is a
+//! clip.
 //!
 //! With [`Engine::Clone`] the voice is a game character's local clone
 //! (`voice::clone`, `app::voices`): the cache and the lines are under
@@ -181,6 +186,33 @@ pub fn check_clip_id(id: &str) -> Result<&str, VoiceError> {
             "clip: lowercase letters, digits and - (superbounce, double-bounce)".into(),
         ))
     }
+}
+
+/// Why `from` is not a line to commit, when it is not: a file inside a
+/// character's dataset (`voices/<character>/dataset`, which holds the
+/// user's disc audio) or fine-tune (`voices/<character>/model`, the
+/// weights), or anything but a `.wav`.
+pub fn check_committable(from: &Path) -> Result<(), VoiceError> {
+    let real = from.canonicalize().unwrap_or_else(|_| from.to_path_buf());
+    for path in [from, real.as_path()] {
+        let part = path.components().find_map(|c| {
+            let c = c.as_os_str().to_str()?;
+            (c == dataset::CLIPS || c == "model").then_some(c.to_owned())
+        });
+        if let Some(part) = part {
+            return Err(VoiceError::Setup(format!(
+                "from: {} is in a {part} folder: a dataset or a fine-tune never goes into a package; commit a line the voice said (a file under announcer/ or voices/<character>/lines or clips)",
+                from.display()
+            )));
+        }
+    }
+    if from.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("wav") {
+        return Err(VoiceError::Invalid(format!(
+            "from: {} is not a .wav line",
+            from.display()
+        )));
+    }
+    Ok(())
 }
 
 /// `text` as a file name: lowercase words joined by `-`, at most 40.
@@ -553,5 +585,31 @@ impl App {
                 exists,
             },
         ))
+    }
+
+    /// Adds a saved line (`from`, else the last one made) to the local
+    /// package `package` as a `sound` item that writes the `snd!` `tag`
+    /// (`class` as `import.sound`'s). The WAV is copied into the package
+    /// unchanged; the package's build resamples and encodes it. A path in
+    /// a dataset or fine-tune is refused first.
+    pub fn voice_commit_sound(
+        &mut self,
+        tag: &str,
+        from: Option<&Path>,
+        package: &str,
+        class: Option<&str>,
+    ) -> Result<Value, VoiceError> {
+        let from = from
+            .map(Path::to_path_buf)
+            .or_else(|| self.announcer.last.clone())
+            .ok_or_else(|| VoiceError::Invalid("from: no line has been made yet".into()))?;
+        check_committable(&from)?;
+        super::sound_import::import_sound(&self.data_root(), &from, package, tag, class).map_err(
+            |e| match e {
+                super::assets::CopyRefusal::Params(m) => VoiceError::Invalid(m),
+                super::assets::CopyRefusal::Refused(m) => VoiceError::Setup(m),
+                super::assets::CopyRefusal::Failed(m) => VoiceError::Io(m),
+            },
+        )
     }
 }

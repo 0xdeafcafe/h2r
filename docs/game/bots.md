@@ -341,11 +341,48 @@ The brain reads game state the way telemetry already does
 the nav mesh comes from. A bot sees an enemy only when all three hold:
 
 - a ray reaches the enemy's head or chest;
-- that part is inside the bot's view cone;
+- that part is inside the bot's view cone and its visual range;
 - a reaction delay has passed (§3.4).
 
 A head over a parapet is seen. The bot aims at the part it sees: the
 chest, or the head when only the head is clear (`mind::sight_point`).
+
+#### Visual range
+
+A bot sees what a person sees on the screen (`perceive::notice_range`),
+applied to players and Firefight actors alike before the mind gets
+them:
+
+- **The view.** The cone is 40 degrees off the aim
+  (`mind::NOTICE_CONE`), the corner of Halo 2's 70-degree, 4:3 frame.
+  Past it only a player within 3 units (`mind::NOTICE_NEAR`) is noticed.
+- **Distance.** In the centre of the view (15 degrees, `perceive::CENTRE`)
+  a player is noticed out to the skill's range; toward the cone's edge
+  the range falls to 0.4 of it (`EDGE_SIGHT`). A crouched player is
+  noticed at 0.75 of the range (`CROUCHED_SIGHT`).
+
+  | | Easy | Normal | Heroic | Legendary |
+  |---|---|---|---|---|
+  | sight range (world units, `perceive::sight_range`) | 25 | 35 | 45 | 55 |
+  | camouflage, still (`perceive::camo_range`) | 1.5 | 2 | 2.5 | 3 |
+  | camouflage tracking error (times the skill's, `look::camo_aim`) | 2.5 | 2.2 | 1.9 | 1.6 |
+
+- **A scope.** A held gun with zoom levels reaches 1.5 times as far per
+  level (`SCOPE_SIGHT`), only within 6 degrees of the aim
+  (`SCOPE_CONE`): a sniper sees a far player down its own line once it
+  has looked there, never off to the side, and never through a wall.
+- **Active camouflage.** A player with camouflage on (player `+0x198`,
+  §3.6) is noticed only at arm's length, twice that while it moves
+  faster than the motion tracker's threshold (`CAMO_MOVING`). Firing
+  (within `sound::HEARD_TICKS`) or a broken shield shows it at the full
+  range, as the camouflage flickers in Halo 2. A tracked camouflaged
+  target is aimed at with the larger error in the table and engaged at
+  0.6 of the thumb's pace (`look::CAMO_ENGAGE`). The motion tracker
+  still shows it moving (§3.1, "The motion tracker").
+
+The host reads each living player's motion and recent fire as slot masks
+(`Observations::moving`, `firing`); perception keeps only the bits of
+players it sees.
 
 #### Visibility grid (`bots::vis`)
 
@@ -1566,19 +1603,23 @@ it shoots to (world units):
 
 | Role | Band (`arms::preferred_range`) | Shoots from, to | Rating |
 |---|---|---|---|
-| unknown (not read) | 2.5 to 15 | 0 to 25 | 1 |
+| unknown (not read) | 2.5 to 15 | 0 to 18.75 | 1 |
 | blade | 0 to 1.5 | (melee) | 4 |
-| scatter | 0 to 4 | 0 to 8 | 4 |
-| spray | 1.5 to 9 | 0 to 18 | 2 |
-| precise | 5 to 28 | 0 to 40 | 3 |
-| sniper | 12 to 60 | 0 to 80 | 5 |
-| blast | 5 to 25 | 2.5 to 35 | 5 |
+| scatter | 0 to 4 | 0 to 5 | 4 |
+| spray | 1.5 to 9 | 0 to 11.25 | 2 |
+| precise | 5 to 28 | 0 to 35 | 3 |
+| sniper | 12 to 60 | 0 to 75 | 5 |
+| blast | 5 to 25 | 2.5 to 31.25 | 5 |
 
-An identified SMG keeps its target within its aim-assist reach, bounded
-to 4.5–9 world units, and fires to 1.6 times that (14.4 at most), in
-bursts past the band from Normal up (§3.4). A plasma rifle or plasma pistol (by identity), or any
+One rule sets where every gun stops shooting: 1.25 times its own band's
+far end (`weapons::FIRE_PAST_BAND`), whatever its class. A person sprays
+a little past where a gun is good and never across the map, so an SMG
+with an 8-unit band fires to 10, a battle rifle with a 20-unit band to
+25. The band comes from the gun's own tag data (`weapons::reach`), and
+the role table above is the fallback when the tag has none. Past the
+band the trigger works in bursts from Normal up (§3.4). A plasma rifle or plasma pistol (by identity), or any
 automatic whose projectile is slower than 150 world units a second,
-keeps its target within 6 and fires to 10 at most
+keeps its target within 6 and so fires to 7.5 at most
 (`weapons::SLOW_BOLT_BAND`, `SLOW_BOLT_FIRE`): a strafing target steps out
 of slow bolts ([round 1 on Midship](notes/2026-11-23-bots-natural-round1.md):
 the plasma rifle hit 0.42 of its shots under 3 units, 0.17 from 3 to 12
@@ -1773,7 +1814,7 @@ it has found itself):
 A fault leaves `Perception::objective` `None`: the bot plays as in Slayer.
 Script games ride a retail engine index (rules-engine.md, "Which engine
 index a script rides") and keep its objective registry, so the same reads
-serve a `.rules` game on the CTF or Assault carrier.
+serve a `.rules` game on the CTF or Assault engine.
 
 **Without the engine's globals.** A rules script that keeps no per-engine
 globals (docs/game/rules-engine.md, "Porting the seven engines") still
@@ -4664,7 +4705,7 @@ stats rank cache use `0x00192df0`/`0x001934f0` directly.
 hopper `0x001902de` answers (ECX the local player; `[0x54e9dc +
 player*0xc70]`, or -1 when flag bit 4 of `[0x54e8e0 + player*0xc70]` is
 clear; its one caller `0x00231056`), through `0x001943d0` at
-`0x00231066`, which fails for -1 so nothing starts. A playlist press
+`0x00231066`, when the saved hopper is usable. The Live menu opens the playlist picker for an unset, out-of-range or Clanker selection. A playlist press
 saves its hopper there (`0x002b21e3`: `push edi` (the hopper), `push
 [ebp+0Ch]` (the player), `call 0x001902fc`, `ret 8`; its only caller).
 Two hooks keep Quickmatch on human hoppers
@@ -5057,12 +5098,12 @@ actions in step 8 separately.
    opens as before, and back from it lands on Custom Game Browser
    (`custom games: opening the browser`); the same for Co-op Campaign.
    Mods opens as Content Download did.
-3. OptiMatch lists the eight human playlists and no Clanker one.
-4. Clankermatch lists Rumble Pit, Team Slayer, Team Skirmish, Team Snipers,
-   Big Team Battle, BTB Heavies, Solo Training and Team Training (the
+3. OptiMatch lists human and Clanker playlists in descriptor order.
+4. Clankermatch lists Clanker Rumble, Clanker Slayer, Clanker Doubles, Clanker Snipers,
+   Clanker BTB, BTB Heavies, Solo Training and Team Training (the
    log: `clankermatch: the playlists are the clanker hoppers`; at logon
    `live: clankermatch: clanker hoppers [8, 9, 10, 11, 12, 13, 14, 15]`).
-5. Pick Rumble Pit: the retail search screen runs for 4 to 20 s
+5. Pick Clanker Rumble: the retail search screen runs for 4 to 20 s
    (`live: clankermatch: searching clanker playlist 8 ...`), then the
    game hosts its own lobby (does it? in every type: FFA and teams).
 6. The match lobby fills with rostered phantoms (seven for Slayer), the
@@ -5096,7 +5137,7 @@ actions in step 8 separately.
      and seat after entry (§11.4).
 9. Leave after the game: the bots go within 30 s (`clankermatch: the game
    is over: the bots go`). Back on the Live menu, Quickmatch starts the
-   human playlist picked last in OptiMatch, or nothing if none
+   human playlist picked last in OptiMatch, or opens its playlist picker if none
    (`clankermatch: hopper 8 not saved for Quickmatch` at the pick).
 10. With a server that has no clanker marks: OptiMatch as retail,
     Clankermatch's list empty (say how the empty list looks).
@@ -5611,9 +5652,10 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      7. Note any spot where a bot still gets stuck for good (map, roughly
         where) and send the `bots:` lines.
 3. **Combat.** Built: `bots::mind` (`Mind`, the phantom's decision loop).
-   - **Seeing.** An enemy is seen when it is inside 65 degrees of the
-     aim, or within 3 units anywhere, and the walls leave a clear line from
-     the bot's eye to its chest or head. Teammates in a team game are never
+   - **Seeing.** An enemy is seen when it is inside 40 degrees of the
+     aim, or within 3 units anywhere, within the skill's visual range
+     (§3.1, "Visual range"), and the walls leave a clear line from the
+     bot's eye to its chest or head. Teammates in a team game are never
      targets.
    - **Deciding**, every frame: fight the target it has while it is still
      seen, else the nearest seen; with no one seen, chase the last place it
@@ -5636,7 +5678,7 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      | grenades a minute | 0.5 | 1 | 2 | 3 |
 
      Until its reaction time has passed the bot walks on and turns at
-     half gain, but does not fire (§3.4). It fires within 25 units, melees (B) within 0.9, and throws a
+     half gain, but does not fire (§3.4). It fires within its gun's range (§3.6), melees (B) within 0.9, and throws a
      grenade (left trigger) at a target 3 to 12 units away, at most once
      every 8 s. While fighting it strafes, kept on the nav mesh.
    - Tests (`cargo test -p bots`): the skills get better in order; a wall
@@ -5998,7 +6040,7 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      The custom-game driver applies Aggression, Aim style and Taunts to
      existing seats as described in §7.
    - **The page** is the shared settings dialog, `clankers`
-     (`assets/ui/screens/clankers.yaml`; docs/game/ui-builder.md "The
+     (`content/ui/screens/clankers.yaml`; docs/game/ui-builder.md "The
      settings dialog"): eight `setting:` rows over the settings above, on
      the lobby's own settings dialog, Quick Options, inside and out:
      Quick Options' panel, header ("CLANKERS"), list (its `setting_lists`
@@ -6183,11 +6225,10 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
    - **Weapon ranges** (`weapons::reach`). A gun's band and fire range
      are its role's (§3.6) refined by its tag's aim assist reach
      (`cone_range`, `pull_range`): a magnum, shotgun, plasma or
-     rifle is good to its reach (kept within half and one and a half
-     times its role's band end) and fires to 1.6 times that. An identified
-     SMG closes to its effective band (4.5 to 9 units) and fires to 1.6
-     times it. A
-     sniper or splash weapon starts with its role's range. The first
+     rifle or SMG is good to its reach (kept between half its role's
+     band end and the role's band end). A sniper or splash weapon starts
+     with its role's band. Every gun fires to 1.25 times its band's end
+     (`weapons::FIRE_PAST_BAND`), one rule for all classes. The first
      barrel's projectile caps all firearm ranges at the nearer positive
      value of its air damage endpoint and maximum travel. With both
      fields unset, the role and aim assist decide. The movement band

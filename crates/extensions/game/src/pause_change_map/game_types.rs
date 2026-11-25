@@ -10,13 +10,12 @@
 //! `crate::community_variants` and `crate::game_variants::inject` merge
 //! into it at each load of the main menu's tags. A variant is filed as
 //! the lobby files it: under its game type, or under one of our rows
-//! (Research and Devolution, Party Games) when its name or the rules
-//! script its block names says so (`tweakers::record_row`).
+//! when its script names one (`community_variants::filed_type`).
 
 use engine::memory::GuestMemory;
 use variants::record::{GameType, GameVariant, RECORD_SIZE};
 
-use crate::community_variants::Row;
+use crate::community_variants::{self, Row};
 use crate::tweakers;
 
 /// A row of the game type list.
@@ -27,7 +26,7 @@ pub enum Group {
 }
 
 /// The game type list's order (`tweakers::GAME_TYPE_WORDS`), then ours.
-pub const ORDER: [Group; 9] = [
+pub const ORDER: [Group; 11] = [
     Group::Type(GameType::Slayer),
     Group::Type(GameType::King),
     Group::Type(GameType::Oddball),
@@ -37,6 +36,8 @@ pub const ORDER: [Group; 9] = [
     Group::Type(GameType::Territories),
     Group::Row(Row::Research),
     Group::Row(Row::PartyGames),
+    Group::Row(Row::Firefight),
+    Group::Row(Row::Siege),
 ];
 
 impl Group {
@@ -70,19 +71,17 @@ pub fn display_name(name: &str) -> String {
         .to_owned()
 }
 
-/// `variant` as a row of the list: under our `row` when it has one, else
-/// under its game type; `None` for an engine the list has no row for.
-pub fn listed(variant: GameVariant, row: Option<Row>) -> Option<Listed> {
-    let group = match row {
+/// The same filing rule as the lobby's Change Rules list.
+pub fn listed(variant: GameVariant) -> Option<Listed> {
+    let name = variant.name();
+    let ty = community_variants::filed_type(&name, variant.ext_block(), variant.game_type())?;
+    let group = match Row::of_type(ty) {
         Some(r) => Group::Row(r),
-        None => match variant.game_type() {
-            GameType::Other(_) => return None,
-            t => Group::Type(t),
-        },
+        None => Group::Type(GameType::from_engine(i32::from(ty.engine()))),
     };
     Some(Listed {
         group,
-        name: display_name(&variant.name()),
+        name: display_name(&name),
         variant,
     })
 }
@@ -116,7 +115,7 @@ pub fn read(m: &dyn GuestMemory) -> Vec<Listed> {
         let Ok(v) = GameVariant::from_bytes(&raw) else {
             continue;
         };
-        if let Some(l) = listed(v, tweakers::record_row(m, record)) {
+        if let Some(l) = listed(v) {
             out.push(l);
         }
     }

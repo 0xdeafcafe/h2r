@@ -9,10 +9,8 @@
 //! and `layer`):
 //!
 //! - `render_scene_passes` calls `0x0002_5d50` between its state call and
-//!   the layer-16 begin (`0x0002c0d6`), then the layer draw (returns
-//!   `0x0002c0e9`); the call's own content is not read, but whatever it
-//!   pushes is in the device's state before the layer begins, so a pass
-//!   asked at the layer draw reads it after the drain.
+//!   the layer-16 begin (call at `0x0002c0db`), then the layer draw
+//!   (returns `0x0002c0e9`). The host reads the device after the drain.
 //! - The layer draw draws layer 16 only when `[FOG_MODE] == 3` or either
 //!   fog byte (`0x00485a75`, `0x00485a76`) is set (`0x00044582`); a
 //!   native pass applies the same gate ([`layer_draws`]).
@@ -24,7 +22,7 @@
 
 use crate::camera::{GuestRead, GuestWrite};
 use crate::skip::{
-    self, Cleared, CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS,
+    self, Cleared, CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE, MAX_ITEMS,
     RENDER_RECORDS, RENDER_RECORD_SIZE,
 };
 use crate::world::Owner;
@@ -41,7 +39,7 @@ pub const FOG_BYTES: u32 = 0x0048_5a74;
 /// The late passes' layer-16 call: the layer draw's return address
 /// (`[esp]` at its entry). Other callers of the layer draw with layer 16
 /// current are not the scene's fog and stay on the D3D path.
-pub const SCENE_FOG_RETURN: u32 = 0x0002_c0e9;
+pub use scene_extract::late::SCENE_FOG_RETURN;
 
 /// Layer 16's implementation chooser is the geometry build's own case
 /// (`0x0004cbf0`, the jump table entry `0x0004cdc8`; layers 3, 16, 18 and
@@ -108,20 +106,28 @@ pub fn layer_draws(mem: &dyn GuestRead) -> Option<bool> {
     Some(mem.read_u32(FOG_BYTES)? & 0x00ff_ff00 != 0)
 }
 
-/// Clears the layer bit on the structure items `native` accepts. In layer
-/// 16 an item whose record has no entry ([`layer_implementation`]) is
-/// neither: the guest draws nothing of it, so it is left alone and does
-/// not break the prefix. Since
-/// the native pass draws before the guest layer, the accepted items must
-/// form a prefix of the layer's items. Objects and other builds belong to
-/// the guest remainder. A gap in the prefix or an unreadable list refuses
-/// the walk before any mask changes. Callers plan writes in a mask preview
-/// so that a failed reservation leaves the guest list intact.
+/// Items left to the guest by the late-layer walk, grouped by cause.
+#[derive(Default)]
+pub struct LateRefusals {
+    pub build: u64,
+    pub handler: u64,
+    pub record: u64,
+    pub subparts: u64,
+    pub object: u64,
+    pub material: u64,
+    pub order: u64,
+}
+
+/// Clears the layer bit for accepted geometry. A layer-16 geometry build
+/// can omit the entry for either an object or structure record. Such a
+/// record leaves no entry for the layer sort and keeps its mask unchanged.
+/// When a real guest entry shares the layer with accepted items, keep the entire list
+/// for the guest sort. Callers preview the writes until reservation commits.
 pub fn clear_fog(
     mem: &mut dyn GuestWrite,
     layer: u32,
     native: &dyn Fn(FogItem) -> bool,
-) -> Option<(Vec<FogItem>, Cleared)> {
+) -> Option<(Vec<FogItem>, Cleared, LateRefusals)> {
     if mem.read_u32(CURRENT_LAYER)? != layer || layer >= 32 {
         return None;
     }
@@ -138,7 +144,8 @@ pub fn clear_fog(
     items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
     let bit = 1u32 << layer;
     let planar = if layer == FOG_LAYER as u32 { Some(planar_gate(&*mem)?) } else { None };
-    let mut prefix = Vec::new();
+    let mut accepted = Vec::new();
+    let mut refused = LateRefusals::default();
     let mut guest_remainder = false;
     for i in first..count {
         let item = items + ITEM_SIZE * i;
@@ -147,54 +154,79 @@ pub fn clear_fog(
             continue;
         }
         if mem.read_u32(item)? != GEOMETRY_BUILD {
+            refused.build += 1;
             guest_remainder = true;
             continue;
         }
         let arg = mem.read_u32(item + 0xc)?;
         let record = (arg >> 8) as u16 as i16;
         if record < 0 {
+            refused.record += 1;
             guest_remainder = true;
             continue;
         }
         let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
-        if mem.read_u32(base + 4)? != u32::MAX {
-            guest_remainder = true;
-            continue;
-        }
-        let packed = mem.read_u32(base + 0xc)?;
-        let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
-            Owner::Cluster((packed >> 9) & 0x1ff)
-        } else {
-            Owner::Instance((packed >> 18) & 0x7ff)
-        };
+        let flags = mem.read_u32(base)?;
         let implementation = match planar {
-            Some(planar) => match layer_implementation(mem.read_u32(base)?, planar) {
+            Some(planar) => match layer_implementation(flags, planar) {
                 Some(i) => Some(i),
                 None => continue,
             },
             None => None,
         };
-        let shader = mem.read_u32(item + 8)? as u16;
-        let fog_item = FogItem { owner, part: arg as u8, shader, implementation };
-        if !native(fog_item) {
+        if mem.read_u32(item + 4)? != GEOMETRY_DRAW {
+            refused.handler += 1;
             guest_remainder = true;
             continue;
         }
-        if guest_remainder {
-            return None;
+        // This handler returns before drawing layer 16 when bit 14 is
+        // set (0x0004d14e). It still writes the current shader on entry.
+        if planar.is_some() && flags & (1 << 14) != 0 {
+            refused.record += 1;
+            guest_remainder = true;
+            continue;
         }
-        prefix.push((item, mask, fog_item));
+        if mem.read_u32(base + 4)? != u32::MAX {
+            refused.object += 1;
+            guest_remainder = true;
+            continue;
+        }
+        // The batch owns a complete part. Let the emitter choose its
+        // ranges when the render record enables subpart selection.
+        if flags & scene_extract::layout::object_walk::RECORD_SUBPARTS != 0 {
+            refused.subparts += 1;
+            guest_remainder = true;
+            continue;
+        }
+        let packed = mem.read_u32(base + 0xc)?;
+        let owner = if flags & (1 << 12) == 0 {
+            Owner::Cluster((packed >> 9) & 0x1ff)
+        } else {
+            Owner::Instance((packed >> 18) & 0x7ff)
+        };
+        let shader = mem.read_u32(item + 8)? as u16;
+        let fog_item = FogItem { owner, part: arg as u8, shader, implementation };
+        if !native(fog_item) {
+            refused.material += 1;
+            guest_remainder = true;
+            continue;
+        }
+        accepted.push((item, mask, fog_item));
     }
-    let mut cleared = Cleared { layer, items: Vec::with_capacity(prefix.len()) };
-    let mut drawn = Vec::with_capacity(prefix.len());
-    for (item, mask, fog_item) in prefix {
+    if guest_remainder {
+        refused.order = accepted.len() as u64;
+        accepted.clear();
+    }
+    let mut cleared = Cleared { layer, items: Vec::with_capacity(accepted.len()) };
+    let mut drawn = Vec::with_capacity(accepted.len());
+    for (item, mask, fog_item) in accepted {
         if mem.write_u32(item + 0x10, mask & !bit).is_none() {
             break;
         }
         cleared.items.push(item);
         drawn.push(fog_item);
     }
-    Some((drawn, cleared))
+    Some((drawn, cleared, refused))
 }
 
 /// Sets the bits [`clear_fog`] cleared back.
@@ -219,7 +251,7 @@ mod tests {
         m.w(CURRENT_LAYER, 16);
         m.w(CURRENT_LIST, LIST);
         m.w(LIST, 100);
-        m.w(LIST + 4, 4);
+        m.w(LIST + 4, 3);
         m.w(LIST + 0xc, 0);
         m.w(LIST + 0x14, ITEMS);
         let item = |m: &mut Mem, i: u32, build: u32, record: u32| {
@@ -237,6 +269,7 @@ mod tests {
         m.w(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX);
         m.w(RENDER_RECORDS + 0x20 * 2, RECORD_FOG);
         m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 37 << 9);
+        m.w(RENDER_RECORDS + 0x20 * 5, 0);
         m.w(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004);
         m.w(RENDER_RECORDS + 0x20 * 7 + 4, u32::MAX);
         m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12 | RECORD_FOG);
@@ -268,28 +301,28 @@ mod tests {
     }
 
     #[test]
-    fn a_native_prefix_ignores_items_outside_the_layer_and_keeps_the_guest_suffix() {
+    fn a_native_layer_ignores_items_outside_the_layer_and_list() {
         let mut m = scene();
         m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3);
-        let (drawn, cleared) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        let (drawn, cleared, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
         assert_eq!(
             drawn,
             vec![
                 FogItem { owner: Owner::Cluster(37), part: 1, shader: 0x0010, implementation: Some(2) },
                 FogItem { owner: Owner::Instance(140), part: 3, shader: 0x0012, implementation: Some(2) },
             ],
-            "the prefix includes both layer-16 structure items"
+            "both layer-16 structure items are accepted"
         );
         assert_eq!(cleared.items, vec![ITEMS, ITEMS + ITEM_SIZE * 2]);
         assert_eq!(mask(&m, 0), 1 << 3, "layer 3 kept, layer 16 gone");
         assert_eq!(mask(&m, 1), 1 << 3, "the object is outside layer 16");
-        assert_eq!(mask(&m, 3), 1 << 16 | 1 << 3, "the other build stays in layer 16");
+        assert_eq!(mask(&m, 3), 1 << 16 | 1 << 3, "the spare slot is outside the list");
         restore(&mut m, &cleared);
         assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
     }
 
     #[test]
-    fn a_native_item_after_any_guest_item_refuses_the_layer_without_mask_edits() {
+    fn interleaved_draws_stay_for_the_guest_sort_and_count_the_refusals() {
         for layer in [6, 16] {
             for (build, model) in [
                 (GEOMETRY_BUILD, 0xe1a3_0004), // An object.
@@ -298,6 +331,7 @@ mod tests {
             ] {
                 let mut m = scene();
                 m.w(CURRENT_LAYER, layer);
+                m.w(LIST + 4, 4);
                 let expected = (1 << layer) | (1 << 3);
                 for i in 0..4 {
                     m.w(ITEMS + ITEM_SIZE * i + 0x10, expected);
@@ -308,7 +342,11 @@ mod tests {
                 m.w(record + 4, model);
                 m.w(record + 0xc, 19 << 9);
 
-                assert!(clear_fog(&mut m, layer, &|item| item.part != 2).is_none());
+                let (drawn, cleared, refused) = clear_fog(&mut m, layer, &|item| item.part != 2).unwrap();
+                assert!(drawn.is_empty());
+                assert!(cleared.items.is_empty());
+                assert_eq!(refused.order, 2);
+                assert_eq!(refused.build + refused.object + refused.material, 2);
                 for i in 0..4 {
                     assert_eq!(mask(&m, i), expected, "layer {layer}, item {i}");
                 }
@@ -317,10 +355,33 @@ mod tests {
     }
 
     #[test]
+    fn subpart_selection_keeps_the_complete_part_out_of_the_batch() {
+        let mut m = scene();
+        m.w(RENDER_RECORDS + RENDER_RECORD_SIZE * 2, RECORD_FOG | scene_extract::layout::object_walk::RECORD_SUBPARTS);
+        let (drawn, cleared, refused) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        assert!(drawn.is_empty() && cleared.items.is_empty());
+        assert_eq!((refused.subparts, refused.order), (1, 1));
+    }
+
+    #[test]
+    fn an_object_without_a_fog_entry_leaves_the_following_placement_eligible() {
+        for flags in [0, RECORD_FOG | RECORD_FOG_UNGATED] {
+            let mut m = scene();
+            m.w(RENDER_RECORDS + RENDER_RECORD_SIZE * 5, flags);
+            let (drawn, cleared, refused) = clear_fog(&mut m, 16, &|_| true).unwrap();
+            assert_eq!(drawn.len(), 2);
+            assert_eq!(cleared.items, [ITEMS, ITEMS + ITEM_SIZE * 2]);
+            assert_eq!((refused.object, refused.order), (0, 0));
+            assert_eq!(mask(&m, 1), (1 << 16) | (1 << 3));
+        }
+    }
+
+    #[test]
     fn the_walk_clears_only_what_the_host_accepts() {
         let mut m = scene();
+        m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12); // The placement builds no fog entry.
         let native = |i: FogItem| i == FogItem { owner: Owner::Cluster(37), part: 1, shader: 0x0010, implementation: Some(2) };
-        let (drawn, cleared) = clear_fog(&mut m, 16, &native).unwrap();
+        let (drawn, cleared, _) = clear_fog(&mut m, 16, &native).unwrap();
         assert_eq!(drawn.len(), 1);
         assert_eq!(cleared.items, vec![ITEMS]);
         assert_eq!(mask(&m, 2), 1 << 16 | 1 << 3, "a placement the host leaves");
@@ -366,7 +427,7 @@ mod tests {
         m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3); // the object is not in layer 16
         m.w(FOG_BYTES, 0x0000_0100);
         m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12 | RECORD_FOG | RECORD_FOG_UNGATED);
-        let (drawn, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        let (drawn, _, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
         let got: Vec<_> = drawn.iter().map(|i| (i.owner, i.implementation)).collect();
         assert_eq!(got, vec![(Owner::Cluster(37), Some(0)), (Owner::Instance(140), Some(1))]);
         // The gate open: the placement has no entry, so the guest draws
@@ -375,7 +436,7 @@ mod tests {
         let mut m = scene();
         m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3);
         m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12 | RECORD_FOG | RECORD_FOG_UNGATED);
-        let (drawn, cleared) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        let (drawn, cleared, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
         assert_eq!(drawn.len(), 1);
         assert_eq!(drawn[0].implementation, Some(2));
         assert_eq!(cleared.items, vec![ITEMS]);
@@ -384,7 +445,7 @@ mod tests {
         let mut m = scene();
         m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3);
         m.w(RENDER_RECORDS + 0x20 * 2, 0);
-        let (drawn, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        let (drawn, _, _) = clear_fog(&mut m, 16, &|_| true).unwrap();
         assert_eq!(drawn.len(), 1);
         assert_eq!(drawn[0].owner, Owner::Instance(140));
         // An unreadable gate refuses the walk.

@@ -20,8 +20,8 @@ use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{
-    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_listed, lit_model, lit_subparts,
-    uniform,
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, OVERRIDE_LAYERS, OVERRIDE_MATERIAL, PlannedDraw, Texaccum,
+    lit_listed, lit_model, lit_subparts, override_sections, uniform,
 };
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
@@ -33,6 +33,7 @@ use native_render::program::ViewInputs;
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, scene_load_palettes};
 
+mod display;
 mod palette;
 pub(crate) use palette::{palette_counters, palette_ready};
 
@@ -67,6 +68,8 @@ impl PartRange {
 }
 
 struct ModelCoverage {
+    display_parts: HashMap<u16, Vec<(u8, u32)>>,
+    node_maps: Vec<Vec<u8>>,
     nodes: usize,
     assets: Arc<palette::GpuAssets>,
     all_parts: bool,
@@ -76,6 +79,7 @@ struct ModelCoverage {
 #[derive(Default)]
 struct Models {
     retire: Option<native_map::RetireQueue>,
+    sun_models: Option<native_render::sun_casters::SharedModels>,
     lit: Mutex<Option<LitObjects>>,
     /// Definition index to render-model datum, shared across definitions.
     index: HashMap<u16, u32>,
@@ -186,11 +190,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         drop(state);
         let state = Arc::clone(&self.state);
         let gpu = self.gpu.clone();
+        if let Some(retired) = retired {
+            native_map::retire_owned(timeline::setup::Stage::Objects, retired);
+        }
         let launched = background::spawn("native-objects load", move || {
-            let _timer = timeline::setup::Stage::Objects.worker();
-            // Destruction of the old map's textures and buffers also belongs
-            // off the guest thread. Already committed passes own their models.
-            drop(retired);
             load_objects(&name, generation, &job, &state, &palette, palettes, formats, gpu);
         });
         if let Err(e) = launched {
@@ -340,19 +343,14 @@ fn refresh_models(
     };
     if !shaders.is_empty() {
         let model_shaders = models.lit.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(LitObjects::model_shaders);
-        match tags::material::ShaderLibrary::read(&mut opened.map) {
-            Ok(mut lib) => {
-                let mut known = HashMap::new();
-                let edited = shader_models(&model_shaders.unwrap_or_default(), &mut |s| {
-                    crate::native_world_glue::shader_edited(&mut lib, &mut known, &shaders, s)
-                });
-                for mode in edited {
-                    if !modes.contains(&mode) {
-                        modes.push(mode);
-                    }
-                }
+        let mut known = HashMap::new();
+        let edited = shader_models(&model_shaders.unwrap_or_default(), &mut |s| {
+            crate::native_world_glue::shader_edited(&mut opened.lib, &mut known, &shaders, s)
+        });
+        for mode in edited {
+            if !modes.contains(&mode) {
+                modes.push(mode);
             }
-            Err(e) => eprintln!("native-objects: {name}: a shader edit's shader tags do not read ({e}); models keep their programs until the map reloads"),
         }
     }
     for mode in modes {
@@ -439,14 +437,32 @@ fn refresh_models(
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_map(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let retired = if state.as_ref().is_some_and(|s| s.generation != native_map_work::generation()) {
+            state.take()
+        } else {
+            None
+        };
+        drop(state);
+        if let Some(retired) = retired {
+            native_map::retire_owned(timeline::setup::Stage::Objects, retired);
+        }
+    }
+
     fn preload(&self, mem: &dyn GuestMemory) {
         if let Some((models, generation)) = self.load(mem) {
             self.refresh_edits(mem, &models, generation);
         }
     }
 
+    fn draw_display_objects(&self, mem: &mut dyn GuestMemory, view: &View, lod: render_bridge::native_scene_lists::LodDetail) {
+        let _ = self.draw_display_models(mem, view, lod);
+    }
+
     fn draw_walk(
         &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, first: usize, run: &[Entry],
+        display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
@@ -477,10 +493,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // do: the frame step opened it with one (render_bridge::scene_step).
         let (scene, scene_view) = view.ok_or(ObjectWalk::Inputs)?;
         let read = crate::native_world_glue::ReadMemory(mem);
-        let request = device.external_ready(&read, false).map_err(|_| ObjectWalk::Reservation)?;
-        let (width, height) = request.surface_size;
-        let (clip, rects) = device.clip_area(&read).ok().flatten().ok_or(ObjectWalk::State)?;
-        if !rects.is_empty() || !clip.is_whole(width, height) || request.rect != (0, 0, width, height) {
+        if !crate::native_layers_glue::viewport_clip(&device, &read) {
             return Err(ObjectWalk::State);
         }
         let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run)?;
@@ -492,12 +505,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         } else {
             None
         };
+        let display_draws = display_lod.and_then(|lod| {
+            display::plan_lod(&models, &device, mem, scene, scene_view, run, &draws, lod)
+        });
         let ranges = draws.len();
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
         let batch = u64::from(device.swap_count()).wrapping_add(1);
         let pass = |draws: Vec<(u32, PlannedDraw)>| {
-            Box::new(ObjectsPass { models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch })
+            Box::new(ObjectsPass {
+                display_only: false, display_draws: display_draws.clone(),
+                models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch,
+            })
         };
         drop(planning);
         // The load the run was planned against, held to the commit.
@@ -637,6 +656,8 @@ fn plan_walk<B: d3d::backend::Backend>(
     }
     let cached = mem.u32(CACHED_IMPLEMENTATION).map_err(|_| ObjectWalk::State)?;
     let mut checked_transition = false;
+    // An animated pass samples its constants at the render clock.
+    let time = native_render::layer_pass::render_time(&read);
     let mut lit = models.lit.try_lock().map_err(|_| ObjectWalk::Model)?;
     let mut lit = lit.as_mut();
     let coverage = models.coverage.read().map_err(|_| ObjectWalk::Model)?;
@@ -663,7 +684,7 @@ fn plan_walk<B: d3d::backend::Backend>(
         // failed GPU lookup for that same model is a residency fallback.
         if !cover.assets.uploaded() { return Err(ObjectWalk::Unresident); }
         let lit = lit.as_deref_mut().filter(|assets| assets.has(model)).ok_or(ObjectWalk::Unresident)?;
-        let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states).map_err(|why| {
+        let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states, time).map_err(|why| {
             count_refusal(&why);
             ObjectWalk::Inputs
         })?;
@@ -848,9 +869,22 @@ pub(crate) fn layer_models<B: d3d::backend::Backend>(
 
 /// The render states an object's draw inherits at a layer call
 /// ([`EntryStates`]), and whether the device's draws are W-buffered.
-pub(crate) fn entry_states<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> (EntryStates, bool) {
+pub(crate) fn entry_states<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory,
+) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
+    use native_render::object_program_gpu::{MaterialConstant18, ObjectLayerEntry};
+    use engine::render_loop::layer::SETUP_CONTEXT;
     let entry = LayerEntry::read(device, mem);
-    (entry.states, entry.w_buffered)
+    let bank = (|| {
+        let mut row = [0; 4];
+        for (lane, word) in row.iter_mut().enumerate() {
+            *word = mem.u32(SETUP_CONTEXT + 0x1630 + lane as u32 * 4).ok()?;
+        }
+        Some(row)
+    })();
+    let dirty = mem.u32(SETUP_CONTEXT + 0x1734).ok().map(|mask| mask & 1 != 0);
+    let c18 = MaterialConstant18::new(device.constant(18), bank, dirty);
+    (ObjectLayerEntry { states: entry.states, c18 }, entry.w_buffered)
 }
 
 /// The device's specular bit, which a draw on the implicit final combiner
@@ -903,9 +937,13 @@ fn load_objects(
     formats: Option<StreamFormats>,
     (device, queue): (wgpu::Device, wgpu::Queue),
 ) {
-    if generation != native_map_work::generation() {
+    let Some(_load) = native_map::begin_load(timeline::setup::Stage::Objects, || {
+        generation == native_map_work::generation()
+    }) else {
         return;
-    }
+    };
+    let _timer = timeline::setup::Stage::Objects.worker();
+    let _scope = mem_watch::scope("native.objects.load");
     let retire = match native_map::retire_queue() {
         Ok(queue) => queue,
         Err(error) => {
@@ -1001,7 +1039,7 @@ fn load_objects(
                 palette.resolve(definition, palette::Definition::Failed);
                 refused += 1;
                 if refused == 1 || hooks::native_verbose() {
-                    eprintln!("native-objects: {name}: definition {:#010x} left to D3D ({why})", definition.0);
+                    eprintln!("native-objects: {name}: definition {:#010x} failed to preload ({why})", definition.0);
                 }
             }
         }
@@ -1017,20 +1055,20 @@ fn load_objects(
         coverage: RwLock::new(coverage.into_iter().filter_map(|(mode, result)| Some((mode, result.ok()?))).collect()),
         index,
         palettes: opened.decoder.used().clone(),
+        sun_models: Some(Arc::new(casters.finish())),
     });
     {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(s) = state.as_mut().filter(|s| owns(s)) else { return };
+        native_render::sun_casters::set_models(generation, models.sun_models.as_ref());
         s.published = Some((timeline::frames(), Arc::clone(&models)));
     }
-    // E3's sun tiles read these on the render thread; retail never does.
-    native_render::sun_casters::set_models(generation, Some(Arc::new(casters.finish())));
     // The palette counts a model resident once the walk can draw it.
     for cover in models.coverage.read().unwrap_or_else(|e| e.into_inner()).values() {
         cover.assets.finish(true);
     }
     palette.refresh();
-    eprintln!("native-objects: {name}: {loaded} definitions ready, {refused} left to D3D");
+    eprintln!("native-objects: {name}: {loaded} definitions indexed, {refused} failed to preload");
 }
 
 /// Each definition's model for E3's sun tiles
@@ -1096,8 +1134,8 @@ struct Opened {
     /// through the stage's palette), shared by every model of the map.
     decoder: StageDecoder,
     images: StageImages,
-    /// The shader tags, read at the first material that needs them.
-    lib: Option<Option<tags::material::ShaderLibrary>>,
+    /// Resolves shader tags against the same metadata as `ctx`.
+    lib: tags::material::ShaderLibrary,
     /// The vector normalization cube, loaded as the lights load it at the
     /// first lit model (`Some(None)`: it does not load).
     normalization: Option<Option<Arc<StaticLightTexture>>>,
@@ -1107,44 +1145,80 @@ struct Opened {
     /// rasterizer bitmap at `+0x64`, `object_program::OBJECT_LIGHTMAP`),
     /// read at the first lit model: the image when uniform, else why not.
     lightmap: Option<Result<Image, String>>,
+    /// The map's shaders with passes in the sorted handlers' layers
+    /// ([`override_materials`]), each as the materials map of its own
+    /// build, read at the first lit model.
+    overrides: Option<Vec<HashMap<u16, LitMaterial>>>,
 }
 
 fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
     let (mut map, files) = native_map::open(name)?;
     let ctx = tags::object::Context::read(&mut map)?;
+    let lib = tags::material::ShaderLibrary::with_metadata(&map, ctx.meta.shader_view());
     Ok(Opened {
         map,
         ctx,
         raw: Raw(files),
         decoder: StageDecoder::new(palettes),
         images: StageImages::new(),
-        lib: None,
+        lib,
         normalization: None,
         lightmap: None,
+        overrides: None,
         formats,
     })
 }
 
-fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
-    if o.lib.is_none() {
-        let lib = tags::material::ShaderLibrary::read(&mut o.map);
-        if let Err(e) = &lib {
-            eprintln!("native-objects: the shader tags do not read ({e}); every object stays on D3D");
-        }
-        o.lib = Some(lib.ok());
+const SHAD: map::FourCC = map::FourCC(*b"shad");
+
+/// The shaders the game may put on an object's record in place of its
+/// part's material: every shader of the map with passes (first level of
+/// detail) in the sorted handlers' layers (`OVERRIDE_LAYERS`), the
+/// camouflage's. The record producer takes the shader from the object's
+/// render state at run time (`object_program_gpu::override_sections`), so
+/// each model compiles their passes over all of its parts; a record names
+/// the one it draws. Read once per map, each as the materials map
+/// `{OVERRIDE_MATERIAL: shader}` of its own build, taken out of `o`
+/// (put back by [`lit_parts`]).
+fn override_materials(o: &mut Opened) -> Vec<HashMap<u16, LitMaterial>> {
+    if let Some(found) = o.overrides.take() {
+        return found;
     }
-    o.lib.as_mut()?.as_mut()?.material(shader, None).ok()
+    let ids: Vec<TagId> = o.map.tags().iter().filter(|t| t.group == SHAD).map(|t| t.id).collect();
+    let mut found = Vec::new();
+    for id in ids {
+        let Ok(mut m) = o.lib.material(id, None) else { continue };
+        // The shader is substituted only by these sorted handlers. Its
+        // other layers can still compile when it is a part's own material.
+        m.layers.retain(|l| l.lod == 0 && !l.passes.is_empty()
+            && OVERRIDE_LAYERS.iter().any(|&x| usize::from(x) == l.layer));
+        if m.layers.is_empty() { continue; }
+        match lit_material(o, m) {
+            Ok(lit) => found.push(HashMap::from([(OVERRIDE_MATERIAL, lit)])),
+            Err(why) => eprintln!("native-objects: shader {:#010x}'s camouflage passes failed to preload: {why}", id.0),
+        }
+    }
+    if hooks::native_verbose() {
+        eprintln!("native-objects: {} shaders with camouflage passes compile over every model's parts", found.len());
+    }
+    found
 }
 
-/// Why an opaque material stays on D3D: no layer-3 implementation reads
-/// only what the object path gives (`object_program::program_refusal`),
-/// or it does not resolve. One that does is drawn through its programs
-/// ([`lit_material`]) or refused there; never with a stand-in.
-fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
-    let Some(m) = material(o, shader) else {
-        return Some("the material does not resolve".into());
-    };
-    native_render::object_program::program_refusal(&m)
+/// Logs, once per shader and layer, why an override shader's passes
+/// ([`override_materials`]) could not be preloaded. The indexed emitter
+/// can submit the bound range when its handler runs.
+fn log_override_refusal(shader: u32, layer: u8, why: &str) {
+    static SEEN: Mutex<Option<HashSet<(u32, u8)>>> = Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.get_or_insert_with(HashSet::new).insert((shader, layer)) {
+        eprintln!("native-objects: shader {shader:#010x}'s layer {layer} failed to preload: {why} (each shader and layer logged once)");
+    }
+}
+
+/// A render model may have no scene-layer upload: kind 4's sorted draw
+/// uses the live indexed range, and the game never submits kinds 0 or 5.
+fn needs_object_program(part: &tags::geometry::Part) -> bool {
+    part.is_drawn() && part.kind != load::PART_TRANSPARENT
 }
 
 /// Compile all sections, including runtime-selected damage variants,
@@ -1152,18 +1226,18 @@ fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
 fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage, RenderModelGeometry), load::Error> {
     let geo = RenderModelGeometry::read_in(&mut o.map, mode, &mut o.raw, Some(&o.ctx.meta))?;
     let mut materials = HashMap::new();
+    let mut material_errors = Vec::new();
     for (index, m) in geo.materials.iter().enumerate() {
-        if program_refusal(o, m.shader.id).is_none()
-            && let Ok(lit) = lit_material(o, m.shader.id)
-        {
-            materials.insert(index as u16, lit);
+        let result = o.lib.material(m.shader.id, None).map_err(|e| e.to_string())
+            .and_then(|material| lit_material(o, material));
+        match result {
+            Ok(lit) => { materials.insert(index as u16, lit); }
+            Err(why) => material_errors.push(format!("material {index}: {why}")),
         }
     }
-    let LitBuild { input: lit, refused, .. } = lit_parts(o, &geo, &materials);
-    if lit.is_empty() {
-        let why = refused.into_iter().map(|(_, reason)| reason).collect::<Vec<_>>().join(", ");
-        return Err(format!("no supported layer-3 parts ({why})").into());
-    }
+    let build = lit_parts(o, &geo, &materials);
+    let parts = geo.sections.iter().flat_map(|s| &s.geometry.parts);
+    let lit = model_draws(build, parts, material_errors)?;
     // A part without index data is not resident.
     let built = implementation_masks(&lit);
     let ranges = built.keys().filter_map(|&(section, part)| {
@@ -1200,9 +1274,39 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage, R
         })
     });
     let assets = Arc::new(palette::GpuAssets::default());
-    let cover = ModelCoverage { nodes: geo.nodes.len(), assets, all_parts, ranges };
+    // A display-only record has a selected section but no sorted item list.
+    // Require coverage of every drawn part before admitting that section.
+    let mut display_parts = HashMap::new();
+    for (i, s) in geo.sections.iter().enumerate() {
+        let Ok(section) = u16::try_from(i) else { continue };
+        let keys = lit.parts.iter().filter(|p| p.section == section)
+            .map(|p| (p.part, p.shader_tag)).collect::<Vec<_>>();
+        if !keys.is_empty() && s.geometry.parts.iter().all(|p| p.kind != load::PART_TRANSPARENT)
+            && s.geometry.parts.iter().filter(|p| p.is_drawn()).count() == keys.len() {
+            display_parts.insert(section, keys);
+        }
+    }
+    let node_maps = geo.sections.iter().map(|section| section.node_map.clone()).collect();
+    let cover = ModelCoverage { display_parts, node_maps, nodes: geo.nodes.len(), assets, all_parts, ranges };
     let cpu = CpuModel { lit, normalization: o.normalization.clone().flatten() };
     Ok((cpu, cover, geo))
+}
+
+/// Keep a model with any compiled layer, including a sorted override.
+/// A transparent-only model reaches the indexed emitter through its
+/// sorted handler without needing any of these cached scene programs.
+fn model_draws<'a>(
+    build: LitBuild, mut parts: impl Iterator<Item = &'a tags::geometry::Part>, mut errors: Vec<String>,
+) -> Result<LitModelInput, load::Error> {
+    if build.input.is_empty() && parts.any(needs_object_program) {
+        errors.extend(build.refused.into_iter().map(|(m, why)| format!("material {m} layer 3: {why}")));
+        errors.extend(build.layer_refused.into_iter().map(|(m, l, why)| format!("material {m} layer {l}: {why}")));
+        if errors.is_empty() {
+            errors.push("no indexed object part matches a material in the model".into());
+        }
+        return Err(errors.join("; ").into());
+    }
+    Ok(build.input)
 }
 
 /// Each part with index data and the native implementations it carries.
@@ -1221,22 +1325,19 @@ fn implementation_masks(lit: &LitModelInput) -> HashMap<(u16, u8), u8> {
 
 /// What an opaque material's programs draw with: the material and its
 /// shader's values (`shad +0x44`, `+0x48`), or why they do not read.
-fn lit_material(o: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
-    let material = material(o, shader).ok_or("the material does not resolve")?;
-    let read = || -> Result<LitMaterial, String> {
-        if o.formats.is_none() {
-            return Err("the game's stream formats do not read".into());
-        }
-        let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
-        let address = o.map.tag(shader).ok().and_then(|t| t.location).map(|l| l.address).ok_or("its shader tag has no address")?;
-        let values = lib.metadata().bytes(address + SHADER_VALUES, 8).map_err(|_| "its shader values do not read")?;
-        let word = |k: usize| u32::from_le_bytes([values[k], values[k + 1], values[k + 2], values[k + 3]]);
-        Ok(LitMaterial {
-            shader: ShaderValues { scalar_21: word(0), vector_24: word(4) },
-            material: material.clone(),
-        })
-    };
-    read()
+fn lit_material(o: &Opened, material: tags::material::Material) -> Result<LitMaterial, String> {
+    if o.formats.is_none() {
+        return Err("the game's stream formats do not read".into());
+    }
+    let shader = material.shader;
+    let address = o.map.tag(shader).ok().and_then(|t| t.location).map(|l| l.address).ok_or("its shader tag has no address")?;
+    let values = o.lib.metadata().bytes(address + SHADER_VALUES, 8).map_err(|_| "its shader values do not read")?;
+    let word = |k: usize| u32::from_le_bytes([values[k], values[k + 1], values[k + 2], values[k + 3]]);
+    Ok(LitMaterial {
+        shader: ShaderValues { scalar_21: word(0), vector_24: word(4) },
+        properties: native_render::layer_pass::instance_properties(&o.lib, shader),
+        material,
+    })
 }
 
 /// The shader instance's values the object inputs scale by (`shad +0x44`
@@ -1254,6 +1355,7 @@ pub fn drawn_layer(layer: usize) -> bool {
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
 fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
+    let overrides = override_materials(o);
     let mut sections = Vec::new();
     // Every detail level: a distant object's records draw a lower one.
     for (si, s) in geo.sections.iter().enumerate() {
@@ -1280,7 +1382,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .parts
                 .iter()
                 .enumerate()
-                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter(|(i, p)| *i < 16 && p.is_drawn())
                 .map(|(k, p)| (k as u8, p.material, g.part_triangles(p)))
                 .collect(),
             // A record with bit 6 may draw a choice of them
@@ -1289,7 +1391,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .parts
                 .iter()
                 .enumerate()
-                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter(|(i, p)| *i < 16 && p.is_drawn())
                 .filter_map(|(k, p)| Some((k as u8, lit_subparts(&g.indices, &g.subparts, p)?)))
                 .collect(),
             // A record without bit 9 draws a strip part as a list.
@@ -1297,7 +1399,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                 .parts
                 .iter()
                 .enumerate()
-                .filter(|(i, p)| *i < 16 && p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .filter(|(i, p)| *i < 16 && p.is_drawn())
                 .filter_map(|(k, p)| Some((k as u8, lit_listed(&g.indices, p)?)))
                 .collect(),
         });
@@ -1305,7 +1407,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
     // The programs each section's classification takes, read first (the
     // stage decoder borrows the map after).
     let mut programs: HashMap<(TagId, u16, u8), Result<(Vec<u8>, Vec<u16>), String>> = HashMap::new();
-    for lit in materials.values() {
+    for lit in materials.values().chain(overrides.iter().flat_map(|m| m.values())) {
         let vertex_shaders = lit
             .material
             .layers
@@ -1325,10 +1427,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
     }
     // The normalization cube, as the lights load it (once per map).
     if o.normalization.is_none() {
-        let cube = match o.lib.as_ref().and_then(Option::as_ref) {
-            Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0,
-            None => None,
-        };
+        let cube = crate::native_lights_glue::light_textures(&mut o.map, o.lib.metadata(), &mut o.raw.0).0;
         o.normalization = Some(cube);
     }
     if o.lightmap.is_none() {
@@ -1344,6 +1443,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
         o.lightmap = Some(l);
     }
     let Some(formats) = o.formats.clone() else {
+        o.overrides = Some(overrides);
         return LitBuild {
             refused: materials.keys().map(|&m| (m, "the game's stream formats do not read".to_string())).collect(),
             ..LitBuild::default()
@@ -1358,10 +1458,28 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
     };
     let engine = EngineStages {
         texaccum: true,
+        // The camouflage handler's layer copies the view
+        // (`native_layers_glue`).
+        view: true,
         normalization: o.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: o.lightmap.clone().and_then(Result::ok),
     };
-    lit_model(&sections, materials, &formats, &engine, &mut vertex, &mut image)
+    let mut build = lit_model(&sections, materials, &formats, &engine, &mut vertex, &mut image);
+    // A record can override any drawn part, including one whose own
+    // material has no base pass.
+    if !overrides.is_empty() && sections.iter().any(|s| !s.parts.is_empty()) {
+        let every_part = override_sections(&sections);
+        for m in &overrides {
+            let theirs = lit_model(&every_part, m, &formats, &engine, &mut vertex, &mut image);
+            let shader = m[&OVERRIDE_MATERIAL].material.shader.0;
+            for (_, layer, why) in &theirs.layer_refused {
+                log_override_refusal(shader, *layer, why);
+            }
+            build.input.append(theirs.input);
+        }
+    }
+    o.overrides = Some(overrides);
+    build
 }
 
 /// What an object's layer-3 draw samples where its pass reads the
@@ -1369,7 +1487,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
 /// globals' rasterizer bitmap at `+0x64`, decoded as stage 3 samples it,
 /// when it is uniform (then the coordinates the draw adds do not matter).
 fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
-    let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+    let lib = &o.lib;
     engine_lightmap(&mut o.map, lib, &mut o.raw.0, &mut o.decoder, &mut o.images, 3)
 }
 
@@ -1409,7 +1527,7 @@ pub(crate) fn engine_lightmap<R: std::io::Read + std::io::Seek>(
 /// `0x0001cb20` picks its classification.
 fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u8) -> Result<(Vec<u8>, Vec<u16>), String> {
     let address = o.map.tag(vs).ok().and_then(|t| t.location).map(|l| l.address).ok_or("the vertex shader tag has no address")?;
-    let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+    let lib = &o.lib;
     let meta = lib.metadata();
     let count = look::classification_count(meta, address).ok_or("the vertex shader's classifications do not read")?;
     let class = object_streams::classification(geometry, influences, count).ok_or_else(|| format!("geometry classification {geometry}"))?;
@@ -1421,6 +1539,10 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 /// One sorted run's objects: the draws planned at the walk, in the list's
 /// order.
 struct ObjectsPass {
+    display_only: bool,
+    /// Alternative geometry for the display. The original run still owns
+    /// all guest writes and is the only geometry sent to the reference.
+    display_draws: Option<Vec<(u32, PlannedDraw)>>,
     models: Arc<Models>,
     /// The planned draws with their model index.
     draws: Vec<(u32, PlannedDraw)>,
@@ -1440,6 +1562,10 @@ struct ObjectsPass {
 }
 
 impl d3d::ExternalPass for ObjectsPass {
+    fn display_only(&self) -> bool { self.display_only }
+
+    fn replays_scene(&self) -> bool { true }
+
     fn batch_key(&self) -> Option<u64> { Some(self.run) }
 
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
@@ -1466,13 +1592,23 @@ impl d3d::ExternalPass for ObjectsPass {
     fn record_draws(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
-        Some(self.packets(t, request))
+        if t.copy == d3d::TargetCopy::Display
+            && let Some(draws) = &self.display_draws
+            && let Ok(mut packets) = self.packets(t, request, draws, false)
+        {
+            // Ranges describe the guest run represented by these packets.
+            packets.ranges = self.draws.len();
+            return Some(Ok(packets));
+        }
+        Some(self.packets(t, request, &self.draws, true))
     }
 }
 
 impl ObjectsPass {
     fn packets(
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+        draws: &[(u32, PlannedDraw)],
+        report_missing: bool,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let constants = self.view.ok_or("object view constants unavailable")?;
         let texaccum = match self.texaccum {
@@ -1489,19 +1625,23 @@ impl ObjectsPass {
         }
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let lit = lit.as_mut().ok_or_else(|| {
-            for (_, draw) in &self.draws {
-                d3d::scene_stage::residency::missing_object(draw.instance);
+            if report_missing {
+                for (_, draw) in draws {
+                    d3d::scene_stage::residency::missing_object(draw.instance);
+                }
             }
             "planned object geometry unavailable"
         })?;
-        let mut missing = self.draws.iter().filter(|(model, draw)| !lit.has_draw_assets(*model, draw)).peekable();
+        let mut missing = draws.iter().filter(|(model, draw)| !lit.has_draw_assets(*model, draw)).peekable();
         if missing.peek().is_some() {
-            for (_, draw) in missing {
-                d3d::scene_stage::residency::missing_object(draw.instance);
+            if report_missing {
+                for (_, draw) in missing {
+                    d3d::scene_stage::residency::missing_object(draw.instance);
+                }
             }
             return Err("planned object geometry or material unavailable");
         }
-        if self.draws.iter().any(|(_, d)| d.indices.is_empty()) {
+        if draws.iter().any(|(_, d)| d.indices.is_empty()) {
             return Err("planned object indices empty");
         }
         let view = ViewInputs {
@@ -1511,7 +1651,8 @@ impl ObjectsPass {
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), &self.draws, texaccum)
+        let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), draws, texaccum)?;
+        crate::native_layers_glue::clip_packets(draws, request, t.size)
     }
 }
 
@@ -1564,6 +1705,8 @@ mod tests {
     fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
         use d3d::ExternalPass;
         let mut pass = ObjectsPass {
+            display_only: false,
+            display_draws: None,
             models: Arc::new(Models::default()),
             draws: Vec::new(),
             texaccum: None,
@@ -1649,6 +1792,24 @@ mod tests {
         assert_eq!(fog[3], 0.0);
         assert!(object_fog(words, true, None).is_none());
         assert!(object_fog(words, false, None).is_some());
+    }
+
+    #[test]
+    fn transparent_and_non_submitted_parts_need_no_cached_object_pass() {
+        let part = |kind| tags::geometry::Part {
+            kind, flags: 0, material: 0, first_index: 0, index_count: 3,
+            first_subpart: 0, subpart_count: 0, raw: Vec::new(),
+        };
+        let sorted = [part(load::PART_TRANSPARENT), part(0), part(5)];
+        assert!(model_draws(LitBuild::default(), sorted.iter(), vec![]).unwrap().is_empty());
+
+        let mixed = [part(load::PART_TRANSPARENT), part(2)];
+        let build = LitBuild {
+            layer_refused: vec![(0, 17, "missing vertex stream".into())],
+            ..LitBuild::default()
+        };
+        let error = model_draws(build, mixed.iter(), vec![]).err().expect("missing opaque pass");
+        assert!(error.to_string().contains("material 0 layer 17: missing vertex stream"));
     }
 
     /// Coverage is keyed by what a record names, (section, part), with the

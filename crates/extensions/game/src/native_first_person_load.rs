@@ -3,7 +3,7 @@
 //! to this lane, while `model_load`, `object_program` and `object_program_gpu`
 //! provide the model, material and stream implementation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -13,7 +13,6 @@ use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
 use native_render::look;
-use native_render::model::{Model, ModelInput, ModelSectionInput};
 use native_render::model_load;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
@@ -36,6 +35,8 @@ struct CpuModel {
 pub struct Models {
     retire: OnceLock<native_map::RetireQueue>,
     pub lit: Mutex<Option<LitObjects>>,
+    /// Upload-side sharing tables, separate from the render-side lock.
+    uploads: Mutex<Option<LitObjects>>,
     pub palettes: Mutex<StagePalettes>,
 }
 
@@ -63,6 +64,12 @@ pub struct MapState {
 }
 
 impl MapState {
+    pub fn retire(mut self) {
+        // Wake the idle worker before queueing the model payload.
+        drop(self.worker.take());
+        native_map::retire_owned(timeline::setup::Stage::Objects, self);
+    }
+
     pub fn activate(&mut self, frame: u64) {
         if self.next.as_ref().is_some_and(|(finished, _)| frame > *finished)
             && let Some((_, set)) = self.next.take()
@@ -76,7 +83,7 @@ impl MapState {
 /// sender, so the worker holds only a weak reference to it.
 pub fn spawn_worker(
     mut set: Arc<NativeSet>,
-    models: Arc<Models>,
+    models: Weak<Models>,
     state: Weak<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
@@ -85,97 +92,114 @@ pub fn spawn_worker(
 ) -> Option<mpsc::Sender<u32>> {
     let (tx, rx) = mpsc::channel::<u32>();
     background::spawn("native-first-person load", move || {
-        if map_generation != render_bridge::native_map_work::generation() {
-            return;
-        }
         let name = set.map.clone();
-        match native_map::retire_queue() {
-            Ok(queue) => {
-                let _ = models.retire.set(queue);
-            }
-            Err(error) => {
-                eprintln!("native-first-person: {name}: could not start resource retirement ({error})");
+        let worker_generation = set.generation;
+        let current = || {
+            map_generation == render_bridge::native_map_work::generation()
+                && state.upgrade().is_some_and(|state| {
+                    state.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                        .is_some_and(|state| state.generation == worker_generation)
+                })
+        };
+        let (mut loaded, mut refused) = (0u32, 0u32);
+        while let Ok(first) = rx.recv() {
+            let Some(_load) = native_map::begin_load(timeline::setup::Stage::Objects, current) else {
                 return;
-            }
-        }
-        let (mut opened, mut uploads) = {
+            };
+            let Some(models) = models.upgrade() else { return };
             let _timer = timeline::setup::Stage::Objects.worker();
-            match open(&name, palettes.clone(), formats.clone()) {
-                Ok(o) => (o, LitObjects::new(&device)),
+            let _scope = mem_watch::scope("native.first_person.load");
+            if models.retire.get().is_none() {
+                let Ok(retire) = native_map::retire_queue() else { return };
+                let _ = models.retire.set(retire);
+            }
+            // Use one map and decoded image cache for queued models. Both
+            // belong to this batch and are released before the worker sleeps.
+            let mut opened = match open(&name, palettes.clone(), formats.clone()) {
+                Ok(opened) => opened,
                 Err(e) => {
                     eprintln!("native-first-person: {name}: map not opened ({e}); first person stays on D3D");
                     return;
                 }
-            }
-        };
-        *models.lit.lock().unwrap_or_else(|e| e.into_inner()) = Some(uploads.empty_with_layout());
-        let (mut loaded, mut refused) = (0u32, 0u32);
-        let mut asked = HashSet::new();
-        while let Ok(definition) = rx.recv() {
-            if map_generation != render_bridge::native_map_work::generation() {
-                return;
-            }
-            let _timer = timeline::setup::Stage::Objects.worker();
-            // A model asked for again is a live edit's reload
-            // (docs/editor/realtime-edits.md, "The native refresh"): the
-            // map is opened again, so the geometry is read as the raw
-            // overlay serves it now.
-            if !asked.insert(definition) {
-                match open(&name, palettes.clone(), formats.clone()) {
-                    Ok(reopened) => opened = reopened,
-                    Err(e) => {
-                        eprintln!("native-first-person: {name}: a live edit's map does not open ({e}); the model keeps its loaded geometry");
-                        continue;
-                    }
+            };
+            let mut uploads = models.uploads.lock().unwrap_or_else(|e| e.into_inner());
+            let uploads = uploads.get_or_insert_with(|| LitObjects::new(&device));
+            models.lit.lock().unwrap_or_else(|e| e.into_inner())
+                .get_or_insert_with(|| uploads.empty_with_layout());
+            let mut asked = HashSet::new();
+            for definition in std::iter::once(first).chain(rx.try_iter()) {
+                if !current() {
+                    return;
                 }
-            }
-            let result = load_model(&mut opened, definition).and_then(|cpu| {
-                let parts = set_parts(&cpu.lit);
-                if let Some(texture) = cpu.normalization {
-                    uploads.set_normalization(&device, &queue, &texture);
-                }
-                uploads.add_model(&device, &queue, definition, cpu.lit);
-                if !uploads.has(definition) {
-                    return Err("GPU refused the model's programs or textures".into());
-                }
-                queue.submit([]);
-                Ok((cpu.nodes, parts))
-            });
-            match result {
-                Ok((nodes, parts)) => {
-                    let part_count = parts.len();
-                    let next = Arc::make_mut(&mut set);
-                    next.definitions.insert(definition as u16, nodes);
-                    next.parts.extend(parts.into_iter().map(|((section, part), native)| {
-                        ((definition as u16, section, part), native)
-                    }));
-                    models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
-                    {
-                        let mut lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(lit) = lit.as_mut() else { return };
-                        if !uploads.move_model_into(definition, lit) {
-                            return;
+                // A model asked for again is a live edit's reload
+                // (docs/editor/realtime-edits.md, "The native refresh"): the
+                // map is opened again, so the geometry is read as the raw
+                // overlay serves it now.
+                if !asked.insert(definition) {
+                    match open(&name, palettes.clone(), formats.clone()) {
+                        Ok(reopened) => opened = reopened,
+                        Err(e) => {
+                            eprintln!("native-first-person: {name}: a live edit's map does not open ({e}); the model keeps its loaded geometry");
+                            continue;
                         }
                     }
-                    {
-                        let Some(state) = state.upgrade() else { return };
-                        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(current) = st.as_mut().filter(|s| {
-                            s.generation == set.generation && s.map_generation == render_bridge::native_map_work::generation()
-                        }) else { return };
-                        current.next = Some((timeline::frames(), Arc::clone(&set)));
-                    }
-                    loaded += 1;
-                    if hooks::native_verbose() {
-                        eprintln!(
-                            "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
-                        );
-                    }
                 }
-                Err(why) => {
-                    refused += 1;
-                    if hooks::native_verbose() {
-                        eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
+                let result = load_model(&mut opened, definition).and_then(|cpu| {
+                    let parts = set_parts(&cpu.lit);
+                    if let Some(texture) = cpu.normalization {
+                        uploads.set_normalization(&device, &queue, &texture);
+                    }
+                    if !uploads.add_model(&device, &queue, definition, cpu.lit) {
+                        return Err("GPU refused the model's programs or textures".into());
+                    }
+                    Ok((cpu.nodes, parts))
+                });
+                // Flush writes even if a later program in the upload failed.
+                queue.submit([]);
+                match result {
+                    Ok((nodes, parts)) => {
+                        let part_count = parts.len();
+                        let next = Arc::make_mut(&mut set);
+                        next.definitions.insert(definition as u16, nodes);
+                        next.parts.retain(|&(model, _, _), _| model != definition as u16);
+                        next.parts.extend(parts.into_iter().map(|((section, part), native)| {
+                            ((definition as u16, section, part), native)
+                        }));
+                        {
+                            let mut used = models.palettes.lock().unwrap_or_else(|e| e.into_inner());
+                            for (saved, decoded) in used.iter_mut().zip(opened.decoder.used()) {
+                                if decoded.is_some() {
+                                    saved.clone_from(decoded);
+                                }
+                            }
+                        }
+                        {
+                            let mut lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+                            let Some(lit) = lit.as_mut() else { return };
+                            if !uploads.move_model_into(definition, lit) {
+                                return;
+                            }
+                        }
+                        {
+                            let Some(state) = state.upgrade() else { return };
+                            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                            let Some(current) = st.as_mut().filter(|s| {
+                                s.generation == set.generation && s.map_generation == render_bridge::native_map_work::generation()
+                            }) else { return };
+                            current.next = Some((timeline::frames(), Arc::clone(&set)));
+                        }
+                        loaded += 1;
+                        if hooks::native_verbose() {
+                            eprintln!(
+                                "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
+                            );
+                        }
+                    }
+                    Err(why) => {
+                        refused += 1;
+                        if hooks::native_verbose() {
+                            eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
+                        }
                     }
                 }
             }
@@ -274,7 +298,8 @@ struct Opened {
     raw: Raw,
     decoder: StageDecoder,
     images: StageImages,
-    lib: Option<Option<tags::material::ShaderLibrary>>,
+    metadata: tags::object::Metadata,
+    lib: tags::material::ShaderLibrary,
     normalization: Option<Option<Arc<StaticLightTexture>>>,
     formats: Option<StreamFormats>,
     lightmap: Option<Result<Image, String>>,
@@ -285,13 +310,16 @@ fn open(
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
 ) -> Result<Opened, load::Error> {
-    let (map, files) = native_map::open(name)?;
+    let (mut map, files) = native_map::open(name)?;
+    let metadata = tags::object::Metadata::read(&mut map)?;
+    let lib = tags::material::ShaderLibrary::with_metadata(&map, metadata.shader_view());
     Ok(Opened {
         map,
         raw: Raw(files),
         decoder: StageDecoder::new(palettes),
         images: StageImages::new(),
-        lib: None,
+        metadata,
+        lib,
         normalization: None,
         formats,
         lightmap: None,
@@ -299,16 +327,7 @@ fn open(
 }
 
 fn material(opened: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
-    if opened.lib.is_none() {
-        let lib = tags::material::ShaderLibrary::read(&mut opened.map);
-        if let Err(e) = &lib {
-            eprintln!(
-                "native-first-person: shader tags do not read ({e}); first person stays on D3D"
-            );
-        }
-        opened.lib = Some(lib.ok());
-    }
-    opened.lib.as_mut()?.as_mut()?.material(shader, None).ok()
+    opened.lib.material(shader, None).ok()
 }
 
 fn lit_material(opened: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
@@ -316,11 +335,7 @@ fn lit_material(opened: &mut Opened, shader: TagId) -> Result<LitMaterial, Strin
     if opened.formats.is_none() {
         return Err("the game's stream formats do not read".into());
     }
-    let lib = opened
-        .lib
-        .as_ref()
-        .and_then(Option::as_ref)
-        .ok_or("the shader tags do not read")?;
+    let lib = &opened.lib;
     let address = opened
         .map
         .tag(shader)
@@ -346,6 +361,7 @@ fn lit_material(opened: &mut Opened, shader: TagId) -> Result<LitMaterial, Strin
             vector_24: word(4),
         },
         material,
+        properties: native_render::layer_pass::instance_properties(lib, shader),
     })
 }
 
@@ -353,106 +369,18 @@ const SHADER_VALUES: u32 = 0x44;
 
 /// Loads one complete record model. Every section is built: the record key,
 /// not the owner definition's default variant, selects the first-person
-/// permutation and LOD. Any refused material or absent program leaves the
-/// whole mode on D3D.
+/// permutation and LOD. Each part publishes only the passes it compiles.
 fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Error> {
     let mode = native_map::tag_of(&opened.map, definition).ok_or("no such mode tag")?;
-    let geometry = RenderModelGeometry::read(&mut opened.map, mode, &mut opened.raw)?;
+    let geometry = RenderModelGeometry::read_in(
+        &mut opened.map, mode, &mut opened.raw, Some(&opened.metadata),
+    )?;
     let nodes = geometry.nodes.len();
-    let inverse_binds = geometry
-        .nodes
-        .iter()
-        .map(|node| model_load::inverse_bind(&node.wire.unknown_028[..]))
-        .collect::<Option<Vec<_>>>()
-        .ok_or("a node's inverse rest frame is not finite")?;
-    let sections: Vec<usize> = (0..geometry.sections.len()).collect();
-    let mut input = ModelInput {
-        inverse_binds,
-        sections: Vec::new(),
-    };
-    for &section_index in &sections {
-        let Some(section) = geometry.sections.get(section_index) else {
-            continue;
-        };
-        let vertices = &section.vertices;
-        input.sections.push(ModelSectionInput {
-            positions: vertices.positions.clone(),
-            uvs: vertices.texcoords.clone(),
-            normals: vertices.normals.clone(),
-            node_indices: vertices.node_indices.clone(),
-            node_weights: vertices.node_weights.clone(),
-            node_map: section.node_map.clone(),
-            parts: section
-                .geometry
-                .parts
-                .iter()
-                .filter(|part| part.is_drawn())
-                .map(|part| native_render::model::ModelPartInput {
-                    material: part.material,
-                    transparent: part.kind == load::PART_TRANSPARENT,
-                    triangles: section.geometry.part_triangles(part),
-                })
-                .collect(),
-        });
+    if geometry.nodes.iter().any(|node| model_load::inverse_bind(&node.wire.unknown_028[..]).is_none()) {
+        return Err("a node's inverse rest frame is not finite".into());
     }
-    let model = Model::build(&input);
-    let shaders = geometry
-        .materials
-        .iter()
-        .map(|material| material.shader.id)
-        .collect();
-    let loaded = model_load::LoadedModel {
-        mode,
-        model,
-        shaders,
-        geometry,
-        lod_sections: sections.clone(),
-        sections,
-    };
-    let mut materials = HashMap::new();
-    for local in loaded.model.materials() {
-        let Some(&shader) = loaded.shaders.get(usize::from(local)) else {
-            return Err(format!("material {local} has no shader").into());
-        };
-        if let Some(why) = native_render::object_program::program_refusal(
-            &material(opened, shader).ok_or("the material does not resolve")?,
-        ) {
-            return Err(format!("shader {:#010x}: {why}", shader.0).into());
-        }
-        materials.insert(
-            local,
-            lit_material(opened, shader)
-                .map_err(|why| format!("shader {:#010x}: {why}", shader.0))?,
-        );
-    }
-    let LitBuild {
-        input,
-        taken,
-        refused,
-        ..
-    } = lit_parts(opened, &loaded, &materials);
-    if !refused.is_empty() {
-        let reasons = refused
-            .into_iter()
-            .map(|(local, why)| format!("material {local}: {why}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(reasons.into());
-    }
-    if input.is_empty() || taken.len() != materials.len() {
-        return Err("not every opaque material has a native program".into());
-    }
-    if input.samples_texaccum() {
-        return Err(
-            "its programs sample the texture accumulation target, which this pass does not bind"
-                .into(),
-        );
-    }
-    let normalization = if input.is_empty() {
-        None
-    } else {
-        opened.normalization.clone().flatten()
-    };
+    let input = compiled_parts(lit_parts(opened, &geometry))?;
+    let normalization = opened.normalization.clone().flatten();
     Ok(CpuModel {
         nodes,
         lit: input,
@@ -460,17 +388,25 @@ fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Er
     })
 }
 
+/// A layer-3 refusal names one material. Other layers of that material
+/// and compiled siblings have independent entries in the GPU input.
+fn compiled_parts(build: LitBuild) -> Result<LitModelInput, load::Error> {
+    if !build.input.is_empty() {
+        return Ok(build.input);
+    }
+    let why = build.refused.into_iter().next()
+        .map(|(local, why)| format!("material {local}: {why}"))
+        .unwrap_or_else(|| "no first-person part has a native pass".into());
+    Err(why.into())
+}
+
 fn lit_parts(
     opened: &mut Opened,
-    loaded: &model_load::LoadedModel,
-    materials: &HashMap<u16, LitMaterial>,
+    geo: &RenderModelGeometry,
 ) -> LitBuild {
-    let geo = &loaded.geometry;
     let mut sections = Vec::new();
-    for &section_index in &loaded.lod_sections {
-        let Some(section) = geo.sections.get(section_index) else {
-            continue;
-        };
+    let mut used = BTreeSet::new();
+    for (section_index, section) in geo.sections.iter().enumerate() {
         let flags = section.wire.compression_flags.0;
         let bounds = geo.compression.as_ref();
         let compression = Compression {
@@ -494,6 +430,17 @@ fn lit_parts(
                 },
             ));
         }
+        let parts: Vec<_> = geometry.parts.iter().enumerate()
+            .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
+            .map(|(index, part)| (index as u8, part.material, geometry.part_triangles(part)))
+            .collect();
+        let vertex_count = section.vertices.positions.len();
+        used.extend(parts.iter().filter_map(|(_, material, triangles)| {
+            triangles.iter().any(|[a, b, c]| {
+                a != b && b != c && a != c
+                    && [a, b, c].into_iter().all(|index| usize::from(*index) < vertex_count)
+            }).then_some(*material)
+        }));
         sections.push(LitSection {
             index: section_index as u16,
             geometry: section.wire.geometry_classification.0,
@@ -501,13 +448,7 @@ fn lit_parts(
             decompression: decompression_rows(&compression),
             streams,
             vertex_count: geometry.vertex_count(),
-            parts: geometry
-                .parts
-                .iter()
-                .enumerate()
-                .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
-                .map(|(index, part)| (index as u8, part.material, geometry.part_triangles(part)))
-                .collect(),
+            parts,
             // A record with bit 6 may draw a choice of them
             // (`frame_scene::Subparts`).
             subparts: geometry
@@ -535,6 +476,11 @@ fn lit_parts(
         });
     }
 
+    let materials: HashMap<_, _> = used.into_iter().filter_map(|local| {
+        let shader = geo.materials.get(usize::from(local))?.shader.id;
+        lit_material(opened, shader).ok().map(|material| (local, material))
+    }).collect();
+
     let mut programs: HashMap<(TagId, u16, u8), Result<(Vec<u8>, Vec<u16>), String>> =
         HashMap::new();
     for lit in materials.values() {
@@ -556,15 +502,9 @@ fn lit_parts(
         }
     }
     if opened.normalization.is_none() {
-        let cube = match opened.lib.as_ref().and_then(Option::as_ref) {
-            Some(lib) => crate::native_lights_glue::light_textures(
-                &mut opened.map,
-                lib.metadata(),
-                &mut opened.raw.0,
-            )
-            .0,
-            None => None,
-        };
+        let cube = crate::native_lights_glue::light_textures(
+            &mut opened.map, opened.lib.metadata(), &mut opened.raw.0,
+        ).0;
         opened.normalization = Some(cube);
     }
     if opened.lightmap.is_none() {
@@ -600,14 +540,17 @@ fn lit_parts(
             .ok()?;
         opened.images.get(&(bitmap, image)).cloned()
     };
+    // The first person's layers draw under no sorted handler: nothing
+    // copies the view for them.
     let engine = EngineStages {
         texaccum: false,
+        view: false,
         normalization: opened.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: opened.lightmap.clone().and_then(Result::ok),
     };
     lit_model(
         &sections,
-        materials,
+        &materials,
         &formats,
         &engine,
         &mut vertex,
@@ -616,11 +559,7 @@ fn lit_parts(
 }
 
 fn object_lightmap(opened: &mut Opened) -> Result<Image, String> {
-    let lib = opened
-        .lib
-        .as_ref()
-        .and_then(Option::as_ref)
-        .ok_or("the shader tags do not read")?;
+    let lib = &opened.lib;
     let matg = opened
         .map
         .tags()
@@ -673,11 +612,7 @@ fn object_vertex_program(
         .and_then(|tag| tag.location)
         .map(|location| location.address)
         .ok_or("the vertex shader tag has no address")?;
-    let lib = opened
-        .lib
-        .as_ref()
-        .and_then(Option::as_ref)
-        .ok_or("the shader tags do not read")?;
+    let lib = &opened.lib;
     let metadata = lib.metadata();
     let count = look::classification_count(metadata, address)
         .ok_or("the vertex shader's classifications do not read")?;
@@ -693,6 +628,29 @@ fn object_vertex_program(
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn a_layer_three_refusal_keeps_the_other_compiled_layers() {
+        use native_render::object_program_gpu::{LitLayerPart, LitLayerPass};
+        let mut build = LitBuild::default();
+        build.refused.push((4, "no layer-3 pass".into()));
+        build.input.layers.push(LitLayerPart {
+            layer: 8,
+            section: 2,
+            part: 3,
+            decompression: [[0.0; 4]; 3],
+            shader_tag: 7,
+            shader: ShaderValues::default(),
+            indices: 0..3,
+            subparts: None,
+            listed: None,
+            passes: vec![LitLayerPass { count: 1, empty: 1, ..Default::default() }],
+        });
+        let parts = compiled_parts(build).unwrap();
+        assert!(parts.parts.is_empty());
+        assert_eq!((parts.layers[0].layer, parts.layers[0].part), (8, 3));
+        assert!(compiled_parts(LitBuild::default()).is_err());
+    }
 
     #[test]
     fn the_previous_model_set_draws_until_the_next_swap() {

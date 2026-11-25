@@ -11,7 +11,6 @@ use tags::ui::{self, MapSource, Screen, UiTag, check::check_map};
 
 use super::apply::place_of;
 use super::*;
-use crate::ui_kit::inject::{self, Docs, ScreensRewrite, Shape};
 
 const SKINS: usize = 64;
 const ANIMATIONS: usize = 40;
@@ -201,8 +200,7 @@ fn apply_one(map: &[u8], f: EditFile) -> Edited {
 
 #[test]
 fn the_shipped_pregame_lobby_file_parses_as_the_lobby_needs() {
-    let baked = Edits::baked();
-    let files = baked.parse().expect("every shipped file parses");
+    let files = shipped_edits();
     let (_, lobby) = files
         .iter()
         .find(|(n, _)| n == "pregame_lobby")
@@ -288,12 +286,6 @@ fn a_bad_file_is_refused_with_its_name_and_the_edit() {
         let e = parse("f", text).unwrap_err();
         assert!(e.contains(want), "{text}: {e}");
     }
-    // Every file's error, not the first.
-    let two = Edits {
-        files: vec![("a".into(), "nonsense: [".into()), ("b".into(), "screen: x\n".into())],
-    };
-    let e = two.parse().unwrap_err();
-    assert!(e.contains("a.yaml") && e.contains("b.yaml"), "{e}");
 }
 
 #[test]
@@ -655,128 +647,13 @@ fn what_a_file_cannot_say_is_listed_not_dropped() {
     assert!(matches!(f.edits[0], Edit::SetRect { block, .. } if block == b("text.0")));
 }
 
-fn docs() -> Docs {
-    Docs {
-        design: "design: one\n".into(),
-        screens: vec![("coop".into(), "screen: coop\n".into())],
-    }
-}
-
-fn edits() -> Edits {
-    Edits {
-        files: vec![
-            (
-                "lobby".into(),
-                format!(
-                    "screen: '{LOBBY}'\nedits:\n  - op: set_rect\n    block: text.0\n    rect: [1, -1, 0, 1]\n"
-                ),
-            ),
-            (
-                "other".into(),
-                format!("screen: '{OTHER}'\nedits:\n  - op: hide\n    block: text.0\n"),
-            ),
-        ],
-    }
-}
-
-/// The first list screen of the plan whose list moves: built on the
-/// invented lobby (screen 39).
-fn one_list_screen() -> Vec<inject::Entry> {
-    let e = inject::plan()
-        .unwrap()
-        .into_iter()
-        .find(|e| e.shape == Shape::List && matches!(e.list, crate::ui_kit::spec::ListPlace::Moved { .. }))
-        .expect("a list screen with a moved list");
-    vec![e]
-}
-
-#[test]
-fn the_cache_key_changes_with_an_edit_file() {
-    let plan = one_list_screen();
-    let key = |e: &Edits| {
-        ScreensRewrite::with_plan(&docs(), plan.clone())
-            .with_edits(e)
-            .unwrap()
-            .key("mainmenu", b"the disc's map")
-    };
-    let base = key(&edits());
-    assert_eq!(base, key(&edits()), "the same files, the same key");
-    let none = ScreensRewrite::with_plan(&docs(), plan.clone()).key("mainmenu", b"the disc's map");
-    assert_ne!(base, none, "edits or none");
-    assert_eq!(none, key(&Edits::default()));
-    let mut changed = edits();
-    changed.files[0].1.push_str("# a comment is a change\n");
-    assert_ne!(base, key(&changed));
-    let mut dropped = edits();
-    dropped.files.pop();
-    assert_ne!(base, key(&dropped));
-    let mut renamed = edits();
-    renamed.files[1].0 = "renamed".into();
-    assert_ne!(base, key(&renamed));
-    let mut shuffled = edits();
-    shuffled.files.reverse();
-    assert_eq!(base, key(&shuffled), "the file order is not the content");
-    // A file that does not parse is refused by name, before any map.
-    let bad = Edits {
-        files: vec![("bad".into(), "screen: x\nedits: []\n".into())],
-    };
-    let e = ScreensRewrite::with_plan(&docs(), plan.clone())
-        .with_edits(&bad)
-        .err()
-        .expect("refused");
-    assert!(e.contains("bad.yaml"), "{e}");
-    // The baked files make a rewrite.
-    let r = ScreensRewrite::baked().unwrap();
-    assert!(r.edits().iter().any(|(n, _)| n == "pregame_lobby"));
-}
-
-struct Temp(std::path::PathBuf);
-
-impl Temp {
-    fn new(what: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("ui-retail-edits-{what}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        Temp(dir)
-    }
-}
-
-impl Drop for Temp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-#[test]
-fn the_rewrite_makes_the_edits_then_adds_our_screens() {
-    let dir = Temp::new("rewrite");
-    let plan = one_list_screen();
-    let mut r = ScreensRewrite::with_plan(&docs(), plan.clone())
-        .with_edits(&edits())
-        .unwrap()
-        .with_cache(&dir.0);
-    let original = menu();
-    let first = r.rebuild("mainmenu", &original).unwrap();
-    assert!(!first.from_cache);
-    assert_eq!(first.edit_failures, vec![]);
-    let files: Vec<&str> = first.edited.iter().map(|a| a.file.as_str()).collect();
-    assert_eq!(files, ["lobby", "other"]);
-    assert_eq!(first.injected, 1, "{:?}", first.skipped);
-    // The lobby (the list screen's template) is edited, and our screen
-    // is in the map beside it.
-    let lobby = pane_bytes(&first.map, LOBBY, 0);
-    assert_eq!(place_of(BlockKind::Text, element(&lobby, BlockKind::Text, 0)), [1, -1, 0, 1]);
-    let mut m = Map::from_reader(Cursor::new(first.map.clone())).unwrap();
-    assert!(m.tags().iter().any(|t| t.name.as_deref() == Some(plan[0].tag.as_str())));
-    assert_eq!(check_map(&mut m).failures, Vec::<String>::new());
-    // The cache says what was edited, as the build did.
-    let second = r.rebuild("mainmenu", &original).unwrap();
-    assert!(second.from_cache);
-    assert_eq!(second.map, first.map);
-    assert_eq!(second.edited, first.edited);
-    // A map no file names is not edited.
-    let shared = r.rebuild("shared", &original).unwrap();
-    assert_eq!(shared.edited, vec![]);
-    assert_eq!(pane_bytes(&shared.map, LOBBY, 0), pane_bytes(&original, LOBBY, 0));
+fn shipped_edits() -> Vec<(String, EditFile)> {
+    let name = "pregame_lobby";
+    let text = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../content/ui/retail-edits/pregame_lobby.yaml"
+    ));
+    vec![(name.into(), parse(name, text).unwrap())]
 }
 
 /// The shipped files on the user's own `mainmenu.map`: the lobby gains
@@ -806,7 +683,7 @@ fn the_shipped_edits_apply_to_the_disc_mainmenu() {
     let before = decoded(&original, PREGAME);
     assert_eq!(before.panes[0].text_blocks.len(), 48, "the lobby's pane 0 has blocks 0 to 47");
 
-    let files = Edits::baked().parse().unwrap();
+    let files = shipped_edits();
     let edited = apply_all(&original, &files).unwrap();
     assert_eq!(edited.failed, vec![]);
     assert!(edited.applied.iter().any(|a| a.file == "pregame_lobby"));
@@ -827,15 +704,5 @@ fn the_shipped_edits_apply_to_the_disc_mainmenu() {
     assert_eq!(s.panes[1..], before.panes[1..], "the other panes as they were");
     let mut m = Map::from_reader(Cursor::new(edited.map.clone())).unwrap();
     m.validate_checksum().unwrap();
-    assert_eq!(check_map(&mut m).failures, Vec::<String>::new());
-
-    // As the game is served it: the edits, then our screens.
-    let mut r = ScreensRewrite::baked().unwrap();
-    let served = r.rebuild("mainmenu", &original).unwrap();
-    assert_eq!(served.edit_failures, vec![]);
-    assert!(served.injected > 0, "{:?}", served.skipped);
-    let after = pane_bytes(&served.map, PREGAME, 0);
-    assert_eq!(place_of(Text, element(&after, Text, 48)), [95, -260, 75, 70]);
-    let mut m = Map::from_reader(Cursor::new(served.map)).unwrap();
     assert_eq!(check_map(&mut m).failures, Vec::<String>::new());
 }

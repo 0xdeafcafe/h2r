@@ -41,6 +41,7 @@ pub(crate) fn prepare<R: Read + Seek>(
     drops: Vec<Zone>,
     bases: Vec<Zone>,
     elite: TagId,
+    classes: &[TagId],
     probe: bool,
 ) -> Result<AiBlocks, String> {
     let location = map
@@ -90,7 +91,7 @@ pub(crate) fn prepare<R: Read + Seek>(
         orders,
         zones,
         squads,
-        character_palette: vec![elite],
+        character_palette: std::iter::once(elite).chain(classes.iter().copied()).collect(),
         ..Default::default()
     };
     // Preserve the map's scripting data (including point sets) and squad

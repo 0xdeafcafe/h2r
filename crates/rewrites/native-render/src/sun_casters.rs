@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use frame_scene::{FrameScene, InstanceKey, LayerOwner, NodeMatrix, View};
 
@@ -29,7 +29,7 @@ use crate::world::{Aabb, Owner, World};
 
 /// Retail draws an object shadow only when its weight exceeds this
 /// (`0x00032438`).
-pub const DRAW_THRESHOLD: f32 = 0.09;
+pub const DRAW_THRESHOLD: f32 = frame_scene::ObjectShadow::DRAW_THRESHOLD;
 
 /// The loaded models, by object definition tag datum
 /// ([`frame_scene::Instance::definition`]): each definition's render
@@ -45,15 +45,15 @@ pub type SharedModels = Arc<dyn CasterModels + Send + Sync>;
 
 /// The current map's caster models with the map epoch they load for
 /// (`frame_scene::SceneId::map_epoch`).
-static MODELS: Mutex<Option<(u64, SharedModels)>> = Mutex::new(None);
+static MODELS: Mutex<Option<(u64, Weak<dyn CasterModels + Send + Sync>)>> = Mutex::new(None);
 
 /// The game's object loader offers map `map_epoch`'s caster models to the
 /// render thread, or withdraws them (`None`). Only the frame graph's E3
 /// sun tiles read them ([`models_for`]); retail never does.
-pub fn set_models(map_epoch: u64, models: Option<SharedModels>) {
+pub fn set_models(map_epoch: u64, models: Option<&SharedModels>) {
     let mut slot = MODELS.lock().unwrap_or_else(|e| e.into_inner());
     match models {
-        Some(m) => *slot = Some((map_epoch, m)),
+        Some(m) => *slot = Some((map_epoch, Arc::downgrade(m))),
         // An older map's loader does not withdraw a newer map's models.
         None => {
             if slot.as_ref().is_some_and(|(epoch, _)| *epoch == map_epoch) {
@@ -69,7 +69,7 @@ pub fn models_for(map_epoch: u64) -> Option<SharedModels> {
     let slot = MODELS.lock().unwrap_or_else(|e| e.into_inner());
     slot.as_ref()
         .filter(|(epoch, _)| *epoch == map_epoch)
-        .map(|(_, m)| Arc::clone(m))
+        .and_then(|(_, m)| m.upgrade())
 }
 
 /// The structure's parts as sun tile receivers: a structure cluster's or
@@ -80,6 +80,21 @@ pub trait WorldReceivers {
     /// A world of another BSP names other clusters by the same indices.
     fn current(&self) -> bool {
         true
+    }
+
+    /// Opaque parts of visible clusters whose bounds meet the shadow projection.
+    fn shadow_parts(&self, _clusters: &[u16], _caster: &SunCaster) -> Vec<ReceiverMesh> {
+        Vec::new()
+    }
+
+    /// Opaque parts of visible clusters whose bounds meet a light's cone
+    /// (`cone_shadows`): its tile's casters and receivers both.
+    fn cone_parts(
+        &self,
+        _clusters: &[u16],
+        _cone: &crate::cone_shadows::Cone,
+    ) -> Vec<ReceiverMesh> {
+        Vec::new()
     }
 
     /// Part `part` of `owner`'s section in world space, when held.
@@ -99,15 +114,15 @@ pub struct WorldPart {
 pub type SharedWorld = Arc<dyn WorldReceivers + Send + Sync>;
 
 /// The current map's world receivers with the map epoch they load for.
-static WORLD: Mutex<Option<(u64, SharedWorld)>> = Mutex::new(None);
+static WORLD: Mutex<Option<(u64, Weak<dyn WorldReceivers + Send + Sync>)>> = Mutex::new(None);
 
 /// The world loader offers map `map_epoch`'s structure to the render
 /// thread, or withdraws it (`None`). Only the frame graph's E3 sun tiles
 /// read it ([`world_for`]); retail never does.
-pub fn set_world(map_epoch: u64, world: Option<SharedWorld>) {
+pub fn set_world(map_epoch: u64, world: Option<&SharedWorld>) {
     let mut slot = WORLD.lock().unwrap_or_else(|e| e.into_inner());
     match world {
-        Some(w) => *slot = Some((map_epoch, w)),
+        Some(w) => *slot = Some((map_epoch, Arc::downgrade(w))),
         // An older map's loader does not withdraw a newer map's world.
         None => {
             if slot.as_ref().is_some_and(|(epoch, _)| *epoch == map_epoch) {
@@ -123,8 +138,9 @@ pub fn set_world(map_epoch: u64, world: Option<SharedWorld>) {
 pub fn world_for(map_epoch: u64) -> Option<SharedWorld> {
     let slot = WORLD.lock().unwrap_or_else(|e| e.into_inner());
     slot.as_ref()
-        .filter(|(epoch, w)| *epoch == map_epoch && w.current())
-        .map(|(_, w)| Arc::clone(w))
+        .filter(|(epoch, _)| *epoch == map_epoch)
+        .and_then(|(_, w)| w.upgrade())
+        .filter(|w| w.current())
 }
 
 /// One structure part's triangles in [`SunWorld`]'s lists.
@@ -191,6 +207,33 @@ impl SunWorld {
         self
     }
 
+    /// The parts of `clusters` whose bounding sphere `meets` accepts.
+    fn parts_meeting(
+        &self,
+        clusters: &[u16],
+        meets: impl Fn([f32; 3], f32) -> bool,
+    ) -> Vec<ReceiverMesh> {
+        let mut receivers = Vec::new();
+        for &cluster in clusters {
+            let owner = Owner::Cluster(u32::from(cluster));
+            let first = self.parts.partition_point(|p| p.owner < owner);
+            for p in self.parts[first..].iter().take_while(|p| p.owner == owner) {
+                let (centre, radius) = box_sphere(&p.bounds);
+                if meets(centre, radius)
+                    && let Some(part) = self.part(owner, p.part)
+                {
+                    receivers.push(ReceiverMesh {
+                        key: ReceiverKey::World(owner, p.part),
+                        mesh: part.mesh,
+                        centre,
+                        radius,
+                    });
+                }
+            }
+        }
+        receivers
+    }
+
     fn mesh_of(&self, held: &HeldPart) -> CasterMesh {
         let mut mesh = CasterMesh::default();
         let mut remap: HashMap<u32, u32> = HashMap::new();
@@ -215,6 +258,17 @@ impl SunWorld {
 impl WorldReceivers for SunWorld {
     fn current(&self) -> bool {
         self.current.as_ref().is_none_or(|f| f())
+    }
+
+    fn shadow_parts(&self, clusters: &[u16], caster: &SunCaster) -> Vec<ReceiverMesh> {
+        let rows = crate::sun_tiles::tile_rows(caster.centre, caster.radius, caster.towards_light);
+        self.parts_meeting(clusters, |centre, radius| {
+            crate::sun_tiles::meets(&rows, caster.radius, centre, radius)
+        })
+    }
+
+    fn cone_parts(&self, clusters: &[u16], cone: &crate::cone_shadows::Cone) -> Vec<ReceiverMesh> {
+        self.parts_meeting(clusters, |centre, radius| cone.meets(centre, radius))
     }
 
     fn part(&self, owner: Owner, part: u8) -> Option<WorldPart> {
@@ -425,14 +479,9 @@ impl Gathered {
 /// `view`'s perspective camera.
 pub fn view_diameter(view: &View, height: u32, centre: [f32; 3], radius: f32) -> f32 {
     let c = &view.camera;
-    let f = c.forward;
-    let n = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt().max(1e-6);
-    let d = [
-        centre[0] - c.position[0],
-        centre[1] - c.position[1],
-        centre[2] - c.position[2],
-    ];
-    let depth = ((d[0] * f[0] + d[1] * f[1] + d[2] * f[2]) / n).max(c.near.max(1e-3));
+    // The ranked shadow rows use absolute depth. A caster behind the eye
+    // still has a finite apparent size for choosing its tile.
+    let depth = c.depth_of(centre).abs().max(c.near.max(1e-3));
     let half = (0.5 * c.fov).tan().max(1e-6);
     radius * height as f32 / (depth * half)
 }
@@ -501,17 +550,22 @@ pub fn gather(scene: &FrameScene, view: u32, height: u32, models: &dyn CasterMod
             if shadow.creature {
                 return Err(CasterRefusal::Creature);
             }
-            let instance = instances
-                .iter()
-                .find(|i| i.key == shadow.caster())
-                .ok_or(CasterRefusal::NoInstance)?;
-            let nodes = scene.nodes_of(instance);
+            let key = shadow.caster();
+            let (definition, sphere, nodes) =
+                if let Some(i) = instances.iter().find(|i| i.key == key) {
+                    (i.definition, i.sphere, scene.nodes_of(i))
+                } else {
+                    let (_, c) = scene
+                        .nearby_casters
+                        .iter()
+                        .find(|(v, c)| *v == view && c.handle == key.0)
+                        .ok_or(CasterRefusal::NoInstance)?;
+                    (c.definition, c.sphere, c.nodes.as_slice())
+                };
             if nodes.is_empty() || !nodes.iter().all(NodeMatrix::is_finite) {
                 return Err(CasterRefusal::NoNodes);
             }
-            let loaded = models
-                .model(instance.definition)
-                .ok_or(CasterRefusal::NoModel)?;
+            let loaded = models.model(definition).ok_or(CasterRefusal::NoModel)?;
             let towards_light = shadow
                 .towards_light(scene)
                 .ok_or(CasterRefusal::NoDirection)?;
@@ -524,12 +578,12 @@ pub fn gather(scene: &FrameScene, view: u32, height: u32, models: &dyn CasterMod
             if mesh.indices.is_empty() {
                 return Err(CasterRefusal::Empty);
             }
-            let (centre, radius) = instance.sphere;
+            let (centre, radius) = sphere;
             let words: &[f32] = bytemuck::cast_slice(nodes);
             Ok(Admitted {
                 shadow: index,
                 caster: SunCaster {
-                    id: u64::from(instance.key.0),
+                    id: u64::from(key.0),
                     centre,
                     radius,
                     screen_diameter: view_diameter(v, height, centre, radius),
@@ -883,6 +937,30 @@ mod tests {
         );
     }
 
+    /// A cone over a cluster's opaque part gathers it, as caster and
+    /// receiver both; a cone elsewhere, or a cluster the view does not
+    /// hold, gathers nothing.
+    #[test]
+    fn a_cone_gathers_the_structure_under_it() {
+        let world = SunWorld::new(&two_section_world());
+        let cone_at = |x: f32| crate::cone_shadows::Cone {
+            apex: [x, 0.5, 6.0],
+            axis: [0.0, 0.0, -1.0],
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            slopes: [0.25, 0.25],
+            near: 0.5,
+            far: 8.0,
+        };
+        let keys = |parts: Vec<ReceiverMesh>| parts.into_iter().map(|r| r.key).collect::<Vec<_>>();
+        assert_eq!(
+            keys(world.cone_parts(&[4], &cone_at(0.5))),
+            [ReceiverKey::World(Owner::Cluster(4), 1)]
+        );
+        assert!(world.cone_parts(&[4], &cone_at(20.0)).is_empty());
+        assert!(world.cone_parts(&[5], &cone_at(0.5)).is_empty());
+    }
+
     /// The render thread reads a map's world only for that map's scenes,
     /// and only while its BSP is the guest's.
     #[test]
@@ -893,7 +971,7 @@ mod tests {
         let world: SharedWorld = Arc::new(
             SunWorld::new(&two_section_world()).with_current(move || held.load(Ordering::Relaxed)),
         );
-        set_world(0x5ca2_0001, Some(world));
+        set_world(0x5ca2_0001, Some(&world));
         assert!(world_for(0x5ca2_0001).is_some_and(|w| w.part(Owner::Cluster(4), 1).is_some()));
         assert!(world_for(0x5ca2_0002).is_none());
         current.store(false, Ordering::Relaxed);
@@ -901,7 +979,7 @@ mod tests {
         current.store(true, Ordering::Relaxed);
         set_world(0x5ca2_0000, None);
         assert!(world_for(0x5ca2_0001).is_some());
-        set_world(0x5ca2_0001, None);
+        drop(world);
         assert!(world_for(0x5ca2_0001).is_none());
     }
 
@@ -911,12 +989,15 @@ mod tests {
     fn caster_models_serve_only_their_maps_scenes() {
         let loaded: SharedModels =
             Arc::new(Models(HashMap::from([(DEFINITION, triangle_model())])));
-        set_models(0x5ca1_0001, Some(loaded));
+        set_models(0x5ca1_0001, Some(&loaded));
         assert!(models_for(0x5ca1_0001).is_some_and(|m| m.model(DEFINITION).is_some()));
         assert!(models_for(0x5ca1_0002).is_none());
         set_models(0x5ca1_0000, None);
         assert!(models_for(0x5ca1_0001).is_some());
-        set_models(0x5ca1_0001, None);
+        let in_flight = models_for(0x5ca1_0001).unwrap();
+        drop(loaded);
+        assert!(in_flight.model(DEFINITION).is_some());
+        drop(in_flight);
         assert!(models_for(0x5ca1_0001).is_none());
     }
 

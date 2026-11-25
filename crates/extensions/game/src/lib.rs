@@ -2,6 +2,7 @@
 //! the campaign picker, gameplay hooks and the glue to the platform crates.
 //!
 //! `boot` is the composition root above this crate and re-exports it.
+#![recursion_limit = "256"]
 
 // Build and load: `crate::fallback`, `crate::tier`, `stamp_path` and the
 // rest are `recomp`'s.
@@ -18,6 +19,8 @@ mod spectator_view;
 pub mod agent_glue;
 pub mod forge_controls;
 pub mod forge_glue;
+pub mod forge_hud;
+pub mod forge_readout;
 pub mod forge_screens;
 mod forge_map;
 mod agent_route;
@@ -53,6 +56,7 @@ pub mod firefight;
 #[cfg(feature = "rules")]
 pub mod rules;
 pub mod fov_row;
+pub mod render_rng;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
 pub mod game_code;
@@ -83,6 +87,8 @@ pub mod host_mem;
 pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
+#[cfg(feature = "gpu")]
+pub mod hud_overlay;
 pub mod hud_kit;
 pub mod hud_kit_world;
 pub mod hud_swap;
@@ -97,6 +103,7 @@ pub mod level_boot;
 pub mod lobby_mode;
 pub mod lobby_start;
 pub mod lobby_tabs;
+pub mod map_variant;
 pub mod list_class;
 #[cfg(feature = "gpu")]
 pub mod lod_distance;
@@ -113,6 +120,7 @@ pub mod map_bases;
 pub mod map_copy;
 pub mod map_override;
 pub mod map_select;
+pub mod map_areas;
 pub mod map_slots;
 pub mod medal_announcer;
 pub mod mod_slots;
@@ -137,9 +145,13 @@ pub mod native_gels_replace;
 #[cfg(feature = "gpu")]
 pub mod native_hud_glue;
 #[cfg(feature = "gpu")]
+pub mod modal_blur_glue;
+#[cfg(feature = "gpu")]
 pub mod native_lights_glue;
 #[cfg(feature = "gpu")]
 pub mod native_map;
+#[cfg(feature = "gpu")]
+pub mod native_shadow_chain;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_draw;
 #[cfg(feature = "gpu")]
@@ -157,6 +169,8 @@ pub mod native_post_glue;
 #[cfg(feature = "gpu")]
 pub mod native_post_load;
 #[cfg(feature = "gpu")]
+mod native_refusals;
+#[cfg(feature = "gpu")]
 pub mod native_residual_glue;
 #[cfg(feature = "gpu")]
 pub mod native_transparents_glue;
@@ -164,6 +178,8 @@ pub mod native_transparents_glue;
 pub mod native_water_glue;
 #[cfg(feature = "gpu")]
 pub mod native_world_glue;
+#[cfg(feature = "gpu")]
+pub(crate) mod relight;
 #[cfg(feature = "gpu")]
 pub mod native_world_layers_glue;
 #[cfg(feature = "gpu")]
@@ -274,6 +290,7 @@ pub mod variant_ext;
 pub mod variant_options;
 pub mod variant_page;
 pub mod variant_quick;
+pub mod variant_weapons;
 pub mod video_screen;
 #[cfg(feature = "local-io")]
 pub mod voice_glue;

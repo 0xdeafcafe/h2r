@@ -9,7 +9,7 @@ use super::{
     Diagnostic, Highlight, Hover, Location, Markup, Parameter, Position, Range, Signature, SignatureHelp, Symbol, Token,
     TokenKind, highlight_kind, severity, symbol_kind,
 };
-use crate::caps::{self, CARRIERS, Entry, Kind, Order, Status, VARIANT_FIELDS};
+use crate::caps::{self, Entry, Kind, Order, Status, VARIANT_FIELDS};
 use crate::ir::{self, Event, LabelKind, Scope};
 use crate::lang::ast::Item;
 use crate::lang::lower::FIELDS;
@@ -101,6 +101,27 @@ pub(crate) const LANG: &[Lang] = &[
         doc: "Whether a player holds a grant of a capability.",
         snippet: "granted(${1:p}, ${2:forge.place})",
     },
+    Lang {
+        name: "vec",
+        params: &["x: fixed", "y: fixed", "z: fixed"],
+        result: "vec",
+        doc: "A point or an offset in world units. It is the value of an expression or a `let`, never stored in a variable: `a + b`, `a - b`, `v * k`, `v.x`, `o.position`, `o.velocity`.",
+        snippet: "vec(${1:0.0}, ${2:0.0}, ${3:0.0})",
+    },
+    Lang {
+        name: "length",
+        params: &["v: vec"],
+        result: "fixed",
+        doc: "A vec's length in world units, exact to the 16.16 step.",
+        snippet: "length(${1:v})",
+    },
+    Lang {
+        name: "distance",
+        params: &["a: vec", "b: vec"],
+        result: "fixed",
+        doc: "The distance between two points: `length(a - b)`.",
+        snippet: "distance(${1:a}, ${2:b})",
+    },
 ];
 
 pub(crate) fn lang_index(name: &str) -> Option<usize> {
@@ -113,10 +134,14 @@ const P: &[&str] = &["p"];
 const P_O: &[&str] = &["p", "o"];
 const ZONE_O: &[&str] = &["zone", "o"];
 const T_ARG: &[&str] = &["t"];
+const O_ARG: &[&str] = &["o"];
 const S: &[&str] = &["s"];
 const KILLER_CLASS: &[&str] = &["killer", "class"];
 const BOUNCE: &[&str] = &["p", "spot", "chain", "monster"];
 const KILLER_ASSIST_CLASS: &[&str] = &["killer", "assist", "class"];
+const DAMAGE: &[&str] = &["o", "by", "amount"];
+const TOUCHDOWN: &[&str] = &["p", "down", "up"];
+const LAUNCH: &[&str] = &["p", "spot", "speed"];
 
 /// An event's argument names, as the docs write them, and what fires it.
 pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
@@ -154,6 +179,23 @@ pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
         Event::Quit => (P, "A player quit."),
         Event::RoundEnd => (NO_ARGS, "At the end of each round."),
         Event::Bounced => (P, "A player fell out of the map during a bounce: the Bounced medal."),
+        Event::Arrive => (O_ARG, "A mover reached the end of its `move_to`, on the tick its time ran out."),
+        Event::Touchdown => (
+            TOUCHDOWN,
+            "A player's biped touched down. `down` is the speed it fell at on the tick before and `up` its vertical speed now, both in world units a second (`down` positive for a fall, `up` positive for rising). At most 16 a tick.",
+        ),
+        Event::Launch => (
+            LAUNCH,
+            "A landing the host judged a superbounce, on the tick its launch window closed (three ticks after the touchdown). `spot` is the strip it came off, `none` for a seam no marked strip accounts for; `speed` is the launch, in world units a second up. At most 16 a tick.",
+        ),
+        Event::Grounded => (
+            P,
+            "A player's run of bounces with no ground between them ended: a landing that did not bounce, the ground from the third tick after a bounce, a teleport, a new unit or a fall through a strip's floor. Only after a `launch`; at most 16 a tick.",
+        ),
+        Event::Damage => (
+            DAMAGE,
+            "An object took damage. `by` is the player it is credited to, `none` for none; `amount` is body and shield damage together, as a fraction of full vitality. At most 16 a tick.",
+        ),
     }
 }
 
@@ -306,7 +348,6 @@ pub(crate) fn type_word_doc(w: &str) -> Option<&'static str> {
         "object" => "Anything placed or made that has a handle. `object?` may be `none`.",
         "zone" => "An object with a volume: a Forge trigger volume, or a netgame flag with its capture volume. A zone is an object.",
         "squad" => "A kit squad slot, 0 to 15: `squad(n)`.",
-        "carrier" => "The built-in enum of carrier engines: `carrier.slayer`, `carrier.assault`. `variant.engine` reads as one.",
         "timer" => "A global variable that counts ticks down; 0 is stopped. Reaching 0 fires `on timer`.",
         "Class" | "class" => "A kit class name.",
         "tag" => "A tag path of any object definition, checked against the map at load.",
@@ -315,6 +356,7 @@ pub(crate) fn type_word_doc(w: &str) -> Option<&'static str> {
         "objects" => "A set of objects: a label's kind, or a set parameter.",
         "zones" => "A set of zones: a label's kind, or a set parameter. A set of zones is a set of objects.",
         "spawns" => "Spawn areas: a label's kind, passed to `spawn_areas`, never visited.",
+        "path" => "A flight path: a label's kind, at least 2 points numbered from 0, passed to `fly`, never visited.",
         _ => return None,
     })
 }
@@ -322,14 +364,18 @@ pub(crate) fn type_word_doc(w: &str) -> Option<&'static str> {
 pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
     Some(match w {
         "rules" => "The header: `rules \"Name\" version`.",
-        "carrier" => "The retail engine the script rides: `carrier slayer`. Before a dot, the built-in enum of carriers: `variant.engine == carrier.assault`.",
+        "carrier" => "Gone: a script names its game type with `type`, not an engine: `type slayer`.",
         "const" => "A named constant, folded at compile time and usable wherever a literal is: `const last_phase = 2`, `const hold = 30s`.",
         "match" => "One arm per variant of an enum value: `match role { Role.vip { } Role.guard, Role.none { } }`, or an `else` arm. Every variant needs an arm.",
         "teams" => "In the header, the team count (1 to 8): `teams 2`. In a set, every team.",
-        "list" => "The game type list row a variant of the script is filed under: `list research` (Research and Devolution) or `list party` (Party Games). With no `list` line it is under its carrier's game type.",
-        "settings" => "The record settings the script sets, one `name = value` a line: `settings { score_limit = 50; shields = none }`. A setting the block leaves out has the carrier's stock value.",
+        "list" => "Gone: `type` files a variant in its row: `type research`, `type party`.",
+        "type" => "The game type: `type slayer`. It picks the game type list's row the script's variants are filed under, the announcer's line at the start and what a point is called. A type changes no rule.",
+        "points" => "What a point is, for the scoreboard and the post-game: `points \"Captures\"`. With no `points` line it is the type's.",
+        "uses" => "The built-in game whose rules the script plays under its own settings: `uses slayer`. The script then holds its header lines, `settings` and `quick` only.",
+        "settings" => "The record settings the script sets, one `name = value` a line: `settings { score_limit = 50; shields = none }`. A setting the block leaves out has the record's stock value.",
         "quick" => "The settings and options the lobby's Quick Options shows, at most five, in row order: `quick score_limit, starting_weapon`.",
-        "scoring" => "Who scores the game: `scoring carrier` leaves the carrier engine's own scoring in place, and the script holds settings only. With no `scoring` line the script's handlers score.",
+        "scoring" => "Gone: `uses slayer` plays a built-in game's rules under the script's settings.",
+        "use" => "Another file's declarations, read in at this line before checking: `use \"waves.rules\"`. The module has no `rules` header, is read once however many files name it, and may not (even through other files) name a file that is reading it. The compile gives one blob, the one the same text in one file would give.",
         "about" => "The variant's description, at most 150 characters: `about \"No shields. 50 points to win.\"`.",
         "requires" => "The capabilities the script declares: `requires player.weapons, hud.message`. The lobby shows them in plain words.",
         "option" => "A row of the variant editor: `option name: int 1..5 = 1 \"Label\" \"Description\"`. An int, a bool or an enum, read-only in handlers.",
@@ -449,16 +495,16 @@ pub(crate) fn def_markdown(m: &Model, d: usize) -> String {
         DefKind::Binder => format!("{}\nA member of the set.", code_block(&format!("(member) {name}: {ty}"))),
         DefKind::Label => label_markdown(m, d),
         DefKind::Setting => match settings::named(name) {
-            Some((index, _)) => setting_markdown(index, m.carrier_engine()),
+            Some((index, _)) => setting_markdown(index, m.engine()),
             None => decl(),
         },
     }
 }
 
 /// A setting's hover: its name and kind, our label, the game types it
-/// applies to, the values it takes and, for a script of another carrier,
-/// that the script cannot name it.
-pub(crate) fn setting_markdown(index: u16, carrier: Option<u8>) -> String {
+/// applies to, the values it takes and, for a script whose record is
+/// another game's, that the script cannot name it.
+pub(crate) fn setting_markdown(index: u16, engine: Option<u8>) -> String {
     let Some(row) = settings::row_at(index) else {
         return String::new();
     };
@@ -486,12 +532,12 @@ pub(crate) fn setting_markdown(index: u16, carrier: Option<u8>) -> String {
     if !row.is_record() {
         out.push_str("\nStored in the variant's extras (the `hx` block), not the game's own record.");
     }
-    if let Some(c) = carrier
-        && !row.applies(c)
+    if let Some(e) = engine
+        && !row.applies(e)
     {
         out.push_str(&format!(
-            "\nThis script's carrier is {}, so it cannot name this setting.",
-            settings::carrier_label(c)
+            "\nThis script's record is {}'s, so it cannot name this setting.",
+            settings::carrier_label(e)
         ));
     }
     out
@@ -510,6 +556,7 @@ fn label_markdown(m: &Model, d: usize) -> String {
     let what = if l.def.kind == LabelKind::Zone { "zone" } else { "object" };
     let sees = match (l.def.kind, l.single) {
         (LabelKind::Spawn, _) => "Spawn areas: pass it to `spawn_areas`; a loop cannot visit them.".to_string(),
+        (LabelKind::Path, _) => "A flight path: pass it to `fly`; a loop cannot visit its points.".to_string(),
         (_, true) if l.optional => format!("One {what}, or `none` on a map that has none (`{what}?`)."),
         (_, true) => format!("One {what}."),
         (_, false) => {
@@ -596,31 +643,23 @@ pub(crate) fn use_markdown(m: &Model, u: Use, s: usize, e: usize) -> String {
             let (_, doc) = event_info(ev);
             format!("{}\n{doc}", code_block(&format!("on {}", event_signature(ev).0)))
         }
-        Use::Carrier => match CARRIERS.iter().find(|(n, _)| *n == text) {
-            Some((n, index)) => format!(
-                "{}\nThe script rides the retail {n} engine (engine index {index}).",
-                code_block(&format!("carrier {n}"))
-            ),
-            None => format!("Unknown carrier `{text}`."),
-        },
+        Use::GameType(Some(t)) => {
+            let row = t.row();
+            format!(
+                "{}\nThe {} game type: its variants are filed in the {} row, and a point is called {}. A record of this type is on engine index {}.",
+                code_block(&format!("type {}", row.name)),
+                row.label,
+                row.label,
+                row.points,
+                row.engine
+            )
+        }
+        Use::GameType(None) => format!("Unknown game type `{text}`."),
         Use::Type => match type_word_doc(&text) {
             Some(doc) => format!("{}\n{doc}", code_block(&text)),
             None => format!("Unknown type `{text}`."),
         },
-        Use::CarrierEnum => format!(
-            "{}\n{}",
-            code_block("carrier"),
-            type_word_doc("carrier").unwrap_or_default()
-        ),
-        Use::CarrierValue(Some(i)) => {
-            let (n, index) = CARRIERS[i];
-            format!(
-                "{}\nThe retail {n} engine (engine index {index}), a value of the built-in enum `carrier`.",
-                code_block(&format!("carrier.{n}"))
-            )
-        }
-        Use::CarrierValue(None) => format!("Unknown carrier `{text}`."),
-        Use::Setting(index) => setting_markdown(index, m.carrier_engine()),
+        Use::Setting(index) => setting_markdown(index, m.engine()),
         Use::Variant => {
             let fields: Vec<String> = VARIANT_FIELDS
                 .iter()
@@ -714,7 +753,7 @@ pub(crate) fn diagnostics(m: &Model) -> Vec<Diagnostic> {
 }
 
 /// A note at each call of an entry in `names`, those no host can make on
-/// the script's carrier.
+/// the engine the script's record is on.
 fn unhostable(m: &Model, names: &[&str], out: &mut Vec<Diagnostic>) {
     for &(s, e, u) in &m.uses {
         if let Use::Api(entry) = u
@@ -951,11 +990,9 @@ fn use_token(u: Use) -> TokenKind {
         Use::VariantField(_) | Use::Field(_) => TokenKind::Variable,
         Use::Capability => TokenKind::Capability,
         Use::Event(_) => TokenKind::Event,
-        Use::Carrier => TokenKind::EnumMember,
+        Use::GameType(_) => TokenKind::EnumMember,
         Use::Type => TokenKind::Type,
         Use::Variant => TokenKind::Keyword,
-        Use::CarrierEnum => TokenKind::Enum,
-        Use::CarrierValue(_) => TokenKind::EnumMember,
         Use::Setting(_) => TokenKind::Variable,
     }
 }
@@ -1151,7 +1188,47 @@ pub(crate) fn symbols(m: &Model) -> Vec<Symbol> {
             children,
         });
     }
-    out
+    nest_sections(m, out)
+}
+
+/// The declarations after a `section "Name"` line, under a symbol of its
+/// own that runs to the next section (docs/game/rules-world-api.md,
+/// "Splitting a script"); those before the first stay at the top.
+fn nest_sections(m: &Model, symbols: Vec<Symbol>) -> Vec<Symbol> {
+    if m.script.sections.is_empty() {
+        return symbols;
+    }
+    let mut marks: Vec<Symbol> = m
+        .script
+        .sections
+        .iter()
+        .map(|(name, pos)| {
+            let off = m.li.pos_offset(*pos);
+            let range = m.li.range(off, m.li.line_end(m.li.line_of(off)));
+            Symbol {
+                name: name.clone(),
+                detail: "section".to_string(),
+                kind: symbol_kind::NAMESPACE,
+                range,
+                selection_range: range,
+                children: Vec::new(),
+            }
+        })
+        .collect();
+    marks.sort_by_key(|s| s.range.start.line);
+    let lines: Vec<u32> = marks.iter().map(|s| s.range.start.line).collect();
+    let mut top = Vec::new();
+    for sym in symbols {
+        match lines.iter().rposition(|&l| l <= sym.range.start.line) {
+            Some(i) => {
+                marks[i].range.end = sym.range.end;
+                marks[i].children.push(sym);
+            }
+            None => top.push(sym),
+        }
+    }
+    top.extend(marks);
+    top
 }
 
 /// The type words a declaration may spell (the enums aside): the

@@ -1,15 +1,15 @@
 # Halo 1 sandbox objects as Halo 2 tags (`crates/tools/h1objects`)
 
 Status: **Built** for reading every Halo 1 Xbox object tag on the 13
-multiplayer maps, and for building Blood Gulch's arsenal (assault
-rifle, pistol, plasma rifle, needler, frag and plasma grenades, health
-pack, cyborg, warthog, ghost) as Halo 2 tags on Coagulation. The built
-tags read back through `crates/formats/tags`; what only a game run
-shows is under "Needs a game run". The measurements behind the labels
-are in [notes/objects.md](notes/objects.md).
+multiplayer maps, and for building Halo 1's objects (Blood Gulch's arsenal:
+assault rifle, pistol, plasma rifle, needler, frag and plasma grenades,
+health pack, cyborg, warthog, ghost; the campaign levels' objects) as Halo 2
+tags. The built tags read back through `crates/formats/tags`, and the
+converted maps load in the game; what only a game run shows is under "Needs
+a game run".
 
 This is the Halo 1 sandbox of [multiplayer.md](multiplayer.md)
-(phase 4) and the object step of [campaign.md](campaign.md) §2.
+and the object step of [campaign.md](campaign.md) §2.
 Physics is Halo 2's (decision 1); Halo 1's health is kept (decision 2,
 [health.md](health.md)). Models and animations come from
 [models.md](models.md); the Halo 2 object family is in
@@ -40,7 +40,7 @@ time and print counts, names and values only.
 
 ## Source widgets
 
-**Built in code.** The Xbox discs contain 51 antenna references, 175 light-volume
+The Xbox discs contain 51 antenna references, 175 light-volume
 widget references, 15 lightning references, 13 cloth references, eight sword-glow
 references and one additional volume attached to
 the beam emitter on a10. The ignored `every_retail_widget_reaches_its_owner`
@@ -157,12 +157,12 @@ firing, `64` misfire, `74` empty damage (`jpt!`). V (every map,
 an element), names S. A `snd!` converts as a sound and stays one in
 Halo 2's slot, which takes either group (retail names both there). A shot plays the firing effect, whose `snd!` parts
 are the weapon's fire sound; the converted weapon names Halo 1's
-([rebuild.md](rebuild.md), "What a shot and a reload play").
+(docs/formats/tag-definitions.md, "What a shot and a reload play").
 
 ### Weapon effects and sounds
 
-Every effect and sound a converted weapon plays is Halo 1's; a slot
-Halo 1 leaves empty stays empty (the engine
+Every effect and sound a converted weapon plays is Halo 1's; a slot Halo 1
+leaves empty stays empty (the engine
 skips a null datum at each read below), never the Halo 2 counterpart's.
 Halo 2 offsets: V from the groups and names on every retail weapon of
 Coagulation (`h2 object coagulation <weapon>`), E where an engine read is
@@ -188,7 +188,9 @@ bytes (docs/formats/tag-schema.md, step 10).
 | magazine `+0x34`, `+0x44` | magazine `+0x38`, `+0x48` | reloading, chambering effect | V (`+0x34`, the SMG's); S (`+0x44`, between two `jpt!` group words) |
 
 A Halo 1 slot may name a `snd!` or an `effe`; each converts by the group
-of the tag it names (`Converter::weapon_slot`). The melee damage
+of the tag it names (`Converter::weapon_slot`). Keeping the counterpart's
+would play the SMG's ready effect when the assault rifle is drawn and its
+ammunition sound when it is picked up. The melee damage
 (`+0x1bc..+0x1f4`), the firing damage and the material effects
 (`item +0xf4`) are the counterpart's.
 
@@ -219,8 +221,9 @@ pack is type 5 with a positive time; the grenades are type 6).
 
 ### `effe` and attachments
 
-Read field by field (`h1::Effect`, `h1::attachments`): layout and
-evidence in [rebuild.md](rebuild.md), "Effects from definitions".
+Read field by field (`h1::Effect`,
+`h1::attachments`): layout and evidence in
+[tag-definitions.md](../formats/tag-definitions.md), "Effects from definitions".
 
 ### `part` (root `0x164`) as `prt3`
 
@@ -238,7 +241,7 @@ fog visibility.
 by the framebuffer blend function at `+0xda` (0 alpha blend, 3 additive,
 6 maximum, 7 alpha-multiply-add), the bitmap (`+0x4`) as
 the stem's `alpha_map_texture` with the compiled shader built from the
-stem ([rebuild.md](rebuild.md), "The compiled particle
+stem ([tag-definitions.md](../formats/tag-definitions.md), "The compiled particle
 shader"), Halo 1's sprite sequences (`+0x98` first, `+0x9a + +0x9c`
 counts, one picked per particle), the collision and death effects
 (`+0x48`, `+0x58`). The five properties and the input mask, vertex
@@ -249,10 +252,9 @@ are emitter-side in Halo 2.
 
 ### Effect particles (event `+0x38`, `0xe8`) as particle systems
 
-`particles::effect_particles`, `particle_system` and
-`Converter::effect_particle_systems`: each Halo 1
-effect particle whose `part` converts becomes a particle system of its
-event, one emitter on the proven slots ([effects.md](../formats/effects.md),
+Each Halo 1 effect particle whose `part` converts becomes a particle
+system of its event (`particles::effect_particles`, `particle_system`,
+`Converter::effect_particle_systems`), one emitter on the proven slots ([effects.md](../formats/effects.md),
 "Emitter"). The record (V, `halo1_effect_particle_survey`): `+0x8`
 location, `+0x54` the `part`, `+0x6c`/`+0x6e` count bounds, `+0x70`
 distribution radius, `+0x84` velocity bounds, `+0x8c` velocity cone
@@ -270,8 +272,8 @@ scale words.
   the radius: unproven), tint (packed ARGB: unproven) and alpha: Halo 1's
   midpoints, as constants.
 - The words no slot names (system flags, fade and LOD distances; emitter
-  `+0x9c..+0xb8`; the constants' input words) are the definition's
-  defaults (`tags::defs`).
+  `+0x9c..+0xb8`; the constants' input words) are the base's most common
+  (`EmitterRole`).
 - Not carried: distribution radius, relative direction and offset,
   angular velocity, the `part`'s physics (`pmov` null), the scale words.
 - A particle's collision or death effect that leads back to the effect
@@ -280,9 +282,9 @@ scale words.
 
 ### `pctl` (particle systems) as particle systems
 
-`particles::particle_system_types` and
-`Converter::particle_system_states`: an effect part naming a Halo 1
-`pctl` becomes particle systems of its event, after the event's own
+An effect part naming a Halo 1 `pctl` becomes particle systems of its
+event (`particles::particle_system_types`,
+`Converter::particle_system_states`), after the event's own
 particles. The layout (V, all 28 distinct tags,
 `halo1_pctl_structure_survey`): a `0x68` root (`+0x38` point physics,
 `+0x48` update physics, `+0x50` 4-byte constants, `+0x5c` particle types
@@ -324,7 +326,7 @@ its authored light values through the output.
 
 ### Object attachments
 
-**Built.** Every converted object kind uses Halo 1's `obje +0x140`
+Every converted object kind uses Halo 1's `obje +0x140`
 block for its marker attachments. Halo 2's attachment dispatcher
 (`0x000bed2a`) creates lights, effects, contrails and looping sounds.
 Their tags and marker names come from Halo 1, and the scales name the
@@ -336,12 +338,11 @@ A source function that lacks a supported curve or engine input stays
 unconverted, with its reason in the report. Halo 1's additive flag
 (H1 `0x8c06d..0x8c088` adds the previous output and wraps the sum by
 one) is such a case, and so is a function that turns off with one that
-did not convert (H1 `0x8c050..0x8c06b`). **Built:** an attachment whose
+did not convert (H1 `0x8c050..0x8c06b`). An attachment whose
 primary or secondary scale names an output with no converted function,
 or with no function at all, fails the conversion with the attachment,
-marker and output (`functions::primary_scale`); an empty Halo 2 scale
-there would run the attachment at one where Halo 1 scaled it by that
-output.
+marker and output (`functions::primary_scale`); an empty Halo 2 scale would
+run the attachment at one where Halo 1 scaled it by that output.
 
 Halo 2 does not dispatch `pctl` attachments directly. Each emitting
 particle type becomes an attached `effe` with the source marker as its
@@ -351,10 +352,10 @@ reads the emission-state rate in particles per second (`pctl` state
 (`0x00247100`). State durations, timed transitions and loop mode
 come from Halo 1. Halo 2 evaluates the transition rates over native
 event time. The existing particle-state conversion supplies the
-textures, sizes, tints and lifetimes. Visual states have separate
+textures, sizes, tints and lifetimes. Visual states still have separate
 native emitters.
 
-**Built** for attachment physics. The native emitter inherits the owner’s
+Attachment physics: the native emitter inherits the owner’s
 motion. Its birth hook (`0x00249170`) uses the source’s radial scatter or
 directional kick (`0x0010f2d0`, `0x0010f150` in Halo 1). Each particle
 state’s `pphy` supplies the mass, collision radius scale, air and liquid
@@ -365,7 +366,7 @@ choosing the coefficients from the active BSP’s liquid plane where
 present, and applies the source type’s death flags. Halo 2’s particle
 initialisation and simulation own all mutable particle state.
 
-**Built** for the minimum-population clock. Each native phase carries
+Minimum-population clock: each native phase carries
 the source minimum (including the transition endpoints and the
 attachment-scale flag). After Halo 2 steps its emitters
 (`0x00179020`), the clock shortens the remaining phase time to 30%
@@ -391,7 +392,7 @@ checks the attachment paths across object kinds.
 `cont` is Halo 1's compacted, span for span (V: the sniper, needler and
 plasma contrails of both games word for word, `particles_disc.rs`
 `contrail_survey`). `particles::CONT_SPANS` and `CONT_POINT_SPANS` list
-the spans; the layout is in [rebuild.md](rebuild.md),
+the spans; the layout is in [tag-definitions.md](../formats/tag-definitions.md),
 "Particles and contrails". Halo 2 effect parts never name a `cont` (the
 part groups on the disc are `deca`, `snd!`, `obje`, `ligh`, `lens`,
 `jpt!`, `MGS2`, `tdtl`): contrails are object attachments, so a Halo 1
@@ -403,8 +404,7 @@ point with an authored physics reference names its rebuilt `pphy`. The definitio
 ### `bipd`, `vehi`, `scen`
 
 Read as the `obje` header (plus every reference, `refs::scan`, for the
-units); the units' seats, camera and collision size come through
-`h1::Unit`. Tuning with no Halo 2 home is listed below.
+units). Their tuning is not read yet (below).
 
 ### `coll` (root `0x298`)
 
@@ -428,30 +428,28 @@ moments, `5c` inertia matrices (2 x `0x24`), `68` powered mass points
 `+0x22` model node, `+0x2c` mass, `+0x34` density, `+0x38` position,
 `+0x68` radius). V1 (strides; finite positions).
 
-## Building Halo 2 tags
+## Building Halo 2 tags (Design)
 
 **Scenery has no template**: the `scen`, its
 `hlmt` and its `mode`'s material list are written field by field from
 typed definitions, with the base's scenery role words in the unknown
 spans and Halo 1's model and bitmaps as predicted resources
-([rebuild.md](rebuild.md), "Scenery from definitions").
+([tag-definitions.md](../formats/tag-definitions.md), "Scenery from definitions").
 
-**Weapons, equipment, projectiles and damage have no template**: they
-are built from their typed definitions,
-with Halo 1's values and no template bytes ([rebuild.md](rebuild.md),
-"Weapons, equipment, projectiles and damage"). The `weap`, `eqip` and
-`proj` rows of `convert::TEMPLATES` only name the Halo 2 counterpart
-whose references (HUD, melee damage) fill the slots Halo 1 has nothing
-converted for.
+**Weapons, equipment, projectiles and damage have no template**: they are built from their typed definitions,
+with Halo 1's values and no template bytes ([tag-definitions.md](../formats/tag-definitions.md),
+Weapons, equipment, projectiles and damage). The template rows below
+for `weap`, `eqip` and `proj` only name the Halo 2 counterpart whose
+references (HUD, effects, sounds, melee damage) fill the slots Halo 1
+has nothing converted for.
 
-**Built. Vehicle drive.** Each vehicle comes from the `vehi` definition.
+**Vehicle drive.** Each vehicle comes from the `vehi` definition.
 H1 powered mass points supply ordered friction or hover contacts. Wheeled
 and tracked vehicles drive those contacts directly. H1 physics and globals
 supply tire drag and material response. The aircraft controller follows the
-source type and physics ([rebuild.md](rebuild.md), "Every vehicle from
-definitions"). [Drive laws and XBE evidence](role-audit.md#native-engine-fields).
+source type and physics. Vehicles have no template row. [Drive laws and XBE evidence](role-audit.md#native-engine-fields).
 
-**Lifepod engine audio. Built.** The a30 entry pod attaches the Halo 1
+**Lifepod engine audio.** The a30 entry pod attaches the Halo 1
 `sound\sfx\vehicles\lifeboat` loop. Its marker is empty and its primary
 scale is zero. The rebuilt attachment names that level's converted loop,
 whose track plays `lifeboat_entry`. The other lifepod variants have no
@@ -460,8 +458,8 @@ loop attachments of converted vehicles with their source and checks a30's
 entry pod explicitly. [Campaign audio evidence](sounds.md#campaign-loops-and-cache-slots-built).
 ### Native pickups and scripted props
 
-**Built** in `h1objects::convert_powerups`. Halo 1's overshield,
-active camouflage and health pack build fresh `eqip` and model chains.
+`h1objects::convert_powerups` builds Halo 1's overshield, active
+camouflage and health pack as fresh `eqip` and model chains.
 The source provides the bounding sphere, pickup time, model, collision,
 pickup sound and effect references. The paired retail `eqip` tags on
 `shared` and `single_player_shared` establish the item sort word and
@@ -472,8 +470,8 @@ shield at `0x00151f4b`, health at `0x00151f6a` and camouflage at
 `0x00151f85` (E). The multiplayer conversion rebuilds the collections in
 both settings ([multiplayer.md](multiplayer.md#what-isnt-placed-and-why)).
 
-**Built** in `h1objects::scripted_props` and the campaign placement
-writer. b30's seven boxes are dynamic `bloc` instances with the Halo 1
+In `h1objects::scripted_props` and the campaign placement writer, b30's
+seven boxes are dynamic `bloc` instances with the Halo 1
 storage crate's model and collision. Halo 1's vehicle tag references a
 `phys` for the mass and leaves the object's radius at zero. The rebuilt
 crate takes its bounds from its model and its shape and inertia from
@@ -482,7 +480,7 @@ dynamic `bloc` with one object-space body (V). a10's Halo ring is a
 `scen`, as in Halo 2's 00a. The ring and boxes keep their scenario names,
 transforms and script-controlled creation.
 
-**Built** for a10's seated props and aircraft. The cryotube and chairs
+a10's seated props and aircraft: the cryotube and chairs
 keep their source stationary vehicle type 6 and seats. a10's scripts call
 `unit_enter_vehicle` or `vehicle_load_magic` on them (V).
 Their collision bodies follow the model's nodes, including the cryotube
@@ -490,21 +488,21 @@ door. The fighter-bomber is a type 3 aircraft for `recording_play`. Its
 `phys` has eighteen mass point spheres, which form one native compound
 body. Halo 1 supplies mass, center of mass and inertia.
 
-**Built** for the lifepods. The flying pods use Halo 1's type 5, model,
+Lifepods: the flying pods use Halo 1's type 5, model,
 collision, seats and flight rates. Where Halo 1 supplies `phys` (the
 plain pod and a30 entry pod), the collision-derived rigid body keeps its
 mass, center of mass and inertia tensor. The flight hook applies H1's positive-radius lifepod controller at
 `0x37760` when the source supplies two powered groups.
 The docked pod keeps its stationary body and source lights. a30's entry pod
 attaches its own `lifeboat` loop, including the source track samples,
-through `h1sounds::looping`, and its reentry fire through the native
+through `h1_assets::sounds::looping`, and its reentry fire through the native
 `effe` attachment on `burn`. The plain and docked tags carry no engine
 loop (V). Offline checks are in `vehicle_rebuild_disc` and
 `h1campaign/tests/disc.rs`.
 
 **Where a vehicle meets the ground.** Three
 things the engine reads at a vehicle's base, proved in
-`h1objects/tests/vehicle_ground_disc.rs`:
+`crates/tools/h1objects/tests/vehicle_ground_disc.rs`:
 
 - **Bounding sphere.** Halo 1 centres every vehicle's sphere on its
   origin (`obje +0x08` zero on all of them), and its origin is where the
@@ -530,12 +528,11 @@ things the engine reads at a vehicle's base, proved in
   `+0x9c`. Retail entry markers face out of their door (the warthog's
   `driver_enter`: (0.15, 0.85, 0.5)); Halo 1's `driver enter` faces the
   vehicle's forward, so with the warthog role's 70 degrees a rider square
-  beside the door is refused; only one ahead of it, looking back, gets
-  in. Rebuilt seats hold pi there
+  beside the door was refused; only one ahead of it, looking back, got in. Rebuilt seats hold pi there
   (`rebuild::SEAT_ENTRY_FACING`), as the retail turrets do.
 - **Spawn height.** The ghost's hull reaches 0.143 below its origin, so
-  at Halo 1's placement it sits 0.14 into the floor, where Halo 1's
-  hover mass points lift it and Halo 2 leaves it. The Halo 1 sandbox
+  at Halo 1's placement it began 0.14 into the floor, where Halo 1's
+  hover mass points lifted it and Halo 2 left it. The Halo 1 sandbox
   raises each vehicle spawn by how far its model reaches below its
   origin (`h1convert::convert::halo1::vehicle_depth`). The Halo 2
   sandbox raises each retail vehicle the same way, by the lowest z of
@@ -543,37 +540,21 @@ things the engine reads at a vehicle's base, proved in
   (`h1convert::placements::retail_vehicle_depth`: the retail ghost
   0.15, the warthog 0.02, the wraith none).
 
-**The Blood Gulch ghost.** Nothing selects the ghost's damaged model,
-at rest it lies on its hull, and driven its hover points lift it (the
-report that prompted the check, and the live numbers, are in
-[notes/objects.md](notes/objects.md)):
-
-- **Model: the intact permutation draws.** Halo 1's `ghost` model has
-  one region, `__unnamed`, with `__base` (geometries 3, 3, 2, 1, 0 from
-  super low to super high, shaders 0 to 2) and `~damaged` (3, 7, 6, 5,
-  4, shaders 3 to 5: the `damaged ghost ...` shaders on the
-  `ghost_destroyed` bitmaps). The converted `mode` keeps both in that
-  order and its `hlmt` has no variants, no damage sections
-  (`hlmt +0x60` empty) and one region naming both permutations. E: the
-  region permutation update (`0x0016d660`) gathers candidates only from
-  the object's variant (`0x0016dad0`, through `hlmt +0x54`); with none
-  it chooses nothing and the region keeps permutation 0.
-- **At rest the ghost lies on its hull.** Its `phmo` is Halo 1's
-  collision (lowest point 0.134 below the origin; the retail ghost's
-  `phmo` 0.019) of Halo 1's `phys` mass, 2000 (retail 907), centre of
-  mass (0.376, 0, 0.133) from the pieces (Halo 1's own 0.362, 0, 0.108;
-  retail 0.287, 0, 0.177). Empty, both rest on their physics shapes
-  (neither hovers without a driver).
-- **Driven, the hover points lift.** A hover point whose marker is on
-  any node but the root lifts nothing. Every friction and hover marker
-  of every retail vehicle is on node 0, so every powered point's marker
-  is ([rebuild.md](rebuild.md), "Every vehicle from definitions";
-  `h1objects/tests/vehicle_rebuild_disc.rs`,
-  `every_powered_point_rides_the_root_node`). The hover points'
-  positions match the retail ghost's within 0.06 (Halo 1's back point
-  (-0.25, 0, 0.08), retail (-0.27, 0, 0.10); the front pair (0.62,
-  ±0.4, 0.06) and (0.68, ±0.4, 0.10)); the skeletons are the same five
-  nodes at the same rest pose.
+**The Blood Gulch ghost.** The converted `mode` keeps the ghost's `__base`
+and `~damaged` permutations in that order and its `hlmt` has no variants and
+no damage sections (`hlmt +0x60` empty), so nothing selects the damaged
+model: E, the region permutation update (`0x0016d660`) gathers candidates
+only from the object's variant (`0x0016dad0`, through `hlmt +0x54`), and with
+none the region keeps permutation 0, the intact one. At rest the ghost lies
+on its hull, as in Halo 1: its `phmo` is Halo 1's collision with Halo 1's
+`phys` mass, and neither physics shape hovers without a driver. Driven, a
+hover point whose marker is on any node but the root lifts nothing, and every
+friction and hover marker of every retail vehicle is on node 0, so every
+powered point's marker is (tag-definitions.md, "Every vehicle from
+definitions"; `crates/tools/h1objects/tests/vehicle_rebuild_disc.rs`,
+`every_powered_point_rides_the_root_node`). The hover points' positions match
+the retail ghost's within 0.06. The game-run figures are in
+[notes/objects.md](notes/objects.md).
 
 **Functions and what they scale (vehicles).** Halo 1 scales an
 attachment (a looping engine sound, a headlight) by one of the object's
@@ -595,28 +576,26 @@ Halo 1's names: the retail warthog's taillights scale by `jump`), export
 the export of the function Halo 1 names, and data an identity or linear
 function whose range is Halo 1's bounds. Each attachment then names its
 output's export. An output that doesn't convert leaves its attachments
-unscaled (scale 1), with a note (tests:
-`h1objects/tests/object_functions_disc.rs`).
+unscaled (1), with a note; unscaled, a rebuilt vehicle's engine would sound
+a constant hum and its lights be always on (tests:
+`crates/tools/h1objects/tests/object_functions_disc.rs`).
 
-Each object names the **retail Halo 2 tag that plays the same role** in
-the base map (`convert::TEMPLATES`): assault rifle on the SMG, pistol
-on the magnum, plasma rifle, needler, grenades on Halo 2's grenades,
-health pack on the overshield, cyborg on `masterchief_mp`. For campaign
-bases (05a_deltaapproach) placed elites, grunts, jackals and engineers
-name Halo 2's elite, grunt, jackal and drone, every other placed biped
-(marines, Keyes, the pilot) `masterchief`. The counterpart supplies the
-references Halo 1 has nothing converted for — the switchable Halo 2
-HUD, melee damage — through `template_candidates` (below, "Campaign
-bases"); every object is otherwise written from its typed definition.
-Halo 1's lifepod is the escape pod, a small flying craft, not Halo 2's
-`insertion_pod`, the ODST drop pod: the scripts fly it with recordings,
-load units into it, open, close, attach and animate it, and never hand
-it to the player (`lifepod_use` in h1campaign's survey, below). The
-pelican's attachments (`obje +0x94`, `0x18` each) loop six sounds,
-engine, hover and banking on each side, scaled by its `engine_audio`,
-`hover_audio` and `banking_audio` functions; a lifepod carries Halo 1's
-own attachments and none of those (the investigation is in
-[notes/objects.md](notes/objects.md)).
+Weapons, equipment, grenade projectiles and bipeds name the **retail
+Halo 2 tag that plays the same role** (`convert::TEMPLATES`, first match;
+`template_candidates` lists every match in table order and the converter
+takes the first the base holds): assault rifle on the SMG, pistol on the
+magnum, plasma rifle, needler, grenades on Halo 2's grenades, health pack
+on the overshield, cyborg on `masterchief_mp`. For campaign bases
+(05a_deltaapproach): placed elites, grunts, jackals and engineers on
+Halo 2's elite, grunt, jackal and drone (`bugger`), every other placed biped
+(marines, Keyes, the pilot) on `masterchief`. Vehicles (the pelican, Covenant
+dropship, wraith, turrets, lifepods), scenery and devices have no template.
+A lifepod is Halo 1's escape pod, a small flying craft, not Halo 2's
+`insertion_pod`, the ODST drop pod: the scripts fly it with recordings, load
+units into it, open, close, attach and animate it, and never hand it to the
+player (`lifepod_use` in h1campaign's survey, below). Template child blocks
+that are not rebuilt keep their retail addresses (aliasing, as retail does
+13,099 times), so the tags must go into a `TagSet` made from that base map.
 
 Lifepod use (**S**, `lifepod_use`): a30's `lifepod_entry`
 (5 placements, the intro pods) is named in `recording_play` (5),
@@ -627,33 +606,36 @@ calls; a10's `lifepod_docked` and `lifepod` in `objects_attach`,
 a30's plain `lifepod` palette entries have no placement. No call drives
 one with a player.
 
-**Model chain.** The `hlmt` is written from its typed definition
-(`rebuild::model`): render model -> converted `mode` (`h1models`, with
-its converted shaders), collision -> converted `coll`, animation -> converted
-`jmad` (`h1models`; null when the Halo 1 object has none, as on the
-weapons), and a **physics model built from Halo 1** — each collision
-node's solid cells as Havok shapes, of Halo 1's `phys` mass where the
-tag names one; a vehicle with no solid collision and no mass points
-gets the one-sphere stand-in, since `vehicle_new` refuses a model
-without one ([rebuild.md](rebuild.md), "Physics models from Halo 1").
-The physics model writes a matrix per rigid body's node into the
-object's `hlmt`-sized array (Nodes, below), so a body's node is one the
-converted model holds. Variants are emptied (count 0); regions are
-rebuilt from the converted model's region and permutation names. `obje
-default_variant` is set to 0.
+**Model chain.** `hlmt` = the template's `hlmt` root with: render model
+-> converted `mode` (`h1_assets::models`, no shaders yet), collision -> converted
+`coll`, animation -> converted `jmad` (`h1_assets::models`; null when the Halo 1
+object has none, as on the weapons), **physics model: the template's
+`phmo`, borrowed** (warthog's for the warthog, ghost's for the ghost,
+`masterchief`'s for the cyborg; Coagulation's weapons and equipment have
+none). The borrowed `phmo` is dropped (null) when its rigid bodies
+(`phmo +0x38`, `0x90` each, node `i16` first) name a node past the
+converted model's count: the physics model writes a matrix per rigid
+body's node into the object's `hlmt`-sized array (Nodes, below). That is
+why humans take the Chief, whose `phmo` stays inside a Halo 1 human's 20
+nodes, and not the marine (node 36); grunts, monitors, flood forms and
+small devices then have no physics model. A vehicle left with none gets one built
+from its Halo 1 collision (tag-definitions.md, Physics models from Halo
+1), since `vehicle_new` refuses a model without one. Variants are emptied (count 0); regions are rebuilt from the
+converted model's region and permutation names. `obje default_variant`
+is set to 0.
 
 **Nodes** (`hlmt +0x78`, `0x5c` each) are the converted `mode`'s, one
-for one (`h1models::mode::hlmt_nodes`): name, parent, first child, next
+for one (`h1_assets::models::mode::hlmt_nodes`): name, parent, first child, next
 sibling, `+0xa` zero, default translation and rotation, scale 1, the
 inverse model-space basis and position. V (05a: SMG, warthog, banshee,
 Master Chief): a retail `hlmt` node is its `mode` node's first `0x5c`
 bytes with `+0xa` zero. E: `object_new` reserves `0x34` bytes of node
 matrices per `hlmt` node, at least one (`0x000b7ef3`, `0x000b800b`,
 object `+0x114`); the model, graph and physics write one per *their*
-node. With the nodes emptied, every multi-node object writes past its
-body into the next object in the pool, and the clobbered header of the
-next item faults at `0x0010b96e` (`mov edx,[ecx+0BCh]` with the
-definition pointer null).
+node. With the nodes emptied, every multi-node object would write past its
+body into the next object in the pool, faulting on the clobbered header of
+the next item (`0x0010b96e`, `mov edx,[ecx+0BCh]` with the definition
+pointer null).
 
 **`coll`** is built from scratch: materials and names as string IDs
 (lower case, spaces to underscores), each region permutation holding the
@@ -669,85 +651,80 @@ narrowed to 24-bit 3D children and 16-bit flagged indices), and Halo 2's
 `0x44`-byte element puts a word before the eight blocks. Proof:
 `campaign_collision_converts_and_answers_as_halo1` (below).
 
-**Collision for Havok: BSP physics.** Havok moves the player's biped,
-vehicles and loose items, and it sees an object through the `hlmt`'s
-`phmo` or, with none, through the `coll` permutation's BSP physics
-slots: one `0x70`-byte slot per BSP, a Havok shape over the BSP inside
-a MOPP tree whose code keys the BSP's surfaces by index
-([collision.md](../formats/collision.md), "BSP physics"). Retail writes
-the slots exactly for the `coll`s of scenery with no `phmo` (V, every
-map on the disc: a Delta Halo statue, trees; not weapons, equipment,
-devices, bipeds or crates). So:
+**Collision for Havok: BSP physics.** An object with a `coll` but neither
+a `phmo` nor BSP physics slots is invisible to Havok, so the player would
+walk through it (a10's round oxygen tanks, barricades and computer banks are
+scenery with collision). Havok moves the player's biped, vehicles and loose
+items, and it sees an object through the `hlmt`'s `phmo` or, with none,
+through the `coll` permutation's BSP physics slots: one `0x70`-byte slot
+per BSP, a Havok shape over the BSP inside a MOPP tree whose code keys
+the BSP's surfaces by index ([collision.md](../formats/collision.md), "BSP
+physics"). Retail writes the slots exactly for the `coll`s of scenery
+with no `phmo` (V, every map on the disc: a Delta Halo statue, trees;
+not weapons, equipment, devices, bipeds or crates). So:
 
-- a scenery object with no `phmo` (every converted one; scenery has no
-  `phmo`, and a10's scenery with collision is ten tags, none named
-  crate) gets its `coll` with one slot per BSP: the box of the BSP's
-  vertices at `+0x10`/`+0x20`, the `coll`'s own datum at `+0x30`, and
-  MOPP code from `crates/formats/mopp` over the BSP's surfaces, keyed
-  `0..n` (`coll::bsp_mopp`), at `+0x64`;
+- a scenery object (it has no `phmo`) gets its `coll` with one slot per
+  BSP: the box of the BSP's vertices at `+0x10`/`+0x20`, the `coll`'s own
+  datum at `+0x30`, and MOPP code from `crates/formats/mopp` over the BSP's
+  surfaces, keyed `0..n` (`coll::bsp_mopp`), at `+0x64`;
 - every other object gets its `coll` without slots, as retail. A Halo 1
   `coll` that both kinds use is built twice (the second named with
   `_bsp_physics` or `_phmo`).
 
-**Shared blocks.** A BSP's eight child blocks and a slot's MOPP code
-are shared by content (`Block::shared`, a hash of the bytes): Halo 1
+**Shared blocks and b40.** A BSP's eight child blocks and a slot's MOPP
+code are shared by content (`Block::shared`, a hash of the bytes): Halo 1
 levels carry identical collision under several names (b40's three
-granite boulders), and without the sharing the slots alone put b40 over
-the tag memory bound; with it b40 converts at lean 1 with tag memory to
-spare (the numbers are in [notes/objects.md](notes/objects.md)). A
-shared block can lie outside its tag's payload, so
+granite boulders), and the slots alone add 37,280 bytes on b40 (38
+slots; a10 13,152 for 15), which would put b40 0x8000 over the tag memory
+bound even at the last lean step. With sharing b40 converts at lean 1
+(the empty squads dropped) with tag memory `0xc22000` of `0xc24000`. A shared block can lie outside its tag's payload, so
 `tags::collision::Collision::read` decodes against the whole metadata
 when a block is out of the tag's range (`Collision::decode_at`).
 
-Vehicles meet bipeds through their `phmo`: a vehicle's wheels and
+**Vehicles meet bipeds through their `phmo`.** A vehicle's wheels and
 treads are in its body above the hull's lowest point where its retail
 role's physics models have wheel shapes (the scorpion's treads; not the
-warthog's tires; `convert::held_wheels`), so a walking biped cannot
-enter them.
+warthog's tires; tag-definitions.md, `convert::held_wheels`), so a walking
+biped cannot enter the converted treads ([notes/objects.md](notes/objects.md)).
 
-**The scorpion's treads are solid.** Its pieces reach 1.18 to each side
-over the back half of the tread and 1.06 over the front half (retail's
-scorpion: 1.13; its hull 0.53), from 0.10 to 0.53 above the origin; a
-path just outside the front half (narrower by 0.12) clears them (the
-game run that checked them is in [notes/objects.md](notes/objects.md)).
-
-**Placed scenery is structure.** The engine gives no scenery a Havok
-body, from a `phmo` or otherwise ([rebuild.md](rebuild.md), "Scenery
-from definitions", and [collision.md](../formats/collision.md), rigid
-bodies: only bipeds, vehicles, machines, crates and creatures get
-bodies), so a scenery object's `coll` and its BSP physics slots never
-make it solid. Instead every scenery placement there from the start
-whose object has a collision model has that collision moved to its
-place and merged into the level's collision BSP
-(`h1convert::scenery_collision`, [multiplayer.md](multiplayer.md),
-"Collision"), the way retail builds its rocks into the structure —
-retail Blood Gulch's base keeps its rocks in the structure and its one
-solid prop as a crate with a fixed body; the object draws as scenery. So Havok meets the rocks and trees through the structure's
-MOPP code, and the engine's own BSP tests (bullets, projectiles, a
-biped's ground checks) through the structure's 3D tree. Which objects
-is decided by the `coll`, not the name. Proof:
-`h1objects/tests/scenery_collision_disc.rs` (inside
-`boulder_doublewide` is solid in converted Blood Gulch, a ray from above
-stops on its top). Whether the player stops at the boulders is the game
-run's to show.
+**Scenery has no body; placed scenery is structure.** The engine gives no
+scenery a Havok body, from a `phmo` or otherwise (rigid bodies: only
+bipeds, vehicles, machines, crates and creatures get them,
+[collision.md](../formats/collision.md)), so neither the BSP slots nor a
+built `phmo` would make a scenery object solid; the player put inside
+`boulder_doublewide` or `boulder_crouch` drops to the ground through it
+([tag-definitions.md](../formats/tag-definitions.md), "Scenery from
+definitions"). Retail Blood Gulch's base keeps its rocks in the structure
+and its one solid prop as a crate with a fixed body. So scenery has no
+`phmo` and its `coll` keeps its BSP physics slots, as retail scenery with
+no `phmo`, and every scenery placement there from the start whose object
+has a collision model has that collision moved to its place and merged into
+the level's collision BSP (`h1convert::scenery_collision`,
+[multiplayer.md](multiplayer.md), "Collision"), the way retail builds its
+rocks into the structure; the object still draws as scenery. So Havok
+meets the rocks and trees through the structure's MOPP code, and the
+engine's own BSP tests (bullets, projectiles, a biped's ground checks)
+through the structure's 3D tree. Which objects is decided by the `coll`,
+not the name. Proof: `crates/tools/h1objects/tests/scenery_collision_disc.rs`
+(inside `boulder_doublewide` is solid in converted Blood Gulch, a ray from
+above stops on its top).
 
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each
 permutation (`8`) its `coll` permutation (`+5`) and physics permutation
-(`+6`); -1 is none (V, retail; [collision.md](../formats/collision.md)).
-`convert::region_map` picks the `coll`
+(`+6`); -1 is none (V, retail; [collision.md](../formats/collision.md)). They are
+set by `convert::region_map`: the `coll`
 region of the same name (string ID form), else the one at the same
 index, else -1; the permutation likewise, then the region's first.
 Physics bytes stay 0 (retail never holds -1 there on an object with no
 `phmo`). A `coll` region no render region selects is listed in
 the report.
 
-**Physics.** The `phmo` is built from Halo 1 as Havok shapes with
-Halo 2's runtime post-processing ([collision.md](../formats/collision.md),
-[rebuild.md](rebuild.md), "Physics models from Halo 1"): each collision
-node's solid cells, taking Halo 1's `phys` mass where the tag names one;
-a vehicle with no solid collision and no mass points gets the one-sphere
-stand-in (Model chain, above).
+**Physics.** A rebuilt vehicle's `phmo` is built from Halo 1's collision
+and `phys` mass (`h1objects::physics`; [tag-definitions.md](../formats/tag-definitions.md),
+"Every vehicle from definitions"). A biped borrows its template's `phmo`,
+which binds rigid bodies to Halo 2's node layout, which the converted model
+does not share (open question below).
 
 ### Halo 2 offsets written
 
@@ -759,7 +736,7 @@ stand-in (Model chain, above).
 | `weap` | `208`..`218` | `cone_angle`, `cone_range`, `pull_angle`, `pull_range`, `bend_angle` | E |
 | `weap` | `2c0` | magazines, `0x5c` | V2 (stride: magazine objects start `0x5c` after) |
 | magazine | `04`, `06`, `08`, `0a`, `10`, `14` | rounds recharged, total initial, total maximum, loaded maximum, reload time, rounds reloaded | S, V2 (the loaded maximum and rounds reloaded agree on every magazine) |
-| magazine | `0c` | the most rounds held in reserve: total maximum less loaded maximum | E (`0x101a10` caps the reserve with it, [skulls.md](../game/skulls.md)), V (all seven retail magazines on Coagulation; the live Blood Gulch run is in [notes/objects.md](notes/objects.md)) |
+| magazine | `0c` | the most rounds held in reserve: total maximum less loaded maximum | E (`0x101a10` caps the reserve with it, [skulls.md](../game/skulls.md)), V (all seven retail magazines on Coagulation). Written 0 it would leave no reserve and the HUD count 0; written, the Blood Gulch assault rifle spawns with 180 in reserve, and emptying the magazine and reloading leaves 120 (Run) |
 | `weap` | `2c8` | triggers of stride `0x40`. Input and behaviour at `04/06`, primary and secondary barrels at `08/0a`, charging action at `18`, charge times, action and illumination at `1c..2c`, charging effect at `30` | V on Coagulation and Blood Gulch. See “Firing a rebuilt weapon” below. |
 | `weap` | `2d0` | barrels, `0xec` | E (objects.md) |
 | barrel | `04`, `0c`, `10` | rounds per second (2), acceleration, deceleration time | S, V2 |
@@ -776,7 +753,7 @@ Halo 1 speeds are multiplied by 30 (per tick to per second).
 
 ### Firing a rebuilt weapon
 
-**Built** for the Halo 1 sandbox. The H1 disc has 316 weapon occurrences
+The H1 disc has 316 weapon occurrences
 across 24 maps, covering 23 distinct paths. Blood Gulch's shotgun and assault rifle both
 have zero H1 trigger flags. The shotgun's weapon type is 1 at H1 `weap +4e2`,
 also the type the two engines check for shell reloads (H1 `0xbf70f`, H2
@@ -813,14 +790,14 @@ aiming direction and shared projectile direction move from H1 bits
 `+94` has a null datum. H2 checks for `-1` after the projectile loop at
 `0x1053f6`.
 
-**Built** for variable-speed H1 projectiles. H1 computes constant acceleration
+**Variable-speed H1 projectiles.** H1 computes constant acceleration
 from the two speeds and the current medium's distance bounds at `0xc1a60`
 and `0xc1ac0`. At impact it normalizes the measured speed between those
 bounds at `0xc2de1`. H2 instead interpolates speed linearly with distance.
 The converter retains the native air-distance bounds and their reciprocal
 for effect inputs. It marks the zero guidance scalar at `proj +198` with
 the negative-zero bit pattern. H2 compares it numerically at `0xf88df`. The 725 local projectile occurrences inspected on
-the H2 disc contain no such marker. At the velocity-length call returning
+the H2 disc contained no such marker. At the velocity-length call returning
 to `0xf966a`, the simulation integrates the H1 curve over the collision
 substep, supplies its mean velocity for the sweep and its end velocity for
 the next step. At the damage initializer returning to `0xfad79`, it scales
@@ -830,8 +807,7 @@ Both guided angular velocity bounds receive H1's single value.
 `weapon_rebuild_disc` compares the firing fields, firing feedback and
 projectile targets against each original weapon on the campaign and
 multiplayer maps. Its Blood Gulch case also checks the retail Coagulation
-trigger and barrel layouts. A play check of the rebuilt map needs a
-game run.
+trigger and barrel layouts.
 
 ### Weapon class and type (`weap +0x288`, `+0x28c`, **Built**)
 
@@ -843,10 +819,10 @@ string IDs, with mode `current` (sid `0x101`) or the seat's, to
 `0x0010fcd0`; that asks `0x001cc3f0` for action `idle` (sid `0xc`) and
 refuses the weapon when there is none (E). Retail: the SMG `rifle`/`smg`,
 the magnum `pistol`/`hp`, the rocket launcher `missile`/`rl`, vehicle guns
-`fixed`/`gun` (V, Coagulation); a weapon with both null is one no graph
-holds, so the player can pick nothing up and never fires.
+`fixed`/`gun` (V, Coagulation). A rebuilt weapon with both null would let
+the player pick nothing up, so it never fires.
 
-**Built. Player weapon classes.** Halo 1 stores the type on the weapon
+**Player weapon classes.** Halo 1 stores the type on the weapon
 (`weap +0x30c`) and lists it under a standing class in the cyborg graph.
 The converted weapon and graph use that same class. Blood Gulch has
 `rifle/ar`, `rifle/sg`, `rifle/sr`, `rifle/pr`, `missile/rl`,
@@ -861,10 +837,12 @@ class/type from each converted weapon and look up its source slots.
 `0x001db170` finds the mode, class, type and action each by binary
 search over signed string IDs (`0x001dd560`; the type falls back to
 `any`), so a graph holds a weapon only if every level of its tree is in
-string-ID order; name order hides names from the search, the cyborg
-refuses every weapon — the Halo 1 sandbox's "no starting weapon", "can't
-pick up weapons" and, with nothing held, no first-person arms or weapon.
-The trees are laid out by string ID when the map is built
+string-ID order. Trees in name order hide names from the search: the
+cyborg's graph would find `idle` and `throw_grenade` for none of the eight
+Halo 1 weapons, so it would refuse every weapon (the Halo 1 sandbox's "no
+starting weapon", "can't pick up weapons" and, with nothing held, no
+first-person arms or weapon); every retail graph is in order. The trees are
+laid out by string ID when the map is built
 ([models.md](models.md), `jmad`), and the disc tests look each weapon up
 as the engine does: `idle` under `combat`, its class and its type, and
 `idle` in its first-person graph, and `throw_grenade` under `combat`,
@@ -888,9 +866,10 @@ to `+0x5c` (this block's address) and reads element `esi`'s `u16` at
 `+0x10`, with no bound check (E). Its one caller, `0x001695fb` in
 `0x00169510`, tests a ray against an object's model and passes the hit's
 material index. An empty block faults there reading `[0 + esi*0x14 +
-0x10]` (pc `0x000d8b33`, address `0x10`).
+0x10]` (pc `0x000d8b33`, address `0x10`, a few seconds into play with the
+player on the health pack).
 
-Retail (V, `tests/hlmt_materials_disc.rs` on coagulation, beavercreek and
+Retail (V, `crates/tools/h1objects/tests/hlmt_materials_disc.rs` on coagulation, beavercreek and
 05a, 100 `hlmt`s, 197 elements):
 
 | Offset | Field | Evidence |
@@ -910,11 +889,12 @@ converted `coll` material, in order: the material's name, `+4`
 `0xffff0000`, `+8` `k | 0xffff0000`, the Halo 2 global material of its
 Halo 1 type (`arsenal::MATERIALS`) and that material's index in the base's
 globals. A `phmo` the converter builds (its shapes name material 0) adds
-an element for each of its materials past the `coll`'s.
-`h1objects::verify::hlmt_materials` checks the rule on a
-built map; `tests/sandbox_disc.rs`
+an element for each of its materials past the `coll`'s; a borrowed retail
+`phmo` keeps the template's elements past the `coll`'s, each named as its
+global material. `h1objects::verify::hlmt_materials` checks the rule on a
+built map; `crates/tools/h1objects/tests/sandbox_disc.rs`
 (`every_hlmt_holds_its_materials_in_both_sandboxes`) and
-`h1campaign/tests/disc.rs` (`every_campaign_level_converts`) run it on
+`crates/tools/h1campaign/tests/disc.rs` (`every_campaign_level_converts`) run it on
 every converted map against what the retail base already breaks.
 
 ### Cut-out model shaders (**Built**)
@@ -940,7 +920,7 @@ These draw on
 `opaque\tex_bump_alpha_test_single_pass` with the leaf in slot 2, the
 base. That stem cuts out in two places (V, `h2 shader` on coagulation's
 `bush_vine` and `tree_cliff_leaf`, both on it; and
-`tests/model_shaders_disc.rs`): its colour pass (layer 3,
+`crates/tools/h1objects/tests/model_shaders_disc.rs`): its colour pass (layer 3,
 `lightmap_tex_detail_alpha_test`) alpha-tests with the base at stage 0,
 and its layer 10 (`shadow\shadow_generate`, whose implementations 1 and 2
 write depth only, the depth the light passes then test equal against)
@@ -948,13 +928,15 @@ samples **slot 0, the bump map**, at stage 0 with `D3DTSS_ALPHAKILL` on.
 Retail's alpha-tested bump maps carry the cut-out: they are P8 bump with
 palette index 255 exactly where the colour map is clear
 (`tree_cliff_leaf_bump`: 24,367 of its 24,396 texels with colour alpha
-below 128 are index 255, none above 159). A `default_vector` there is
-opaque, so each card's depth covers the whole card and the canopy draws
-as a flat near-black diamond (the live check that showed it is in
-[notes/objects.md](notes/objects.md)).
+below 128 are index 255, none above 159). A shader with
+`default_vector` there is opaque, so each card's depth covers the whole
+card: the whitebark's canopies drew as flat near-black diamonds, the clear
+part showing the dark colour behind the depth, not the cliff; pointing the
+leaf shader's slot 0 at the leaf bitmap itself cut the canopies into the
+leaf's star shape ([notes/objects.md](notes/objects.md)).
 
 The converter binds a bump map of its own in slot 0 when a cut-out
-`soso` has none (`h1bitmaps::mask::cutout_bump`, tag `<base
+`soso` has none (`h1_assets::bitmaps::mask::cutout_bump`, tag `<base
 name>_alpha_test_bump`, built once per base): DXT5 of the base's size and
 mip chain, every texel the flat normal (129, 128, 255, a fixed colour
 block within a step of `default_vector`'s 128, 128, 255), its alpha 0
@@ -963,12 +945,12 @@ keeps the depth cut where the colour pass cuts; the threshold is Halo 1's
 half and agrees with retail's leaf bump above. Its tiling and LOD offset
 are the base's. Every image of a multi-image base is cut the same way.
 A base that doesn't decode fails the conversion. Proof:
-`h1bitmaps` `a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha`;
-`tests/model_shaders_disc.rs`,
+`h1_assets::bitmaps` `a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha`;
+`crates/tools/h1objects/tests/model_shaders_disc.rs`,
 `bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha` (retail's
 slots on coagulation, then every converted shader on the cut-out stem
 among the five plants and trees). Not covered: an alpha-tested `senv`
-(structure) shader on the same stem binds its own P8 bump or the
+(structure) shader on the same stem still binds its own P8 bump or the
 default, whether or not that bump's alpha cuts.
 
 ### Change colours (`obje +0xac`, **Built**)
@@ -1014,13 +996,13 @@ doors read A; marines' faces, the flood and the crewman's flesh B; the
 cyborgs, the cryo tube and the cyborg helmet C. No object reads both A
 and C.
 
-The converter:
+The converter (**Design**):
 
 - A `soso` with a change colour that isn't cut out is drawn with
   `tex_bump_env_four_change_color` (the black default cube when it has no
   reflection, as retail's `elite_fp_leather` is). Its change map is the
   multipurpose blue moved into the channel of the Halo 2 slot
-  (`h1bitmaps::mask::channel_into`, DXT5, tag
+  (`h1_assets::bitmaps::mask::channel_into`, DXT5, tag
   `<mask>_change_color_<slot>`); every other channel is 0, so the shader
   multiplies the rest by 1. A cut-out one (the trees' leaves) stays
   without: there is no alpha-tested change-colour stem in the base.
@@ -1036,7 +1018,7 @@ The converter:
   darken-by and scale-by imports or converted object outputs in the second
   block. On a10 the shield station's two colour ranges follow its two
   power-derived outputs. See [the model material audit](role-audit.md).
-- **Built.** A device colour bound to an output whose function did not
+- A device colour bound to an output whose function did not
   convert fails the conversion. One bound to an output the device has no
   function for binds Halo 2's `zero`. E (Halo 1): the object allocator
   zeroes the whole object (`0x8b8d8..0x8b8e6`); only the function loop
@@ -1045,19 +1027,20 @@ The converter:
   applies it (`0x8c162` scale-by, `0x8c1be` darken-by). E (Halo 2): the
   colour update looks the name up with `0xbab40`, which clears the value
   before searching, and keeps zero for a name no function exports
-  (`0xbe9bc..0xbe9c8`).
+  (`0xbe9bc..0xbe9c8`); dropping the colour's function would stop the
+  colour following it.
 
 So the cyborg's armour plates take the player's primary colour, or the
 team's in a team game. Halo 1's cyborg has one mask, so the secondary
 colour has no area to show on. Halo 2 does not team-colour vehicles; a
 vehicle keeps its own colour (the Scorpion's grey). Proof:
-`h1bitmaps` `a_multipurpose_blue_becomes_one_change_colour_channel`,
+`h1_assets::bitmaps` `a_multipurpose_blue_becomes_one_change_colour_channel`,
 `h1convert` `halo1_change_colours_go_to_halo2_slots` and
 `the_change_colour_layout_puts_the_mask_and_the_reflection_where_the_stem_reads_them`,
 `h1objects` `change_colours_go_to_halo2_slots_with_c_first_when_read`,
 `rebuilt_scenery_carries_its_change_colours`, and the disc tests
-`tests/model_shaders_disc.rs` (`bloodgulch_cyborg_and_scorpion_take_change_colours`)
-and `tests/rebuild_disc.rs`.
+`crates/tools/h1objects/tests/model_shaders_disc.rs` (`bloodgulch_cyborg_and_scorpion_take_change_colours`)
+and `crates/tools/h1objects/tests/rebuild_disc.rs`.
 
 ### Weapon zoom
 
@@ -1069,8 +1052,7 @@ Blood Gulch's pistol keeps one level and the sniper rifle keeps two.
 An unscoped weapon has zero levels and a zero range, like the retail
 magnum and shotgun on Coagulation and Zanzibar.
 
-A zero count still
-lets Halo 2 use the player's binocular zoom. Converted unscoped weapons set `weap +0x12c` bit 16 to skip that
+A zero count lets Halo 2 use the player's binocular zoom. Converted unscoped weapons set `weap +0x12c` bit 16 to skip that
 fallback (E `0x000c89c1..0x000c89df`). This keeps the assault rifle
 and other unscoped Halo 1 weapons at the unzoomed field of view.
 Scope HUD conversion is described in [hud.md](hud.md#scope-mask).
@@ -1117,9 +1099,9 @@ tree, drawing Halo 1's digits (`h1convert::shad::counter_shader`). The
 detail is the plain grey default and colour 0 white, so the digit draws
 as Halo 1's additive `schi` drew it; Halo 1's digits carry their colour.
 Any other numeric `schi`, and every model of a weapon whose counters
-don't count its rounds, converts the plain way: one `one_add_illum`
-copy of the digits' first image, which reads 00 whatever the rifle
-holds.
+don't count its rounds, converts as a plain additive picture: both entries
+would draw one `one_add_illum` copy of the digits' first image, so the
+rifle would read 00 whatever it held.
 
 Not converted: the rifle's `compass` (D out, the compass heading over
 eight images). It draws its first image.
@@ -1129,9 +1111,9 @@ Proof: `h1convert` unit tests
 and `a_counter_digit_draws_on_illum_detail_its_frame_from_the_weapons_digit`,
 `tests/shad_rebuild.rs` `ammunition_counter_instances_share_one_tree`
 (retail's counters against the tree and properties written), and
-`h1objects/tests/model_shaders_disc.rs`
+`crates/tools/h1objects/tests/model_shaders_disc.rs`
 `bloodgulch_assault_rifle_counter_shows_the_rounds_loaded`. The digits
-changing as the rifle fires needs a live check.
+changing as the rifle fires is under "Needs a game run".
 
 ### Tuning carried over
 
@@ -1143,11 +1125,11 @@ velocities, the health pack's powerup type and amount, and every object's
 bounding sphere. The values themselves are retail data and are not
 committed: `bloodgulch_sandbox_converts_and_reads_back` prints, for every
 object, each field with the Halo 1 value, the value written and the
-counterpart value it replaced (`ObjectReport::tuning`). On Blood Gulch the
+template value it replaced (`ObjectReport::tuning`). On Blood Gulch the
 rows that change play most are the assault rifle's reserve ammunition and
 reload time, every weapon's error angles and cone ranges, the plasma
 rifle's heat, the needler's magazine and rate of fire, and every bullet's
-speed (Halo 1's are slower than their Halo 2 counterparts').
+speed (Halo 1's are slower than the Halo 2 templates').
 
 ### Blood Gulch hit registration (**Built**)
 
@@ -1162,11 +1144,11 @@ regions and standing height 0.725, crouching height 0.5 and radius
 and rigid bodies serve other collision queries. A weapon's model ray
 uses the node BSPs (`0x001695fb`).
 
-- **Aim assist.** The weapon cones reach the engine
-  (`weap +0x208..0x218`, Halo 2 `0x001a5137..0x001a5199`). The target
-  search (`0x001a5d18`) and shot-aim lookup (`0x001a6ca3`) read
-  `hlmt +0x68` and resolve each entry's model marker; the block empty,
-  they find nothing. The converter writes the
+- **Aim assist.** The weapon cones already reach the engine
+  (`weap +0x208..0x218`, Halo 2 `0x001a5137..0x001a5199`). The
+  converted cyborg had an empty `hlmt +0x68`. The target search
+  (`0x001a5d18`) and shot-aim lookup (`0x001a6ca3`) read this block
+  and resolve each entry's model marker. The converter writes the
   cyborg's authored `body` and `head` markers with the targeting
   radii, flags, angular limits and lock distance of Coagulation's
   player Chief. The marker positions and nodes come from Halo 1.
@@ -1174,15 +1156,15 @@ uses the node BSPs (`0x001695fb`).
   (`0x00095089`) with damage flag bit 1 (`0x00095092`). Halo 2
   reads `hlmt` material `+6` for the damage section and checks its
   bit 7 and the damage flag (`0x000d8d50..0x000d8d79`). Imported
-  cyborg materials select rebuilt body or head sections by the source
-  material flag. A pistol or sniper
+  cyborg materials would have section −1; they select rebuilt body or
+  head sections by the source material flag. A pistol or sniper
   round can take the native headshot path once damage reaches the body.
 - **Projectile travel.** Halo 1 Blood Gulch uses projectile tags for
   its bullets, pellets, bolts, needles, shells and rockets. The
   converter takes their collision radii and ranges and converts the
   speeds from world units per tick to per second. Halo 1 computes
   drag over its authored air interval (`0x000c1ac0` and `0x000c3f0e`).
-  The converter writes that interval into the Halo 2
+  The converter also writes that interval into the Halo 2
   distance-based speed transition (`proj +0x18c..0x194`,
   `0x000f9527..0x000f95b4`). A plasma rifle bolt starts at 50
   world units per second and reaches 25 over 20–50 world units of
@@ -1200,14 +1182,15 @@ uses the node BSPs (`0x001695fb`).
   (`map::build::PinnedImage::grown`). The fresh build's unpinning and
   its from-scratch read take those arrays as the globals' own and leave
   the replaced rows out (`tags::schema::transplant::Unpinner::add_grown`,
-  `h1convert::fresh::grown`), or every Halo 1 sandbox build and Halo 1
-  assets level fails with "root tag missing or of the wrong class". The
-  edit also records the stock rows and their value arrays as the arrays
-  it replaced (`map::build::GrownTag::replaced`), which the from-scratch
-  read counts as described (`tags::repo::MapSource::add_replaced`), so
-  the globals are taken exactly — or every fresh build fails with
-  "globals\globals.matg (3072 nonzero bytes in 1 ranges no array
-  covers)". Test:
+  `h1convert::fresh::grown`). Without that, the globals are refused
+  and dropped, and every Halo 1 sandbox build and Halo 1 assets level
+  fails with "root tag missing or of the wrong class".
+  The edit also records the stock rows and their value arrays
+  as the arrays it replaced (`map::build::GrownTag::replaced`). The
+  from-scratch read counts them as described
+  (`tags::repo::MapSource::add_replaced`), so the globals are taken
+  exactly; without that, every fresh build fails with "globals\globals.matg
+  (3072 nonzero bytes in 1 ranges no array covers)". Test:
   `a_grown_tag_unpins_with_its_new_array_and_without_its_old_one`.
   The plasma grenade's free explosion and the needler's super
   explosion list an impulse-only `jpt!` before the vitality damage.
@@ -1217,31 +1200,33 @@ uses the node BSPs (`0x001695fb`).
   Attached detonation damage uses its dedicated slot.
 
 The Halo 2 sandbox uses its native player models and weapons.
-`tests/hitreg_disc.rs` checks the Halo 1 sandbox after writing and
+`crates/tools/h1objects/tests/hitreg_disc.rs` checks the Halo 1 sandbox after writing and
 reading the map. It compares head, torso and thigh rays to the disc
 collision, checks authored marker positions and character shapes,
 and follows each converted weapon's projectile and impact damage.
 It also checks the plasma grenade and needler's separate damage and
-impulse paths. A live hit and aiming check needs a game run.
+impulse paths. A live hit and aiming check is under "Needs a game run".
 
 ## What has no Halo 2 home here
 
 - **Vitality:** Halo 1 `coll` body and shield vitality
   and its damage modifiers; Halo 2 keeps damage in the `hlmt`, whose
-  layout is not reviewed (an NPC's damage responses come from its
-  counterpart).
-- **Unit and vehicle tuning.** Driving is rebuilt: the vehicle uses H1
-  speeds, seat data, mass points and inertia.
-  [Current mappings](role-audit.md#native-engine-fields).
-- **Weapon:** ready time and chamber time. The [HUD conversion](hud.md#weapon-huds) covers
-  the weapon panel and crosshairs. Scope masks need the screen effect
-  block.
+  layout is not reviewed. The template's damage info stays.
+- **Unit and vehicle tuning.** The rebuilt vehicle uses H1 speeds, seat
+  data, mass points and inertia. [Current mappings](role-audit.md#native-engine-fields).
+- **Weapon:** ready time, chamber time and charging (plasma pistol). The
+  [HUD conversion](hud.md#weapon-huds) covers the weapon panel and
+  crosshairs. Scope masks need the screen effect block.
+- **Projectile:** material responses: the template's. Contrails are
+  Halo 1's (above).
+- **Equipment:** non-health powerup and grenade type values (template's).
 - **Grenade throwing** reads the projectile from the globals' grenade
   block (`matg`), which this crate does not touch; the converted grenade
   projectiles are built but only thrown once the globals point at them.
 
-Stopgap references (every retail HUD and melee damage kept from the
-counterpart) are listed per object in `ObjectReport::stopgaps`.
+Stopgap references (every retail effect, sound, damage effect, HUD and
+`phmo` kept from a template) are listed per object in
+`ObjectReport::stopgaps`.
 
 **Campaign bases** have no multiplayer biped or powerups. Each Halo 1
 tag tries every matching row in table order (`template_candidates`) and
@@ -1274,12 +1259,12 @@ let ids = tree.install_over(&mut set, &donor_slots)?;      // or tree.install(&m
   (`query::Tree` for `tags::collision::Bsp` and `h1map::bsp::CollisionBsp`).
 - `Converter::object(tag)` converts an object (and its projectiles, model,
   collision and animations, each once) into `Converter::tree`, a `Tree` of
-  `(name, h1models::Converted)` whose cross references are placeholders
+  `(name, h1_assets::models::Converted)` whose cross references are placeholders
   (`convert::local(k)`).
 - `Tree::install(set)` adds slots (fine on a `TagSet::new`).
   `Tree::install_over(set, donors)` reuses existing slots: **a pinned base
   cannot grow its tag index** (`TagSet::build` refuses), so on a base map
-  the tags must take over slots the conversion frees. A
+  the tags must take over slots the converted map no longer uses. A
   pinned donor's bytes stay in place as unowned metadata, so blocks other
   tags share with it remain valid. The proof uses Coagulation's 86
   `scenarios\` bitmaps for its 52 tags.
@@ -1287,11 +1272,11 @@ let ids = tree.install_over(&mut set, &donor_slots)?;      // or tree.install(&m
 ## Tests
 
 ```sh
-cargo test -p h1objects                       # synthetic: templates, coll, tree install
-H1_ISO=<halo1 iso> H2_DISC=disc/halo2.iso cargo test -p h1objects --test it -- disc:: --skip _disc:: --ignored --nocapture
+cargo xtask test -p h1objects                   # synthetic: templates, coll, tree install
+H1_ISO=<halo1 iso> H2_DISC=disc/halo2.iso cargo xtask test --disc -p h1objects
 ```
 
-`tests/collision_disc.rs` (`H2_MAPS=` limits the Halo 2 maps,
+`crates/tools/h1objects/tests/collision_disc.rs` (`H2_MAPS=` limits the Halo 2 maps,
 `H1_LEVELS=` the Halo 1 levels, default a10 and b40):
 
 - `retail_static_scenery_carries_bsp_physics`: the slot rule, each
@@ -1318,7 +1303,7 @@ ghost) and `phmo` (cyborg, warthog, ghost); every converted `coll` passes
 `tags::collision::Collision::validate`; and every reference word pair in
 the new tags (136) names a tag of that group in the built map.
 
-`tests/particles_disc.rs`: `every_pctl_part_becomes_particle_systems`:
+`crates/tools/h1objects/tests/particles_disc.rs`: `every_pctl_part_becomes_particle_systems`:
 every `pctl` effect part (201 over the conversions) becomes one system
 per lasting particle state (402), on that state's `prt3`, at the part's
 location, the type's count over the event, the state's lifespan and size.
@@ -1327,14 +1312,14 @@ every Halo 1 effect particle whose `part` converts (42,266 over the
 campaign and multiplayer conversions) is a particle system of its event
 on the converted `prt3`, at its location, its rate times 30 times the
 event's duration its count, its speed, cone and size Halo 1's.
-`tests/particles_disc.rs`: `every_particle_converts`: every Halo 1
+`every_particle_converts`: every Halo 1
 `part` of the campaign and multiplayer maps (2,301 conversions) reads
 back and writes the same, names its blend function's stem, its bitmap as
 parameter and compiled bitmap, Halo 1's sequences and converted effects.
 `retail_particle_shaders_compile_from_their_stems`: the compiled shader
 rule on 533 retail particles.
 
-`tests/particles_disc.rs`: `every_contrail_converts`: every Halo 1
+`every_contrail_converts`: every Halo 1
 `cont` of the campaign and multiplayer maps (191) converts, reads back
 through the definition with Halo 1's spans at Halo 2's offsets and its
 bitmap converted; every rebuilt projectile and vehicle whose Halo 1
@@ -1352,9 +1337,9 @@ attachments name a contrail (236 attachments) names the converted one.
   zeroed `+0x3c..+0x60`), and points with source `pphy` physics.
 
 - That the engine accepts objects whose `hlmt` has no variants
-  and regions renamed from Halo 1, and whose counterpart damage info
-  names regions the converted model lacks.
-- The built `phmo`s against Halo 1 skeletons (node counts and names
+  and regions renamed from Halo 1, and whose template damage info names
+  regions the converted model lacks.
+- The borrowed `phmo`s against Halo 1 skeletons (node counts and names
   differ: rigid bodies may attach to the wrong nodes or none).
 - That the S offsets above mean what the values suggest (heat, magazine,
   barrel and projectile fields), and the per-tick to per-second factor.
@@ -1362,13 +1347,19 @@ attachments name a contrail (236 attachments) names the converted one.
   have gravity scale 1, Halo 2's 0), maximum range 0 on the plasma bolt.
 - The `coll` BSP leading word as a node index, and Halo 1 material names
   as Halo 2 materials (the global material table will not know them).
-- That the player stops at a converted crate (BSP physics slots), that
-  Havok bodies (grenades, vehicles) bounce off scenery, and that the
-  player stops at the boulders ("Placed scenery is structure" above).
-  Which object code adds a slots-only scenery's shapes to the Havok
-  world is not found (the slot shapes are built by `0x00246c60` from
-  the `coll` post-process `0x002122b0`; no reader of slot `+0x40` or
-  `+0x50` was found in a sweep of `0x70`-stride loops); the
-  walk-through investigation is in [notes/objects.md](notes/objects.md).
-- Counterpart seats, turrets (Halo 2's warthog gunner is a separate
-  turret vehicle) and animation names against the converted `jmad`.
+- That Havok bodies (grenades, vehicles) bounce off scenery, and that the
+  player stops at converted boulders: a scenery placement's collision is
+  merged into the level's collision ("Collision for Havok"), because
+  the BSP physics slots alone did not put converted scenery in the Havok
+  world ([notes/objects.md](notes/objects.md)). Which object code adds a
+  slots-only scenery's shapes to the world is not found (the slot shapes
+  are built by `0x00246c60` from the `coll` post-process `0x002122b0`; no
+  reader of slot `+0x40` or `+0x50` was found in a sweep of `0x70`-stride
+  loops).
+- That a converted crate stops the player.
+- The rebuilt Blood Gulch shotgun and assault rifle firing in play (automatic
+  input, direct-damage datum zero).
+- The assault rifle's ammunition digits changing as it fires.
+- A live hit and aiming check on the Halo 1 sandbox's cyborg.
+- Template seats, turrets (Halo 2's warthog gunner is a separate turret
+  vehicle) and animation names against the converted `jmad`.

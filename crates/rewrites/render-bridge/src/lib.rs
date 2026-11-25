@@ -29,6 +29,8 @@ pub mod native_objects;
 pub mod native_particles;
 #[cfg(feature = "native-render")]
 pub mod native_effects;
+#[cfg(feature = "native-render")]
+mod native_flares;
 /// Not gated: the hot-edit glue pushes with or without the native renderer.
 pub mod native_edits;
 #[cfg(feature = "native-render")]
@@ -37,6 +39,8 @@ pub mod native_post;
 pub mod native_scene_lists;
 #[cfg(feature = "native-render")]
 pub mod native_shadows;
+#[cfg(feature = "native-render")]
+pub mod native_sky;
 #[cfg(feature = "native-render")]
 pub mod native_transparents;
 #[cfg(feature = "native-render")]

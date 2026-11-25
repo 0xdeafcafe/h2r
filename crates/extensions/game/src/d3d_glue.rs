@@ -196,37 +196,34 @@ pub fn install_light_for_profile(
 }
 
 #[cfg(feature = "gpu")]
-/// [`install`], with in-between frames on the headless GPU backend when
-/// `interp` (from [`interpolation`], asked with [`interp_render_thread`])
-/// is given (docs/game/high-framerate.md "E1", "Headless"): the backend at
-/// 1x, or the scaled one, goes behind `d3d::InterpBackend` on the render
-/// thread, as a window's does. There is no display, so the in-between
-/// frames are paced on the wall clock at the frame rate (a display clock
-/// of their own): each is made (replayed or warped) and presented through
-/// the backend's replay hook, which counts no guest swap. With
-/// `H2_BOOT_GFX_BETWEEN=N` the first N in-between frames are written as
+/// [`install`], with the frame rate `fps` ([`frame_rate`]) for the frame
+/// owner's display-rate loop on the headless GPU backend
+/// (docs/graphics/framescene.md, section 7). A paced owner draws display
+/// frames between scenes on the wall clock and shows each through the
+/// backend's replay hook, which counts no guest swap. With
+/// `H2_BOOT_GFX_BETWEEN=N` the first N of them are written as
 /// `frame-NNNNN-between-KK.png` (KK-th after guest swap NNNNN), and the
-/// guest frames shown meanwhile as `frame-NNNNN.png` ([`BetweenShots`]). Without
-/// `H2_BOOT_GFX` (nothing is drawn) and under the lighting A/B, `interp`
-/// is ignored.
+/// guest frames shown meanwhile as `frame-NNNNN.png` ([`BetweenShots`]).
+/// Without `H2_BOOT_GFX` (nothing is drawn), under the lighting A/B and
+/// for a locked owner (every scene drawn once), `fps` is ignored.
 pub fn install_headless(
     rt: &runtime::Runtime,
-    interp: Option<Interpolation>,
+    fps: Option<FrameRate>,
 ) -> anyhow::Result<Installed> {
-    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None, false)
+    install_headless_for_profile(rt, fps, crate::run_plan::compiled_render_hooks(), None, false)
 }
 
 #[cfg(feature = "gpu")]
 /// Boot selects the presenting backend after network and film registration.
 pub fn window_targets(
     _store: &settings::Store,
-    native_size: crate::run_opts::NativeSize,
+    native_target: crate::run_opts::NativeTarget,
     display_size: impl Fn((u32, u32)) -> (u32, u32) + Send + Sync + 'static,
     reference: impl FnOnce() -> d3d::GfxBackend,
     display: impl FnOnce() -> d3d::GfxBackend,
 ) -> (d3d::GfxBackend, crate::run_opts::DisplayView) {
     let (main, backend) = (reference(), Some(display()));
-    (main, crate::run_opts::DisplayView { backend, native_size, viewer_output: None, display_size: Arc::new(display_size) })
+    (main, crate::run_opts::DisplayView { backend, native_target, viewer_output: None, viewer_lod: None, display_size: Arc::new(display_size) })
 }
 
 /// A locked retail target has no live raster edits. It can present directly
@@ -260,6 +257,17 @@ pub fn single_copy(store: Option<&settings::Store>, protected: bool) -> anyhow::
     if protected {
         return Ok(false);
     }
+    // Relit pixels must never feed guest readbacks, including in offline play.
+    let lighting = match store {
+        Some(s) => s.get(crate::setting_defs::LIGHTING.key)
+            .and_then(|v| u32::try_from(v.as_int()?).ok())
+            .map(crate::setting_defs::lighting_of)
+            .unwrap_or_default(),
+        None => d3d::scaled::lighting().map_err(anyhow::Error::msg)?,
+    };
+    if lighting.is_relight() {
+        return Ok(false);
+    }
     let def = &crate::setting_defs::SINGLE_COPY;
     let value = match store {
         Some(store) => store.get(def.key).unwrap_or(def.default),
@@ -284,13 +292,25 @@ pub struct PrivateScenes {
 impl PrivateScenes {
     pub fn requested(switches: &hooks::Switches, profile: film::RenderHooks, locked: bool) -> Option<Self> {
         // The original census has to measure all guest-visible readbacks.
+        // A paced display owns its frames by default: its display-rate
+        // loop is what 60 and 120 fps draw. A locked run (headless,
+        // unpaced, stop-at-present) asks for it with `frame-scene.sink`.
         let record = profile == film::RenderHooks::Gpu
-            && switches.feature(render_bridge::carried_slots::ID, false)
+            && switches.feature(render_bridge::carried_slots::ID, !locked)
             && !switches.feature(render_bridge::entry_census::ID, false)
             && hooks::switches::native_render_on(switches)
             && switches.feature(render_bridge::scene_step::ID, true);
         use frame_scene::mailbox::Mode;
         record.then_some(Self { mode: if locked { Mode::Locked } else { Mode::Paced } })
+    }
+
+    /// The display-rate loop for this owner at `fps`
+    /// (docs/graphics/framescene.md, section 7). A locked owner draws every
+    /// scene once and has none.
+    fn display(self, fps: Option<FrameRate>) -> Option<native_render::frame_graph::display_rate::Display> {
+        let fps = fps?;
+        (self.mode == frame_scene::mailbox::Mode::Paced)
+            .then(|| native_render::frame_graph::display_rate::Display::new(fps))
     }
 
     /// Taps the ordinary display backend for an armed parity comparison.
@@ -312,20 +332,20 @@ impl PrivateScenes {
 #[cfg(feature = "gpu")]
 pub fn install_headless_for_profile(
     rt: &runtime::Runtime,
-    interp: Option<Interpolation>,
+    fps: Option<FrameRate>,
     profile: film::RenderHooks,
     settings: Option<&settings::Store>,
     protected_readbacks: bool,
 ) -> anyhow::Result<Installed> {
     let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
     let private = PrivateScenes::requested(&switches, profile, true);
-    install_headless_with_scenes(rt, interp, profile, settings, protected_readbacks, private)
+    install_headless_with_scenes(rt, fps, profile, settings, protected_readbacks, private)
 }
 
 #[cfg(feature = "gpu")]
 pub fn install_headless_with_scenes(
     rt: &runtime::Runtime,
-    interp: Option<Interpolation>,
+    fps: Option<FrameRate>,
     profile: film::RenderHooks,
     settings: Option<&settings::Store>,
     protected_readbacks: bool,
@@ -344,7 +364,8 @@ pub fn install_headless_with_scenes(
                     .filter(|&n| n > 0)
                     .unwrap_or(30),
             };
-            let (width, height) = output_size(settings, Arc::new(|| crate::setting_defs::GUEST_FRAME))?();
+            let native = Arc::new(|| settings::NativeTarget::windowed(crate::setting_defs::GUEST_FRAME));
+            let (width, height) = output_size(settings, native)?();
             let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless()
@@ -367,13 +388,14 @@ pub fn install_headless_with_scenes(
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
-            // `H2_BOOT_GFX_BETWEEN=N`: the first N in-between frames
-            // (with in-between frames on), and the guest frames among them.
+            // `H2_BOOT_GFX_BETWEEN=N`: the first N display frames between
+            // scenes (with a frame rate above 30), and the guest frames
+            // among them.
             let between = BetweenShots::new(
                 std::env::var("H2_BOOT_GFX_BETWEEN")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .filter(|_| interp.is_some())
+                    .filter(|_| fps.is_some())
                     .unwrap_or(0),
             );
             // `shadow_limit`: how many shadow-map frames it may add.
@@ -522,9 +544,9 @@ pub fn install_headless_with_scenes(
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook),
                 );
                 let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
-                if interp.is_some() {
+                if fps.is_some() {
                     eprintln!(
-                        "d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
+                        "d3d: display frames between scenes are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
                     );
                 }
                 let mut b =
@@ -550,15 +572,7 @@ pub fn install_headless_with_scenes(
                 }?;
                 return Ok(installed.with_gpu_view(Some(scale_stats)));
             }
-            let max_slots = match interp.as_ref() {
-                Some(i) if i.mode == d3d::interp::Mode::Replay => match (i.rate)() {
-                    120 => 4,
-                    60 => 2,
-                    _ => 1,
-                },
-                _ => 1,
-            };
-            agent::render::clip::CLIPS.set_writer(dir.canonicalize()?, max_slots);
+            agent::render::clip::CLIPS.set_writer(dir.canonicalize()?, 1);
             if (width, height) != crate::setting_defs::GUEST_FRAME || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
@@ -588,23 +602,22 @@ pub fn install_headless_with_scenes(
                     "d3d: rendering at {width}x{height}, {:?} lighting; single copy {single}",
                     b.lighting()
                 );
-                let thread = RenderThread::requested(max_slots > 1, false);
-                return install_scaled_view(rt, b, interp, thread, profile, private);
+                let thread = RenderThread::requested(false);
+                return install_scaled_view(rt, b, fps, thread, profile, private);
             }
             let mut backend = configure_gfx(
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(replay),
             );
-            if !protected_readbacks && interp.is_none() {
+            if !protected_readbacks {
                 crate::native_shadows_glue::configure_single(&mut backend);
             }
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
-            // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
-            // behind the in-between frames when `interp` is given.
-            let thread = RenderThread::requested(max_slots > 1, false);
-            install_game_view(rt, backend, interp, thread, profile, private, settings)
+            // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0.
+            let thread = RenderThread::requested(false);
+            install_game_view(rt, backend, fps, thread, profile, private, settings)
         }
     }
 }
@@ -852,110 +865,26 @@ pub fn frame_stats_gpu_note(frame_stats: bool, gpu: bool) -> Option<&'static str
 }
 
 #[cfg(feature = "gpu")]
-/// What [`interpolation`] turns on: the frame-rate setting's reader and how
-/// in-between frames are made.
-pub struct Interpolation {
-    pub rate: Box<dyn Fn() -> u32 + Send>,
-    pub mode: d3d::interp::Mode,
-}
+/// The frame-rate setting as a display rate, read at every present.
+pub type FrameRate = Box<dyn Fn() -> frame_scene::pace::Rate + Send>;
 
 #[cfg(feature = "gpu")]
-/// In-between frames (`d3d::InterpBackend`, docs/game/high-framerate.md
-/// "Phase 2" and "E1"): `impl.render.interpolate`, on by default (exact
-/// switch; `-impl.render.interpolate` turns it off), replays the frame with
-/// blended matrices (Design D);
-/// `impl.render.reproject` warps frame N's world image by the camera's
-/// turn instead (E1, blended one frame behind), and
-/// `impl.render.reproject_ahead` the same with the turn carried on past N;
-/// either, when set, takes the place of the replay.
-/// They need the render thread. The rate follows the
-/// Frame Rate row (`graphics.fps`, `H2_FPS`, `--fps`): 30 makes nothing.
-pub fn interpolation(
-    settings: Option<&std::sync::Arc<settings::Store>>,
-    render_thread: bool,
-) -> Option<Interpolation> {
-    let switches = hooks::Switches::from_env().ok()?;
-    let mode = interp_mode(
-        switches.feature("impl.render.interpolate", true),
-        switches.feature("impl.render.reproject", false),
-        switches.feature("impl.render.reproject_ahead", false),
-    )?;
-    if !interpolation_from(true, render_thread) {
-        return None;
-    }
-    match mode {
-        d3d::interp::Mode::Replay => eprintln!(
-            "d3d: interpolated replay on (impl.render.interpolate): in-between frames at up to {} fps while the frame rate is above 30",
-            d3d::interp::pacing::MAX_REPLAY_HZ
-        ),
-        d3d::interp::Mode::Reproject { ahead } => eprintln!(
-            "d3d: rotation-only reprojection on (impl.render.reproject{}): in-between frames at up to {} fps while the frame rate is above 30, one gameplay view only",
-            if ahead { "_ahead" } else { "" },
-            d3d::interp::pacing::MAX_REPLAY_HZ
-        ),
-    }
-    let rate: Box<dyn Fn() -> u32 + Send> = match settings {
+/// The Frame Rate row (`graphics.fps`, `H2_FPS`, `--fps`) for the frame
+/// owner's display-rate loop (docs/graphics/framescene.md, section 7): above
+/// 30 a paced owner draws display frames between scenes; 30 draws each
+/// scene once. The setting is read live.
+pub fn frame_rate(settings: Option<&std::sync::Arc<settings::Store>>) -> FrameRate {
+    use frame_scene::pace::Rate;
+    match settings {
         Some(store) => {
             let fps = store.handle::<u32>(crate::setting_defs::FPS.key);
-            Box::new(move || fps.get())
+            Box::new(move || Rate::from_setting(fps.get()))
         }
         None => {
             let fps = fps_from(std::env::var("H2_FPS").ok().as_deref());
-            Box::new(move || fps)
+            Box::new(move || Rate::from_setting(fps))
         }
-    };
-    Some(Interpolation { rate, mode })
-}
-
-#[cfg(feature = "gpu")]
-/// The mode the switches ask for: reprojection wins over the replay, and
-/// `reproject_ahead` over `reproject`; none of them, none.
-pub fn interp_mode(interpolate: bool, reproject: bool, ahead: bool) -> Option<d3d::interp::Mode> {
-    use d3d::interp::Mode;
-    if ahead {
-        Some(Mode::Reproject { ahead: true })
-    } else if reproject {
-        Some(Mode::Reproject { ahead: false })
-    } else {
-        interpolate.then_some(Mode::Replay)
     }
-}
-
-#[cfg(feature = "gpu")]
-/// Whether a run has a GPU backend for in-between frames, and the
-/// render-thread answer [`interpolation`] is asked with: a window's backend
-/// runs on the host's render thread (`host_render_thread`); with no window,
-/// the headless GPU backend `H2_BOOT_GFX` makes (`boot_gfx`) runs on one
-/// unless `H2_RENDER_THREAD=0` (`env_render_thread`). `None`: no GPU
-/// backend (the headless recorder draws nothing to make frames from).
-pub fn interp_render_thread(
-    windowed: bool,
-    host_render_thread: bool,
-    boot_gfx: bool,
-    env_render_thread: bool,
-) -> Option<bool> {
-    if windowed {
-        Some(host_render_thread)
-    } else if boot_gfx {
-        Some(env_render_thread)
-    } else {
-        None
-    }
-}
-
-#[cfg(feature = "gpu")]
-/// [`interpolation`]'s decision: the switch and the render thread.
-pub fn interpolation_from(switch: bool, render_thread: bool) -> bool {
-    if !switch {
-        return false;
-    }
-    if !render_thread {
-        eprintln!(
-            "d3d: in-between frames (impl.render.interpolate, impl.render.reproject) need the render thread (H2_RENDER_THREAD=0 is set): off"
-        );
-        return false;
-    }
-    true
 }
 
 #[cfg(feature = "gpu")]
@@ -974,22 +903,19 @@ pub fn install_threaded_for_profile<B>(
     rt: &runtime::Runtime,
     backend: B,
     extra: Option<ExtraReport>,
-    interp: Option<Interpolation>,
     profile: film::RenderHooks,
 ) -> anyhow::Result<Installed>
 where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
-    install_gpu_for_profile(rt, backend, extra, interp, Some(RenderThread::default()), profile, None)
+    install_gpu_for_profile(rt, backend, extra, Some(RenderThread::default()), profile, None)
 }
 
 /// How a game view's backend runs on its render thread.
 #[cfg(feature = "gpu")]
 #[derive(Clone, Copy, Default)]
 pub struct RenderThread {
-    /// In-between frames feed the agent's clip slots.
-    pub clip_capture: bool,
     /// Each present completes before the guest's next frame starts.
     pub synchronous_presents: bool,
 }
@@ -997,8 +923,8 @@ pub struct RenderThread {
 #[cfg(feature = "gpu")]
 impl RenderThread {
     /// `None` when `H2_RENDER_THREAD=0` keeps the backend on the guest thread.
-    pub fn requested(clip_capture: bool, synchronous_presents: bool) -> Option<Self> {
-        render_thread_requested().then_some(Self { clip_capture, synchronous_presents })
+    pub fn requested(synchronous_presents: bool) -> Option<Self> {
+        render_thread_requested().then_some(Self { synchronous_presents })
     }
 }
 
@@ -1007,6 +933,9 @@ impl RenderThread {
 struct SceneOutput<B: d3d::Backend> {
     service: crate::frame_owner::Service,
     owner: d3d::threaded::owner::FrameOwner<B>,
+    /// The owner's display-rate loop on the render thread; `None` for a
+    /// locked owner or without a frame rate.
+    display_rate: Option<Box<dyn d3d::threaded::owner::DisplayRate<B>>>,
 }
 
 #[cfg(feature = "gpu")]
@@ -1024,7 +953,7 @@ fn current_lighting(
 pub fn install_game_view(
     rt: &runtime::Runtime,
     mut backend: d3d::GfxBackend,
-    interp: Option<Interpolation>,
+    fps: Option<FrameRate>,
     thread: Option<RenderThread>,
     profile: film::RenderHooks,
     private: Option<PrivateScenes>,
@@ -1032,12 +961,16 @@ pub fn install_game_view(
 ) -> anyhow::Result<Installed> {
     let scenes = if let Some(private) = private {
         let service = private.install(&mut backend)?;
-        let owner = crate::frame_cutover::owner(service.display_device(), current_lighting(settings, d3d::Lighting::Retail));
-        Some(SceneOutput { service, owner })
+        let lighting: Arc<dyn Fn() -> d3d::Lighting + Send + Sync> =
+            current_lighting(settings, d3d::Lighting::Retail).into();
+        let display = private.display(fps);
+        let owner = crate::frame_cutover::owner(service.display_device(), Arc::clone(&lighting), display.clone());
+        let display_rate = display.map(|d| d.on_display(lighting));
+        Some(SceneOutput { service, owner, display_rate })
     } else {
         None
     };
-    let installed = install_gpu_for_profile(rt, backend, None, interp, thread, profile, scenes)?;
+    let installed = install_gpu_for_profile(rt, backend, None, thread, profile, scenes)?;
     Ok(installed.with_gpu_view(None))
 }
 
@@ -1045,7 +978,7 @@ pub fn install_game_view(
 pub fn install_scaled_view(
     rt: &runtime::Runtime,
     mut backend: d3d::ScaledBackend<d3d::GfxBackend, d3d::GfxBackend>,
-    interp: Option<Interpolation>,
+    fps: Option<FrameRate>,
     thread: Option<RenderThread>,
     profile: film::RenderHooks,
     private: Option<PrivateScenes>,
@@ -1053,13 +986,15 @@ pub fn install_scaled_view(
     let stats = backend.shared_stats();
     let scenes = if let Some(private) = private {
         let service = private.install(backend.view_mut())?;
-        let owner = crate::frame_cutover::scaled_owner(service.display_device());
-        Some(SceneOutput { service, owner })
+        let display = private.display(fps);
+        let owner = crate::frame_cutover::scaled_owner(service.display_device(), display.clone());
+        let display_rate = display.map(|d| d.on_scaled());
+        Some(SceneOutput { service, owner, display_rate })
     } else {
         None
     };
     let report = scale_report(&mut backend);
-    let installed = install_gpu_for_profile(rt, backend, Some(report), interp, thread, profile, scenes)?;
+    let installed = install_gpu_for_profile(rt, backend, Some(report), thread, profile, scenes)?;
     Ok(installed.with_gpu_view(Some(stats)))
 }
 
@@ -1074,7 +1009,6 @@ fn install_gpu_for_profile<B>(
     rt: &runtime::Runtime,
     backend: B,
     extra: Option<ExtraReport>,
-    interp: Option<Interpolation>,
     thread: Option<RenderThread>,
     profile: film::RenderHooks,
     scenes: Option<SceneOutput<B>>,
@@ -1084,13 +1018,13 @@ where
     B::Texture: Sync,
 {
     let threaded = thread.is_some();
-    let RenderThread { clip_capture, synchronous_presents } = thread.unwrap_or_default();
+    let RenderThread { synchronous_presents } = thread.unwrap_or_default();
     let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
     let measure = threaded
         && profile == film::RenderHooks::Gpu
-        && switches.feature(render_bridge::carried_slots::ID, false);
+        && switches.feature(render_bridge::carried_slots::ID, true);
     let window = measure.then(|| {
-        let w = d3d::scene_sink::window::PresentWindow::new(scenes.is_some() && interp.is_none());
+        let w = d3d::scene_sink::window::PresentWindow::new(scenes.is_some());
         Arc::new(w.with_seal_probe(|| {
             render_bridge::scene_step::last().is_some_and(|scene| {
                 scene.id.map_epoch == render_bridge::native_map_work::generation()
@@ -1098,11 +1032,14 @@ where
         }))
     });
     let worker = if let Some(scenes) = scenes {
-        if threaded && interp.is_none() {
-            let display = d3d::ThreadedBackend::new(backend)?
+        if threaded {
+            let mut display = d3d::ThreadedBackend::new(backend)?
                 .with_synchronous_presents(synchronous_presents)
                 .with_frame_owner(scenes.owner)
                 .with_present_window(window.clone());
+            if let Some(rate) = scenes.display_rate {
+                display = display.with_display_rate(rate);
+            }
             return install_device(rt, display, extra, profile, Some(SceneWorker::Display(scenes.service)), window);
         }
         Some(SceneWorker::Private(scenes.service))
@@ -1112,31 +1049,10 @@ where
     if !threaded {
         return install_device(rt, backend, extra, profile, worker, None);
     }
-    match interp {
-        Some(Interpolation { rate, mode }) => {
-            let mut interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
-            if clip_capture {
-                let mut present = 0;
-                interp = interp.with_capture_slots(move || {
-                    present += 1;
-                    agent::render::clip::CLIPS.slots(present)
-                });
-            }
-            // The agent's render.stats reads its counters.
-            crate::render_probe::set_interp(interp.stats());
-            crate::render_probe::set_interp_holds(interp.holds());
-            let display = d3d::ThreadedBackend::new(interp)?
-                .with_synchronous_presents(synchronous_presents)
-                .with_present_window(window.clone());
-            install_device(rt, display, extra, profile, worker, window)
-        }
-        None => {
-            let display = d3d::ThreadedBackend::new(backend)?
-                .with_synchronous_presents(synchronous_presents)
-                .with_present_window(window.clone());
-            install_device(rt, display, extra, profile, worker, window)
-        }
-    }
+    let display = d3d::ThreadedBackend::new(backend)?
+        .with_synchronous_presents(synchronous_presents)
+        .with_present_window(window.clone());
+    install_device(rt, display, extra, profile, worker, window)
 }
 
 /// [`render_thread_requested`] for a given value of the variable: only
@@ -1427,6 +1343,20 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.draw_owned(color, depth, draw, textures);
         self.forget(r)
     }
+    fn draw_admitted(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: d3d::backend::ResolvedDraw,
+        textures: [Option<&u32>; 4],
+        admission: d3d::backend::RetainedAdmission<u32>,
+    ) -> (
+        Result<d3d::backend::DrawOutcome, String>,
+        Vec<d3d::backend::StreamBytes>,
+    ) {
+        let r = self.0.draw_admitted(color, depth, draw, textures, admission);
+        self.forget(r)
+    }
     fn draw_shared(
         &mut self,
         color: u32,
@@ -1447,16 +1377,9 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.present(surface, flags);
         self.forget(r)
     }
-    // The interpolated replay's host-only calls (d3d::interp).
-    fn stamp_present(&mut self, at: std::time::Instant) {
-        self.0.stamp_present(at)
-    }
     fn present_replay(&mut self, surface: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         let r = self.0.present_replay(surface, gamma);
         self.forget(r)
-    }
-    fn idle(&mut self) -> Option<std::time::Instant> {
-        self.0.idle()
     }
     fn reset_present_metadata(&mut self) -> Result<(), String> {
         self.0.reset_present_metadata()
@@ -1480,6 +1403,22 @@ impl d3d::backend::Backend for Headless {
         textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
     ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
         self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
+    }
+
+    fn can_commit_carried(&self) -> bool {
+        self.0.can_commit_carried()
+    }
+
+    fn prepare_carried_stage(
+        &mut self, stage: &d3d::SceneStage<Self::Surface>,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        self.0.prepare_carried_stage(stage)
+    }
+
+    fn commit_carried_stage(
+        &mut self, stage: d3d::SceneStage<Self::Surface>, copies: Vec<d3d::ExternalRecording>,
+    ) {
+        self.0.commit_carried_stage(stage, copies);
     }
 
     fn queue_external_draw(
@@ -1535,10 +1474,6 @@ impl d3d::backend::Backend for Headless {
     ) -> Result<bool, String> {
         self.0.external_pass(color, depth, sampled, request, pass)
     }
-    fn warp_surface(&mut self, src: u32, dst: u32, h: [[f32; 3]; 3]) -> Result<bool, String> {
-        let r = self.0.warp_surface(src, dst, h);
-        self.forget(r)
-    }
     fn queue_frame_probe_read(
         &mut self, surface: Self::Surface, width: u32, height: u32,
         done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
@@ -1572,9 +1507,6 @@ impl d3d::backend::Backend for Headless {
         surface: u32,
     ) -> Result<Option<d3d::backend::DisplaySurfacePixels>, String> {
         self.0.read_display_surface(surface)
-    }
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        self.0.gpu_fence()
     }
     fn present_with_gamma(
         &mut self,
@@ -1631,6 +1563,10 @@ impl d3d::backend::Backend for Headless {
     }
     fn snapshot_surface(&mut self, surface: u32, opaque: bool) -> Result<Option<u32>, String> {
         let r = self.0.snapshot_surface(surface, opaque);
+        self.forget(r)
+    }
+    fn snapshot_surface_into(&mut self, surface: u32, opaque: bool, into: &mut u32) -> Result<bool, String> {
+        let r = self.0.snapshot_surface_into(surface, opaque, into);
         self.forget(r)
     }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
@@ -1904,7 +1840,8 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         let mut d = dev.lock().unwrap();
         // Device events by kind and reason, most frequent first.
         let mut ev: std::collections::BTreeMap<String, u64> = Default::default();
-        for e in d.take_events() {
+        let (events, dropped) = d.take_events_counted();
+        for e in events {
             let k = match e {
                 d3d::Event::DrawSkipped { entry, reason } => {
                     format!("draw skipped in {entry}: {reason}")
@@ -1921,6 +1858,7 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
             .iter()
             .take(40)
             .map(|(k, n)| format!("\n  event {n:>8}  {k}"))
+            .chain((dropped > 0).then(|| format!("\n  event {dropped:>8}  more, past the device's kept limit")))
             .collect();
         let extra = extra
             .as_ref()
@@ -2007,6 +1945,10 @@ pub(crate) fn residual_tally(t: d3d::residual::Tally) -> render_bridge::residual
         state_words: t.state_words,
         copies: t.copies,
         uploads: t.uploads,
+        native_guest_binds: t.native_guest_binds,
+        guest_bind_refused_destroy: t.guest_bind_refused_destroy,
+        native_rect_clears: t.native_rect_clears,
+        clear_refused_rect_count: t.clear_refused_rect_count,
     }
 }
 
@@ -2264,6 +2206,9 @@ mod tests {
         let gpu = film::RenderHooks::Gpu;
         assert_eq!(policy("frame-scene.sink", gpu, true), Some(Mode::Locked));
         assert_eq!(policy("frame-scene.sink", gpu, false), Some(Mode::Paced));
+        // A paced display owns its frames by default; a locked run asks.
+        assert_eq!(policy("", gpu, false), Some(Mode::Paced));
+        assert_eq!(policy("frame-scene.sink=off", gpu, false), None);
         for spec in [
             "", "frame-scene.sink,frame-scene.census", "frame-scene.sink,impl.render.native=off",
             "frame-scene.sink,frame-scene=off",
@@ -2415,27 +2360,6 @@ mod tests {
 
     #[cfg(feature = "gpu")]
     #[test]
-    fn interpolation_needs_its_switch_and_the_render_thread() {
-        assert!(!interpolation_from(false, true), "switched off");
-        assert!(interpolation_from(true, true));
-        assert!(!interpolation_from(true, false), "no render thread");
-    }
-
-    #[cfg(feature = "gpu")]
-    #[test]
-    fn interpolation_runs_on_a_window_or_the_headless_gpu() {
-        // A window: the host's render thread decides, H2_BOOT_GFX ignored.
-        assert_eq!(interp_render_thread(true, true, false, false), Some(true));
-        assert_eq!(interp_render_thread(true, false, true, true), Some(false));
-        // Headless on the GPU (H2_BOOT_GFX): H2_RENDER_THREAD decides.
-        assert_eq!(interp_render_thread(false, false, true, true), Some(true));
-        assert_eq!(interp_render_thread(false, false, true, false), Some(false));
-        // Headless without the GPU: nothing to make frames from.
-        assert_eq!(interp_render_thread(false, true, false, true), None);
-    }
-
-    #[cfg(feature = "gpu")]
-    #[test]
     fn in_between_captures_stop_at_their_limit() {
         let (keep, write, skip) = (
             GuestShot {
@@ -2538,27 +2462,7 @@ mod tests {
 
     #[cfg(feature = "gpu")]
     #[test]
-    fn interpolation_modes_from_their_switches() {
-        use d3d::interp::Mode;
-        assert_eq!(interp_mode(false, false, false), None, "all three off");
-        assert_eq!(interp_mode(true, false, false), Some(Mode::Replay));
-        assert_eq!(
-            interp_mode(false, true, false),
-            Some(Mode::Reproject { ahead: false })
-        );
-        assert_eq!(
-            interp_mode(true, true, false),
-            Some(Mode::Reproject { ahead: false }),
-            "reprojection wins"
-        );
-        assert_eq!(
-            interp_mode(false, false, true),
-            Some(Mode::Reproject { ahead: true })
-        );
-        assert_eq!(
-            interp_mode(true, true, true),
-            Some(Mode::Reproject { ahead: true })
-        );
+    fn the_frame_rate_from_h2_fps() {
         assert_eq!(fps_from(None), 30);
         assert_eq!(fps_from(Some("60")), 60);
         assert_eq!(fps_from(Some("uncapped")), 0);

@@ -1,10 +1,21 @@
 //! The chain's rule on lists of ticks: bounces in a row, what ends a
 //! chain, the medals at each count, Bounced, and the bots.
+//!
+//! With the `rules` feature, every scenario's [`Chain`] is the twin of
+//! `superbounce_chain_twin.rs`: the Rust chain with the built-in
+//! Superbounce script beside it, fed the chain's physics events, which
+//! must score and count as the chain does on every tick.
 
-use hud_kit_core::huds::superbounce::Medal::*;
+use hud_kit_core::views::superbounce::Medal::*;
 use superbounce::Kind;
 
 use super::*;
+
+#[cfg(feature = "rules")]
+#[path = "superbounce_chain_twin.rs"]
+mod twin;
+#[cfg(feature = "rules")]
+use twin::Chain;
 
 const MINUS_3: u32 = 0xffff_fffd;
 const UNIT: u32 = 0xe001_0007;
@@ -36,6 +47,7 @@ fn tick(at: Vec3, vz: f32, airborne: bool) -> PlayerTick {
         position: at,
         velocity: [0.0, 0.0, vz],
         airborne,
+        crouching: false,
         word: Some(MINUS_3),
     }
 }
@@ -577,6 +589,7 @@ fn under_map(n: usize) -> Vec<PlayerTick> {
             position: [10.0 + 0.06 * i as f32, 0.0, -3.4],
             velocity: [1.8, 0.0, 0.0],
             airborne: false,
+            crouching: false,
             word: None,
         })
         .collect()
@@ -761,4 +774,121 @@ fn both_rules_on_one_death_give_one_bounced() {
     });
     assert_eq!(run(&mut c, &ticks), [Event::Bounced { chain: 0 }]);
     assert!(!c.armed());
+}
+
+// ---- the physics a script hears ----
+
+/// A bounce's ticks give its touchdown, then its launch when the window
+/// closes; a landing off the strip after it gives a touchdown and the end
+/// of the run.
+#[test]
+fn a_step_says_what_it_saw_of_the_physics() {
+    let spots = spots();
+    let mut c = Chain::default();
+    let mut seen = Vec::new();
+    let mut ticks = bounce_and_fly();
+    ticks.push(falling(BESIDE));
+    ticks.extend((0..=LAUNCH_TICKS).map(|_| tick(BESIDE, 0.0, false)));
+    for t in &ticks {
+        c.step(Some(t), &spots);
+        seen.extend(c.physics().iter().copied());
+    }
+    let id = spot_id(&spots[0]);
+    assert_eq!(
+        seen,
+        [
+            Physics::Touchdown {
+                down: 6.0,
+                up: 12.0
+            },
+            Physics::Launch {
+                spot: Some(id),
+                speed: 12.0
+            },
+            Physics::Touchdown {
+                down: 6.0,
+                up: 0.0
+            },
+            Physics::Grounded,
+        ]
+    );
+    // Each step's list is its own.
+    c.step(Some(&tick(BESIDE, 0.0, false)), &spots);
+    assert!(c.physics().is_empty());
+}
+
+/// A launch whose run ends on the same step (the third tick clear) gives
+/// the launch, then the end; a death in a run gives the end.
+#[test]
+fn the_end_of_a_run_follows_its_last_launch() {
+    let spots = spots();
+    let mut c = Chain::default();
+    for t in [
+        falling(STRIP),
+        tick(STRIP, 12.0, false),
+        tick(STRIP, 11.8, false),
+        tick(STRIP, 11.5, false),
+    ] {
+        c.step(Some(&t), &spots);
+    }
+    c.step(Some(&tick(STRIP, 11.2, false)), &spots);
+    assert!(matches!(
+        c.physics(),
+        [Physics::Launch { .. }, Physics::Grounded]
+    ));
+    let mut c = Chain::default();
+    for t in bounces(2) {
+        c.step(Some(&t), &spots);
+    }
+    c.step(Some(&falling(BELOW)), &spots);
+    assert!(c.physics().is_empty());
+    c.step(None, &spots);
+    assert_eq!(c.physics(), [Physics::Grounded]);
+    // A fall through a strip's floor in a run ends it too.
+    let mut c = Chain::default();
+    let mut ticks = bounces(1);
+    ticks.extend(fall_onto_strip());
+    ticks.extend(under_map(2));
+    let mut ends = 0;
+    for t in &ticks {
+        c.step(Some(t), &spots);
+        ends += c.physics().iter().filter(|p| **p == Physics::Grounded).count();
+    }
+    assert_eq!(ends, 1);
+}
+
+/// The medals' step gives every player's physics, slot by slot.
+#[test]
+fn every_players_physics_is_heard_by_slot() {
+    let spots = spots();
+    let mut m = Medals::new();
+    let mut heard = Vec::new();
+    for (i, t) in bounce_and_fly().into_iter().enumerate() {
+        let seen = [
+            Seen {
+                slot: 5,
+                user: None,
+                tick: Some(PlayerTick {
+                    unit: UNIT + 5,
+                    ..t
+                }),
+            },
+            Seen {
+                slot: 0,
+                user: Some(0),
+                tick: Some(t),
+            },
+        ];
+        m.step(i as u32, &seen, &spots);
+        heard.extend(m.physics().iter().map(|(slot, p)| (*slot, std::mem::discriminant(p))));
+    }
+    let touchdown = std::mem::discriminant(&Physics::Touchdown { down: 0.0, up: 0.0 });
+    let launch = std::mem::discriminant(&Physics::Launch {
+        spot: None,
+        speed: 0.0,
+    });
+    assert_eq!(
+        heard,
+        [(0, touchdown), (5, touchdown), (0, launch), (5, launch)]
+    );
 }

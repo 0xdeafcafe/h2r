@@ -44,6 +44,33 @@ pub const SCREEN_EFFECTS_OFF: [u32; 2] = [0x0048_5607, 0x0048_50c8];
 /// Most screen-effect entries read.
 pub const MAX_SCREEN_EFFECTS: u32 = 256;
 
+/// Maximum number of corners captured for one screen-effect call.
+pub const MAX_CORNERS: u32 = 64;
+
+/// Four words at a screen-effect value or corner pointer.
+fn words(mem: &dyn GuestRead, address: u32) -> Option<[u32; 4]> {
+    let mut words = [0; 4];
+    for (i, word) in words.iter_mut().enumerate() {
+        *word = mem.read_u32(address.checked_add(4 * i as u32)?)?;
+    }
+    Some(words)
+}
+
+/// Inputs for the strip plan at screen-effect entry, before the guest binds
+/// any of the call's targets.
+pub fn screen_inputs(
+    mem: &dyn GuestRead, values: u32, corners: u32, columns: u32, rows: u32,
+) -> Result<([u32; 4], Vec<[u32; 4]>), &'static str> {
+    let count = columns.checked_mul(rows).filter(|&n| n <= MAX_CORNERS).ok_or("too many corners")?;
+    let values = words(mem, values).ok_or("unreadable screen values")?;
+    let mut grid = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let address = corners.checked_add(16 * i).ok_or("unreadable screen corner")?;
+        grid.push(words(mem, address).ok_or("unreadable screen corner")?);
+    }
+    Ok((values, grid))
+}
+
 /// One call of `render_screen_effects`: what it was asked to draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PostFrame {
@@ -95,6 +122,37 @@ impl PostFrame {
 mod tests {
     use super::*;
     use crate::testing::Mem;
+
+    #[test]
+    fn screen_inputs_keep_corner_order_and_refuse_wrapped_guest_addresses() {
+        let mut m = Mem::default();
+        for i in 0..20 {
+            m.w(0x1000 + i * 4, i);
+        }
+        let (values, corners) = screen_inputs(&m, 0x1000, 0x1010, 2, 2).unwrap();
+        assert_eq!(values, [0, 1, 2, 3]);
+        assert_eq!(corners[3], [16, 17, 18, 19]);
+        m.w(u32::MAX - 3, 7);
+        for at in [0, 4, 8] {
+            m.w(at, 8);
+        }
+        assert!(screen_inputs(&m, 0x1000, u32::MAX - 3, 1, 1).is_err());
+    }
+
+    #[test]
+    fn side_target_strip_inputs_require_every_corner_before_drawing() {
+        let mut m = Mem::default();
+        for i in 0..19 {
+            m.w(0x4000 + 4 * i, i);
+        }
+        assert_eq!(
+            screen_inputs(&m, 0x4000, 0x4010, 2, 2),
+            Err("unreadable screen corner"),
+        );
+        m.w(0x404c, 19);
+        let (_, corners) = screen_inputs(&m, 0x4000, 0x4010, 2, 2).unwrap();
+        assert_eq!(corners[3], [16, 17, 18, 19]);
+    }
 
     #[test]
     fn the_frame_reads_its_gates() {

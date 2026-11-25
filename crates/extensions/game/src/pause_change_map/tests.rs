@@ -110,7 +110,7 @@ fn kit_map() -> Map {
 fn change_map_opens_what_game_setups_change_map_opens() {
     let cat = map_select::sample();
     assert_eq!(opening(Mode::Multiplayer, &cat), Some(Opening::Categories));
-    assert_eq!(opening(Mode::Forge, &cat), Some(Opening::Maps(Category::Halo2)));
+    assert_eq!(opening(Mode::Forge, &cat), opening(Mode::Multiplayer, &cat));
     assert_eq!(opening(Mode::Firefight, &cat), None, "no kit map installed");
     assert_eq!(
         categories(&cat),
@@ -123,7 +123,7 @@ fn change_map_opens_what_game_setups_change_map_opens() {
     with_kit.push(kit_map());
     let cat = Catalogue::new(with_kit);
     assert_eq!(opening(Mode::Firefight, &cat), Some(Opening::Maps(Category::Firefight)));
-    assert!(!categories(&cat).contains(&Category::Firefight), "only a Firefight lobby's");
+    assert!(categories(&cat).contains(&Category::Firefight), "installed kit maps are playable maps");
 
     // One category: its maps straight away; none: no row.
     let one = Catalogue::new(cat.maps(Category::Halo2).to_vec());
@@ -199,7 +199,12 @@ fn game_setup_lists_the_lobbys_rows_in_its_order() {
 fn listed(name: &str, ty: GameType, row: Option<Row>) -> Listed {
     let mut v = GameVariant::blank(ty);
     v.set_name(name).unwrap();
-    game_types::listed(v, row).unwrap()
+    if let Some(row) = row {
+        let listed = crate::community_variants::listed_named(name).unwrap();
+        assert_eq!(Row::of_type(listed.game_type), Some(row));
+        v.set_ext(&listed.ext()).unwrap();
+    }
+    game_types::listed(v).unwrap()
 }
 
 #[test]
@@ -261,7 +266,7 @@ fn the_game_types_are_the_lobbys_with_our_rows_last() {
     assert_eq!(Group::Type(GameType::Ctf).label(), "Capture the Flag");
     assert_eq!(Group::Row(Row::Research).label(), "Research and Devolution");
     assert!(
-        game_types::listed(GameVariant::blank(GameType::Other(5)), None).is_none(),
+        game_types::listed(GameVariant::blank(GameType::Other(5))).is_none(),
         "an engine the list has no row for"
     );
 }
@@ -277,14 +282,19 @@ fn the_built_in_list_is_read_from_the_game() {
     ctf.set_name("CTF Classic").unwrap();
     let mut odd = GameVariant::blank(GameType::Oddball);
     odd.set_name("Rockets Oddball").unwrap();
-    g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 2);
-    for (i, v) in [&ctf, &odd].into_iter().enumerate() {
+    let siege = ::rules::compile(::rules::builtin::SIEGE).unwrap();
+    let script = variants::portable::record_for_named(&siege, "My Siege", &[]).unwrap();
+    assert_eq!(script.game_type(), GameType::Script);
+    g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 3);
+    for (i, v) in [&ctf, &odd, &script].into_iter().enumerate() {
         let at = RECORDS + 4 + i as u32 * BUILTIN_RECORD + BUILTIN_VARIANT;
         g.write(at, v.bytes()).unwrap();
     }
     let list = game_types::read(&g);
     let names: Vec<&str> = list.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["CTF Classic", "Rockets Oddball"]);
+    assert_eq!(names, ["CTF Classic", "Rockets Oddball", "My Siege"]);
+    assert_eq!(list[2].group, Group::Row(Row::Siege));
+    assert_eq!(list[2].variant, script);
     assert_eq!(list[1].group, Group::Type(GameType::Oddball));
     assert_eq!(list[0].variant, ctf, "the whole record");
 }
@@ -603,4 +613,31 @@ fn the_switch_turns_the_row_and_its_screens_off() {
     assert!(!install(&mut registry, None).unwrap());
     let plan = registry.build(&hooks::Base).unwrap().text();
     assert!(!plan.contains("pause-change-map"), "{plan}");
+}
+
+#[test]
+fn a_change_rules_press_limits_the_map_rows_to_the_chosen_wave_set() {
+    let visit = Arc::new(Visit::default());
+    let basin = crate::community_variants::listed_named("Basin").unwrap();
+    let variant = game_types::listed(basin.record.clone()).unwrap();
+    visit.open(0, ALL_ROWS, vec![variant], None);
+    let pick = setup::rules_pick(&visit, Group::Row(Row::Firefight)).unwrap();
+    assert_eq!(pick.values, ["Basin"]);
+    (pick.set)(0);
+    let draft = visit.draft();
+    let chosen = draft.variant.as_ref();
+    let creek = Map {
+        id: 73,
+        name: "Firefight – Beaver Creek".into(),
+        path: r"t:\$C\4d53006400020011\beavercreek".into(),
+        ..Map::default()
+    };
+    let cat = Arc::new(Catalogue::new(map_select::sample().all().cloned()
+        .chain([kit_map(), creek.clone()])));
+    let mode = map_select::variant_mode(Mode::Multiplayer, chosen);
+    let maps = cat.for_variant(mode, chosen);
+    assert_eq!(opening(mode, &maps), Some(Opening::Maps(Category::Firefight)));
+    assert_eq!(maps.maps(Category::Firefight), [creek]);
+    assert_eq!(maps.all().count(), 1);
+    assert_eq!(cat.for_variant(Mode::Forge, chosen).categories(), cat.categories());
 }

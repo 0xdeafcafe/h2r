@@ -1,6 +1,6 @@
 [package]
 name = "pogo-kit"
-description = "The Pogo Stick's models, built from art/pogo into each multiplayer map"
+description = "The Pogo Stick's models, built from content/pogo into each multiplayer map"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

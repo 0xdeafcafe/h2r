@@ -29,6 +29,25 @@ fn track() -> Track {
 }
 
 #[test]
+fn the_bar_shows_a_monitor_look_sentence_when_nothing_else_needs_the_line() {
+    let mut track = track();
+    track.tick = 100;
+    track.note_monitor_look(&agent_proto::theater::MonitorLookSource {
+        seat: 3,
+        map: "invented_map".into(),
+        reason: "monitor_look_source".into(),
+    });
+    let shown = |spec: &crate::ui_kit::spec::ScreenSpec| {
+        spec.texts
+            .iter()
+            .any(|t| t.text.contains("Seat 3 has a monitor look this machine cannot draw"))
+    };
+    assert!(shown(&bar(&track, true, None)));
+    // A transient notice has the line first.
+    assert!(!shown(&bar(&track, true, Some("Clip export started"))));
+}
+
+#[test]
 fn every_pause_row_has_its_action_or_opens_the_kit_picker() {
     let mut track = track();
     track.tick = 450;

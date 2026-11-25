@@ -5,7 +5,7 @@
 //! `hud_kit_core`'s, shared with the game's runtime; this crate draws and
 //! checks them offline:
 //!
-//! - [`model`], [`huds`]: `hud_kit_core`'s, re-exported;
+//! - [`model`], [`views`]: `hud_kit_core`'s, re-exported;
 //! - [`rects`]: the retail rectangles an element sits beside;
 //! - [`hudg`]: the HUD globals the kit reads;
 //! - [`templates`]: the templates resolved through the HUD editor's
@@ -32,7 +32,7 @@ pub mod templates;
 
 pub use compile::{AsHudEdit, Compiled, compile};
 pub use hud_edit::Mode;
-pub use hud_kit_core::{huds, model};
+pub use hud_kit_core::{model, views};
 pub use model::{
     Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Origin, PillPart, Place,
     Pulse, Style, Value, Values,

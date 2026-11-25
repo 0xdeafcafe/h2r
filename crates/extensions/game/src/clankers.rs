@@ -7,7 +7,7 @@
 //! `h2 settings` lists them.
 //!
 //! **The page** is the shared settings dialog ([`page`],
-//! `crate::ui_kit::settings`), declared by `assets/ui/screens/clankers.yaml`:
+//! `crate::ui_kit::settings`), declared by `content/ui/screens/clankers.yaml`:
 //! eight rows over [`DEFS`] on the lobby's own settings dialog, Quick
 //! Options, as the Halo 1 Options page is. Its header (icon, name and
 //! what the window is for) is the same whatever has the focus; the
@@ -193,7 +193,7 @@ pub static DEFS: [&Def; 8] = [
 
 /// The Clankers page over `store`: the shared settings dialog
 /// (`crate::ui_kit::settings`) its doc declares,
-/// `assets/ui/screens/clankers.yaml`: its header, its eight rows over
+/// `content/ui/screens/clankers.yaml`: its header, its eight rows over
 /// [`DEFS`], their help and picker copy, and the Game Setup row's text
 /// and help (`settings.caller`).
 pub fn page(store: Arc<Store>) -> KitScreen {

@@ -1,6 +1,6 @@
 # Forge map variants: editing the map's own placements, and the file that keeps the edits
 
-Status: Design, slices M1 to M10 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); everything else named here as new is not.
+Status: Design, slices M1 to M10, D2 to D4, V1, V2 and G1 built. The document's placement ops, its links and labels, the materialiser and the local session that this page extends are built ([forge-design.md](forge-design.md)), and so are the print, `EntryOp::{Set, Remove, Reset}`, format 3, their validator rules and `Refusal::Print` (M1), `resolve`, which lowers entry ops for `replay` (M2), the materialiser's entry ops and print check (M3), the tier, the play and session forms and the variant name rule (M4), the session's things, `Session::{things, move_thing, hold}`, its kept rows and print check, and the base calls on `World` (M5), `Session::{set_field, remove, reset}` and `forge::props` (M6), `forge_map::rows`, which reads each block's rows, typed fields and prints from the loaded scenario as the session opens (M7), `ForgeWorld`'s base calls over the call queue, `base_move`, `base_field`, `base_inert` and `base_restore` (M8), the Objects tool aiming at every thing, own or added, mark or body, by game type and `forge.show` (M9), and `forge.things`, entry ops in `forge.propose` with named refusals and the variant in `forge.status` (M10); `forge_doc::games` (D2), `forge::props::{games, games_ops}` and `Session::set_games`, the item spawner's game types, one op a changed slot (D3), and `EntryOp::Property` with the spawner's `team`, `forge_doc::teams` and the census's team for it (D4); the variant store, `forge::files::variants` (V1), and the lobby's pick and the build before Start Game, `game::map_variant` (V2); `Property::Games` on scenery, crates and machines, `forge_doc::{object_games, for_game}`, `forge_build::{build_for, map_id}` and `game` in the format 2 `MapId` (G1); everything else named here as new is not.
 Code: `crates/formats/forge-doc` (the document), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (`Session`; `things.rs` for things, kept rows and the base reconcile; `tool.rs` for aiming), `crates/extensions/agent/src/forge/{local.rs, base.rs}` (`ForgeWorld`, its base calls and the agent methods), `crates/extensions/game/src/forge_map.rs`, `crates/live/live-hle/src/maps.rs` (`MapGate`). Tests: named per slice below.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
@@ -128,8 +128,8 @@ map; that tool is not designed here.
 A family beside `Placement`, `TagField` and `Forge`
 (`forge_doc::Edit::Entry(EntryOp)`, in
 `crates/formats/forge-doc/src/entry.rs`; the type is `EntryOp` because
-`forge_doc::Entry` is the log entry). `Set`, `Remove` and `Reset` are
-built; `Property` is slice D4's:
+`forge_doc::Entry` is the log entry). `Set`, `Remove`,
+`Reset`, `Property` and `Area` are built.
 
 | Op | Does | Carries |
 |---|---|---|
@@ -137,6 +137,7 @@ built; `Property` is slice D4's:
 | `EntryOp::Remove {target}` | removes the entry | nothing |
 | `EntryOp::Reset {target}` | drops the effect of every earlier entry op on an own entry: it is in the map again, as the disc has it. Links and labels are their own ops and stay | nothing |
 | `EntryOp::Property {target, property}` | sets or clears a property that has no retail field ("Properties without a retail field") | the property's own value |
+| `EntryOp::Area {target, area}` | sets or clears a netgame flag's [area](gametype-markers.md#in-the-document) | a radius or path with heights, or `null` |
 
 `Placement::Add` stays the one way to make an entry, and its `OpId` is
 the new entry's name.
@@ -148,9 +149,9 @@ the new entry's name.
   `Placement::Set` or `Placement::Remove` of that running index
   (`Resolved::lowered`); `replay` hands those to the adapter in op
   order. `forge_doc::Apply` keeps its two required methods.
-  `EntryOp::Reset` lowers to nothing, and so does every entry op a
-  later reset of the same entry covers, as the fold leaves out a
-  retracted op. Placement ops by running index are never covered;
+  Resets, properties and areas lower to nothing. The fold leaves out
+  entry ops covered by a later reset of the same entry, as it leaves
+  out a retracted op. Placement ops by running index are never covered;
   their indices are read in the document with the covered ops left
   out.
 - **Replay checks the prints first.** `Resolved::prints` lists every
@@ -171,7 +172,8 @@ the new entry's name.
 - **Format.** A document with an `EntryOp` op or a print has `format` 3
   (`content::forge::DOCUMENT_FORMAT_ENTRIES`).
   `ForgeDoc::required_format` is the highest number its ops need, so a
-  document without them keeps its number and its identity.
+  document without them keeps its number and its identity. A group op
+  needs 4 (`DOCUMENT_FORMAT_GROUPS`).
 - **Validation without a map** (`validate.rs`, and the identity pass in
   `links.rs`): a base target carries its print; the block has the
   field and the layout marks it editable; the value's type is the
@@ -274,8 +276,11 @@ section 2 is where the page for it is.
 built: position and rotation (the block's rotation or facing) on every
 kind, object, item, respawn time, return time, team, role and order,
 each with the kinds it is on, how it reads a thing and the one
-`EntryOp::Set` it writes. Game types joins it in D3, and the rows a
-Forge property backs in D4 and D5. A teleporter's channel is its link's
+`EntryOp::Set` it writes. The game types of an item spawner are not a
+row of that table, which is one field a row: `props::games` reads the
+four slots as a set and `Session::set_games` writes the slots that
+change in one undo step. The rows a Forge property backs come in D4 and
+D5. A teleporter's channel is its link's
 (the Links tool), not a row. `Session::set_field` takes a row's name
 and refuses one the thing's kind does not have.
 
@@ -290,9 +295,9 @@ scenario bytes (`forge_doc::Labels`).
 | Property | On | Reaches the game by | State |
 |---|---|---|---|
 | `spare_clips` | item spawner of a weapon | a write to the new weapon's reserve after the spawner makes it. The spawner returns the object's ID and stores the entry's index on it (**E**, forge.md 1.2); the reserve's field on a weapon object is not decoded | not shown until slice D5 proves the write |
-| `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | shown with D4 |
-| `weight` | starting point | an answer to the spawn chooser's hook (`PLAYER_SPAWN_LOCATION`, the point `spawn_areas` already names, [rules-engine.md](rules-engine.md)). How the routine weighs locations is not traced | not shown until slice D5 |
-| `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | slice G1 |
+| `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | `Session::{team, set_team}`; `forge_doc::labelled` reports it for a labelled spawner |
+| `weight` | starting point | an answer to the spawn chooser (`PLAYER_SPAWN_LOCATION`, whose free-spot test `spawn_areas` answers, [rules-engine.md](rules-engine.md)). How the routine weighs locations is not traced | not shown until slice D5 |
+| `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | `Property::Games`, `forge_doc::object_games`; no session call or tool row sets it |
 
 A property that reaches the game through a hook is host state in
 `ForgeExt` and follows [forge-design.md](forge-design.md), "Who owns
@@ -314,7 +319,7 @@ engines, or all of them.
   engine's code or a group value: 12 every engine, 13 and 14 every
   engine but CTF and Assault, which match each other's code; King of
   the Hill's code is 0 (**E**, `map::scenario_layout::game_types`).
-  `forge_doc::games::encode(set)` (new) gives the slots for a set: a group value when one equals the
+  `forge_doc::games::encode(set)` gives the slots for a set: a group value when one equals the
   set, else one slot an engine. A set that needs more than four slots
   is refused with "An item can name four game types at most."
   `decode(slots)` gives the set back, and an entry whose slots hold a
@@ -347,18 +352,123 @@ engines, or all of them.
   `disc_item_game_types_and_respawn_modes_census` prints how the retail
   maps use the slots).
 - **Objects.** A scenery, crate or machine placement has no game-type
-  field (**C**). With a `games` property the materialiser builds the
-  map for the session's engine and leaves out the placements whose set
-  lacks it (`forge_build`, slice G1). A document with such a property
-  has the engine in its package's identity: `MapId` format 2 gains a
-  `game` member, present only then, so every other document keeps its
-  id ([maps.md](maps.md), "Identity: `MapId`"). Each machine knows the
-  engine from the session's variant, so each builds the same file.
+  field (**C**). Its set is the `games` property
+  (`Property::Games(Option<GameSet>)`, `forge_doc::OBJECT_BLOCKS`),
+  written as engine indices in ascending order (`[1, 9]`); a clear is
+  every game type, and an empty set or one of every engine is refused.
+  `forge_build::build_for(doc, engine, ..)` builds the map for an engine:
+  `forge_doc::for_game` removes each object whose set lacks it with an
+  entry removal after the last op and leaves out the ops that set its
+  game types, so the built document never has more ops than the
+  authored one; the package holds the document as authored. A document
+  with such a property has the engine in its package's identity: the
+  `[[forge]]` layer's `game` and the format 2 `MapId`'s `game` member,
+  present only then, so every other document keeps its id
+  (`forge_build::map_id`; [maps.md](maps.md), "Identity: `MapId`").
+  `forge_build::build` names no engine and refuses such a document
+  (`forge_game`). An object with game types has no link and no label,
+  since a build may leave it out, and a document with one has no
+  `expect`: each engine builds its own map. Each machine knows the
+  engine from the session's variant, so each builds the same file. The
+  lobby's pick (`map_variant::pick`, `Maps::build`) does not pass an
+  engine yet, so a variant with object game types is refused there.
 - **The start gate.** A map variant that lacks what the game variant
   needs blocks the start by name: a script's labels through
   [rules-start-gate.md](rules-start-gate.md), and a retail engine's
   goals through the same census (`forge_doc::labelled`, which reads
   the document's flags with the map's).
+
+### AI ground
+
+A Firefight or Siege map is made in Forge as well as in Studio: the
+author places labelled markers and asks for the ground
+([game-types-without-carriers.md](game-types-without-carriers.md), "Maps
+for scripted games"). The document holds the places and the recipe and
+never what the build makes, since the ground is derived from the disc's
+collision and each machine builds its own.
+
+- **A marker** is a netgame flag the document adds
+  (`Placement::Add` on `netgame_flags` with `position`, `facing` and
+  `team`) with a label op naming it, one of `ff_drop`, `ff_base`,
+  `ff_cover`, `siege_site`, `siege_goal` and `siege_line`
+  (`forge_doc::GroundLabel`). A `siege_line`'s number is its phase. A
+  seventh label, `siege_barrier`, is the one that marks an object, not a
+  flag: scenery, a crate, a machine or a vehicle, numbered by the phase it
+  opens in (no number is open from the start). The AI and objectives page
+  offers it (`Session::label_barrier` labels the object the monitor aims
+  at, opening in phase 1), Properties still takes it typed, and the ground
+  build and the stamp do not read it, so labelling a barrier leaves the
+  ground current. A
+  map's own flag labelled the same way is a marker too. A ground label
+  on any other block, or a `siege_line` with no phase, is refused by name
+  (`ForgeDoc::ground_marks`). A session adds a marker as a flag with no
+  object, so it places nothing in the world
+  (`Session::place_marker`, `crates/extensions/forge/src/scene.rs`
+  `Marker`).
+- **The recipe** is a `generate` recipe named `ai_ground`
+  (`forge_doc::GROUND_RECIPE`) with the kit's version, the home team and
+  the mode (`GroundRecipe`). `ForgeDoc::tier` allows it, so a variant
+  with markers and a recipe is a map variant (`Tier::Variant`); the
+  validator refuses a malformed one and a second. A session keeps the
+  recipe beside its document, not in it, so the log's chain is
+  untouched: a save writes the document with the recipe
+  (`Session::ground_form`) and a load takes it out again.
+- **Materialising.** `forge_build::build` reads each marker's position,
+  facing and team from the finished scenario and hands them, with the
+  recipe, to `firefight_kit::ground::build` over the materialised map.
+  The bytes it makes are the map, and `Built::ground` reports the zones,
+  squad slots, problems and receipt (`crates/tools/forge-build/src/ground.rs`).
+  The build equals the kit's own over the same labels. `ai_ground` and
+  `forge_kit` are not built together: the ground is built over the play
+  form.
+- **When it is built.** Never while placing. **Build AI ground** on the
+  Forge options page builds now; **Test waves** builds when the ground is
+  stale or was never built; a save builds first when it was built and is
+  stale, and a build that fails stops the save with its reason
+  (`Session::{build_ground, ensure_ground, save_building}`).
+- **Stale** (`ForgeDoc::ground_stamp`): the stamp is a digest of the
+  recipe, the markers and every op that moves one or that adds, moves or
+  removes something solid (scenery, crates, machines, vehicles). The
+  session compares it with the stamp of its last build
+  (`Session::ground_state`: `NotBuilt`, `Current`, `Stale`). An edit
+  that touches none of those, a weapon or a title, leaves it current.
+- **The builder** is the app's (`forge::GroundBuilder`): the composition
+  root installs `boot::ground_builder::AppGround` through
+  `forge_glue::ground::install`, which runs `forge_build::build` over the
+  play form with the disc's maps and hands the session `Built::ground`'s
+  report (zones, squad slots, problems, receipt). The session holds no
+  generator. The editor runs the build as a file job
+  (`Editor::start_ground`): a worker builds on a copy of the session
+  with the installed builder, edits wait, and the editor takes the copy
+  back, so the game thread never waits for it. The HUD says
+  `AI ground built: N zones, M squad slots, P problems.`, or the build's
+  own sentence when it fails (a failed build changes nothing); with no
+  builder installed both rows and `forge.ground.build` refuse by name.
+  **The built map is not loaded yet**: the notice adds `The running map
+  is not changed.` until the app supplies a loader
+  (`forge_glue::ground::loads_map`, `AppGround::after`). A loader must
+  reload the running map with the build, and a session that opens on a
+  reloaded map must keep the document, the monitor's place and the tool
+  (below, "What is left").
+- **The overlay.** While the monitor is on, the play window draws each
+  placed marker as its game type marker (a drop green, a cover yellow, a
+  base its team's colour, the siege labels violet) and each label the
+  last build could not honour in orange in place of its marker
+  (`Editor::marker_entries`, `forge_glue::markers_world`;
+  [gametype-markers.md](gametype-markers.md), "The game"). The sectors
+  are not drawn: the report holds their count, not their places.
+- **What is left.** Loading the built map. A session opens on the
+  original map (`forge_map::open` refuses a slot that serves a package or
+  an override), the document's edits are live in that map, and the build
+  has them baked in, so a reload needs the session to open over the built
+  map and keep its document as an edit log over the original. The
+  sectors' places need `forge_build::GroundReport` to carry them.
+- **The palette page.** The Objects menu's last row, **AI and
+  objectives**, lists the six labels with how many are placed; choosing
+  one places the next marker in front of the monitor
+  (`sheet::objects_with_ai`, `Command::Marker`). A base or a siege line
+  takes the team the placed ones leave short, and a siege line the phase
+  of its pair.
 
 ### The map variant file
 
@@ -373,7 +483,7 @@ A map variant is a Forge document, in the form a game is played from.
   `Tier::Variant` or `Tier::Map`, in
   `crates/formats/forge-doc/src/variant.rs`). A variant holds
   `Placement::Add`, `EntryOp`, link, unlink and label ops, and nothing
-  else: no recipe but the kit's, no import slot, no source map, no
+  else: no recipe but the kit's and the AI ground's, no import slot, no source map, no
   placement set or removal by running index, no tag-field, mesh or
   bitmap op. So a variant
   changes the scenario's placement blocks and no tag, its build is a
@@ -408,9 +518,28 @@ A map variant is a Forge document, in the form a game is played from.
   the same directory holds the ones fetched from Live, as the
   game-variant store keeps its Live copies
   (`crates/extensions/game/src/game_variants/store.rs`).
-  `forge::files` owns the store: `list(map)`, `save`, `load`,
-  `rename`, `duplicate`, `delete`. Files are user output and stay out
-  of Git checkouts.
+  `forge::files::variants` owns the store (`crates/extensions/forge/src/files.rs`):
+  `list(data, map, installed)`, `save(data, doc, replace)`,
+  `load(data, map, file, installed)`, `rename`, `duplicate`, `delete`,
+  where `installed` is the hash of this machine's map of that name, or
+  `None`. A file is named by its stem. `save` writes the play form and
+  refuses a name another variant of the map has, compared without case
+  (`variant_name_taken`), unless `replace` is set; a rename or a
+  duplicate never replaces. Two names that make one stem get `-2`. A
+  rename or a duplicate drops `expect`, since the title is in the id.
+  `list` gives every file, the Live copies after the saved ones, each
+  with the `Problem` that bars it and its sentence; `load` refuses with
+  the same one. Rename, duplicate and delete act on saved files, and on
+  one that has a problem. Files are user output and stay out of Git
+  checkouts. `suggestable(data)` lists the files of every map that a
+  game variant may suggest: the variant tier, this build's builder, in
+  their own map's directory, with their base hash and document id. The
+  `.h2forge` store of Forge maps is the same module's
+  other half. On the Map variants dialogs a fact row (the page's "No map
+  variants", the open variant's "Open now") takes no A, and the footer
+  follows the focused row: A Select and B Back on an action, B Back
+  alone on a fact
+  ([forge-map-variants-ui.md](forge-map-variants-ui.md)).
 - **No game bytes.** The document rule holds unchanged: typed values an
   author set, tag keys, digests. A print and a `was` are digests. An
   own entry's position is never written unless the author moved it,
@@ -423,7 +552,7 @@ names it, and the format 2 `MapId`.
 
 | Who picks | Holds the variant as | Where |
 |---|---|---|
-| The custom-game lobby | `lobby_start::map_variant() -> Option<MapId>`, beside the lobby's map | `crates/extensions/game/src/lobby_start.rs` |
+| The custom-game lobby | `lobby_start::map_variant() -> Option<MapId>`, beside the lobby's map; the pick's name and build in `map_variant::picked()` | `crates/extensions/game/src/{lobby_start.rs, map_variant.rs}` |
 | A Live session | `NewSession.map_id`, which exists; `map` stays the base map's name | `crates/live/live-proto/src/session.rs` |
 | A playlist entry | `map_variant: <MapId>` on a record of the hopper JSON. The retail record has no room for a hash, so the server keeps it in a table by hopper and record position, re-keyed by the patch's `from` as the other bytes are ([live-admin.md](../live/live-admin.md), "`PUT /v1/titles/{title}/hopper`"), published as `HopperVariantsSet` and served with the pins | `crates/live/live-server/src/admin.rs` |
 | A game variant | `maps: [{base, variant, name}]` in the `.h2variant` bundle: map variants its author made it for. The `0x130` record is untouched | `variants::portable::Bundle` |
@@ -440,25 +569,35 @@ names it, and the format 2 `MapId`.
   not read at any named point).
 - **A game variant only suggests.** Picking a game variant never
   changes the lobby's map or map variant. When the lobby's map has a
-  suggested variant on this machine, the Map Variant picker opens on
-  it and its description says which game variant it was made for. What
+  suggested variant on this machine (`map_variant::suggest`: the
+  suggestion's base is the installed map's hash and its `variant` the
+  saved document's id), the Map Variant picker opens on it, with Original
+  still first and the rest by name, and its line ends "Made for
+  <game variant>."; a held pick wins, and a suggested variant that fails
+  the store's checks is not opened on. The suggestions are written by
+  Studio's variant tool (**Suggest map variants**, `variant.maps` and
+  `variant.export`) and by `game_variants::store::Store::set_maps` for a
+  game variant kept in the game's store, from the map variants on this
+  machine (`forge::files::variants::suggestable`); the retail editor
+  saves through the save storage, whose variants port with none. What
   a game variant *requires* of a map is its script's labels, which the
   start gate enforces.
 
 ### The lobby
 
 Game Setup has **Map Variant...** under **Change Map...** in the
-CUSTOM GAMES and FORGE modes (`lobby_mode::arrange`); in FORGE it takes
-the place of Forge Map....
+CUSTOM GAMES and FORGE modes (`lobby_mode::arrange`); in FORGE it picks
+the map variant the session opens.
 
 1. **Change Map...** picks the map as today
    ([map-select.md](map-select.md)). A new map clears the variant.
 2. **Map Variant...** opens a picker dialog on top of Game Setup
-   (`kit.picker.map-variant`, in place of `kit.picker.forge-map`):
+   (`kit.picker.map-variant`):
    **Original**, then this map's variants by name. The description
    gives the author, the counts by kind and the game types it has
-   goals for. A variant that cannot be used is listed with its reason
-   as its description and cannot be chosen.
+   goals for (`forge_screens::variants::detail` writes the author and the
+   counts by kind; the game types are not in it yet). A variant that cannot
+   be used is listed with its reason as its description and cannot be chosen.
 3. The lobby's panel shows the variant's name on the line under the
    map's (`lobby_mode::panel_lines`).
 4. In FORGE the pick is what the session opens: Original is a new
@@ -466,7 +605,21 @@ the place of Forge Map....
 5. **Start Game** materialises first when the package is not cached
    and is refused, with the reason as the lobby's status line
    (`lobby_status.rs`), when any check of "Rules and limits" fails for
-   the host or a member.
+   the host or a member. `map_variant::pick` loads the variant with the
+   installed map's hash (`variants::load`), starts the build once on its
+   own thread, and holds the start state
+   (`lobby_mode::start_refused`) while it builds (the line says
+   `Building <name>...`) or is refused (the table's sentence). A pick is
+   cleared by a change of the lobby's map (`map_variant::sync`, read
+   where the lobby's state is read), by Original and by leaving the lobby.
+   In FORGE mode with no pick, `map_variant::follow_mode` (called by
+   `lobby_mode::variant_hold`) picks the map's empty draft with the
+   kit (`pick_kit`): the package carries the `forge_kit` spare rows, and
+   `kit_start` names it for the load, where `forge_map::open` lets a
+   session open on it and reads its spare rows into the session's kit
+   ([forge-editing.md](forge-editing.md), "The object menu").
+   Without a builder in the game (`game::map_variant::install`) a pick
+   is `variant_build`. `variant_member` is `Refusal::member`; V3 sends it.
 
 The row is absent when the `forge` feature is off. Only the party
 leader picks, as for the map.
@@ -478,7 +631,9 @@ Every machine builds the map from its own disc; no built byte travels
 
 - **The host** builds when the leader picks, off the game thread, into
   `<data>/maps/forge-<first 16 hex of the id>/`, and reuses a package
-  whose receipt matches.
+  whose receipt matches: its manifest's id is the pick's and its files
+  are there (`boot/src/forge_maps.rs`, `DiscMaps`, over the `Maps` trait
+  of `map_variant.rs`).
 - **A member** learns the pick from the session's `map_id`.
   `live_hle::maps::MapGate` treats a format 2 id as a package to make
   ready: get the document, check it, build it, compare with `expect`.
@@ -525,20 +680,25 @@ Every machine builds the map from its own disc; no built byte travels
 ## Interfaces
 
 - **`forge-doc`**: `Endpoint::Base.print`, `print`, `check_print`, `Edit::Entry`,
-  `EntryOp`, `Property`, `resolve`, `Resolved`, `Printed`,
+  `EntryOp`, `Property`, `teams`, `object_games`, `for_game`,
+  `OBJECT_BLOCKS`, `resolve`, `Resolved`, `Printed`,
   `Apply::prints`, `Refusal::Print`, `games::{GameSet,
-  encode, decode}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
+  GamesError, ENGINES, encode, decode, flag_games}`, `Tier`, `ForgeDoc::{tier, check_variant}`,
   `Refusal::Tier`, `play_form`, `session_form`, `KIT_RECIPE`,
-  `variant_name`.
+  `variant_name`, `GroundLabel`, `GroundRecipe`, `GROUND_RECIPE`,
+  `ForgeDoc::{ground_recipe, with_ground, ground_marks, ground_stamp}`.
 - **`forge`**: `Thing {id: Endpoint, block, kind, own, frame, fields,
   changed}`, `ThingKind`, `BaseRows`,
   `Session::{with_base, left_out, things, thing, move_thing, hold,
   release, set_field, remove, reset}`, and on `World`: `base_move`,
   `base_field`, `base_inert`, `base_restore`. The tool's
+  `Session::{place_marker, place_marker_next, move_marker, remove_marker,
+  markers, ground_state, build_ground, ensure_ground, save_building}`,
+  `GroundBuilder`,
   `Tool::{aimed_thing, held_thing, game, show}`, `Show`, `in_game`,
   `MARK_RADIUS` and `Command::{MoveThing, Remove}`.
   `forge::props` is the table of properties by name: the kinds
-  each is on, how it reads a thing and the op it writes. `forge::files`
+  each is on, how it reads a thing and the op it writes. `forge::files::variants`
   is the variant store.
 - **Agent API** (game), in [agent-api.md](../runtime/agent-api.md),
   "Local Forge session". `forge.things {kind?, changed?}` (read) lists
@@ -548,7 +708,10 @@ Every machine builds the map from its own disc; no built byte travels
   takes `EntryOp` ops, and a refused edit carries its name
   (`forge_print`, `forge_was`, `forge_left_out`, ...) in the error's
   `data.code`. `forge.status` reports the variant's name, id, tier and
-  whether it has unsaved edits (`variant`). `forge.variants {map?}`
+  whether it has unsaved edits (`variant`), and the ground in brief
+  (`ground`). `forge.ground` (read) and `forge.ground.build` (act) give
+  the ground's state, markers, problems and receipt, and build it
+  (`crates/extensions/agent/src/forge/ground.rs`). `forge.variants {map?}`
   (read, new) and `forge.variant.pick {map_id?}` (act, new) list the
   store and set the lobby's pick, for lobby and start-gate checks; they
   are V1 and V2's.
@@ -576,10 +739,12 @@ map loads. None is answered by loading the original map.
 | `variant_builder` | `builder` differs from this build's | "<name> was made with another version of Forge." with both versions in the log |
 | `variant_format` | `format` is one this build does not read | the same sentence |
 | `variant_print` | an entry's print differs | "<name> does not match this map (<block> <index>)." |
+| `variant_unreadable` | the file does not parse, or is in another map's directory | "<name> cannot be read." |
 | `variant_tier` | a file offered as a variant holds more than one may | "<name> is a Forge map, not a map variant." |
 | `variant_expect` | the built map's id is not `expect.map_id` (`forge_expect_map_id`) | "<name> did not build to the map its author saved." |
 | `variant_missing` | the document is on neither this machine nor Live, or is hidden or blocked | "<name> is not available." |
 | `variant_game` | the start gate: a goal or a label the game variant needs is absent | the gate's sentence, naming what is missing |
+| `variant_build` | the build failed for a reason the rows above do not name; the log has the error | "<name> could not be built." |
 | `variant_member` | a member failed any of the above | "<gamertag>: " and that member's sentence |
 
 - A base map is named by hash. A name match with another hash is

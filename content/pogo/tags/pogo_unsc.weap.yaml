@@ -1,0 +1,25 @@
+# The unsc stick as a weapon: inert, no triggers, barrels, magazines,
+# melee damage or zoom (docs/game/pogo-stick.md). Every field not named
+# here is the `weap` definition's default.
+#
+# It is held as the magnum's weapon class and type, which a unit takes only
+# when its animation graph has an idle for it. Held, the game reads the
+# weapon's first-person block (arms, weapon model and their graph); the
+# stick takes the one of the map's own weapon of that class, so the
+# references are to tags the map already has.
+fields:
+  item.obje.object_type: 2            # weapon
+  item.obje.bounding_radius: 0.22
+  item.obje.bounding_offset: [0.0, 0.059, -0.165]
+  item.obje.model: 'hlmt:objects\weapons\multiplayer\pogo\unsc\pogo_unsc'
+  weapon_class: pistol
+  weapon_name: hp
+  weapon_flags: 65536                 # bit 16: no binocular zoom
+  magnification_levels: 0
+  hud: 'nhdt:objects\weapons\multiplayer\pogo\pogo'
+borrow:
+  - from: weap
+    where:
+      - {weapon_class: pistol, weapon_name: hp}
+      - {weapon_class: pistol}
+    take: [first_person]

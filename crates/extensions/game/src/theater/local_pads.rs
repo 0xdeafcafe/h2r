@@ -3,7 +3,7 @@
 //! that the guest can observe even without calling XInputGetState.
 use super::{Mode, Session};
 use anyhow::{Result, ensure};
-use film::tape::{Call, PADR, PDEV, PortChange, Tap};
+use film::tape::{Call, PDEV, PortChange, Tap};
 use input::{HostBackend, HostPad, HostPadId, InputManager};
 use std::sync::{Arc, Mutex};
 use xapi::tap::{InputTap, PACKET};
@@ -141,7 +141,6 @@ impl InputTap for FilmPads {
                 inner.read_with_memory(handle, status, packet, memory);
             }
             self.session.record(
-                PADR,
                 Call {
                     index: 0, // Session assigns the shared call index.
                     op: OP.into(),

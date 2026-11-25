@@ -29,8 +29,8 @@ Commit `grammar.js` and `src/` together. Then put the commit's SHA in
 To see a script's tree or its highlights:
 
 ```sh
-tree-sitter parse ../../crates/formats/rules/src/builtin/vip.rules
-tree-sitter highlight ../../crates/formats/rules/src/builtin/vip.rules
+tree-sitter parse ../../content/modes/rules/vip.rules
+tree-sitter highlight ../../content/modes/rules/vip.rules
 ```
 
 `queries/highlights.scm` is ordered for the tree-sitter CLI (the first
@@ -40,8 +40,8 @@ the reverse order, as Zed lets the last one win. Change both.
 
 ## Nodes
 
-Declarations: `header`, `carrier_declaration`, `teams_declaration`,
-`list_declaration`, `scoring_declaration`, `about_declaration`,
+Declarations: `header`, `type_declaration`, `teams_declaration`,
+`uses_declaration`, `use_declaration`, `points_declaration`, `about_declaration`,
 `quick_declaration`, `settings_declaration` (`setting`),
 `requires_declaration` (`capability`),
 `option_declaration` (`range`), `palette_declaration`, `enum_declaration`,

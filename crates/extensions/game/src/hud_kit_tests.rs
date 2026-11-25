@@ -244,6 +244,71 @@ fn the_gate_answers_kit_widgets_only() {
     assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), None);
 }
 
+/// The records the motion tracker draws from are where the root points:
+/// the tag's own before an install, the copy after it (the retail records
+/// first, in the same order); an index past the block is skipped.
+#[test]
+fn the_kept_records_follow_the_root() {
+    let mut m = memory();
+    let b = records::BITMAP_SIZE as u32;
+    let roots = [(ROOT, vec![1, 9])];
+    assert_eq!(kept_records(&m, &roots).unwrap(), [RETAIL_BITMAPS + b]);
+    let (hud, c) = hud();
+    install(&mut m, &hud, &c);
+    let copy = m.u32(ROOT + records::ROOT_BITMAPS + 4).unwrap();
+    assert_eq!(kept_records(&m, &roots).unwrap(), [copy + b]);
+    let mut kept = vec![0; b as usize];
+    m.read(copy + b, &mut kept).unwrap();
+    assert_eq!(kept, vec![0xb1; b as usize], "the second retail record");
+}
+
+/// For a user in monitor mode a retail widget is not drawn, the player's
+/// copy or a weapon's, but the motion tracker's is left to the game, as
+/// are the kit's own widgets (the kit's gate answers them) and every
+/// widget of another user; another caller is not answered.
+#[test]
+fn a_monitor_user_draws_no_retail_widget_but_the_motion_tracker() {
+    let mut m = memory();
+    let (hud, c) = hud();
+    let mut t = install(&mut m, &hud, &c);
+    t.kept = kept_records(&m, &[(ROOT, vec![1])]).unwrap();
+    let copy = m.u32(ROOT + records::ROOT_BITMAPS + 4).unwrap();
+    let texts = m.u32(ROOT + records::ROOT_TEXTS + 4).unwrap();
+    let (shield, tracker) = (copy, copy + records::BITMAP_SIZE as u32);
+    let weapon = 0x0055_0000;
+    let meter = t.widgets[0].address;
+    m.set_u32(SP, GATE_RETURNS[1]).unwrap();
+    let off = 1 << 1;
+    for (widget, answer) in [
+        (shield, Some(false)),
+        (texts, Some(false)),
+        (weapon, Some(false)),
+        (tracker, None),
+        (meter, None),
+    ] {
+        assert_eq!(retail_gate(&m, SP, widget + 8, &t, off, 1).unwrap(), answer, "{widget:#x}");
+        assert_eq!(retail_gate(&m, SP, widget + 8, &t, off, 0).unwrap(), None, "user 0 {widget:#x}");
+    }
+    assert_eq!(retail_gate(&m, SP, shield + 8, &t, 0, 1).unwrap(), None);
+    assert_eq!(retail_gate(&m, SP, shield + 8, &t, u32::MAX, USERS).unwrap(), None);
+    m.set_u32(SP, 0x1234).unwrap();
+    assert_eq!(retail_gate(&m, SP, shield + 8, &t, off, 1).unwrap(), None);
+}
+
+/// `Handle::retail` turns one user's retail widgets off and on again,
+/// leaving the others; a user past the last is ignored.
+#[test]
+fn retail_is_per_user() {
+    let h = Handle(0);
+    h.retail(3, false);
+    assert!(!retail_shown(3));
+    assert!(retail_shown(2));
+    h.retail(USERS, false);
+    assert!(retail_shown(USERS));
+    h.retail(3, true);
+    assert!(retail_shown(3));
+}
+
 /// A widget whose element gives way to word D bits is hidden while the
 /// game's word D (the gate's third stack argument) has one, and shown at
 /// its value otherwise; a widget without such bits ignores the word.
@@ -794,7 +859,7 @@ fn the_navpoint_is_skipped_when_our_point_is_gone() {
 /// tutorial.
 #[test]
 fn the_training_text_breaks_lines_as_the_game_does() {
-    let first = hud_kit_core::huds::superbounce::TUTORIAL_TEXT[0];
+    let first = hud_kit_core::views::superbounce::TUTORIAL_TEXT[0];
     assert_eq!(
         game_line_breaks(first),
         "Crouch, walk in under a lip,\r\nlet go, then walk out."
@@ -850,12 +915,12 @@ fn a_notification_is_the_inserts_call_with_its_text() {
     assert!(NOTES_PER_TICK >= 16);
 }
 
-/// The insert copies 63 units: a longer text, a second line, an empty
+/// The insert keeps 62 units: a longer text, a second line, an empty
 /// text and a fifth user are refused, not cut.
 #[test]
 fn a_notification_the_game_cannot_keep_is_refused() {
-    assert_eq!(note_fits(0, &"a".repeat(63)), Ok(()));
-    assert!(note_fits(0, &"a".repeat(64)).is_err());
+    assert_eq!(note_fits(0, &"a".repeat(62)), Ok(()));
+    assert!(note_fits(0, &"a".repeat(63)).is_err());
     assert!(note_fits(0, "one\ntwo").is_err());
     assert!(note_fits(0, "").is_err());
     assert!(note_fits(USERS, "Primed").is_err());
@@ -920,4 +985,191 @@ fn a_world_mark_draws_shown_posed_and_in_its_mode() {
     }
     // The go green is not a style the widget hooks draw.
     assert!(!draws(Style::Go));
+}
+
+/// The banner's fields as `0x0024cc73` leaves them: the text (62 units
+/// and a zero at most), the tick twice, shown, the shared order byte
+/// stepped, and the duration; each user's own state.
+#[test]
+fn the_banner_is_written_as_the_game_writes_its_timed_line() {
+    let mut m = memory();
+    let (huds, time) = (0x0055_a000, 0x0055_f000);
+    // No game time yet: nothing.
+    m.set_u32(USER_HUDS, huds).unwrap();
+    assert!(!write_banner(&mut m, 0, "WAVE 3", BANNER_TICKS).unwrap());
+    m.set_u32(GAME_TIME, time).unwrap();
+    m.set_u32(time + GAME_TIME_TICK, 1234).unwrap();
+    m.set_u8(huds + MESSAGE_ORDER, 7).unwrap();
+    assert!(write_banner(&mut m, 1, "WAVE 3", BANNER_TICKS).unwrap());
+    let hud = huds + USER_HUD_LEN;
+    let units: Vec<u16> = "WAVE 3".encode_utf16().chain([0]).collect();
+    for (k, u) in units.iter().enumerate() {
+        assert_eq!(
+            m.u16(hud + BANNER_TEXT + 2 * k as u32).unwrap(),
+            *u,
+            "unit {k}"
+        );
+    }
+    assert_eq!(m.u32(hud + BANNER_STAMP).unwrap(), 1234);
+    assert_eq!(m.u32(hud + BANNER_START).unwrap(), 1234);
+    assert_eq!(m.u32(hud + BANNER_DURATION).unwrap(), 90);
+    assert_eq!(m.u8(hud + BANNER_SHOWN).unwrap(), 1);
+    assert_eq!(m.u8(hud + BANNER_ORDER).unwrap(), 7);
+    assert_eq!(
+        m.u8(huds + MESSAGE_ORDER).unwrap(),
+        8,
+        "the order byte steps"
+    );
+    // User 0's state is untouched.
+    assert_eq!(m.u8(huds + BANNER_SHOWN).unwrap(), 0);
+    // A long text keeps 62 units and its zero, before the shown byte.
+    assert!(write_banner(&mut m, 0, &"A".repeat(80), 30).unwrap());
+    assert_eq!(m.u16(huds + BANNER_TEXT + 2 * 61).unwrap(), u16::from(b'A'));
+    assert_eq!(m.u16(huds + BANNER_TEXT + 2 * 62).unwrap(), 0);
+    assert_eq!(BANNER_TEXT + 2 * 63, BANNER_SHOWN);
+    assert_eq!(m.u8(huds + BANNER_ORDER).unwrap(), 8);
+    // No local user 4.
+    assert!(!write_banner(&mut m, USERS, "WAVE 3", 30).unwrap());
+}
+
+/// A banner is written when its text changes or follows none, not again
+/// for the same text, and runs out on its own when hidden.
+#[test]
+fn the_banner_is_written_on_a_change_of_text() {
+    let mut last = None;
+    let s = |t: &str| Some(t.to_owned());
+    assert_eq!(banner_due(&mut last, s("GET READY")), s("GET READY"));
+    assert_eq!(banner_due(&mut last, s("GET READY")), None);
+    assert_eq!(banner_due(&mut last, s("WAVE 1")), s("WAVE 1"));
+    assert_eq!(banner_due(&mut last, None), None);
+    assert_eq!(last, None);
+    // The same text after a gap is a new line.
+    assert_eq!(banner_due(&mut last, s("WAVE 1")), s("WAVE 1"));
+}
+
+/// The banner of a HUD: its first shown banner element in a mode its
+/// place has; a text the game cannot keep is none.
+#[test]
+fn the_banner_is_the_first_shown_in_its_mode() {
+    let mut split = Element::channel("b.split", Kind::Banner { longest: "WAVE 3" });
+    split.at = Place::GAME.split((0, 0), (0, 0));
+    let hud = Hud {
+        name: "b",
+        elements: vec![
+            Element::channel("b.full", Kind::Banner { longest: "VICTORY" }),
+            split,
+        ],
+    };
+    let mut values = Values::default();
+    values.set("b.full", Value::text("VICTORY"));
+    values.set("b.split", Value::text("WAVE 3"));
+    assert_eq!(
+        banner_of(&hud, &values, Mode::Full).as_deref(),
+        Some("VICTORY")
+    );
+    assert_eq!(
+        banner_of(&hud, &values, Mode::Half).as_deref(),
+        Some("WAVE 3")
+    );
+    values.set("b.full", Value::hidden());
+    assert_eq!(
+        banner_of(&hud, &values, Mode::Full).as_deref(),
+        Some("WAVE 3")
+    );
+    values.set("b.split", Value::text("A".repeat(63)));
+    assert_eq!(banner_of(&hud, &values, Mode::Quarter), None);
+    values.set("b.split", Value::hidden());
+    assert_eq!(banner_of(&hud, &values, Mode::Full), None);
+}
+
+/// The local users the banner goes to: the local views, one to four.
+#[test]
+fn the_local_users_are_the_views_one_to_four() {
+    let mut m = memory();
+    assert_eq!(local_users(&m).unwrap(), 1);
+    m.set_u16(GLOBALS + 8, 3).unwrap();
+    assert_eq!(local_users(&m).unwrap(), 3);
+    m.set_u16(GLOBALS + 8, 0).unwrap();
+    assert_eq!(local_users(&m).unwrap(), 1);
+    m.set_u16(GLOBALS + 8, 9).unwrap();
+    assert_eq!(local_users(&m).unwrap(), 4);
+}
+
+/// A HUD of one text, for the registry's tests.
+struct OneText(&'static str);
+
+impl Describe for OneText {
+    fn hud(&self) -> Hud {
+        Hud {
+            name: self.0,
+            elements: vec![Element::text(
+                "t",
+                Font::Lcd,
+                Justify::Centre,
+                "99",
+                Place::new(Anchor::TopLeft, (0, 0)),
+            )],
+        }
+    }
+    fn states(&self) -> Vec<(&'static str, Values)> {
+        Vec::new()
+    }
+}
+
+/// A local user's own values are drawn for that user's HUD, the shared
+/// ones for every other; taking them away draws the shared ones again.
+#[test]
+fn a_local_users_own_values_are_drawn_for_its_hud() {
+    let h = register(Arc::new(OneText("own-values-test")));
+    let text = |n: &str| {
+        let mut v = Values::default();
+        v.set("t", Value::text(n));
+        v
+    };
+    h.publish(text("4"));
+    h.publish_for(1, Some(text("2")));
+    h.publish_for(USERS, Some(text("9")));
+    let at = |user| value(h.0, user, "t").map(|v| v.text);
+    assert_eq!(at(0).as_deref(), Some("4"));
+    assert_eq!(at(1).as_deref(), Some("2"));
+    assert_eq!(at(3).as_deref(), Some("4"));
+    h.publish_for(1, Some(text("1")));
+    assert_eq!(at(1).as_deref(), Some("1"), "replaced, not added");
+    h.publish_for(1, None);
+    assert_eq!(at(1).as_deref(), Some("4"));
+    // The pure choice.
+    let (shared, stamps) = (text("4"), Stamps::new());
+    let own = [Own {
+        user: 2,
+        values: text("7"),
+        stamps: Stamps::new(),
+    }];
+    assert_eq!(values_for((&shared, &stamps), &own, 2).0, &text("7"));
+    assert_eq!(values_for((&shared, &stamps), &own, 0).0, &shared);
+}
+
+/// The drawing user is the HUD draw's global, 0 past the local users.
+#[test]
+fn the_drawing_user_is_the_hud_draws() {
+    let mut m = memory();
+    assert_eq!(draw_user(&m), 0);
+    m.set_u32(DRAW_USER, 2).unwrap();
+    assert_eq!(draw_user(&m), 2);
+    m.set_u32(DRAW_USER, u32::MAX).unwrap();
+    assert_eq!(draw_user(&m), 0);
+}
+
+/// HUDs that show together take the slots in turn; one that never shows
+/// with the earlier ones starts again at the first slot.
+#[test]
+fn huds_that_never_meet_share_the_first_navpoint_slots() {
+    // A biped's HUD (1 point), its readout (3), a monitor's (4), which never
+    // shows with either, and a second monitor HUD (2) that shows with it.
+    let never = |a: usize, b: usize| {
+        let monitor = |i: usize| i >= 2;
+        monitor(a) != monitor(b)
+    };
+    assert_eq!(slot_bases(&[1, 3, 4, 2], never), vec![0, 1, 0, 4]);
+    assert_eq!(slot_bases(&[], never), Vec::<usize>::new());
+    assert_eq!(slot_bases(&[2, 2], |_, _| false), vec![0, 2]);
 }

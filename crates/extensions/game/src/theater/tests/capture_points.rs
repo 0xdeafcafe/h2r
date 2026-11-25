@@ -157,14 +157,14 @@ impl Fixture {
         for tick in 1..=901 {
             record.checkpoint(&guest);
             if tick == 900 {
-                record.record(film::RAND, random(1));
+                record.record(random(1));
             }
             assert_eq!(record.capture_point_due(), tick % 150 == 0);
             if record.capture_point_due() {
                 record.try_capture_point(tick * 2, 0, &mut machine);
             }
             if tick == 900 {
-                record.record(film::RAND, random(2));
+                record.record(random(2));
             }
         }
         // The fake game opened the capture gate; the sealed film must not

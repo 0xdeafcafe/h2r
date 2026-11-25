@@ -372,8 +372,11 @@ impl<R: Read + Seek> Map<R> {
         self.storage_length
     }
 
-    // Only the lossless writer/checksummer may read beyond the declared map.
-    pub(crate) fn read_storage_range(&mut self, offset: u64, size: u64) -> Result<Vec<u8>> {
+    /// Read a range of the whole bounded input, the storage padding after
+    /// the declared map included: for readers that must keep every byte of
+    /// the file (the lossless writer, the checksummer, the tag store's
+    /// skeleton). Capped at 64 MiB per read like [`Map::read_file_range`].
+    pub fn read_storage_range(&mut self, offset: u64, size: u64) -> Result<Vec<u8>> {
         if size > MAX_TABLE_BYTES {
             return Err(Error::Limit);
         }

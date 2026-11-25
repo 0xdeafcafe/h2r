@@ -3,7 +3,7 @@
 //! is lined up with the seam they are going for, and, in a fall, whether
 //! the landing will bounce. All of it is pure; the mode runs it each tick
 //! ([`guide`]) and the readout HUD draws it as world marks
-//! (`hud_kit_core::huds::superbounce_guide`).
+//! (`hud_kit_core::views::superbounce_guide`).
 //!
 //! - **The impact** ([`impact`]): the body's origin flown on the shared
 //!   flight model (`superbounce_flight::fly`: the sim's fall, and the air
@@ -39,7 +39,7 @@
 //!   `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now`, `Walk off`.
 //! - **Visibility** ([`strength`]): primed only.
 
-use hud_kit_core::huds::superbounce_guide::{self as marks, Call, Layout};
+use hud_kit_core::views::superbounce_guide::{self as marks, Call, Layout};
 use superbounce::rule::{self, Outcome, Verdict};
 use superbounce::{Kind, Poly, Spot, Vec3};
 
@@ -542,7 +542,7 @@ pub fn phase(body: &Body, air: &Air) -> Option<Phase> {
 /// The jump cue on the box before the jump: what to do to reach the
 /// takeoff and leave it (docs/game/superbounce.md, "The jump cue"). Its
 /// words are [`Cue::text`]; the HUD kit's box names the same five
-/// (`hud_kit_core::huds::superbounce_guide`).
+/// (`hud_kit_core::views::superbounce_guide`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cue {
     /// The takeoff is on a floor over the player's: `Climb up`.

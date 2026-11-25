@@ -137,20 +137,21 @@ impl Opener {
     pub const GAME_SETUP_FIREFIGHT: Opener = Opener {
         rows: &[
             "Change Map...",
+            crate::lobby_mode::MAP_VARIANT_LABEL,
             "Change Rules...",
             "Quick Options...",
             "Clanker Options...",
             "Firefight Options...",
         ],
-        focus: 4,
+        focus: 5,
         ..Opener::GAME_SETUP
     };
-    /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Forge Map
-    /// row: what the Forge Map picker opens over (`crate::lobby_mode`).
+    /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Map Variant
+    /// row: what the Map Variant picker opens over (`crate::lobby_mode`).
     pub const GAME_SETUP_FORGE: Opener = Opener {
         rows: &[
             "Change Map...",
-            crate::lobby_mode::FORGE_MAP_LABEL,
+            crate::lobby_mode::MAP_VARIANT_LABEL,
             "Change Rules...",
             "Quick Options...",
             "Clanker Options...",
@@ -182,7 +183,6 @@ impl Opener {
             "Co-op Campaign",
             "Custom Games",
             "Forge",
-            "Firefight",
             "Custom Game Browser",
             "Mods",
         ],

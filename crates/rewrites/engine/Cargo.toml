@@ -19,12 +19,14 @@ x87.workspace = true
 # The native simulation subsystems (docs/engine/sim-rewrite.md): float
 # rules and host lanes, and animation sampling behind src/sim_anim.rs.
 sim-core.workspace = true
+sim-havok.workspace = true
 sim-anim.workspace = true
 # The collision world behind src/sim_collision (phase 2).
 sim-collision.workspace = true
 # The object update's kernels and views behind src/sim_objects (phase 3:
 # docs/engine/sim-rewrite-objects.md).
 sim-objects.workspace = true
+sim-sound.workspace = true
 # For src/runtime_glue.rs (feature `runtime-glue`): registration of the
 # adapters with the runtime's dispatch table.
 runtime = { workspace = true, optional = true }
@@ -42,11 +44,14 @@ lifted = { path = "../../runtime/lifted", optional = true }
 tags = { workspace = true, optional = true }
 map = { workspace = true, optional = true }
 xiso = { workspace = true, optional = true }
+# For tests/variant_record_differential.rs: the record model the native
+# clean-up and protocol answers come from.
+variants = { path = "../../formats/variants", optional = true }
 
 [features]
 runtime-glue = ["dep:runtime", "dep:mopp", "guest-layout/runtime-glue"]
 # Seeded differential test against the lifted original (tests/differential.rs).
-differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "sim-collision/synth", "dep:tags", "dep:map", "dep:xiso", "dep:emit", "dep:lifted"]
+differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift", "sim-core/override", "sim-collision/synth", "dep:tags", "dep:map", "dep:xiso", "dep:emit", "dep:lifted", "dep:variants"]
 
 [dev-dependencies]
 # Synthetic BSPs for the native adapter tests.
@@ -57,6 +62,12 @@ sim-core = { workspace = true, features = ["override"] }
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# Its own binary: it flips the marker kernel's process-global switch on,
+# which `sim_native_differential`'s stubbed marker cases need off.
+[[test]]
+name = "marker_differential"
+path = "tests/marker_differential.rs"
 
 [lints]
 workspace = true

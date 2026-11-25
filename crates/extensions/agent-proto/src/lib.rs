@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod anim;
 pub mod audio;
 mod client;
 pub mod discover;
@@ -28,12 +29,14 @@ pub mod frame_graph;
 pub mod game_load;
 pub mod goto;
 pub mod havok;
+pub mod hs;
 pub mod pogo;
 pub mod superbounce;
 pub mod superbounce_view;
 pub mod host_lobby;
 pub mod host_pause;
 pub mod host_quit;
+pub mod host_window;
 pub mod host_shot;
 pub mod host_memory;
 pub mod memory_forensics;
@@ -60,9 +63,9 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    CaptureCamera, CaptureLighting, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
-    DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
-    LayoutTexture, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
+    CaptureCamera, CaptureLighting, CurrentView, CurrentViewParams, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
+    DisplayRateStats, DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
+    LayoutTexture, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
     ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
     ResidualUnattributed, ResidualWindow, SceneCarried,
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
@@ -226,6 +229,14 @@ pub mod method {
     pub const GAME_MENU: &str = "game.menu";
     /// Queue an installed multiplayer package by its complete MapId.
     pub const MAPS_LOAD: &str = "maps.load";
+    /// The game's content packages in load order, on or off and why, and
+    /// what each map read got from them (docs/editor/studio-redesign.md,
+    /// "How the game consumes packages"; `boot::packages`).
+    pub const PACKAGES_LIST: &str = "packages.list";
+    /// The tag store at `<data>/tags`: the maps it can serve and whether
+    /// this boot serves them (docs/engine/asset-store.md, `store-maps`;
+    /// `boot::store_status`).
+    pub const STORE_STATUS: &str = "store.status";
     /// Test maps (docs/game/test-maps.md, [`crate::test_maps`]): the
     /// built-in recipes and the test maps built.
     pub const MAPS_TEST_LIST: &str = "maps.test.list";
@@ -284,6 +295,9 @@ pub mod method {
     /// frame kind, a made frame's blend fraction and camera shift, and the
     /// first anchors' window pixels (no params; the first call arms it).
     pub const RENDER_MARKS: &str = "render.marks";
+    /// The game type markers the last present drew, and what the 256
+    /// budget left out ([`crate::MarkersParams`]).
+    pub const RENDER_MARKERS: &str = "render.markers";
     /// Two PNG files compared pixel by pixel ([`crate::CompareParams`]).
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
@@ -293,6 +307,9 @@ pub mod method {
     /// Position the world camera at an explicit eye and heading, or release
     /// it ([`crate::ViewParams`]).
     pub const RENDER_VIEW: &str = "render.view";
+    /// The pose of the view the game draws for a local player, in
+    /// `render.view`'s conventions ([`crate::CurrentViewParams`]).
+    pub const RENDER_VIEW_CURRENT: &str = "render.view.current";
     /// Arm a sequence of headless display presents, including in-between frames.
     pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
     /// Read the number of display frames written by a clip capture.
@@ -302,6 +319,9 @@ pub mod method {
     /// What the guest front-end still asks `d3d` to do, by caller and by
     /// producer, over a window of presents ([`crate::ResidualParams`]).
     pub const RENDER_RESIDUAL: &str = "render.residual";
+    /// The native particle path's geometry refusals by named check, each
+    /// with the first refused draw's shape (no params).
+    pub const RENDER_PARTICLES_REFUSALS: &str = "render.particles.refusals";
     /// Arm the in-process two-path comparison for one frame
     /// ([`crate::ParityParams`]); a diagnostic, deleted with the D3D
     /// backend.

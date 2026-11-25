@@ -1,7 +1,7 @@
 # Game variants defined by their rules script
 
 Status: Built. Every slice, 1 to 12, is in.
-Code: `crates/formats/rules/src/settings.rs` (new, the settings a script may name), `crates/formats/rules/src/ir.rs` (the IR's settings and quick marks), `crates/formats/variants/src/portable.rs` (`record_for`, a script's record), `crates/extensions/game/src/community_variants.rs` (the built-in entries), `crates/extensions/game/src/variant_quick.rs` (new, the lobby's Quick Options), `crates/extensions/game/src/variant_quick/page.rs` (new, the Quick Options dialog), `assets/ui/screens/variant-quick.yaml` (new, its doc). Tests: named per slice under "Slices".
+Code: `crates/formats/rules/src/settings.rs` (new, the settings a script may name), `crates/formats/rules/src/ir.rs` (the IR's settings and quick marks), `crates/formats/variants/src/portable.rs` (`record_for`, a script's record), `crates/extensions/game/src/community_variants.rs` (the built-in entries), `crates/extensions/game/src/variant_quick.rs` (new, the lobby's Quick Options), `crates/extensions/game/src/variant_quick/page.rs` (new, the Quick Options dialog), `content/ui/screens/variant-quick.yaml` (new, its doc). Tests: named per slice under "Slices".
 Switch: `variant-quick` (on by default, with `lobby-options`), listed in [switches.md](../runtime/switches.md). The built-in entries stay under the existing features (`tweakers`, `rules`, `lobby-options`).
 
 A game variant is one `.rules` file: its rules, its own options, and
@@ -25,8 +25,8 @@ and before its options:
 
 ```
 rules "SWAT" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about "No shields, no motion sensor, battle rifles and magnums. One headshot kills. 50 points to win."
 quick score_limit, starting_weapon, secondary_weapon
 
@@ -47,7 +47,7 @@ settings {
 
 **Names.** `rules::settings::TABLE` (new) is the one list of settings a
 script may name. A row has a name, a label of ours ("Starting Weapon"),
-a kind, where it is stored and the carriers it applies to. The names are
+a kind, where it is stored and the engines it applies to. The names are
 ours, in snake case, from `variants::record::symbolic_name` (**Code**);
 a setting a script already reads as `variant.<name>`
 (`caps::VARIANT_FIELDS`, **Code**) keeps that name, so reading and
@@ -72,42 +72,42 @@ a label each. A choice the table has no name for is written as its
 number; the table grows by appending names.
 
 **Where a setting is stored.** A row is either a record setting (a
-`variants::record::SettingId` per carrier) or a field of the `hx` block
-(`variants::ext::Ext`): `gravity`, `damage`, `shield`, `health` and
+`variants::record::SettingId` per engine) or a field of the `hx` block
+(`variants::ext::Ext`): `gravity`, `damage`, `shield`, `health`, `speed` and
 `unlimited_grenades`, the extras the game applies
 ([game-options.md](game-options.md#showing-them)). `team_count` is the
 record's setting 93. The block's `superbounce` flag has no row: a script
 asks for the mode with `requires hud.superbounce`.
 
-**Per carrier.** Three cases, all decided by the table:
+**Per type.** Three cases, all decided by the table:
 
-- A setting every game type has applies on every carrier.
-- `score_limit` is one name for the carrier's own score setting
+- A setting every game type has applies on every type.
+- `score_limit` is one name for the type's own score setting
   (`GameType::score_setting`, settings 1 to 9, **Code**).
 - A game-type setting carries its type in its name, as the variant
   fields do (`juggernaut_movement`, `oddball_ball_speed`,
-  `king_moving_hill`, `ctf_flag_type`), and applies only on that carrier
-  (the CTF names on `ctf` and `assault`, where the two engines pair
-  their settings). Naming one on another carrier is the error
-  `setting.carrier`: "juggernaut_movement is a Juggernaut setting; this
-  script's carrier is slayer".
+  `king_moving_hill`, `ctf_flag_type`), and applies only on that type's
+  record (the CTF names on `ctf` and `assault`, where the two engines
+  pair their settings). Naming one on another type is the error
+  `setting.type`: "juggernaut_movement is a Juggernaut setting; this
+  script's record is Slayer's".
 
 **Settings left out.** A setting the block does not name has the stock
-value: what the game's defaults writer gives a new record of the carrier
+value: what the game's defaults writer gives a new record of the type
 before the menu applies anything (`0x19d220`, **E**; modelled without a
 disc by `live_proto::hopper::variant::VariantRecord::stock`, **Code**).
 The disc's per-type defaults in the `goof` tag play no part, so a script
 gives the same record offline, on Live and in the game. A script that
 wants a value the menu's Create New would have given states it.
-`h2 rules settings <file.rules>` (new) prints every setting of the
-carrier with its value and whether the script or the stock record set
-it.
+`h2 rules check <file.rules>` reports the engine index of the generated
+record. `h2 rules settings <file.rules>` lists the settings available on
+that index and marks the value of each as `script` or `stock`.
 
 **Checks, in three places.** No check falls back to another value.
 
 1. *The compiler* (`lang/check.rs`), with no disc: the name is in the
    table (`setting.unknown`, with the nearest name as its fix), applies
-   to the carrier (`setting.carrier`), is named once (`setting.twice`),
+   to the type (`setting.type`), is named once (`setting.twice`),
    and the value is of the row's kind and in its range
    (`setting.value`). The ranges are the record clean-up's
    (`variants::record::check`, **Code**).
@@ -128,41 +128,41 @@ it.
 Thirteen of the fourteen community variants are settings and nothing else.
 Such a script says so in its header:
 
-- `scoring carrier`: the game plays its carrier's rules, which are the
-  carrier engine's built-in script. The script has no handlers, no
-  variables and no options (`scoring.handlers`). It may have `requires`,
-  `list`, `settings`, `quick` and `about`.
-- No `scoring` line: the script is the game's one scorer, as every
-  script is today ([rules-engine.md](rules-engine.md#which-engine-index-a-script-rides)).
-  A script with neither handlers nor `scoring carrier` is the error
-  `scoring.none`: "this script scores nothing. Write `scoring carrier`
-  to play Slayer's rules."
+- `uses <type>`: the game plays that retail type's built-in script
+  (`slayer`, `ctf`, `assault`, `oddball`, `koth`, `juggernaut` or
+  `territories`). The script has no handlers, no variables and no
+  options (`uses.handlers`). It may have `type`, `points`, `teams`,
+  `requires`, `settings`, `quick` and `about`.
+- No `uses` line: the script's own handlers score the game; on the
+  script index they are its only scorer ([rules-engine.md](rules-engine.md#one-scorer)).
+  A script with neither handlers nor `uses` is the error `scoring.none`:
+  "this script scores nothing. Write `uses slayer` to play Slayer's
+  rules."
 
+The `type` line is separate: it files the variant in the game type
+list's row and picks the start line, and a `uses` script need not name
+the type it uses (Hide and Seek is `type party` and `uses juggernaut`).
+The design is [game-types-without-carriers.md](game-types-without-carriers.md).
 The record still names the script (mode 2 and its prefix), so the
 variant keeps its row, its description and its quick marks wherever the
-record goes. On the host, the start observer loads a `scoring carrier`
+record goes. On the host, the start observer loads a `uses`
 script, checks its header (prefix, engine, policy) and then runs the
-carrier engine's built-in script in its place (`runtime::carrier_builtin`,
-`rules::builtin::builtin`) under the variant's own record: the VM reads
+used type's built-in script in its place (`runtime::used_builtin`,
+`rules::builtin::of_type`) under the variant's own record: the VM reads
 the record's settings (team play, score limit, time limit), and the
-built-in plays its own default options, since the carried script has
-none. From there it is a running script like any other: the built-in is
-the one scorer, `rules.state` reports the built-in (`scoring: script`),
-and the Live session names the built-in's hash, which every build has
-([rules-engine.md](rules-engine.md#the-host-runtime), "A `scoring
-carrier` script").
+built-in plays its own default options, since the script has
+none. From there it is a running script like any other: the built-in
+scores, `rules.state` reports the built-in (`scoring: carrier`,
+the wire's word for a script with a `uses` line), and the Live session
+names the built-in's hash, which every build has
+([rules-engine.md](rules-engine.md#the-host-runtime), "A `uses`
+script").
 
-A built-in this host cannot run yet is refused by name, as any script
-is: "Sun King is scoring carrier and plays the built-in King of the Hill
-script, which this host cannot run yet: ...". Of the thirteen settings
-scripts, the nine on Slayer (Zombies, Jousting, SWAT, Duel, Tower of
-Power, Cops and Robbers, Bounce Practice, Glitch Hunt, Bumper Cars) run
-`slayer.rules`. The other four are refused: Clint Eastwood and Hide and
-Seek because `juggernaut.rules` answers on `round_start` and `quit`,
-Sun King because `koth.rules` answers on `round_start` and reads
-`variant.king_moving_hill`, and Wheeeeee! because `oddball.rules` calls
-`spawn_objective` and answers on `pickup` and `drop`, none of which the
-host does yet ([rules-engine.md](rules-engine.md#the-host-runtime)).
+A script using Slayer or Juggernaut inherits its built-in handlers.
+Juggernaut's `role_traits` assigns the role through the VM. A missing
+host entry or event still refuses a built-in by name. For example,
+Wheeeeee! uses Oddball, whose built-in needs objective pickup and drop
+events. See [rules-engine.md](rules-engine.md#the-host-runtime).
 
 ### Quick Options marks
 
@@ -190,7 +190,7 @@ quick time_limit, bounce_points, suicide_costs
 **The full editor** shows everything, marked or not. The record settings
 are on the game's own pages (Change Rules, then Edit, which copies a
 built-in first). The `hx` extras the table has rows for (gravity, damage,
-shield, health, unlimited grenades) are the table's rows, so More
+shield, health, speed, unlimited grenades) are the table's rows, so More
 Options edits them as a script's `settings` block names them, and the
 extras no row stores are not offered. The extras and the script's options
 are on More Options (`variant_page.rs`): after its fixed rows, one row per `option`
@@ -202,56 +202,68 @@ is the in-game half of roadmap phase 10 of
 
 ### The IR
 
-`ir::Header` gains two fields and `ir::Ir` two tables:
+`ir::Header` carries these fields and `ir::Ir` two tables:
 
 | Field | Encoding | Content |
 |---|---|---|
-| `header.scoring` | one byte, after `list` | 0 the script, 1 the carrier; any other value fails to decode |
+| `header.uses` | one byte, after the type byte | the retail type the script uses, `0xff` for none; any other value fails to decode |
+| `header.points` | a string, after `teams` | the score label, 1 to 32 bytes |
 | `header.about` | a string | the description, at most 150 UTF-16 units (`variants::portable::MAX_DESCRIPTION_UNITS`); empty when the script has none |
 | `settings` | a count, then `(u16 table index, i32 value)` | the settings the script names, in ascending index order |
 | `quick` | a count of at most 5, then `(u8 kind, u16 index)` | kind 0 a table index, 1 an option index; in the script's order |
 
 The encoding is canonical: `decode` refuses settings out of order, an
 index twice and a quick count over five. `verify::load` refuses an index
-past the table, a setting that does not apply to the header's carrier, a
+past the table, a setting that does not apply to the header's type, a
 value outside the row's range, a quick mark that names nothing, and a
-`scoring carrier` blob with handlers, slots or options. So a blob from
+`uses` blob with handlers, slots or options. So a blob from
 anywhere holds to the rules the compiler applied.
 
 The IR carries only what the script names. The stock record is a fixed
 fact about the retail game, not part of a script.
 
 **What the hash covers.** `Ir::id` is the SHA-256 of the whole encoding,
-so it covers the settings, the marks, the description and the scoring
+so it covers the settings, the marks, the description and the `uses`
 line with the rules. Two variants that differ only in a setting are two
 scripts with two hashes, which is what makes each community variant a
 file of its own. The consequence: a saved copy names the exact script it
 was made from, and editing a compiled-in script orphans the copies made
 from the old text. An orphaned copy keeps its settings, is listed under
-its carrier's game type and is refused by name at the start
+its type's game type row and is refused by name at the start
 (`runtime`'s "its full hash is not known"), as any record naming a
 script the machine lacks. `IR_VERSION` stays 1; blobs kept anywhere
 (Live's `/v1/rules`, a store's `scripts/*.ir`) are rebuilt from source.
 
 ### The record of a script
 
-`variants::portable::record_for(ir, options)` (new) is the one builder:
+`variants::portable::record_for(ir, options)` builds the variant in this order:
 
-1. `GameVariant::stock(carrier)` (new; the stock record, in the
-   `variants` crate);
-2. each IR setting through `GameVariant::set`, or into the `Ext` for a
-   block row;
-3. the name (`header.name`);
-4. the script reference: mode 2, the hash's first 8 bytes and the option
-   bits (`Ir::pack_options`, the defaults when none are given).
+1. `portable::settings_record` chooses the stock record. The retail
+   template comes from `uses` when present, otherwise from `type`.
+   A Slayer-template script that writes no type-area field starts with
+   `GameVariant::stock(GameType::Script)`, index 6. It has Slayer's
+   common defaults and a zeroed type area. Other templates keep their
+   retail index and stock defaults.
+2. Each named setting goes to its record field or extension field.
+   Eligibility for index 6 depends on which fields a script writes.
+   Writing zero to a type-area field still counts as a write.
+3. The record receives its name and its mode-2 reference, consisting of
+   the first eight bytes of the IR hash and the packed script options.
+   Omitted options take their declared defaults.
 
-Every place that makes a variant from a script calls it: the built-in
-entries, `Bundle` construction, Live's `bundle_for_script` and Studio.
+The built-in list, Live's from-script builder, the CLI and Studio use
+this record. Opening a saved or portable variant keeps the record's
+original engine. The script header determines its visible type.
 
 ### Built-in list entries
 
-`rules::builtin::LISTED` (new) names the scripts that are built-in
-variants, in list order. `community_variants.rs` keeps its hooks and its
+The `variant` items of the packages that are on name the scripts that are
+built-in variants, in list order (`rules::builtin::Registry::listed`, made
+by `workspace::script_registry` and given to `community_variants::install_registry`
+at boot; `rules::builtin::LISTED` is the first-party packages' list as
+constants, which the tests and a game with no package set run on). A
+package off takes its entries out of the list, and the list holds
+`community_variants::MAX_ENTRIES`. `community_variants.rs` keeps its hooks and its
 merged block and loses `VARIANTS`, `Setting`, `Variant`, `Category`,
 `Tweak` and `superbounce_ext`. At `BUILTINS_LOAD`, for each listed
 script (compiled once, kept):
@@ -259,59 +271,57 @@ script (compiled once, kept):
 | Part of the entry | From |
 |---|---|
 | name | `header.name`, a space and U+E006; the string hook serves it at `name_id(i)` |
-| game type | `header.carrier` as a list type (`GameType::ALL`) |
-| pairs | the record of the script: its value of every setting of the carrier that the editor offers (`game_variants::inject::pairs`, the store's own rule, **Code**) |
+| game type | the record's retail loader template (`GameType::menu_template`), as an index in `GameType::ALL` |
+| pairs | the record of the script: its value of every setting of the type that the editor offers (`game_variants::inject::pairs`, the store's own rule, **Code**) |
 | description | `header.about`, at description number `DESCRIPTION_BASE + i` |
 | icon | by origin, not by script: U+E006 for a compiled-in script, U+E007 for the store's |
-| row | `header.list` (`Row::of_list`) |
+| row | `header.game_type` (`Row::of_type`) |
 
 The entry carries every offered pair, not only the script's, so the
 disc's per-type defaults never show through.
 
 The pairs cannot carry the `hx` block. When the original loader returns,
-the wrapper writes each listed script's block into its record in the
-content list (`tweakers::patch_builtins` today, for Superbounce at the
-list's first fill; it moves beside the wrapper and covers every listed
-script). From then the built-in record names its script, and so does the
-copy Edit makes. `community_variants::row_of` reads the row from the
-block alone; the match by name (`row_builtin`) and the superbounce
-mode's match by name are deleted.
+the wrapper restores each community and store variant's block with
+`community_variants::write_blocks`. The script index uses a Slayer
+template in the loader and regains index 6 and its empty type area at
+this point. The record a player selects or copies carries the script
+reference. `community_variants::filed_type` resolves its declared type.
 
 `DESCRIPTION_BASE` moves to 40, giving the listed scripts 40 to 93 (54
 entries; retail uses 0 to 38 and the store 94 to 100).
 
 **Porting the table.** Each of the fourteen becomes a file in
-`crates/formats/rules/src/builtin/`. All fourteen port with what exists:
+`content/modes/rules/`, a `variant` item of the `modes` package. All fourteen port with what exists:
 
-| Variant | Carrier | Scoring | `list` | Notes |
-|---|---|---|---|---|
-| SWAT, Duel, Tower of Power | slayer | carrier | none | |
-| Jousting, Cops and Robbers | slayer | carrier | `party` | |
-| Bumper Cars | slayer | carrier | `party` | `starting_weapon = none` is one of our added choices; without `variant_options` the entry is left out, as today |
-| Glitch Hunt | slayer | carrier | `research` | |
-| Bounce Practice | slayer | carrier | `research` | `bounce_practice.rules`: settings only; the bounce-scoring script is `bounce_hunt.rules` |
-| Zombies | slayer | carrier | `party` | the honour rules stay in `about`. `infection.rules` enforces them but waits on `set_team` (untraced, `verify::unhostable`) |
-| Sun King | king | carrier | none | |
-| Wheeeeee! | oddball | carrier | none | |
-| Clint Eastwood | juggernaut | carrier | none | |
-| Hide and Seek | juggernaut | carrier | `party` | a row's list is Slayer's and Juggernaut's variant lists filtered (slice 12); a `list` line on any other carrier is the error `list.carrier` |
-| Superbounce | slayer | script | `research` | `superbounce.rules` gains its settings; the table's are deleted |
-| Gun Game | slayer | script | `party` | `gun_game.rules`: a kill gives the next rung's weapon at once (`set_loadout`); players spawn unarmed (`starting_weapon = none`) and the map has no weapons |
-| Race | slayer | script | `party` | `race.rules`: the map's hills are its checkpoints, run in number order, so every map with hills races |
-| VIP | slayer | script | `party` | `vip.rules`: a VIP per team, worth `vip_points` to kill, the role passing to a teammate; the script ends the round at the score limit |
-| Siege | slayer | script | `party` | `siege.rules`: the map's territory and CTF flags are its zones, so every Territories and CTF map plays it ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); players spawn unarmed (`starting_weapon = none`, our added choice) and `set_loadout` arms each side |
+| Variant | `type` | `uses` | Notes |
+|---|---|---|---|
+| SWAT, Duel, Tower of Power | `slayer` | `slayer` | |
+| Jousting, Cops and Robbers | `party` | `slayer` | |
+| Bumper Cars | `party` | `slayer` | `starting_weapon = none` is one of our added choices; without `variant_options` the entry is left out, as today |
+| Glitch Hunt | `research` | `slayer` | |
+| Bounce Practice | `research` | `slayer` | `bounce_practice.rules`: settings only; the bounce-scoring script is `bounce_hunt.rules` |
+| Zombies | `party` | `slayer` | the honour rules stay in `about`. `infection.rules` enforces them but waits on `set_team` (untraced, `verify::unhostable`) |
+| Sun King | `koth` | `koth` | |
+| Wheeeeee! | `oddball` | `oddball` | |
+| Clint Eastwood | `juggernaut` | `juggernaut` | |
+| Hide and Seek | `party` | `juggernaut` | a row's list is Slayer's and Juggernaut's variant lists filtered (slice 12) |
+| Superbounce | `research` | none | `superbounce.rules` gains its settings; the table's are deleted |
+| Gun Game | `party` | none | `gun_game.rules`: a kill gives the next rung's weapon at once (`set_loadout`); players spawn unarmed (`starting_weapon = none`) and the map has no weapons |
+| Race | `party` | none | `race.rules`: the map's hills are its checkpoints, run in number order, so every map with hills races |
+| VIP | `party` | none | `vip.rules`: a VIP per team, worth `vip_points` to kill, the role passing to a teammate; the script ends the round at the score limit |
+| Siege | `siege` | none | `siege.rules`: the map's territory and CTF flags are its zones, and neither is required, so every map plays it — with no territory the assault goes straight at the flag stand, with no stand the sites are the whole assault, with neither the round draws at its start ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); players spawn unarmed (`starting_weapon = none`, our added choice) and `set_loadout` arms each side; one life a round (`lives = 1`, our added choice) holds each death for its side's respawn wave |
 
 Siege, Gun Game, Race and VIP, like Superbounce, are scripted modes after
 the settings scripts and are examples too (`builtin::examples`).
 
 ### The default Live lineup
 
-`rules::builtin::MATCHMAKING` lists ten `scoring carrier` scripts, one for
+`rules::builtin::MATCHMAKING` lists ten `uses` scripts, one for
 each built-in matchmaking variant of Live's default playlists
 ([live-matchmaking.md](../live/live-matchmaking.md), 6.8): Rumble Slayer,
 Team Slayer, Team Snipers, Oddball, Teamball, King of the Hill, Team King,
-Classic CTF, Assault and Territories. A script is its carrier's settings
-and nothing else, so the carrier's own rules score the game, as they do
+Classic CTF, Assault and Territories. A script is its type's settings
+and nothing else, so the type's built-in rules score the game, as they do
 for a record with no mode. Each names the three settings the game's hopper
 defaults writer clears (`0x00193010`): `setting_twelve`,
 `setting_thirteen` and `join_in_progress`. `live_proto::hopper::defaults`
@@ -352,13 +362,11 @@ through `record_for` and reads it back.
   `h2 variants from-script <file.rules> [--option KEY=VALUE]... [-o DIR]`
   (new) writes it. `h2 variants port <input> --script FILE` keeps the
   input's record settings and attaches the script; the block's extras are
-  the script's settings, not the input's. A bundle's checks are unchanged
-  (`Bundle::integrity`): the IR still must hash to the file's hash and
-  ride the record's engine.
+  the script's settings, not the input's. The IR must match its hash. `Bundle::integrity` accepts the declared engine or the script index, where the record names its script explicitly.
 - **Live.** `bundle_for_script` (`crates/live/live-server/src/game_variants.rs`)
   builds its record with `record_for` in place of the bare stock record,
   and takes the description from `about` when the request gives none.
-  The script view of `/v1/rules` gains `scoring`, `about`, `settings`
+  The script view of `/v1/rules` gains `scoring` (`script`, or `carrier` for a script with a `uses` line), `about`, `settings`
   (name, label, value text) and `quick`, for the web's script and
   variant pages. Both homes serve the same fields; the parity suite
   covers them.
@@ -399,7 +407,7 @@ rest.
 `h1_options_row::QUICK_OPTIONS`, **Code**) opens, for a script variant,
 the page `variant-quick` in place of retail's screen 222. It is the
 shared settings dialog ([ui-builder.md](ui-builder.md#the-settings-dialog))
-from `assets/ui/screens/variant-quick.yaml`: Quick Options' own panel,
+from `content/ui/screens/variant-quick.yaml`: Quick Options' own panel,
 the variant's name, five row slots bound `quick.0` to `quick.4`, the
 focused row's help under the rows (an option's description; for a
 setting, what it sets: `page::help`) and the value picker on A. Its Rust
@@ -444,15 +452,15 @@ change with it and need no code of their own.
 
 | Part | Change |
 |---|---|
-| `ide/complete.rs` | setting names inside `settings { }` (only the carrier's), a setting's values after `=`, settings and options after `quick`, `carrier` after `scoring`; header snippets for `scoring`, `about`, `quick` and the block; `quick` and `scoring` join `SPACE_TRIGGER_WORDS` |
-| `ide/info.rs` | hover on a setting: its label, kind, values, stock value and the carriers it applies to; hover on the four new words |
+| `ide/complete.rs` | setting names inside `settings { }` (only the type's), a setting's values after `=`, settings and options after `quick`, type words after `type` and `uses`; header snippets for `type`, `points`, `uses`, `about`, `quick` and the block; `type`, `uses` and `quick` join `SPACE_TRIGGER_WORDS` |
+| `ide/info.rs` | hover on a setting: its label, kind, values, stock value and the types it applies to; hover on the four new words |
 | `ide/model.rs` | a use for a setting name and for a quick mark; go to definition from a mark to its `option` or its `settings` line; renaming an option renames its mark |
-| `ide/fix.rs` | fixes for `setting.unknown` (nearest name), `setting.carrier` (remove the line), `quick.many` (drop the sixth), `scoring.none` (add the line) |
+| `ide/fix.rs` | fixes for `setting.unknown` (nearest name), `setting.type` (remove the line), `quick.many` (drop the sixth), `scoring.none` (add `uses <T>`) |
 | `ide/format.rs`, `ide/fold.rs` | one setting a line inside the block, the block folds |
 | `workbench::CheckReport` | the settings with their values and the quick rows, for Studio's and the web's check report |
 | `editors/tree-sitter-rules`, `editors/vscode/syntaxes`, `editors/zed`, `web/src/stats/rulesMonaco.ts` | the four words, the block and its `name = value` lines |
 
-`settings`, `quick`, `scoring` and `about` are words only at the start
+`type`, `uses`, `points`, `settings`, `quick` and `about` are words only at the start
 of a top-level line; a script may still use them as names inside a
 handler.
 
@@ -466,11 +474,11 @@ writes the `.h2variant` of `from_script`.
 
 ## Interfaces
 
-- `rules::settings`: `TABLE`, `named(name)`, `applies(index, carrier)`,
+- `rules::settings`: `TABLE`, `named(name)`, `applies(index, engine)`,
   `value_label(index, value)`. No dependency on `variants`; a test in
   `variants` holds the table to `record::field`, `schema::applies` and
   the clean-up's ranges.
-- `rules::ir`: `Header::{scoring, about}`, `Ir::{settings, quick}`,
+- `rules::ir`: `Header::{game_type, uses, points, about}`, `Ir::{settings, quick}`,
   `MAX_QUICK`.
 - `rules::builtin::LISTED`, and `by_prefix` (the lookup
   `runtime::compiled_in` makes today, for Studio and the CLI).
@@ -487,12 +495,12 @@ writes the `.h2variant` of `from_script`.
 - No compatibility: the IR's encoding changes in place, the table is
   deleted in the slice that ports it, and blobs are rebuilt.
 - No fallback: an unknown setting, a value out of range, a sixth mark
-  and a `list` the rows cannot hold are compile errors; an entry the
+  and a `type` the rows cannot hold are compile errors; an entry the
   disc does not offer is left out by name.
 - A script names at most the table's settings. A setting with no name of
   ours (`record::symbolic_name` has none) cannot be set and has the
   stock value; naming it is adding a row.
-- A `scoring carrier` script cannot add handlers on top of its carrier's
+- A `uses` script cannot add handlers on top of the used type's
   scoring. A mode that needs both is a full script.
 - Our rows hold Slayer and Juggernaut variants.
 - Names: a listed script's name is at most 16 characters, the game's
@@ -507,22 +515,21 @@ change needs a line in another slice's doc puts the text in its report.
 
 | # | Slice | After | Owns | Tests that prove it |
 |---|---|---|---|---|
-| 1 | Language and IR: the table, `settings`, `quick`, `scoring`, `about`, the codec and the verifier | | `crates/formats/rules/src/settings.rs` (new), `lang/{ast,parse,check,lower}.rs`, `ir.rs`, `verify.rs`, `lib.rs`, `tests/diagnostics.rs`; `docs/game/rules-engine.md`, `docs/game/rules-language-types.md` | `settings_round_trip_and_decode_refuses_disorder`; `a_setting_on_the_wrong_carrier_is_refused` (compiler and `verify::load`); `score_limit_names_each_carriers_setting`; `a_sixth_quick_mark_is_refused`; `a_quick_mark_names_a_setting_or_an_option`; `scoring_carrier_takes_no_handlers`; `a_script_with_no_handlers_needs_scoring_carrier`; `the_hash_covers_settings_marks_and_about`; one diagnostics case per new code |
+| 1 | Language and IR: the table, `settings`, `quick`, `uses`, `about`, the codec and the verifier | | `crates/formats/rules/src/settings.rs` (new), `lang/{ast,parse,check,lower}.rs`, `ir.rs`, `verify.rs`, `lib.rs`, `tests/diagnostics.rs`; `docs/game/rules-engine.md`, `docs/game/rules-language-types.md` | `settings_round_trip_and_decode_refuses_disorder`; `a_setting_on_the_wrong_carrier_is_refused` (compiler and `verify::load`); `score_limit_names_each_carriers_setting`; `a_sixth_quick_mark_is_refused`; `a_quick_mark_names_a_setting_or_an_option`; `scoring_carrier_takes_no_handlers`; `a_script_with_no_handlers_needs_scoring_carrier`; `the_hash_covers_settings_marks_and_about`; one diagnostics case per new code |
 | 2 | The record of a script and the CLI | 1 | `crates/formats/variants/src/{record,portable}.rs`, `crates/formats/variants/tests/settings_table.rs` (new), `crates/apps/cli/src/{variants_cmd,rules_cmd}.rs`; `docs/editor/variants.md` | `the_table_matches_the_record` (every row has a `record::field`, its carriers match `schema::applies`, its range the clean-up's); `record_for_is_stock_plus_the_scripts_settings`; `record_for_refuses_what_the_game_would_not_keep`; `from_script_is_the_same_bundle_twice`; `h2 rules settings` and `h2 variants from-script` output tests; disc `#[ignore]`: `the_stock_record_is_offered` (each carrier's stock values are values its `sily` definitions offer) |
-| 3 | IDE and editor grammars | 1 | `crates/formats/rules/src/ide/*.rs`, `crates/formats/rules/src/workbench.rs`, `editors/**`, `web/src/stats/rulesMonaco.ts`, `web/src/lib/rulesIde.ts` | `ide::tests`: completion in the block offers only the carrier's settings, values after `=`, marks after `quick`; hover on a setting; rename of an option renames its mark; each fix; the formatter's round trip; the tree-sitter corpus cases |
-| 4 | The fourteen scripts | 1 | `crates/formats/rules/src/builtin/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/scripts.rs` | `every_listed_script_compiles_and_verifies`; `listed_names_are_unique_and_fit_the_keyboard`; `each_listed_script_sets_what_the_table_set` (the old table's pairs, written into the test as the expected values, so the table can go) |
+| 3 | IDE and editor grammars | 1 | `crates/formats/rules/src/ide/*.rs`, `crates/formats/rules/src/workbench.rs`, `editors/**`, `web/src/stats/rulesMonaco.ts`, `web/src/lib/rulesIde.ts` | `ide::tests`: completion in the block offers only the type's settings, values after `=`, marks after `quick`; hover on a setting; rename of an option renames its mark; each fix; the formatter's round trip; the tree-sitter corpus cases |
+| 4 | The fourteen scripts | 1 | `content/modes/rules/*.rules`, `builtin/mod.rs`, `crates/formats/rules/tests/scripts.rs` | `every_listed_script_compiles_and_verifies`; `listed_names_are_unique_and_fit_the_keyboard`; `each_listed_script_sets_what_the_table_set` (the old table's pairs, written into the test as the expected values, so the table can go) |
 | 5 | Built-in entries from scripts | 2, 4 | `crates/extensions/game/src/{community_variants,tweakers,string_ids,superbounce_mode}.rs`, `rules/header.rs`, `game_variants/port.rs`; `docs/game/community-gametypes.md` | on synthetic memory: `entries_are_built_from_the_listed_scripts` (name, type, pairs, description number); `every_listed_record_gets_its_block_at_load`; `a_copy_lists_under_its_scripts_row`; `a_script_the_disc_does_not_offer_is_left_out_by_name`; the existing merged-block and tweakers tests, moved off the table. Disc `#[ignore]`: `every_listed_script_is_offered_on_the_retail_disc` |
-| 6 | The host and `scoring carrier` | 1 | `crates/extensions/game/src/rules/{runtime,feature,scoring}.rs`, `rules/runtime/tests.rs`, `crates/extensions/agent-proto/src/rules.rs`, `crates/extensions/agent/src/rules.rs` | `a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record`; `a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name`; `every_listed_carrier_script_runs_its_builtin_or_is_refused_by_name`; `its_requires_still_turn_the_mode_on` |
+| 6 | The host and `uses` | 1 | `crates/extensions/game/src/rules/{runtime,feature,scoring}.rs`, `rules/runtime/tests.rs`, `crates/extensions/agent-proto/src/rules.rs`, `crates/extensions/agent/src/rules.rs` | `a_carrier_scored_slayer_script_runs_the_builtin_slayer_under_its_record`; `a_carrier_whose_builtin_this_host_cannot_run_is_refused_by_name`; `every_listed_carrier_script_runs_its_builtin_or_is_refused_by_name`; `its_requires_still_turn_the_mode_on` |
 | 7 | Live and the web | 2 | `crates/live/live-server/src/game_variants.rs`, `crates/live/live-server/tests/{variants,rule_scripts}.rs`, `crates/live/live-worker/**`, `web/src/stats/{Rules,Variant}.tsx`, `web/src/lib/{rules,variants}.ts`; `docs/live/live-api.md` | `a_script_variant_has_the_scripts_settings`; `the_script_view_lists_settings_and_quick`; `stock_agrees_with_the_hopper_stock_record` (`GameVariant::stock` against `VariantRecord::stock`, all seven types); the parity suite's variant cases |
 | 8 | The panel | 5 | `crates/extensions/game/src/variant_quick.rs` (new), `lobby_options.rs`, `crates/extensions/agent/src/variants.rs` (new, the `variants.quick` read); `docs/game/ui-builder.md`, `docs/runtime/switches.md`, `docs/runtime/agent-api.md` | `rows_read_settings_and_options_from_the_record`; `marked_rows_replace_the_formatters_in_order`; `mode_and_option_lines_still_take_the_bottom`; `a_variant_with_no_script_keeps_retails_rows`; `a_script_with_no_marks_shows_none` |
-| 9 | The dialog | 8 | `crates/extensions/game/src/variant_quick/page.rs` (new), `assets/ui/screens/variant-quick.yaml` (new), `ui_kit/settings.rs`, `h1_options_row.rs`, `host_lobby/retail.rs`, `crates/hooking/guest-layout/src/points.rs`, and `variants.quick.set` in slice 8's agent file once 8 has landed | `ui_kit::settings::tests` for a bound row and an empty slot; `a_change_writes_one_setting_and_calls_the_setter` (runner test); `an_option_change_keeps_the_blocks_crc`; `a_refused_record_changes_nothing`; `quick_options_opens_ours_only_for_a_script_variant`; `quick_options_is_greyed_for_a_script_with_no_marks`; the page's offline render in every state |
-| 10 | Script options in the editor | 5 | `crates/extensions/game/src/variant_page.rs`, `assets/ui/screens/variant-more-options.yaml`; `docs/game/game-options.md` | `a_row_per_option_after_the_fixed_rows`; `a_step_writes_the_option_bits_and_keeps_the_extras`; `a_record_with_no_script_has_no_option_rows` |
+| 9 | The dialog | 8 | `crates/extensions/game/src/variant_quick/page.rs` (new), `content/ui/screens/variant-quick.yaml` (new), `ui_kit/settings.rs`, `h1_options_row.rs`, `host_lobby/retail.rs`, `crates/hooking/guest-layout/src/points.rs`, and `variants.quick.set` in slice 8's agent file once 8 has landed | `ui_kit::settings::tests` for a bound row and an empty slot; `a_change_writes_one_setting_and_calls_the_setter` (runner test); `an_option_change_keeps_the_blocks_crc`; `a_refused_record_changes_nothing`; `quick_options_opens_ours_only_for_a_script_variant`; `quick_options_is_greyed_for_a_script_with_no_marks`; the page's offline render in every state |
+| 10 | Script options in the editor | 5 | `crates/extensions/game/src/variant_page.rs`, `content/ui/screens/variant-more-options.yaml`; `docs/game/game-options.md` | `a_row_per_option_after_the_fixed_rows`; `a_step_writes_the_option_bits_and_keeps_the_extras`; `a_record_with_no_script_has_no_option_rows` |
 | 11 | Studio | 2 | `crates/apps/studio/src/ui/{variants,game_script}.rs`, `crates/apps/studio/src/app/rules_edit.rs`, `crates/formats/variants/src/panel.rs`; `docs/editor/editor-guide.md` | `new_from_script_is_record_for`; `an_option_edit_is_one_undo_step`; `the_script_section_lists_marks` |
-| 12 | Rows over Juggernaut's list | 5 | `crates/extensions/game/src/tweakers.rs`, `tweakers/tests.rs` (from slice 5 once it has landed), the `list party` line of the Hide and Seek script; the Hide and Seek row of `docs/game/community-gametypes.md` | `tweakers::filtered` takes Slayer's and Juggernaut's categories; a row's list is both categories' handles, filtered; `hide_and_seek_lists_under_party_games`; Juggernaut's own list drops it; Create New stays dropped on a row's list |
+| 12 | Rows over Juggernaut's list | 5 | `crates/extensions/game/src/tweakers.rs`, `tweakers/tests.rs` (from slice 5 once it has landed), the `type party` line of the Hide and Seek script; the Hide and Seek row of `docs/game/community-gametypes.md` | `tweakers::filtered` takes Slayer's and Juggernaut's categories; a row's list is both categories' handles, filtered; `hide_and_seek_lists_under_party_games`; Juggernaut's own list drops it; Create New stays dropped on a row's list |
 
 Slices 2, 3, 4 and 6 run together after 1; 7 and 11 after 2; 8, 10 and 12
-after 5; 9 after 8. Slice 1's `list.carrier` check accepts `slayer` and
-`juggernaut`.
+after 5; 9 after 8.
 
 ## Open decisions
 
@@ -552,13 +559,13 @@ settings` prints the whole record; Hide and Seek moves under Party Games
   Nothing here depends on it: a script variant's rows are ours. Tracing
   the dialog's list would verify it.
 - **Design**: the syntax, the five-row limit, the stock base, the hash
-  covering everything, `scoring carrier`.
+  covering everything, `uses`.
 
 ## Not verified
 
-- That each carrier's stock values are values the retail editor offers
+- That each engine's stock values are values the retail editor offers
   (slice 2's disc test). A stock value it does not offer leaves every
-  script variant of that carrier out of the list.
+  script variant of that engine out of the list.
 - That `0x19a728` keeps the `hx` block of the record it is given, and
   that a change made through it reaches guests as retail's Quick Options
   changes do.

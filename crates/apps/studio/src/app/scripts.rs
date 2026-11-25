@@ -1,6 +1,7 @@
 //! The Scripts tool (docs/editor/rich-editors.md, "Scripts"): the open
 //! map's globals and scripts decompiled with the source's executable,
-//! each name in the source a link, and the builtins' names. Read only.
+//! each name in the source a link, and the builtins' names. Compiling a
+//! definition's source into the map is `app::script_edit`.
 //!
 //! The tables come from the map the scenario session has open
 //! (`hs::Scenario::read`), the builtin and type tables from the source's
@@ -90,6 +91,9 @@ pub struct Entry {
     pub type_name: String,
     /// The node slots the definition's source shows.
     pub nodes: usize,
+    /// The recordings its source names (values of type
+    /// `cutscene_recording`), once per mention.
+    pub recordings: Vec<super::recordings::Key>,
 }
 
 /// The read tables.
@@ -113,11 +117,25 @@ pub struct ScriptsTool {
     /// The session revision read (`None`: no map open).
     pub(crate) for_rev: Option<Option<u64>>,
     pub state: Option<Result<Loaded, String>>,
+    /// The map's recordings, read with the tables (`app::recordings`).
+    pub recordings: Option<Result<Vec<super::recordings::Row>, String>>,
+    /// The recordings as edited, with their undo stack.
+    pub recording_doc: Option<super::recordings::Doc>,
     pub selected: Option<Item>,
     /// The script documentation listing to name builtins from.
     pub doc_path: Option<PathBuf>,
     /// The working copy an outside editor has (`app::external`).
     pub external: Option<super::external::WorkingCopy>,
+    /// The tables as the map holds them and the undo stack of compiles
+    /// (`app::script_edit`); none when the scripts did not read.
+    pub edit: Option<super::script_edit::Doc>,
+    /// How the last compile ended, for the tab.
+    pub compile: Option<super::script_edit::Outcome>,
+    /// Compiles and undos run, so the tab can tell its own has finished.
+    pub compiles: u64,
+    /// The last expression sent to the paired game (`hs.eval`) and what
+    /// it answered, as one line, or why it did not.
+    pub evaluated: Option<(String, Result<String, String>)>,
 }
 
 /// A Scripts tool command.
@@ -132,6 +150,19 @@ pub enum ScriptAction {
     /// Write the working copy and open it in `code`, `zed` or (`None`)
     /// any editor, at the shown definition.
     OpenInEditor(Option<&'static str>),
+    /// Compile `source` into the map's tables (one undo step), or (not
+    /// `apply`) only check it.
+    Compile { source: String, apply: bool },
+    /// Compile the definitions the working copy changed or added.
+    CompileWorking,
+    /// Undo (or redo) the last compile.
+    CompileUndo { redo: bool },
+    /// Play the recording `name` on `player`'s unit in the paired game
+    /// and keep the path it takes (`recording.play`).
+    PlayRecording { name: String, player: u16 },
+    /// Evaluate an expression in the paired game (`hs.eval`); `ty` names
+    /// the result's type where the expression's own is not fixed.
+    Eval { expression: String, ty: Option<String> },
 }
 
 impl Loaded {
@@ -243,6 +274,25 @@ impl Loaded {
         }
     }
 
+    /// The definitions that name recording `index` of `rows` (by its name
+    /// or its number), with how many times.
+    pub fn recording_uses(
+        &self,
+        rows: &[super::recordings::Row],
+        index: usize,
+    ) -> Vec<(Item, &str, usize)> {
+        let Some(row) = rows.get(index) else {
+            return Vec::new();
+        };
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let n = e.recordings.iter().filter(|k| row.named_by(index, k)).count();
+                (n > 0).then_some((e.source.item, e.source.name.as_str(), n))
+            })
+            .collect()
+    }
+
     /// The definitions that name `name` as a `kind`, with how many times.
     pub fn uses(&self, kind: LinkKind, name: &str) -> Vec<(Item, &str, usize)> {
         self.entries
@@ -301,7 +351,7 @@ fn object(s: &scenario_edit::Scenario, name: &str) -> Result<Target, String> {
     Ok(Target::Placement(kind, index))
 }
 
-fn entry(tables: &hs::Scenario, catalog: &Catalog, source: ItemSource) -> Result<Entry, String> {
+pub(super) fn entry(tables: &hs::Scenario, catalog: &Catalog, source: ItemSource) -> Result<Entry, String> {
     let fail = |e: hs::Error| format!("{}: {e}", source.name);
     let (kind, type_name) = match source.item {
         Item::Global(i) => {
@@ -326,10 +376,16 @@ fn entry(tables: &hs::Scenario, catalog: &Catalog, source: ItemSource) -> Result
     };
     let mut slots = std::collections::BTreeSet::new();
     let mut links = Vec::new();
+    let mut recordings = Vec::new();
     for t in &source.tokens {
         slots.insert(t.datum);
         if t.head {
             slots.insert(hs::Datum(tables.node(t.datum).map_err(fail)?.data()));
+        }
+        if !t.head
+            && let Some(k) = recording_key(tables, catalog, t.datum).map_err(fail)?
+        {
+            recordings.push(k);
         }
         if let Some((kind, name, raw)) = classify(tables, catalog, t.datum, t.head).map_err(fail)? {
             links.push(Link {
@@ -344,9 +400,36 @@ fn entry(tables: &hs::Scenario, catalog: &Catalog, source: ItemSource) -> Result
     Ok(Entry {
         nodes: slots.len(),
         links,
+        recordings,
         kind,
         type_name,
         source,
+    })
+}
+
+/// The recording an atom of type `cutscene_recording` names.
+fn recording_key(
+    tables: &hs::Scenario,
+    catalog: &Catalog,
+    datum: hs::Datum,
+) -> hs::Result<Option<super::recordings::Key>> {
+    use super::recordings::Key;
+    let Expression::Atom {
+        source_type,
+        literal,
+        ..
+    } = tables.expression(datum)?
+    else {
+        return Ok(None);
+    };
+    if catalog.type_name(source_type)? != "cutscene_recording" {
+        return Ok(None);
+    }
+    Ok(match literal {
+        Literal::Symbol { spelling, .. } => Some(Key::Name(spelling.to_owned())),
+        Literal::Short(n) => Some(Key::Index(n.into())),
+        Literal::Long(n) => Some(Key::Index(n.into())),
+        _ => None,
     })
 }
 
@@ -399,6 +482,18 @@ impl super::App {
         self.scripts.for_rev = Some(rev);
         self.scripts.selected = None;
         self.scripts.state = rev.map(|_| self.read_scripts());
+        self.scripts.compile = None;
+        self.scripts.edit = match &self.scripts.state {
+            Some(Ok(l)) => self.read_script_header().ok().map(|(base, header)| {
+                super::script_edit::Doc::new(l.tables.clone(), base, header)
+            }),
+            _ => None,
+        };
+        (self.scripts.recordings, self.scripts.recording_doc) = match rev.map(|_| self.read_recordings()) {
+            None => (None, None),
+            Some(Ok((rows, doc))) => (Some(Ok(rows)), Some(doc)),
+            Some(Err(e)) => (Some(Err(e)), None),
+        };
         match &self.scripts.state {
             Some(Err(e)) => {
                 let e = format!("scripts: {e}");
@@ -423,6 +518,13 @@ impl super::App {
             executable,
             self.scripts.doc_path.as_deref(),
         )
+    }
+
+    /// The scenario payload's address and table header, from the source.
+    fn read_script_header(&self) -> Result<(u32, Vec<u8>), String> {
+        let source = self.session.source().ok_or("no map is open")?;
+        let mut map = source.open().map_err(|e| e.to_string())?;
+        hs::Scenario::read_header(&mut map).map_err(|e| e.to_string())
     }
 
     /// The read tables, or why there are none.
@@ -464,6 +566,38 @@ impl super::App {
                     Ok(m) => self.info(format!("script documentation: {m}")),
                     Err(e) => self.error(format!("script documentation: {e}")),
                 }
+            }
+            ScriptAction::Compile { source, apply } => self.run_script_compile(&source, apply),
+            ScriptAction::CompileWorking => {
+                self.check_working_copy(std::time::Instant::now(), true);
+                match self.working_edits() {
+                    Ok(source) => self.run_script_compile(&source, true),
+                    Err(why) => self.error(format!("script not compiled: {why}")),
+                }
+            }
+            ScriptAction::CompileUndo { redo } => match self.script_step(redo) {
+                Ok(true) => self.info(if redo { "compile redone" } else { "compile undone" }),
+                Ok(false) => self.info("no compile to undo or redo"),
+                Err(e) => self.error(format!("compile not undone: {}", e.line())),
+            },
+            ScriptAction::PlayRecording { name, player } => {
+                match crate::api::recordings::play_on(self, &name, player, None) {
+                    Ok(_) => self.info(format!("recording {name}: playing on player {player}")),
+                    Err(e) => self.error(format!("recording {name} not played: {}", e.message)),
+                }
+            }
+            ScriptAction::Eval { expression, ty } => {
+                let answer = crate::api::scripts::eval_on(self, &expression, ty.as_deref());
+                let line = match answer {
+                    Ok(v) if v["ok"] == true => Ok(format!(
+                        "{} {}",
+                        v["type"].as_str().unwrap_or("?"),
+                        if v["value"].is_null() { "void".to_owned() } else { v["value"].to_string() }
+                    )),
+                    Ok(v) => Err(v["error"].as_str().unwrap_or("not evaluated").to_owned()),
+                    Err(e) => Err(e.message),
+                };
+                self.scripts.evaluated = Some((expression, line));
             }
             ScriptAction::OpenInEditor(only) => {
                 if let Err(why) = self.open_scripts_in_editor(None, only, true) {

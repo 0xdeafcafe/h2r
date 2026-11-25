@@ -133,7 +133,10 @@ impl GfxBackend {
         let _encode = Timer::start(stage, Metric::EncodeNs);
         let start = self.pending.as_ref().map_or(0, |p| p.draws.len());
         self.frame_draw += 1;
-        for (i, packet) in draws.packets.into_iter().enumerate() {
+        for (i, mut packet) in draws.packets.into_iter().enumerate() {
+            if !self.count_samples {
+                packet.disable_sample_count();
+            }
             self.append_recorded(color, depth, packet, i == 0, draws.discards);
         }
         let pending = self.pending.as_mut().expect("at least one validated draw");

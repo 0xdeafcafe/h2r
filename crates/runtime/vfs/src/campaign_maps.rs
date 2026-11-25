@@ -2,11 +2,9 @@
 //! (docs/halo1/campaign-picker.md §3).
 //!
 //! 1.0 opens a campaign level's map as `d:\maps\<basename of its scenario
-//! path>.map` (`0x214db0`). A second campaign's converted maps live in
-//! `<data>/campaigns/<key>/<map>.map`; [`CampaignMapsBackend`] serves each
-//! named one as `maps\<map>.map` when the inner backend has no such file.
-//! A name the disc has is never shadowed: the disc (and the packages over
-//! it) win. Metadata is the disc's `maps\mainmenu.map`'s, resized, so times
+//! path>.map` (`0x214db0`). [`CampaignMapsBackend`] serves the named
+//! converted levels of the tag store under their original campaign names.
+//! Metadata is the disc's `maps\mainmenu.map`'s, resized, so times
 //! and attributes look like the disc's. Files are opened on first use and
 //! kept while they are the ones to serve; nothing is written.
 //!
@@ -18,47 +16,44 @@
 //! what it was opened with, and [`Backend::map_changed`] says when the map
 //! would now come from the other file, so the game's cached copy is
 //! dropped (docs/runtime/cache-slots.md).
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs::File,
-    io::{Read, Seek, SeekFrom},
-    path::PathBuf,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::map_override::{is_map_path, override_id, resize};
-use crate::{Backend, DirectoryEntry, Error, HostFile, Metadata, Result, SandboxChoice, VolumeInfo};
+use crate::map_override::{is_map_path, override_id, override_id_from_hash, resize};
+use crate::{
+    Backend, DirectoryEntry, Error, HostFile, MapSource, Metadata, Result, SandboxChoice, VolumeInfo,
+};
 
 /// The disc map whose metadata ours borrow.
 const TEMPLATE: &str = "maps\\mainmenu.map";
 
 struct Open {
-    file: File,
+    file: crate::map_source::OpenMap,
     len: u64,
     id: Option<content::MapId>,
     /// The host file this is.
-    host: PathBuf,
+    host: MapSource,
 }
 
 pub struct CampaignMapsBackend<B> {
     inner: B,
     /// By lower-case map name: its host file.
-    maps: BTreeMap<String, PathBuf>,
+    maps: BTreeMap<String, MapSource>,
     open: BTreeMap<String, Option<Open>>,
     /// By lower-case map name: its Halo 2-assets file, served while
     /// `assets` says Halo 2 and the file is there.
-    alternates: BTreeMap<String, PathBuf>,
+    alternates: BTreeMap<String, MapSource>,
     assets: SandboxChoice,
     /// Handles open per lower-case map name.
     handles: BTreeMap<String, usize>,
     /// The host file each map was last opened from.
-    last_opened: BTreeMap<String, PathBuf>,
+    last_opened: BTreeMap<String, MapSource>,
     /// Maps whose missing Halo 2-assets file was already reported.
     warned: BTreeSet<String>,
 }
 
 impl<B: Backend> CampaignMapsBackend<B> {
     /// Serve `maps` (map name, host file) over `inner`.
-    pub fn new(inner: B, maps: impl IntoIterator<Item = (String, PathBuf)>) -> Self {
+    pub fn new(inner: B, maps: impl IntoIterator<Item = (String, MapSource)>) -> Self {
         Self {
             inner,
             maps: maps
@@ -79,7 +74,7 @@ impl<B: Backend> CampaignMapsBackend<B> {
     pub fn with_assets(
         mut self,
         assets: SandboxChoice,
-        alternates: impl IntoIterator<Item = (String, PathBuf)>,
+        alternates: impl IntoIterator<Item = (String, MapSource)>,
     ) -> Self {
         self.assets = assets;
         self.alternates = alternates
@@ -90,16 +85,16 @@ impl<B: Backend> CampaignMapsBackend<B> {
     }
 
     /// The host file `stem` should be served from at its next open.
-    fn wanted(&mut self, stem: &str) -> Option<PathBuf> {
+    fn wanted(&mut self, stem: &str) -> Option<MapSource> {
         let own = self.maps.get(stem)?.clone();
         if self.assets.halo1() {
             return Some(own);
         }
         match self.alternates.get(stem) {
-            Some(alt) if alt.is_file() => Some(alt.clone()),
+            Some(alt) if alt.len_on_disk().is_some() => Some(alt.clone()),
             alt => {
                 if self.warned.insert(stem.to_owned()) {
-                    let at = alt.map_or_else(|| "none".to_owned(), |p| p.display().to_string());
+                    let at = alt.map_or_else(|| "none".to_owned(), |p| format!("{p:?}"));
                     eprintln!(
                         "campaigns: {stem}: no Halo 2 assets level ({at}); serving its Halo 1 map"
                     );
@@ -111,6 +106,13 @@ impl<B: Backend> CampaignMapsBackend<B> {
 
     pub fn into_inner(self) -> B {
         self.inner
+    }
+
+    fn is_stored_path(&self, path: &str) -> bool {
+        is_map_path(path).is_some_and(|name| {
+            let stem = name[..name.len() - 4].to_ascii_lowercase();
+            matches!(self.maps.get(&stem), Some(MapSource::Stored { .. }))
+        })
     }
 
     /// Our map for `path` (its lower-case name and open file), when it is
@@ -130,11 +132,11 @@ impl<B: Backend> CampaignMapsBackend<B> {
         }
         if !self.open.contains_key(&stem) {
             let host = self.wanted(&stem)?;
-            let chosen = if self.inner.stat(path).is_ok() {
+            let chosen = if !self.is_stored_path(path) && self.inner.stat(path).is_ok() {
                 None
             } else {
-                File::open(&host).ok().and_then(|file| {
-                    let len = file.metadata().ok().filter(|m| m.is_file())?.len();
+                host.open().ok().and_then(|file| {
+                    let len = file.len().ok()?;
                     (len <= u64::from(u32::MAX)).then_some(Open {
                         file,
                         len,
@@ -167,7 +169,9 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
             *self.handles.entry(stem.clone()).or_insert(0) += 1;
             self.last_opened.insert(stem, host);
         }
-        self.inner.opened(path)
+        if !self.is_stored_path(path) {
+            self.inner.opened(path);
+        }
     }
     fn closed(&mut self, path: &str) {
         if let Some(stem) = is_map_path(path).map(|n| n[..n.len() - 4].to_ascii_lowercase())
@@ -178,19 +182,21 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
                 self.handles.remove(&stem);
             }
         }
-        self.inner.closed(path)
+        if !self.is_stored_path(path) {
+            self.inner.closed(path);
+        }
     }
     fn rescan(&mut self) {
         self.inner.rescan()
     }
     fn resolves_on_use(&mut self, path: &str) -> bool {
-        self.inner.resolves_on_use(path)
+        !self.is_stored_path(path) && self.inner.resolves_on_use(path)
     }
     fn map_changed(&mut self, path: &str) -> bool {
         let Some(stem) = is_map_path(path).map(|n| n[..n.len() - 4].to_ascii_lowercase()) else {
             return self.inner.map_changed(path);
         };
-        if !self.maps.contains_key(&stem) || self.inner.stat(path).is_ok() {
+        if !self.maps.contains_key(&stem) || (!self.is_stored_path(path) && self.inner.stat(path).is_ok()) {
             return self.inner.map_changed(path);
         }
         if self.handles.contains_key(&stem) {
@@ -207,6 +213,7 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
     fn stat(&mut self, path: &str) -> Result<Metadata> {
         match self.ours(path).map(|(_, o)| o.len) {
             Some(len) => self.meta(len),
+            None if self.is_stored_path(path) => Err(Error::FileCorrupt),
             None => self.inner.stat(path),
         }
     }
@@ -218,46 +225,44 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
         let names: Vec<String> = self.maps.keys().cloned().collect();
         for n in names {
             let file = format!("{n}.map");
-            if entries.iter().any(|e| e.name.eq_ignore_ascii_case(&file)) {
-                continue;
-            }
             if let Some(len) = self.ours(&format!("maps\\{file}")).map(|(_, o)| o.len) {
-                entries.push(DirectoryEntry {
-                    name: file,
-                    metadata: self.meta(len)?,
-                });
+                let metadata = self.meta(len)?;
+                if let Some(entry) = entries.iter_mut().find(|e| e.name.eq_ignore_ascii_case(&file)) {
+                    entry.metadata = metadata;
+                } else {
+                    entries.push(DirectoryEntry { name: file, metadata });
+                }
             }
         }
         Ok(entries)
     }
     fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize> {
         let Some((_, o)) = self.ours(path) else {
-            return self.inner.read_at(path, offset, buffer);
+            return if self.is_stored_path(path) {
+                Err(Error::FileCorrupt)
+            } else {
+                self.inner.read_at(path, offset, buffer)
+            };
         };
-        let n = o.len.saturating_sub(offset).min(buffer.len() as u64) as usize;
-        if n == 0 {
-            return Ok(0);
-        }
-        o.file.seek(SeekFrom::Start(offset))?;
-        match o.file.read_exact(&mut buffer[..n]) {
-            Ok(()) => Ok(n),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Err(Error::FileCorrupt),
-            Err(e) => Err(e.into()),
-        }
+        o.file.read_at(offset, buffer)
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
     }
     fn film_source(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
         if let Some((stem, o)) = self.ours(path) {
-            let mut source = crate::FilmMapSource::region(o.file.try_clone()?, 0);
-            source.override_name = Some(stem);
-            return Ok(Some(source));
+            return Ok(o.file.film_source()?.map(|mut source| {
+                source.override_name = Some(stem);
+                source
+            }));
+        }
+        if self.is_stored_path(path) {
+            return Err(Error::FileCorrupt);
         }
         self.inner.film_source(path)
     }
     fn map_ranges(&mut self, path: &str) -> Option<Vec<(u64, u64)>> {
-        if self.ours(path).is_some() {
+        if self.is_stored_path(path) || self.ours(path).is_some() {
             None
         } else {
             self.inner.map_ranges(path)
@@ -273,7 +278,10 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
             let file = o.host.clone();
             (stem, file)
         };
-        let id = override_id(&host.0, &host.1).ok()?;
+        let id = match host.1 {
+            MapSource::File(path) => override_id(&host.0, &path).ok()?,
+            MapSource::Stored { hash, .. } => override_id_from_hash(&host.0, hash?),
+        };
         if let Some((_, o)) = self.ours(path) {
             o.id = Some(id);
         }
@@ -281,21 +289,16 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let Some((_, o)) = self.ours(path) else {
-            return self.inner.host_file(path);
+            return if self.is_stored_path(path) { None } else { self.inner.host_file(path) };
         };
-        let len = o.len;
-        Some(HostFile {
-            generation: None,
-            path: o.host.clone(),
-            offset: 0,
-            len,
-        })
+        o.host.host_file(o.len)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use crate::{ATTR_DIRECTORY, ATTR_READONLY, BasicInfo};
 
     /// A disc holding `files` (path, bytes), with a `maps` folder.
@@ -382,8 +385,8 @@ mod tests {
                 ("maps\\lockout.map", b"disc"),
             ]),
             [
-                ("A10".to_string(), d.join("a10.map")),
-                ("lockout".to_string(), d.join("lockout.map")),
+                ("A10".to_string(), d.join("a10.map").into()),
+                ("lockout".to_string(), d.join("lockout.map").into()),
             ],
         );
         assert_eq!(b.stat("maps\\a10.map").unwrap().end_of_file, 14);
@@ -443,9 +446,9 @@ mod tests {
         let choice = SandboxChoice::default();
         let mut b = CampaignMapsBackend::new(
             Fake::with(&[("maps\\mainmenu.map", b"menu")]),
-            [("a30".to_string(), d.join("a30.map"))],
+            [("a30".to_string(), d.join("a30.map").into())],
         )
-        .with_assets(choice.clone(), [("a30".to_string(), d.join("h2").join("a30.map"))]);
+        .with_assets(choice.clone(), [("a30".to_string(), d.join("h2").join("a30.map").into())]);
         let p = "maps\\a30.map";
         assert_eq!(read(&mut b, p), b"halo one assets");
         let h1_id = b.map_id(p);
@@ -477,9 +480,9 @@ mod tests {
         choice.set_halo1(false);
         let mut b = CampaignMapsBackend::new(
             Fake::with(&[("maps\\mainmenu.map", b"menu")]),
-            [("a10".to_string(), d.join("a10.map"))],
+            [("a10".to_string(), d.join("a10.map").into())],
         )
-        .with_assets(choice.clone(), [("a10".to_string(), d.join("h2").join("a10.map"))]);
+        .with_assets(choice.clone(), [("a10".to_string(), d.join("h2").join("a10.map").into())]);
         let p = "maps\\a10.map";
         b.opened(p);
         b.closed(p);
@@ -495,7 +498,7 @@ mod tests {
         let d = dir("missing");
         let mut b = CampaignMapsBackend::new(
             Fake::with(&[("maps\\mainmenu.map", b"menu")]),
-            [("a30".to_string(), d.join("a30.map"))],
+            [("a30".to_string(), d.join("a30.map").into())],
         );
         assert!(b.stat("maps\\a30.map").is_err());
         assert!(

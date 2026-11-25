@@ -35,8 +35,9 @@ pub enum Check {
     OneLayout,
     /// Every `Art` and the text template resolve on the map.
     Templates,
-    /// A prompt, message or training text has at most two lines and fits
-    /// the frame's width less the box.
+    /// A prompt, message, training or banner text has at most two lines
+    /// (the prompt and the banner one) and fits the frame's width less the
+    /// box; a message or banner text is one the game keeps whole.
     Prompt,
     /// An element with no split-screen offset is hidden there, and the
     /// widgets of one HUD show in the same screen modes.
@@ -274,11 +275,15 @@ pub fn glyphs(r: &mut Report, hud: &Hud, states: &[(&'static str, Values)], has:
 
 /// The text a channel may take: two lines for a message or the training
 /// box, one for the prompt (the game's prompt line draws no line break, so
-/// a second line runs into the first), as wide as the frame less the box
-/// (the training box's margin; the prompt line runs from its start to the
-/// frame's right edge).
+/// a second line runs into the first) and the banner (one centred line), as
+/// wide as the frame less the box (the training box's margin; the prompt
+/// line runs from its start to the frame's right edge).
 fn prompt_fault(kind: &Kind, frame: &hud_edit::place::Frame, lines: &[[f32; 2]]) -> Option<String> {
-    let most = if matches!(kind, Kind::Prompt { .. }) { 1 } else { 2 };
+    let most = if matches!(kind, Kind::Prompt { .. } | Kind::Banner { .. }) {
+        1
+    } else {
+        2
+    };
     if lines.len() > most {
         return Some(format!("{} lines, at most {most}", lines.len()));
     }
@@ -335,6 +340,7 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             let colour = match x.style {
                 Style::Go => "the go green".to_owned(),
                 Style::Team(n) => format!("team {n}'s colour"),
+                Style::Axis(n) => format!("axis {n}'s colour"),
                 _ => continue,
             };
             r.push(finding(
@@ -347,6 +353,17 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
         }
         // A world mark names a team the game has.
         for e in hud.elements.iter().filter(|e| e.kind.world().is_some()) {
+            if let Some(Style::Axis(n)) = v.get(e.id).map(|x| x.style)
+                && n >= hud_kit_core::world::AXES
+            {
+                r.push(finding(
+                    Check::World,
+                    Some(*s),
+                    None,
+                    vec![e.id.to_owned()],
+                    format!("{} is in axis {n}'s colour; a gizmo has {} axes", e.id, hud_kit_core::world::AXES),
+                ));
+            }
             if let Some(Style::Team(n)) = v.get(e.id).map(|x| x.style)
                 && n >= hud_kit_core::world::TEAMS
             {
@@ -360,8 +377,12 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             }
         }
     }
-    // Templates.
-    let t = src.templates(&hud);
+    // Templates: a monitor's grenade row is its first place.
+    let monitor = d.monitor();
+    let mut t = src.templates(&hud);
+    if monitor {
+        t = t.for_monitor();
+    }
     for m in t.missing(&hud) {
         r.push(finding(Check::Templates, None, None, Vec::new(), m));
     }
@@ -386,12 +407,15 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
             .push("retail: against the synthetic map's flat boxes, not the disc's art".into());
     }
     r.notes.push(src.words_note.clone());
-    let retail = hud_edit::model::read(&mut src.map, src.player)?;
+    let mut retail = hud_edit::model::read(&mut src.map, src.player)?;
+    if monitor {
+        preview::monitor_retail(&mut retail);
+    }
     for &mode in modes {
         let covers = retail_covers(src, &retail, mode);
         let st = preview::retail_states(mode, src.words).remove(0);
         for (s, v) in &states {
-            let shot = preview::shot(src, &hud, &compiled, s, v, &d.world(s), &st)?;
+            let shot = preview::shot(src, &hud, &compiled, monitor, s, v, &d.world(s), &st)?;
             per_shot(&mut r, src, &hud, v, &shot, &covers);
             r.shots.push(shot);
         }
@@ -624,10 +648,14 @@ fn per_shot(
                 texts.push(("its text".to_owned(), t.clone()));
             }
             for (what, t) in texts {
-                // A notification is one line the game copies 63 units of.
-                if matches!(e.kind, Kind::Message { .. })
-                    && let Some(why) = crate::model::message_fault(&t)
-                {
+                // A notification or a banner is one line the game keeps
+                // 62 units of.
+                let units = match e.kind {
+                    Kind::Message { .. } => crate::model::message_fault(&t),
+                    Kind::Banner { .. } => crate::model::banner_fault(&t),
+                    _ => None,
+                };
+                if let Some(why) = units {
                     r.push(f(
                         Check::Prompt,
                         vec![d.id.into()],

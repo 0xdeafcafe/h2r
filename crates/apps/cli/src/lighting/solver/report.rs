@@ -6,6 +6,7 @@ use super::{
     solve::{Fit, PageSplit, Stats, Vertex},
 };
 use anyhow::Result;
+use content::Sha256;
 use std::fmt::Write as _;
 
 fn escape(s: &str) -> String {
@@ -107,37 +108,43 @@ impl Report {
         split: &PageSplit,
         fitted: bool,
         write: &mut impl FnMut(&str, &[u8]) -> Result<()>,
-    ) -> Result<()> {
-        let mut rgba = Vec::with_capacity(mip.retail.len() * 4);
-        let mut png =
-            |suffix: &str, preserve_alpha: bool, color: &dyn Fn(usize) -> [u8; 3]| -> Result<()> {
-                rgba.clear();
-                for i in 0..mip.retail.len() {
-                    rgba.extend_from_slice(&color(i));
-                    rgba.push(if preserve_alpha { mip.alpha[i] } else { 255 });
-                }
-                let mut data = Vec::new();
-                assets::png::write_rgba_fast(&mut data, mip.width, mip.height, &rgba)?;
-                write(&format!("{stem}-{suffix}.png"), &data)
-            };
-        png("retail", false, &|i| mip.retail[i])?;
-        png("visibility", false, &|i| [split.texels[i].visibility; 3])?;
-        png("alpha", false, &|i| [mip.alpha[i]; 3])?;
+    ) -> Result<Option<[Sha256; 3]>> {
         let has_alpha = mip.alpha.iter().any(|&a| a != 255);
-        if has_alpha {
-            png("retail-rgba", true, &|i| mip.retail[i])?;
-        }
+        let mut rgba = Vec::with_capacity(mip.retail.len() * 4);
+        let mut png = |suffix: &str, pixels: &[u8]| -> Result<()> {
+            let mut data = Vec::new();
+            assets::png::write_rgba_fast(&mut data, mip.width, mip.height, pixels)?;
+            write(&format!("{stem}-{suffix}.png"), &data)
+        };
+        let mut hashes = Vec::with_capacity(3);
+        let mut previews = |suffix: &str, color: &dyn Fn(usize) -> [u8; 3], display: bool| -> Result<()> {
+            rgba.clear();
+            for i in 0..mip.retail.len() {
+                rgba.extend_from_slice(&color(i));
+                rgba.push(255);
+            }
+            png(suffix, &rgba)?;
+            if display && has_alpha {
+                for (alpha, &original) in rgba.iter_mut().skip(3).step_by(4).zip(&mip.alpha) {
+                    *alpha = original;
+                }
+                png(&format!("{suffix}-rgba"), &rgba)?;
+            }
+            if display {
+                hashes.push(Sha256::of(&rgba));
+            }
+            Ok(())
+        };
+        previews("retail", &|i| mip.retail[i], true)?;
+        previews("visibility", &|i| [split.texels[i].visibility; 3], false)?;
+        previews("alpha", &|i| [mip.alpha[i]; 3], false)?;
         let mut views = vec![("retail", "Retail")];
         if fitted {
-            png("on", false, &|i| split.texels[i].lamp_on)?;
-            png("off", false, &|i| split.texels[i].lamp_off)?;
-            png("direct", false, &|i| split.texels[i].direct)?;
-            png("closure-i", false, &|i| split.texels[i].closure_i)?;
-            png("baked", false, &|i| split.texels[i].baked)?;
-            if has_alpha {
-                png("on-rgba", true, &|i| split.texels[i].lamp_on)?;
-                png("off-rgba", true, &|i| split.texels[i].lamp_off)?;
-            }
+            previews("on", &|i| split.texels[i].lamp_on, true)?;
+            previews("off", &|i| split.texels[i].lamp_off, true)?;
+            previews("direct", &|i| split.texels[i].direct, false)?;
+            previews("closure-i", &|i| split.texels[i].closure_i, false)?;
+            previews("baked", &|i| split.texels[i].baked, false)?;
             views.extend([("on", "Reconstructed · on"), ("off", "Reconstructed · off")]);
         } else {
             views.push(("visibility", "Traced visibility"));
@@ -200,7 +207,12 @@ impl Report {
         }
         entry.push_str("</p></details>");
         self.pages.push((mip.level != 0, energy, entry));
-        Ok(())
+        if fitted {
+            let hashes = hashes.try_into().map_err(|_| anyhow::anyhow!("missing display product for {stem}"))?;
+            Ok(Some(hashes))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn vertices(
@@ -409,9 +421,15 @@ mod tests {
                 assert!(files.insert(name.to_owned(), bytes.to_owned()).is_none());
                 Ok(())
             };
-            report
+            let digests = report
                 .page("page", &mip, &split, evidence.is_some(), &mut write)
                 .unwrap();
+            let expected = evidence.map(|_| [
+                Sha256::of(&[135, 40, 27, 0]),
+                Sha256::of(&[135, 40, 27, 0]),
+                Sha256::of(&[15, 40, 27, 0]),
+            ]);
+            assert_eq!(digests, expected);
             let result = report.finish([evidence; 2], &mut write).unwrap();
             assert_eq!(result.reviewable, evidence.is_some());
             let html = std::str::from_utf8(&files["index.html"]).unwrap();

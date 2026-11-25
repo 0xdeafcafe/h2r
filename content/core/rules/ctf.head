@@ -1,0 +1,3 @@
+rules "Capture the Flag" 1
+type ctf
+const assault = 0

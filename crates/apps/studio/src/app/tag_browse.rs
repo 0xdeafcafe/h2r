@@ -70,14 +70,87 @@ impl<T: Read + Seek> ReadSeek for T {}
 /// A map opened through [`ReadSeek`].
 pub type AnyMap = Map<Box<dyn ReadSeek>>;
 
-fn open_at(path: &std::path::Path, region: Option<(u64, u64)>) -> Result<AnyMap, String> {
+fn file_reader(path: &std::path::Path) -> Result<Box<dyn ReadSeek>, String> {
     let f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let r: Box<dyn ReadSeek> = Box::new(BufReader::new(f));
+    Ok(Box::new(BufReader::new(f)))
+}
+
+fn open_reader(
+    r: Box<dyn ReadSeek>,
+    region: Option<(u64, u64)>,
+    name: &str,
+) -> Result<AnyMap, String> {
     match region {
         None => Map::from_reader(r),
         Some((base, len)) => Map::from_region(r, base, len),
     }
-    .map_err(|e| format!("{}: {e}", path.display()))
+    .map_err(|e| format!("{name}: {e}"))
+}
+
+/// A reader with byte runs laid over it, `(offset in the reader, bytes)`:
+/// a read returns the runs' bytes where they cover it and the reader's
+/// elsewhere.
+pub struct Patched<R> {
+    inner: R,
+    /// Where the next read starts.
+    at: u64,
+    /// Where `inner` is, when known: a read that starts there does not
+    /// seek it (a buffered reader's seek drops its buffer).
+    inner_at: Option<u64>,
+    runs: Vec<(u64, Vec<u8>)>,
+}
+
+impl<R> Patched<R> {
+    pub fn new(inner: R, mut runs: Vec<(u64, Vec<u8>)>) -> Self {
+        runs.sort_by_key(|r| r.0);
+        Self {
+            inner,
+            at: 0,
+            inner_at: None,
+            runs,
+        }
+    }
+}
+
+impl<R: Read + Seek> Read for Patched<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.inner_at != Some(self.at) {
+            self.inner.seek(std::io::SeekFrom::Start(self.at))?;
+        }
+        let n = self.inner.read(buf)?;
+        let (lo, hi) = (self.at, self.at + n as u64);
+        for (start, bytes) in &self.runs {
+            let end = start + bytes.len() as u64;
+            if *start >= hi {
+                break;
+            }
+            if end <= lo {
+                continue;
+            }
+            let (from, to) = (lo.max(*start), hi.min(end));
+            buf[(from - lo) as usize..(to - lo) as usize]
+                .copy_from_slice(&bytes[(from - start) as usize..(to - start) as usize]);
+        }
+        self.at = hi;
+        self.inner_at = Some(hi);
+        Ok(n)
+    }
+}
+
+impl<R: Read + Seek> Seek for Patched<R> {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        let at = match to {
+            std::io::SeekFrom::Start(n) => Some(n),
+            std::io::SeekFrom::Current(d) => self.at.checked_add_signed(d),
+            std::io::SeekFrom::End(d) => {
+                let end = self.inner.seek(std::io::SeekFrom::End(0))?;
+                self.inner_at = Some(end);
+                end.checked_add_signed(d)
+            }
+        };
+        self.at = at.ok_or_else(|| std::io::Error::other("seek before the start"))?;
+        Ok(self.at)
+    }
 }
 
 fn region(path: PathBuf, r: Option<(u64, u64)>) -> Option<assets::Region> {
@@ -200,20 +273,53 @@ impl App {
     /// The map the Tags tool shows, opened from its source (field edits
     /// are not in it).
     pub fn open_shown_map(&self) -> Result<AnyMap, String> {
+        let (r, region, name) = self.shown_reader()?;
+        open_reader(r, region, &name)
+    }
+
+    /// The map the Tags tool shows with its document's metadata edits laid
+    /// over its bytes ([`TagDoc::patches`], placed by the map's own
+    /// address space): what a reader of the map sees once the edits save.
+    /// A grown block's new room is not in it (it has no place in the
+    /// file until the save appends it). The Shader tab's read and preview
+    /// read through it (docs/editor/rich-editors.md, "Shaders").
+    pub fn open_shown_map_edited(&self) -> Result<AnyMap, String> {
+        let patches = self.shown_tags().patches();
+        if patches.is_empty() {
+            return self.open_shown_map();
+        }
+        let plain = self.open_shown_map()?;
+        let (r, region, name) = self.shown_reader()?;
+        let base = region.map_or(0, |(at, _)| at);
+        let mut runs = Vec::with_capacity(patches.len());
+        for (address, bytes) in patches {
+            let len = u32::try_from(bytes.len()).map_err(|_| "an edit too long to place")?;
+            let at = plain
+                .file_offset(address, len)
+                .map_err(|e| format!("the edit at {address:#010x}: {e}"))?;
+            runs.push((base + at, bytes));
+        }
+        let r: Box<dyn ReadSeek> = Box::new(Patched::new(r, runs));
+        open_reader(r, region, &name)
+    }
+
+    /// The shown map's reader, its region in that reader (none for the
+    /// whole of it) and a name for its errors.
+    fn shown_reader(&self) -> Result<(Box<dyn ReadSeek>, Option<(u64, u64)>, String), String> {
         if let Some(b) = &self.tag_browse {
             let src = self
                 .source
                 .as_ref()
                 .ok_or("open a disc, map or folder first")?;
             let (path, r) = src.location(&b.map).map_err(|e| format!("{e:#}"))?;
-            return open_at(&path, r);
+            return Ok((file_reader(&path)?, r, path.display().to_string()));
         }
         let s = self.session.source().ok_or("no map is open")?;
         if let Some(bytes) = &s.bytes {
             let r: Box<dyn ReadSeek> = Box::new(Cursor::new(bytes.clone()));
-            return Map::from_reader(r).map_err(|e| e.to_string());
+            return Ok((r, None, "the open map".to_owned()));
         }
-        open_at(&s.path, s.region)
+        Ok((file_reader(&s.path)?, s.region, s.path.display().to_string()))
     }
 
     /// The files the shown map's raw pointers select: the map itself and
@@ -409,5 +515,37 @@ pub fn resolve_elsewhere(source: &MapSource, doc: &mut TagDoc, own: &str) {
                 doc.set_elsewhere(*id, cache);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod patched_tests {
+    use super::Patched;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+
+    /// Reads across, inside and beside the runs see the runs' bytes where
+    /// they cover and the reader's elsewhere, through seeks of each kind.
+    #[test]
+    fn runs_lay_over_the_readers_bytes() {
+        let base: Vec<u8> = (0..32).collect();
+        let runs = vec![(10, vec![0xaa, 0xbb]), (4, vec![0xcc; 3])];
+        let mut p = Patched::new(Cursor::new(base), runs);
+        let mut all = Vec::new();
+        p.read_to_end(&mut all).unwrap();
+        let mut want: Vec<u8> = (0..32).collect();
+        want[4..7].fill(0xcc);
+        want[10..12].copy_from_slice(&[0xaa, 0xbb]);
+        assert_eq!(all, want);
+        let mut two = [0u8; 2];
+        p.seek(SeekFrom::Start(5)).unwrap();
+        p.read_exact(&mut two).unwrap();
+        assert_eq!(two, [0xcc, 0xcc]);
+        p.seek(SeekFrom::Current(4)).unwrap();
+        p.read_exact(&mut two).unwrap();
+        assert_eq!(two, [0xbb, 12]);
+        assert_eq!(p.seek(SeekFrom::End(-1)).unwrap(), 31);
+        p.read_exact(&mut two[..1]).unwrap();
+        assert_eq!(two[0], 31);
+        assert!(p.seek(SeekFrom::Current(-100)).is_err());
     }
 }

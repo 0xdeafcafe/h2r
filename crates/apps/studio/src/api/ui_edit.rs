@@ -105,7 +105,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::UI_SAVE,
-        "Save the edits: our screens' YAML into the checkout's assets/ui/screens (refused outside a checkout); a retail screen's with the map, as doc.save does",
+        "Save the edits: our screens' YAML into the checkout's content/ui/screens (refused outside a checkout); a retail screen's with the map, as doc.save does",
         "{}",
         r#"{"sink":"ours|retail","written?":"[path]","save?":"doc.save result"}"#,
         "null",

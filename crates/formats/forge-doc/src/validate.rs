@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use map::scenario_layout::{self as layout, BlockDef, FieldDef, FieldType, Role};
 
@@ -37,6 +38,8 @@ pub struct Limits {
     pub max_adds: usize,
     /// The base's initial count for each block the caller knows.
     pub base_counts: BTreeMap<BlockKind, u32>,
+    /// Netgame flag types in base index order, empty without map context.
+    pub base_flag_types: Arc<[u16]>,
     pub world: Option<WorldBounds>,
     pub builder: Option<BuilderVersions>,
 }
@@ -48,6 +51,7 @@ impl Default for Limits {
             max_log_entries: crate::MAX_LOG_ENTRIES,
             max_adds: MAX_OPS,
             base_counts: BTreeMap::new(),
+            base_flag_types: Arc::default(),
             world: None,
             builder: None,
         }
@@ -163,7 +167,15 @@ pub(crate) fn document(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
         }
         counts.push(item, limits)?;
     }
-    crate::links::check_with(&doc.ops, limits)
+    // Each game type builds its own map from a document with object game
+    // types, so no one map ID can be expected of it.
+    if doc.expect.is_some() && !crate::object_games(&doc.ops).is_empty() {
+        return Err(Refusal::invalid(
+            "expect",
+            "a document with object game types expects no map: each game type builds its own",
+        ));
+    }
+    crate::links::check(&doc.ops, limits)
 }
 
 fn validate_recipe(
@@ -200,6 +212,9 @@ fn validate_recipe(
                 token("parameter name", &write.field)?;
                 value(&write.value)
             })?;
+            if generator == crate::GROUND_RECIPE {
+                crate::GroundRecipe::from_parameters(parameters)?;
+            }
         }
         Recipe::Import { slot } => {
             if !imports.contains(slot) {
@@ -487,7 +502,7 @@ impl Counts {
             },
         };
         let back = match edit {
-            EntryOp::Set { .. } => return,
+            EntryOp::Set { .. } | EntryOp::Property { .. } | EntryOp::Area { .. } => return,
             EntryOp::Remove { .. } if self.removed.insert(target) => false,
             EntryOp::Reset { .. } if self.removed.remove(&target) => true,
             _ => return,

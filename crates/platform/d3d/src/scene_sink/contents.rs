@@ -144,7 +144,7 @@ impl ReplayFrame {
                         state.forget(*to, self.aspects(*to));
                     }
                 }
-                ReplayOp::Sample { id, of, how } => {
+                ReplayOp::Sample { id, of, how, .. } => {
                     // A snapshot freezes this version. An in-place view reads
                     // the contents present when the draw binds it.
                     let mut mask = self.aspects(*of);

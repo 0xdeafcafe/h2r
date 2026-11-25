@@ -170,12 +170,23 @@ impl Ext {
                 return Some(what);
             }
         }
+        if !crate::ext_weapons::is_known(self.primary) {
+            return Some("primary weapon");
+        }
+        if !crate::ext_weapons::is_known(self.secondary) {
+            return Some("secondary weapon");
+        }
         (!TEAM_SIZE.contains(&self.team_size)).then_some("team size")
     }
 
     /// Gravity as a factor of the game's (1.0 for 100%).
     pub fn gravity_scale(&self) -> f32 {
         f32::from(self.gravity) / 100.0
+    }
+
+    /// Movement speed as a factor of the game's (1.0 for 100%).
+    pub fn speed_scale(&self) -> f32 {
+        f32::from(self.speed) / 100.0
     }
 
     /// The block's bytes. The default is all zero, so a variant without
@@ -282,8 +293,10 @@ impl Ext {
         if self.unlimited_grenades {
             parts.push("Unlimited grenades".into());
         }
-        if self.primary != 0 || self.secondary != 0 {
-            parts.push(format!("Weapons {}/{}", self.primary, self.secondary));
+        for (id, what) in [(self.primary, "Primary"), (self.secondary, "Secondary")] {
+            if id != 0 {
+                parts.push(format!("{what} weapon {}", crate::ext_weapons::name(id)));
+            }
         }
         if self.team_size != 0 {
             parts.push(format!("Teams of {}", self.team_size));
@@ -330,7 +343,7 @@ mod tests {
             health: 150,
             speed: 125,
             unlimited_grenades: true,
-            primary: 7,
+            primary: 2,
             secondary: 0,
             team_size: 4,
             script: Script::default(),
@@ -377,7 +390,7 @@ mod tests {
         assert_eq!(
             e.summary(),
             "Gravity 50%, Damage 200%, Health 150%, Speed 125%, \
-             Unlimited grenades, Weapons 7/0, Teams of 4"
+             Unlimited grenades, Primary weapon Gravity Hammer, Teams of 4"
         );
         // One option alone.
         let g = Ext {
@@ -385,6 +398,26 @@ mod tests {
             ..Ext::default()
         };
         assert_eq!(Ext::decode(&g.encode()), Block::Ext(g));
+    }
+
+    #[test]
+    fn a_weapon_id_the_table_lacks_ignores_the_block() {
+        for (primary, secondary, what) in [(999, 0, "primary weapon"), (0, 999, "secondary weapon")] {
+            let e = Ext {
+                primary,
+                secondary,
+                ..Ext::default()
+            };
+            assert_eq!(e.out_of_range(), Some(what));
+            assert_eq!(Ext::decode(&e.encode()), Block::Ignored(Why::Range(what)));
+        }
+        let e = Ext {
+            primary: crate::ext_weapons::TABLE[0].id,
+            secondary: crate::ext_weapons::TABLE[1].id,
+            ..Ext::default()
+        };
+        assert_eq!(Ext::decode(&e.encode()), Block::Ext(e));
+        assert!(!e.is_default());
     }
 
     #[test]

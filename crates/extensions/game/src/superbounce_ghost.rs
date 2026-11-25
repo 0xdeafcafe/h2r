@@ -38,7 +38,7 @@ use std::time::Instant;
 
 use engine::GuestMemory;
 use gfx::world_lines::{ImageMarks, ImageValidity, LineStyle, WorldLine};
-use hud_kit_core::huds::superbounce::{Medal, Verb};
+use hud_kit_core::views::superbounce::{Medal, Verb};
 use superbounce::ghost::{self as file, Button, Frame, Ghost, MAX_FRAMES, Source, TICK_HZ};
 use superbounce::verified::Entry;
 use superbounce::{Kind, Spot, Status, Vec3};
@@ -58,7 +58,7 @@ use crate::superbounce_font::Look;
 /// [`BUTTON_BUMPER_JUMPER`] ([`button_for`]).
 pub const BUTTON: u8 = 2;
 /// [`BUTTON`]'s glyph in the HUD font (docs/input/button-icons.md); the
-/// prompts in `hud_kit_core::huds::superbounce` write the same one.
+/// prompts in `hud_kit_core::views::superbounce` write the same one.
 pub const BUTTON_GLYPH: char = '\u{e102}';
 /// The ghost button on the Bumper Jumper layout: B (1), on the ground.
 pub const BUTTON_BUMPER_JUMPER: u8 = 1;

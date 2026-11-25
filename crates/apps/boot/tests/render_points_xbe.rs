@@ -13,7 +13,9 @@ use engine::points;
 #[test]
 #[ignore = "needs the retail default.xbe in $H2_XBE"]
 fn the_native_renderers_points_are_discovered_functions() {
-    let data = std::fs::read(std::env::var_os("H2_XBE").expect("set H2_XBE to a retail default.xbe")).unwrap();
+    let data =
+        std::fs::read(std::env::var_os("H2_XBE").expect("set H2_XBE to a retail default.xbe"))
+            .unwrap();
     let xbe = xbe::Xbe::parse(&data).unwrap();
     let analysis = analyze::analyze(&xbe).unwrap();
     let entries = analyze::dispatch::entries(&xbe, &analysis);
@@ -37,6 +39,9 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::RENDER_DYNAMIC_LIGHTS,
         &points::RENDER_DECAL_MODE,
         &points::RENDER_LIGHT_PASSES,
+        &points::SCENE_ITEMS,
+        &points::FIRST_PERSON_LIGHTS,
+        &points::FIRST_PERSON_LIGHT_RECORDS,
         &points::LIGHT_GEOMETRY_DRAW,
         &points::LIGHT_RESTORE_TARGET,
         &points::LAYER_BUILD,
@@ -50,14 +55,21 @@ fn the_native_renderers_points_are_discovered_functions() {
             p.name,
             p.base
         );
-        assert!(entries.contains(&p.base), "{} ({:#010x}) is not an entry", p.name, p.base);
+        assert!(
+            entries.contains(&p.base),
+            "{} ({:#010x}) is not an entry",
+            p.name,
+            p.base
+        );
     }
 }
 
 #[test]
 #[ignore = "needs the retail default.xbe in $H2_XBE"]
 fn the_native_scene_list_sites_are_instruction_boundaries() {
-    let data = std::fs::read(std::env::var_os("H2_XBE").expect("set H2_XBE to a retail default.xbe")).unwrap();
+    let data =
+        std::fs::read(std::env::var_os("H2_XBE").expect("set H2_XBE to a retail default.xbe"))
+            .unwrap();
     let xbe = xbe::Xbe::parse(&data).unwrap();
     let mut analysis = analyze::analyze(&xbe).unwrap();
     let sites = [
@@ -68,7 +80,10 @@ fn the_native_scene_list_sites_are_instruction_boundaries() {
         points::TRANSPARENT_ORDER_READY.base,
     ];
     for site in sites.into_iter().chain([points::OBJECT_RECORD_APPENDED]) {
-        assert!(matches!(analysis.claim(site), Some(('I', Some(_)))), "{site:#010x}");
+        assert!(
+            matches!(analysis.claim(site), Some(('I', Some(_)))),
+            "{site:#010x}"
+        );
     }
     analysis.expose_instructions(points::scene_effects::instruction_entries());
     for site in sites {
@@ -83,11 +98,18 @@ fn render_aspect_sites_are_dispatch_blocks_in_the_build_tiers_analysis() {
     let xbe = xbe::Xbe::parse(&data).unwrap();
     assert!(recomp::has_retail_render_sites(&xbe));
     boot::register_image_entries();
-    let (analysis, _) = recomp::analyze_cached(&xbe, recomp::analysis_cache(&data).as_deref()).unwrap();
+    let (analysis, _) =
+        recomp::analyze_cached(&xbe, recomp::analysis_cache(&data).as_deref()).unwrap();
     let builder = analyze::cfg::CfgBuilder::new(&analysis, &xbe);
-    for pc in points::render_aspect::instruction_entries().chain(points::scene_effects::instruction_entries()) {
-        assert!(analysis.functions.contains_key(&pc), "missing render hook entry {pc:#010x}");
+    for pc in boot::image_entries() {
+        assert!(
+            analysis.functions.contains_key(&pc),
+            "missing render hook entry {pc:#010x}"
+        );
         let cfg = builder.build(pc).unwrap();
-        assert!(cfg.blocks.contains_key(&pc), "no block for render hook {pc:#010x}");
+        assert!(
+            cfg.blocks.contains_key(&pc),
+            "no block for render hook {pc:#010x}"
+        );
     }
 }

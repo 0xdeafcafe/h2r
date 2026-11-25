@@ -33,7 +33,9 @@ fn render_frame_and_stats_through_the_socket() {
         &a,
         &PROBE,
         RenderSources {
-            interp: Box::new(|| Some(json!({"frames": 7, "unsure_camera": 1}))),
+            display_rate: Box::new(|| {
+                Some(agent_proto::DisplayRateStats { rate_hz: 60, swaps: 7, blended: 6, ..Default::default() })
+            }),
             counters: Box::new(|| None),
         },
     );
@@ -52,7 +54,8 @@ fn render_frame_and_stats_through_the_socket() {
     c.set_timeout(Some(Duration::from_secs(10))).unwrap();
 
     let s = c.call(method::RENDER_STATS, Value::Null).unwrap();
-    assert_eq!(s["interp"]["unsure_camera"], 1);
+    assert_eq!(s["display_rate"]["blended"], 6);
+    assert_eq!(s["display_rate"]["rate_hz"], 60);
 
     let r = c.call(method::RENDER_FRAME, Value::Null).unwrap();
     assert_eq!(r["armed"], false);

@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use firefight::scoring::kill_points;
 use firefight::{
-    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Director, Drop, FORMAT, Lives,
-    Observed, Round, Scoring, Skull, SquadSpec, Wave,
+    Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
+    Round, Scoring, ScriptDirector, Skull, SquadSpec, Wave,
 };
 
 fn round(skulls_on: Vec<Skull>) -> Round {
@@ -69,7 +69,7 @@ fn three_rounds() -> Def {
 /// Runs a match in which every squad dies to player 0 a tick after it
 /// appears, and returns the commands with their tick.
 fn play(def: Def, skulls: BTreeSet<Skull>) -> Vec<(u32, Command)> {
-    let mut director = Director::new(
+    let mut director = ScriptDirector::new(
         def,
         firefight::Settings {
             seed: 3,

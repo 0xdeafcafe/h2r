@@ -1,7 +1,5 @@
-//! The docs baked into the build: `DESIGN` (`assets/ui/design.yaml`),
+//! The docs baked into the build: `DESIGN` (`content/ui/design.yaml`),
 //! `SCREENS`, each screen's name and its file's text, sorted by name,
-//! `RETAIL_EDITS`, each retail edit file's stem and text
-//! (`assets/ui/retail-edits/`, `ui_kit::retail_edits`), and
 //! `RETAIL_SAMPLES`, the retail screens' sample states
 //! (`assets/ui/retail-samples/`, `ui_kit::preview::retail_sample`), each
 //! sorted by stem. The build script lists the folders (`build.rs`,

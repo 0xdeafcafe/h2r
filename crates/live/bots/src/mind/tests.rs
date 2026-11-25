@@ -235,8 +235,8 @@ fn it_keeps_moving_and_starts_turning_before_it_may_fire() {
                 "{skill:?} walks: {pad:?}"
             );
         }
-        // Someone new off to the left: a fresh reaction.
-        let at = [4.0, 4.0, 0.0];
+        // Someone new off to the left, inside the 40° view: a fresh reaction.
+        let at = [5.0, 3.0, 0.0];
         look(&mut m, X, vec![enemy(1, at)], 70, None);
         let (_, ready) = m.target.expect("noticed");
         let delay = ready - 70;
@@ -328,7 +328,7 @@ fn on_target_it_fires_and_off_target_it_does_not() {
 
 #[test]
 fn it_holds_the_trigger_inside_the_band_and_bursts_past_it_from_normal() {
-    // Weapon-blind: the band ends at 15, it fires to 25.
+    // Weapon-blind: the band ends at 15, it fires to 18.75.
     let fire = |skill: Skill, at: f32| {
         let mut m = Mind::new(skill, 3);
         let fired: Vec<bool> = (0..120)
@@ -346,11 +346,11 @@ fn it_holds_the_trigger_inside_the_band_and_bursts_past_it_from_normal() {
     }
     // Past the band, easy still holds; normal bursts, its on time
     // stretched by a nameless bot's middling spray.
-    let far = fire(Skill::Easy, 20.0);
+    let far = fire(Skill::Easy, 17.0);
     assert!(far.iter().all(|f| *f), "{far:?}");
-    let far = fire(Skill::Normal, 20.0);
+    let far = fire(Skill::Normal, 17.0);
     let (on, _) = Skill::Normal.aim().burst.unwrap();
-    let (on, _) = tactics::hold_pattern(20.0, 15.0, Some((on, 0)), tactics::spray(None)).unwrap();
+    let (on, _) = tactics::hold_pattern(17.0, 15.0, Some((on, 0)), tactics::spray(None)).unwrap();
     let burst = far.iter().take_while(|f| **f).count() as u32;
     assert!((on - 2..=on + 2).contains(&burst), "{far:?}");
     assert!(far.contains(&false) && far.iter().filter(|f| **f).count() > 2 * burst as usize);
@@ -1431,6 +1431,7 @@ fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
                 [c[0] + 3.0, c[1] + 3.0, 0.0],
                 [c[0] - 3.0, c[1] + 3.0, 0.0],
             ],
+            ..Default::default()
         }),
     };
     let mut m = Mind::new(Skill::Normal, 3);

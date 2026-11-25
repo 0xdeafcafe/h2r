@@ -8,7 +8,7 @@ fn the_built_in_line_names_the_focused_entrys_origin() {
     for n in [0, 38] {
         assert_eq!(origin_text(n), "Bungie Original");
     }
-    for n in [DESCRIPTION_BASE, DESCRIPTION_BASE + LISTED.len() as u32 - 1] {
+    for n in [DESCRIPTION_BASE, DESCRIPTION_BASE + listed().len() as u32 - 1] {
         assert_eq!(origin_text(n), "Community Classic");
     }
     for n in [94, 99, 100] {
@@ -16,7 +16,7 @@ fn the_built_in_line_names_the_focused_entrys_origin() {
     }
     // Past the listed scripts and short of the store's: nobody's.
     assert_eq!(
-        origin_text(DESCRIPTION_BASE + LISTED.len() as u32),
+        origin_text(DESCRIPTION_BASE + listed().len() as u32),
         "Bungie Original"
     );
     assert_eq!(origin_text(39), "Bungie Original");
@@ -111,8 +111,7 @@ fn world(n: u32, offer: &[(u32, Vec<i32>)]) -> Fake {
 fn all_listed() -> Vec<&'static Listed> {
     listed()
         .iter()
-        .zip(LISTED)
-        .map(|(l, b)| l.as_ref().unwrap_or_else(|why| panic!("{}: {why}", b.name)))
+        .map(|l| l.as_ref().unwrap())
         .collect()
 }
 
@@ -152,7 +151,7 @@ fn entries_are_built_from_the_listed_scripts() {
     let offer = offer_map(&all_offered());
     let (ours, lines) = entries(&offer);
     assert!(lines.is_empty(), "{lines:?}");
-    assert_eq!(ours.len(), LISTED.len());
+    assert_eq!(ours.len(), listed().len());
     for (i, (e, b)) in ours.iter().zip(LISTED).enumerate() {
         let ir = ::rules::compile(b.source).unwrap();
         // The name: the script's, a space and the icon, at our id.
@@ -161,9 +160,9 @@ fn entries_are_built_from_the_listed_scripts() {
             text(e.name_id),
             Some(format!("{} \u{e006}", ir.header.name))
         );
-        // The game type: the carrier's list type.
+        // The game type: the list type of the record's engine.
         let ty = GameType::from_list_index(e.list_type).unwrap();
-        assert_eq!(ty.engine(), i32::from(ir.header.carrier), "{}", b.name);
+        assert_eq!(ty, listed()[i].as_ref().unwrap().record.game_type().menu_template(), "{}", b.name);
         // The pairs: the record of the script, every setting the editor
         // offers, not only the script's.
         let record = variants::portable::record_for(&ir, &[]).unwrap();
@@ -247,7 +246,7 @@ fn a_script_the_disc_does_not_offer_is_left_out_by_name() {
         lines.iter().any(|l| l.contains("SWAT left out")),
         "{lines:?}"
     );
-    assert_eq!(lines.len(), LISTED.len() - ours.len(), "one line each");
+    assert_eq!(lines.len(), listed().len() - ours.len(), "one line each");
 
     // With nothing to add the tag is unchanged.
     let mut m = world(3, &[]);
@@ -293,7 +292,7 @@ fn bumper_cars_needs_our_none_and_bounce_practice_has_a_magnum() {
     assert!(done.lists >= 1);
     let (ours, lines) = entries(&offered(&m, GOOF, TAGS).unwrap());
     assert!(lines.is_empty(), "{lines:?}");
-    assert_eq!(ours.len(), LISTED.len());
+    assert_eq!(ours.len(), listed().len());
 }
 
 #[test]
@@ -301,10 +300,10 @@ fn superbounce_is_filed_under_research_by_its_script() {
     let sb = listed_named("Superbounce").unwrap();
     assert_eq!(
         sb.record.game_type(),
-        GameType::Slayer,
-        "played as Slayer underneath"
+        GameType::Script,
+        "the record is independent of the Research row"
     );
-    assert_eq!(sb.row, Some(Row::Research));
+    assert_eq!(Row::of_type(sb.game_type), Some(Row::Research));
     let ext = sb.ext();
     assert!(ext.out_of_range().is_none());
     assert_eq!(Ext::decode(&sb.block()), variants::ext::Block::Ext(ext));
@@ -330,9 +329,9 @@ fn a_copy_lists_under_its_scripts_row() {
     let none = [0; ext::LEN];
     for l in all_listed() {
         // A copy Edit makes keeps the block and takes a new name.
-        assert_eq!(row_of("My Copy", &l.block()), l.row, "{}", l.name);
+        assert_eq!(row_of("My Copy", &l.block()), Row::of_type(l.game_type), "{}", l.name);
         // The built-in before its block is written: by its list name.
-        assert_eq!(row_of(&l.display_name(), &none), l.row, "{}", l.name);
+        assert_eq!(row_of(&l.display_name(), &none), Row::of_type(l.game_type), "{}", l.name);
         // Its bare name and no block is a player's variant of its own.
         assert_eq!(row_of(&l.name, &none), None, "{}", l.name);
     }
@@ -368,7 +367,7 @@ fn the_party_and_research_rows_hold_their_scripts() {
     let under = |r: Row| -> Vec<&str> {
         all_listed()
             .into_iter()
-            .filter(|l| l.row == Some(r))
+            .filter(|l| Row::of_type(l.game_type) == Some(r))
             .map(|l| l.name.as_str())
             .collect()
     };
@@ -380,12 +379,12 @@ fn the_party_and_research_rows_hold_their_scripts() {
             "Jousting",
             "Cops and Robbers",
             "Bumper Cars",
-            "Siege",
             "Gun Game",
             "Race",
             "VIP"
         ]
     );
+    assert_eq!(under(Row::Siege), ["Siege"]);
     assert_eq!(
         under(Row::Research),
         ["Bounce Practice", "Glitch Hunt", "Superbounce"]
@@ -404,7 +403,7 @@ fn put_builtin(m: &mut dyn engine::memory::GuestMemory, at: u32, name: &str, ty:
 #[test]
 fn every_listed_record_gets_its_block_at_load() {
     use crate::tweakers::{
-        BUILTIN_LIST, BUILTIN_RECORD, BUILTIN_VARIANT, record_block, record_row,
+        BUILTIN_LIST, BUILTIN_RECORD, BUILTIN_VARIANT, record_block, record_type,
     };
     const RECORDS: u32 = 0x0060_0000;
     let all = all_listed();
@@ -422,7 +421,7 @@ fn every_listed_record_gets_its_block_at_load() {
             &mut g,
             rec(1 + k as u32),
             &l.display_name(),
-            l.record.game_type(),
+            GameType::from_list_index(l.list_type).unwrap(),
         );
     }
     put_builtin(&mut g, rec(n - 1), &all[0].display_name(), GameType::Ctf);
@@ -441,25 +440,43 @@ fn every_listed_record_gets_its_block_at_load() {
         let r = rec(1 + k as u32);
         let block = record_block(&g, r).unwrap();
         assert_eq!(block, l.block(), "{}", l.name);
+        assert_eq!(crate::tweakers::record_engine(&g, r), Some(l.record.game_type().engine()), "{}", l.name);
         // A game on it finds its script.
         let script = Ext::in_effect(&block).script;
+        if l.game_type == Type::Firefight {
+            assert_eq!(script.mode, variants::ext::Mode::Firefight);
+            assert_eq!(::firefight::builtin::by_prefix(script.prefix).unwrap().name, l.name);
+            assert_eq!(record_type(&g, r), Some(Type::Firefight));
+            continue;
+        }
         assert_eq!(script.mode, variants::ext::Mode::Rules, "{}", l.name);
         let found = crate::rules::runtime::compiled_in(script.prefix).expect("compiled in");
         assert_eq!(found.id.0[..8], script.prefix, "{}", l.name);
-        // Our rows hold Slayer and Juggernaut variants, so Hide and Seek
-        // is under Party Games.
-        let row = if matches!(l.record.game_type(), GameType::Slayer | GameType::Juggernaut) {
-            l.row
-        } else {
-            None
-        };
-        assert_eq!(record_row(&g, r), row, "{}", l.name);
+        assert_eq!(record_type(&g, r), Some(l.game_type), "{}", l.name);
     }
-    assert_eq!(
-        record_row(&g, rec(1 + position("Hide and Seek") as u32)),
-        Some(Row::PartyGames)
-    );
     assert_eq!(write_blocks(&mut g), Ok(0), "already there");
+}
+
+#[test]
+fn the_goof_template_becomes_a_script_record_before_selection_or_editing() {
+    use engine::memory::GuestMemory;
+    use variants::record::{RECORD_SIZE, TYPE_AREA};
+    let template = GameType::from_list_index(goof_type(GameType::Script).unwrap()).unwrap();
+    assert_eq!(template, GameType::Slayer);
+    let siege = listed_named("Siege").unwrap();
+    let mut g = engine::testing::FakeGuest::new();
+    g.map(GOOF, RECORD_SIZE as u32);
+    put_builtin(&mut g, GOOF, &siege.display_name(), template);
+    g.set_u8(GOOF + TYPE_AREA.start as u32, 1).unwrap();
+    assert_eq!(restore_script_record(&mut g, GOOF, GameType::Script, &siege.block()), Ok(true));
+    let mut raw = [0; RECORD_SIZE];
+    g.read(GOOF, &mut raw).unwrap();
+    let restored = GameVariant::from_bytes(&raw).unwrap();
+    assert_eq!(restored.game_type(), GameType::Script);
+    assert!(raw[TYPE_AREA].iter().all(|v| *v == 0));
+    assert_eq!(restored.name(), siege.display_name());
+    assert_eq!(crate::tweakers::record_type(&g, GOOF), Some(Type::Siege));
+    assert_eq!(restore_script_record(&mut g, GOOF, GameType::Script, &siege.block()), Ok(false));
 }
 
 #[test]
@@ -474,11 +491,11 @@ fn the_rows_texts_are_ours_and_apart_from_the_scripts() {
     }
     assert_eq!(Row::from_mark(0), None);
     let ids: Vec<u32> = row_ids().collect();
-    assert_eq!(ids.len(), 6);
+    assert_eq!(ids.len(), 3 * Row::ALL.len());
     for (k, id) in ids.iter().enumerate() {
         assert!(is_ours(*id));
         assert!(!ids[..k].contains(id), "{id:#x} twice");
-        assert!((0..LISTED.len()).all(|i| *id != name_id(i) && *id != description_id(i)));
+        assert!((0..listed().len()).all(|i| *id != name_id(i) && *id != description_id(i)));
     }
 }
 
@@ -510,14 +527,14 @@ fn string_ids_are_private_and_round_trip() {
         2,
         38,
         39,
-        DESCRIPTION_BASE + LISTED.len() as u32,
+        DESCRIPTION_BASE + listed().len() as u32,
         93,
         100,
     ] {
         assert_eq!(description_for(n), None, "{n}");
     }
     assert!(
-        DESCRIPTION_BASE + LISTED.len() as u32 <= inject::DESCRIPTION_BASE,
+        DESCRIPTION_BASE + listed().len() as u32 <= inject::DESCRIPTION_BASE,
         "the store's numbers start at 94"
     );
 }
@@ -548,7 +565,7 @@ fn extend_appends_after_retail_entries_unchanged() {
     );
 
     let n = m.u32(GOOF + GOOF_BUILTINS).unwrap();
-    assert_eq!(n as usize, 39 + LISTED.len());
+    assert_eq!(n as usize, 39 + listed().len());
     assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(ENTRIES_AT));
     // Retail entries: byte for byte, in place; the old block untouched.
     let mut b = vec![0; retail_before.len()];
@@ -561,6 +578,12 @@ fn extend_appends_after_retail_entries_unchanged() {
         let e = ENTRIES_AT + (39 + k as u32) * ENTRY_SIZE;
         assert_eq!(m.u32(e), Some(name_id(k)));
         assert_eq!(m.u32(e + 4), Some(want.list_type));
+        let display = text(m.u32(e).unwrap()).unwrap();
+        let template = GameType::from_list_index(m.u32(e + 4).unwrap()).unwrap();
+        let l = listed()[k].as_ref().unwrap();
+        let ty = l.game_type;
+        assert_eq!(filed_type(&display, &[0; ext::LEN], template), Some(ty), "{display}");
+        assert_eq!(filed_type("Renamed", &l.block(), GameType::Script), Some(ty), "{}", l.name);
         let (count, at) = (m.u32(e + 8).unwrap(), m.u32(e + 12).unwrap());
         let got: Vec<(u32, i32)> = (0..count)
             .map(|j| {
@@ -599,7 +622,7 @@ fn a_failed_read_leaves_the_tag_alone() {
     assert_eq!(m.u32(GOOF + GOOF_BUILTINS + 4), Some(OLD));
     assert_eq!(m.u32(GOOF + GOOF_BUILTINS), Some(6));
     // A list that would not fit our page is refused the same way.
-    m.set_u32(GOOF + GOOF_BUILTINS, MAX_ENTRIES);
+    m.set_u32(GOOF + GOOF_BUILTINS, MAX_SLOTS);
     assert_eq!(
         extend_builtins(&mut m, GOOF, &[entry(0)], DATA_BASE, ENTRIES_AT),
         None
@@ -631,5 +654,5 @@ fn every_listed_script_is_offered_on_the_retail_disc() {
         "left out on this disc:\n{}",
         lines.join("\n")
     );
-    assert_eq!(ours.len(), LISTED.len());
+    assert_eq!(ours.len(), listed().len());
 }

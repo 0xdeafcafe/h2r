@@ -1,0 +1,141 @@
+# The UNSC "field spring" (content/pogo/README.md): stamped olive steel over a
+# gunmetal sleeve, a coil over the sleeve, a chromed piston and a tread
+# rubber foot. Model space, world units (1 = 3.048 m): +X forward, +Y left,
+# +Z up, the origin the right grip. The shaft's axis is x 0, y 0.059.
+name: pogo_unsc
+atlas: unsc
+nodes:
+  - { name: frame, at: [0, 0, 0] }
+  - { name: piston, parent: frame, at: [0, 0.059, -0.2] }
+markers:
+  - { name: grip_right, node: frame, at: [0, 0, 0] }
+  - { name: grip_left, node: frame, at: [0, 0.118, 0] }
+  - { name: peg_right, node: frame, at: [0, 0.023, -0.279] }
+  - { name: peg_left, node: frame, at: [0, 0.095, -0.279] }
+  - { name: foot, node: piston, at: [0, 0.059, -0.361] }
+parts:
+  - sweep:
+      what: the handlebar, between the grips
+      node: frame
+      region: body_dark
+      section: { circle: { radius: 0.0055, sides: 8 } }
+      path: [[0, 0.014, 0], [0, 0.104, 0]]
+      caps: false
+  - lathe:
+      what: the right grip
+      node: frame
+      region: grip
+      origin: [0, 0, 0]
+      axis: [0, 1, 0]
+      segments: 10
+      caps: true
+      profile: [[0.0085, -0.016], [0.0095, -0.014], [0.0075, -0.011], [0.0075, 0.011], [0.0095, 0.014], [0.0085, 0.016]]
+  - lathe:
+      what: the left grip
+      node: frame
+      region: grip
+      origin: [0, 0.118, 0]
+      axis: [0, 1, 0]
+      segments: 10
+      caps: true
+      profile: [[0.0085, -0.016], [0.0095, -0.014], [0.0075, -0.011], [0.0075, 0.011], [0.0095, 0.014], [0.0085, 0.016]]
+  - box:
+      what: the head clamp, painted, with the stencil numerals
+      node: frame
+      region: accent
+      min: [-0.013, 0.044, -0.014]
+      max: [0.013, 0.074, 0.012]
+      bevel: 0.003
+  - lathe:
+      what: the upper tube, with its collar under the clamp
+      node: frame
+      region: body
+      origin: [0, 0.059, 0]
+      segments: 12
+      profile: [[0.0105, -0.150], [0.0105, -0.040], [0.0125, -0.036], [0.0125, -0.022], [0.0105, -0.018], [0.0105, -0.012]]
+  - lathe:
+      what: the sleeve the piston slides in, with the coil's upper perch
+      node: frame
+      region: body_dark
+      origin: [0, 0.059, 0]
+      segments: 12
+      caps: true
+      profile: [[0.012, -0.292], [0.0135, -0.288], [0.0135, -0.262], [0.0125, -0.258], [0.0125, -0.168], [0.0145, -0.164], [0.0145, -0.154], [0.0115, -0.150]]
+  - sweep:
+      what: the coil over the sleeve, six turns
+      node: frame
+      region: glow
+      section: { circle: { radius: 0.003, sides: 4 } }
+      path: [
+          [0.0185, 0.0590, -0.1720], [0.0150, 0.0699, -0.1735], [0.0057, 0.0766, -0.1750],
+          [-0.0057, 0.0766, -0.1765], [-0.0150, 0.0699, -0.1780], [-0.0185, 0.0590, -0.1795],
+          [-0.0150, 0.0481, -0.1810], [-0.0057, 0.0414, -0.1825], [0.0057, 0.0414, -0.1840],
+          [0.0150, 0.0481, -0.1855], [0.0185, 0.0590, -0.1870], [0.0150, 0.0699, -0.1885],
+          [0.0057, 0.0766, -0.1900], [-0.0057, 0.0766, -0.1915], [-0.0150, 0.0699, -0.1930],
+          [-0.0185, 0.0590, -0.1945], [-0.0150, 0.0481, -0.1960], [-0.0057, 0.0414, -0.1975],
+          [0.0057, 0.0414, -0.1990], [0.0150, 0.0481, -0.2005], [0.0185, 0.0590, -0.2020],
+          [0.0150, 0.0699, -0.2035], [0.0057, 0.0766, -0.2050], [-0.0057, 0.0766, -0.2065],
+          [-0.0150, 0.0699, -0.2080], [-0.0185, 0.0590, -0.2095], [-0.0150, 0.0481, -0.2110],
+          [-0.0057, 0.0414, -0.2125], [0.0057, 0.0414, -0.2140], [0.0150, 0.0481, -0.2155],
+          [0.0185, 0.0590, -0.2170], [0.0150, 0.0699, -0.2185], [0.0057, 0.0766, -0.2200],
+          [-0.0057, 0.0766, -0.2215], [-0.0150, 0.0699, -0.2230], [-0.0185, 0.0590, -0.2245],
+          [-0.0150, 0.0481, -0.2260], [-0.0057, 0.0414, -0.2275], [0.0057, 0.0414, -0.2290],
+          [0.0150, 0.0481, -0.2305], [0.0185, 0.0590, -0.2320], [0.0150, 0.0699, -0.2335],
+          [0.0057, 0.0766, -0.2350], [-0.0057, 0.0766, -0.2365], [-0.0150, 0.0699, -0.2380],
+          [-0.0185, 0.0590, -0.2395], [-0.0150, 0.0481, -0.2410], [-0.0057, 0.0414, -0.2425],
+          [0.0057, 0.0414, -0.2440], [0.0150, 0.0481, -0.2455], [0.0185, 0.0590, -0.2470],
+          [0.0150, 0.0699, -0.2485], [0.0057, 0.0766, -0.2500], [-0.0057, 0.0766, -0.2515],
+          [-0.0150, 0.0699, -0.2530], [-0.0185, 0.0590, -0.2545], [-0.0150, 0.0481, -0.2560],
+          [-0.0057, 0.0414, -0.2575], [0.0057, 0.0414, -0.2590], [0.0150, 0.0481, -0.2605],
+          [0.0185, 0.0590, -0.2620]
+        ]
+  - lathe:
+      what: the collar the pegs are clamped to
+      node: frame
+      region: body
+      origin: [0, 0.059, 0]
+      segments: 12
+      profile: [[0.0135, -0.290], [0.0165, -0.288], [0.0165, -0.274], [0.0135, -0.272]]
+  - box:
+      what: the right peg, tread plate
+      node: frame
+      region: peg
+      min: [-0.012, 0.002, -0.287]
+      max: [0.012, 0.044, -0.279]
+      bevel: 0.002
+  - box:
+      what: the left peg
+      node: frame
+      region: peg
+      min: [-0.012, 0.074, -0.287]
+      max: [0.012, 0.116, -0.279]
+      bevel: 0.002
+  - lathe:
+      what: the hydraulic reservoir on the back of the tube
+      node: frame
+      region: accent
+      origin: [-0.021, 0.059, 0]
+      segments: 8
+      caps: true
+      profile: [[0.0045, -0.118], [0.007, -0.114], [0.007, -0.066], [0.0045, -0.062]]
+  - box:
+      what: the reservoir's bracket
+      node: frame
+      region: body_dark
+      min: [-0.016, 0.054, -0.096]
+      max: [-0.009, 0.064, -0.084]
+  - lathe:
+      what: the piston rod, chromed
+      node: piston
+      region: piston
+      origin: [0, 0.059, 0]
+      segments: 8
+      profile: [[0.0065, -0.345], [0.0065, -0.245]]
+  - lathe:
+      what: the foot, tread rubber
+      node: piston
+      region: foot
+      origin: [0, 0.059, 0]
+      segments: 12
+      caps: true
+      profile: [[0.016, -0.361], [0.021, -0.356], [0.021, -0.349], [0.012, -0.344], [0.0085, -0.338]]

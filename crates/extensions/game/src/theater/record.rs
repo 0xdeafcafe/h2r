@@ -300,6 +300,30 @@ impl Recording {
             self.match_over = true;
         }
         let inputs = self.frame.actions.take().unwrap_or_default();
+        if let Some(film) = &self.film {
+            use film::file::{RECORD_JOIN, RECORD_LEAVE, TICK_DIGEST, TICK_EVENTS};
+            let mut seats = [None; film::columns::SEATS];
+            for input in &inputs {
+                if let Some(slot) = seats.get_mut(usize::from(input.seat)) {
+                    *slot = input.action;
+                }
+            }
+            let flags = if post_hash.is_some() { TICK_DIGEST } else { 0 }
+                | if events.is_empty() { 0 } else { TICK_EVENTS };
+            let mut film = film.lock().unwrap_or_else(|e| e.into_inner());
+            film.push_tick(flags, post_hash.unwrap_or(0), &seats)?;
+            for event in &events {
+                match event {
+                    Event::Join { player } => {
+                        film.seat_record(player.seat, RECORD_JOIN, &[player.seat, player.kind as u8])?
+                    }
+                    Event::Leave { seat } | Event::Quit { seat } => {
+                        film.seat_record(*seat, RECORD_LEAVE, &[*seat])?
+                    }
+                    _ => {}
+                }
+            }
+        }
         let out = self.out.as_mut().context("engine tape is closed")?;
         let match_start = self.meta.descriptor().match_start_tick;
         if match_start == Some(tick) {
@@ -321,6 +345,8 @@ impl Recording {
                 closing_events: Vec::new(),
                 post_hash,
                 forge: Vec::new(),
+                // The Firefight host log's entries applied this tick.
+                firefight: crate::firefight::film::take(),
             },
             records,
             clock,
@@ -448,6 +474,11 @@ impl Session {
                 let Mode::Record(rec) = &mut s.mode else {
                     anyhow::bail!("recording ended during capture");
                 };
+                // The film file reaches this tick before the mark that says
+                // the tape can end here.
+                if let Some(actions) = &rec.film {
+                    actions.lock().unwrap_or_else(|e| e.into_inner()).checkpoint()?;
+                }
                 let film = rec.out.as_mut().context("capture requires an open film")?;
                 let mark = film::tape::Mark::D3dBarrier {
                     slices,

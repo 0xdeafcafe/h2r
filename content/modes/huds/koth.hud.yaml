@@ -1,0 +1,31 @@
+# The King of the Hill HUD (docs/game/game-types-without-carriers.md, "The display"):
+# rows of text from the frame's bottom left, as the superbounce readout's,
+# a navpoint over the objective and the timed banner. Elements in draw order.
+name: koth
+elements:
+  - id: koth.hill
+    kind: text
+    font: hud
+    justify: start
+    longest: "Hill: Held by the enemy"
+    at: {anchor: bottom-left, full: [101, -47]}
+  - id: koth.time
+    kind: text
+    font: hud
+    justify: start
+    longest: "Held 99:59"
+    at: {anchor: bottom-left, full: [101, -26]}
+  - id: koth.phase
+    kind: text
+    font: hud
+    justify: start
+    longest: "Phase 99:59"
+    at: {anchor: bottom-left, full: [101, -68]}
+  - id: koth.mark
+    kind: navpoint
+    longest: "999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: koth.banner
+    kind: banner
+    longest: "HILL MOVED"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}

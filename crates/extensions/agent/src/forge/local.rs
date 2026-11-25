@@ -5,7 +5,10 @@ use std::sync::{Arc, mpsc};
 
 use ::forge::look::{Refusal, monitors::Who};
 use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
-use agent_proto::forge::{THING_KINDS, ThingsParams, method, refusal};
+use agent_proto::forge::{
+    GROUND_WAIT_TICKS, GroundBuildParams, NAV_WAIT_TICKS, NavParams, THING_KINDS, ThingsParams,
+    method, refusal,
+};
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
 use engine::GuestMemory;
 use forge_doc::{Entry, ForgeDoc, Op, Sha256, TagKey};
@@ -55,6 +58,9 @@ pub const OBJECT_KIND: &str = refusal::OBJECT_KIND;
 /// it is not the placement's to move.
 pub const OBJECT_HELD: &str = refusal::OBJECT_HELD;
 
+/// A kit add names a spare row the map does not have: it has no kit.
+pub const NO_KIT: &str = refusal::NO_KIT;
+
 /// The name a refused edit's sentence carries (`agent_proto::forge::refusal`):
 /// a sentence that starts with a game call's name has it, a print or `was`
 /// check that failed has its own, and any other is
@@ -67,11 +73,15 @@ pub fn refusal_name(message: &str) -> &'static str {
     {
         return name;
     }
-    if let Some(name) = [OBJECT_GONE, OBJECT_KIND, OBJECT_HELD]
+    if let Some(name) = [OBJECT_GONE, OBJECT_KIND, OBJECT_HELD, NO_KIT]
         .into_iter()
         .find(|name| message.starts_with(name))
     {
         return name;
+    }
+    // The session's own sentence for a map with no kit.
+    if message.starts_with(::forge::kit::NO_KIT) {
+        return NO_KIT;
     }
     let print = forge_doc::Refusal::Print {
         block: BlockKind::Weapons,
@@ -161,17 +171,29 @@ pub fn things_reply(session: &Session, params: &ThingsParams) -> Result<Value, R
             THING_KINDS.join(", ")
         )));
     }
+    let areas = session.areas().map_err(super::unavailable)?;
     let things: Vec<Value> = session
         .things()
-        .iter()
+        .into_iter()
         .filter(|t| {
             params
                 .kind
                 .as_deref()
                 .is_none_or(|k| thing_kind(t.kind) == k)
         })
-        .filter(|t| params.changed.is_none_or(|c| t.changed == c))
-        .map(thing_json)
+        .filter_map(|thing| {
+            let area = areas.get(&thing.id.identity());
+            let changed = thing.changed || area.is_some();
+            if params.changed.is_some_and(|wanted| changed != wanted) {
+                return None;
+            }
+            let mut row = thing_json(&thing);
+            if thing.block == BlockKind::NetgameFlags {
+                row["area"] = json!(area);
+                row["changed"] = json!(changed);
+            }
+            Some(row)
+        })
         .collect();
     Ok(json!({"things": things, "left_out": session.left_out()}))
 }
@@ -202,6 +224,12 @@ enum Staged {
         index: u32,
         field: &'static str,
         value: forge_doc::Value,
+    },
+    /// A kit row: the fields still document values.
+    KitAdd {
+        block: BlockKind,
+        index: u32,
+        fields: Vec<(&'static str, forge_doc::Value)>,
     },
 }
 
@@ -265,6 +293,14 @@ impl ForgeWorld {
                                 field: def.name,
                                 value,
                             })
+                        }
+                        Staged::KitAdd {
+                            block,
+                            index,
+                            fields,
+                        } => {
+                            let row = base::new_row(block, &fields, |k| resolve(k))?;
+                            ForgeStep::Base(BaseStep::Add { block, index, row })
                         }
                     })
                 })
@@ -391,6 +427,33 @@ impl World for ForgeWorld {
             .push(Staged::Base(BaseStep::Restore { block, index, row }));
         Ok(())
     }
+
+    /// Add an entry of a kit block as its row `index`, the next spare row.
+    fn kit_add(
+        &mut self,
+        block: BlockKind,
+        index: u32,
+        fields: &[(&'static str, forge_doc::Value)],
+    ) -> Result<(), String> {
+        // The shape is checked now; a tag key resolves when the edit is applied.
+        base::new_row(block, fields, |_| Ok(0))?;
+        self.steps.push(Staged::KitAdd {
+            block,
+            index,
+            fields: fields.to_vec(),
+        });
+        Ok(())
+    }
+
+    /// Take the kit block's last row, `index`, away.
+    fn kit_drop(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+        if !::forge::kit::is_block(block) {
+            return Err(format!("the kit has no {} rows", block.name()));
+        }
+        self.steps
+            .push(Staged::Base(BaseStep::Drop { block, index }));
+        Ok(())
+    }
 }
 
 /// Slot 0xffff is outside the engine's object pool. Different salt words
@@ -450,6 +513,13 @@ fn spawned_handles(made: Value, expected: usize) -> Result<Vec<u32>, String> {
 /// Agent proposals complete through the same tick-boundary host as pad edits.
 pub type ProposalReply = mpsc::Receiver<Result<Entry, String>>;
 
+/// A ground build's answer: `forge.ground`'s reply with `built` set, or why
+/// the build did not happen.
+pub type GroundReply = mpsc::Receiver<Result<Value, String>>;
+
+/// A generation's answer: `forge.nav`'s reply, or why it did not happen.
+pub type NavReply = mpsc::Receiver<Result<Value, String>>;
+
 pub trait LocalApi: Send + Sync + 'static {
     /// The profile and seat colour the monitor look methods speak for: the
     /// signed-in profile of local slot 0, from guest memory when there is
@@ -470,6 +540,33 @@ pub trait LocalApi: Send + Sync + 'static {
     fn log(&self, since: u32) -> Result<Vec<Entry>, String>;
     fn input(&self, m: &dyn GuestMemory, input: ::forge::tool::Input) -> Result<(), String>;
     fn propose(&self, tick: u32, op: Op, was: Option<Sha256>) -> Result<ProposalReply, String>;
+    /// `forge.ground`: the ground's state, markers and last report. The
+    /// default reads the session and says nothing the game alone knows.
+    fn ground(&self) -> Result<Value, String> {
+        Ok(super::ground::reply(
+            &*self.session()?,
+            super::ground::Facts::default(),
+        ))
+    }
+    /// `forge.ground.build`: start a build (**Build AI ground**, or with
+    /// `if_stale` **Test waves**) and answer when it has finished.
+    fn ground_build(&self, _if_stale: bool) -> Result<GroundReply, String> {
+        Err(super::ground::NO_BUILDER.into())
+    }
+    /// `forge.nav`: the nav's state, the last generation's counts,
+    /// problems and overlay. The default reads the session and says
+    /// nothing the game alone knows.
+    fn nav(&self) -> Result<Value, String> {
+        Ok(super::nav::reply(
+            &*self.session()?,
+            super::nav::Facts::default(),
+        ))
+    }
+    /// `forge.nav {generate: true}`: **Generate nav**, answering when it
+    /// has finished.
+    fn nav_generate(&self) -> Result<NavReply, String> {
+        Err(super::nav::NO_GENERATOR.into())
+    }
     /// How many game ticks `forge.propose` waits for its answer. A shared
     /// session's goes to the host and back, and waits for the tick the
     /// stream applies the entry at.
@@ -630,6 +727,64 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         let input = tool_input(v)?;
         ctx.with_guest(|m| host.input(m, input).map_err(refused))?;
         Ok(json!({"queued":true}))
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::GROUND, Access::Read, move |v, _| {
+        empty(v)?;
+        host.ground().map_err(super::unavailable)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::NAV, Access::Act, move |v, ctx| {
+        let p: NavParams = if v.is_null() {
+            NavParams::default()
+        } else {
+            serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
+        };
+        if !p.generate {
+            return host.nav().map_err(super::unavailable);
+        }
+        if ctx.at.boundary != Boundary::Tick || ctx.at.mode.as_deref() != Some("multiplayer") {
+            return Err(super::unavailable(
+                "nav generation requires a local multiplayer tick",
+            ));
+        }
+        let reply = host.nav_generate().map_err(refused)?;
+        ctx.defer(
+            NAV_WAIT_TICKS,
+            Box::new(move |_| match reply.try_recv() {
+                Ok(result) => Some(result.map_err(refused)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(super::unavailable("the Forge session ended")))
+                }
+            }),
+        );
+        Ok(Value::Null)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::GROUND_BUILD, Access::Act, move |v, ctx| {
+        if ctx.at.boundary != Boundary::Tick || ctx.at.mode.as_deref() != Some("multiplayer") {
+            return Err(super::unavailable(
+                "a ground build requires a local multiplayer tick",
+            ));
+        }
+        let p: GroundBuildParams = if v.is_null() {
+            GroundBuildParams::default()
+        } else {
+            serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
+        };
+        let reply = host.ground_build(p.if_stale).map_err(refused)?;
+        ctx.defer(
+            GROUND_WAIT_TICKS,
+            Box::new(move |_| match reply.try_recv() {
+                Ok(result) => Some(result.map_err(refused)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(super::unavailable("the Forge session ended")))
+                }
+            }),
+        );
+        Ok(Value::Null)
     });
     agent.add_game_method(method::PROPOSE, Access::Act, move |v, ctx| {
         if ctx.at.boundary != Boundary::Tick || ctx.at.mode.as_deref() != Some("multiplayer") {

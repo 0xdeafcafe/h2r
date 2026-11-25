@@ -64,6 +64,7 @@ dependencies = [
  "hooks",
  "hot-render",
  "hot-tags",
+ "hs",
  "image",
  "input",
  "libc",
@@ -208,6 +209,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "anim-edit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tags",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -283,6 +294,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "png",
  "pollster",
+ "settings",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",
@@ -672,6 +684,10 @@ dependencies = [
  "film",
  "firefight-kit",
  "font",
+ "forge",
+ "forge-build",
+ "forge-doc",
+ "forge-nav",
  "frame-scene",
  "game",
  "gfx",
@@ -709,6 +725,7 @@ dependencies = [
  "sim-bench",
  "sim-bridge",
  "snapshot",
+ "stage-kit",
  "tags",
  "timeline",
  "toml",
@@ -716,6 +733,7 @@ dependencies = [
  "vfs",
  "voice",
  "wgpu",
+ "workspace",
  "xapi",
  "xbe",
  "xiso",
@@ -728,6 +746,7 @@ dependencies = [
  "background",
  "content",
  "engine",
+ "game-markers",
  "guest-layout",
  "h1map",
  "host-dirs",
@@ -1074,6 +1093,7 @@ dependencies = [
  "voice",
  "windows-sys 0.61.2",
  "wma",
+ "workspace",
  "xbe",
  "xiso",
 ]
@@ -2024,9 +2044,12 @@ dependencies = [
  "sim-anim",
  "sim-collision",
  "sim-core",
+ "sim-havok",
  "sim-objects",
+ "sim-sound",
  "simd",
  "tags",
+ "variants",
  "x87",
  "xbe",
  "xiso",
@@ -2124,6 +2147,7 @@ dependencies = [
  "bots",
  "content",
  "firefight",
+ "h1-assets",
  "h1campaign",
  "h1convert",
  "hs",
@@ -2251,6 +2275,7 @@ name = "forge-build"
 version = "0.1.0"
 dependencies = [
  "content",
+ "firefight-kit",
  "forge-doc",
  "map",
  "scenario-edit",
@@ -2263,12 +2288,24 @@ name = "forge-doc"
 version = "0.1.0"
 dependencies = [
  "content",
+ "game-markers",
  "map",
  "rules",
  "scenario-edit",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "forge-nav"
+version = "0.1.0"
+dependencies = [
+ "bots",
+ "collision-build",
+ "map",
+ "scenario-edit",
+ "tags",
 ]
 
 [[package]]
@@ -2430,6 +2467,7 @@ dependencies = [
  "forge",
  "forge-doc",
  "frame-scene",
+ "game-markers",
  "gfx",
  "guest-layout",
  "h1-contract",
@@ -2439,6 +2477,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "hs",
+ "hud-edit",
  "hud-kit-core",
  "iced-x86",
  "indexmap",
@@ -2484,7 +2523,12 @@ dependencies = [
  "xapi",
  "xbe",
  "xiso",
+ "zstd",
 ]
+
+[[package]]
+name = "game-markers"
+version = "0.1.0"
 
 [[package]]
 name = "generic-array"
@@ -2894,6 +2938,7 @@ dependencies = [
  "ureq",
  "variants",
  "vfs",
+ "workspace",
  "xbe",
  "xiso",
 ]
@@ -3193,6 +3238,7 @@ dependencies = [
  "anyhow",
  "assets",
  "font",
+ "frame-scene",
  "h1-assets",
  "h1map",
  "hud-edit",
@@ -3229,6 +3275,8 @@ dependencies = [
  "assets",
  "font",
  "map",
+ "serde",
+ "serde_yaml_ng",
  "tags",
 ]
 
@@ -4388,6 +4436,7 @@ dependencies = [
  "gfx",
  "ir",
  "lift",
+ "lifted",
  "map",
  "mem-watch",
  "pollster",
@@ -5848,6 +5897,7 @@ name = "rules"
 version = "0.1.0"
 dependencies = [
  "content",
+ "game-markers",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -6219,6 +6269,7 @@ dependencies = [
  "assets",
  "bytemuck",
  "content",
+ "game-markers",
  "gfx",
  "h1-assets",
  "map",
@@ -6523,6 +6574,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "show-lan"
+version = "0.1.0"
+dependencies = [
+ "actor-net",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "hkdf",
+ "hmac 0.12.1",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6547,6 +6610,7 @@ name = "sim-anim"
 version = "0.1.0"
 dependencies = [
  "sim-core",
+ "simd",
 ]
 
 [[package]]
@@ -6565,6 +6629,8 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "hooks",
+ "hs",
+ "ir",
  "lifted",
  "runtime",
  "sim-ext",
@@ -6574,6 +6640,11 @@ dependencies = [
 name = "sim-collision"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "host-dirs",
+ "memmap2",
+ "mopp",
+ "sha2 0.10.9",
  "sim-core",
 ]
 
@@ -6590,11 +6661,28 @@ name = "sim-ext"
 version = "0.1.0"
 
 [[package]]
+name = "sim-havok"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "simd",
+ "x87",
+]
+
+[[package]]
 name = "sim-objects"
 version = "0.1.0"
 dependencies = [
  "guest-layout",
  "sim-core",
+]
+
+[[package]]
+name = "sim-sound"
+version = "0.1.0"
+dependencies = [
+ "simd",
+ "x87",
 ]
 
 [[package]]
@@ -6718,6 +6806,15 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sound-edit"
+version = "0.1.0"
+dependencies = [
+ "audio",
+ "serde",
+ "serde_yaml_ng",
 ]
 
 [[package]]
@@ -6967,6 +7064,7 @@ version = "0.1.0"
 dependencies = [
  "collision-build",
  "content",
+ "gfx",
  "h1-assets",
  "h1convert",
  "h1map",
@@ -6979,6 +7077,7 @@ dependencies = [
  "tags",
  "thiserror 2.0.21",
  "toml",
+ "workspace",
  "xiso",
 ]
 
@@ -7049,6 +7148,7 @@ dependencies = [
  "ab_glyph",
  "agent",
  "agent-proto",
+ "anim-edit",
  "anyhow",
  "app-icon",
  "assets",
@@ -7062,10 +7162,13 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "firefight-kit",
+ "forge",
  "forge-doc",
  "geometry-edit",
  "gfx",
  "guest-layout",
+ "h1-assets",
  "h1convert",
  "h1map",
  "h1objects",
@@ -7085,6 +7188,9 @@ dependencies = [
  "rules",
  "scenario-edit",
  "serde_json",
+ "sim-bench",
+ "sound-edit",
+ "stage-kit",
  "studio-proto",
  "superbounce",
  "tags",
@@ -7094,7 +7200,9 @@ dependencies = [
  "wgpu",
  "winit",
  "wma",
+ "workspace",
  "xbe",
+ "xiso",
 ]
 
 [[package]]
@@ -7182,6 +7290,8 @@ dependencies = [
 name = "tags"
 version = "0.1.0"
 dependencies = [
+ "content",
+ "flate2",
  "map",
  "sha2 0.10.9",
  "thiserror 2.0.21",
@@ -7913,8 +8023,10 @@ dependencies = [
  "content",
  "host-dirs",
  "libc",
+ "mem-watch",
  "memmap2",
  "rustix 1.1.6",
+ "tags",
  "thiserror 2.0.21",
  "xiso",
 ]
@@ -8835,6 +8947,34 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "workspace"
+version = "0.1.0"
+dependencies = [
+ "anim-edit",
+ "audio",
+ "content",
+ "firefight",
+ "font",
+ "game",
+ "h1-assets",
+ "hud-kit-core",
+ "live-proto",
+ "map",
+ "png",
+ "pogo-kit",
+ "rules",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sound-edit",
+ "tags",
+ "thiserror 2.0.21",
+ "toml",
+ "variants",
+ "vfs",
 ]
 
 [[package]]

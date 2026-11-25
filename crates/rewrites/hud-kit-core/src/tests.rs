@@ -1,12 +1,12 @@
 //! The core without a map: the record bytes at the draw's offsets, the
 //! superbounce HUD's arming bar and the kit's pill block
-//! (`huds::pill_block`) compiled against templates resolved from an
+//! (`views::pill_block`) compiled against templates resolved from an
 //! invented `nhdt` through a [`MapView`], and the cropped meter's ramp.
 
 use map::{FourCC, TagId};
 
-use crate::huds::pill_block::{self, CHARGE, CHARGE_COLUMNS, CHARGE_DOWN};
-use crate::huds::superbounce;
+use crate::views::pill_block::{self, CHARGE, CHARGE_COLUMNS, CHARGE_DOWN};
+use crate::views::superbounce;
 use crate::model::*;
 use crate::records::{
     self, BITMAP_SIZE, KIT_INPUT, NO_FONT, TEXT_SIZE, WidgetKind, bitmap as bf, text as tf,
@@ -54,6 +54,7 @@ fn templates(art_list: Vec<(Art, Result<ArtTemplate, String>)>) -> Templates {
             count: [(118, -1), (90, -2), (70, -3)],
             panel: 103.0,
             frag: [53.0, 50.0],
+            step: [(53, 0), (40, 0), (30, 0)],
         }),
     }
 }
@@ -549,16 +550,39 @@ fn the_modes_are_the_widgets_three() {
     assert_eq!(records::ROOT_TEXTS, 0x10);
 }
 
-/// A notification is one line of at most 63 UTF-16 units: the game's
-/// insert copies 63.
+/// A notification is one line of at most 62 UTF-16 units: the game's
+/// insert hands its copy 63, which keeps 62 and a zero.
 #[test]
-fn a_notification_is_one_line_of_at_most_63_units() {
+fn a_notification_is_one_line_of_at_most_62_units() {
+    assert_eq!(MESSAGE_UNITS, 62);
+    assert_eq!(MESSAGE_UNITS, BANNER_UNITS);
+    assert!(message_fault(&"a".repeat(63)).is_some());
     assert_eq!(message_fault(&"a".repeat(MESSAGE_UNITS)), None);
     assert!(message_fault(&"a".repeat(MESSAGE_UNITS + 1)).is_some());
     // A private-use glyph is one unit.
     let medal = format!("\u{e2a0}{}", "a".repeat(MESSAGE_UNITS - 1));
     assert_eq!(message_fault(&medal), None);
     assert!(message_fault("two\nlines").is_some());
+}
+
+/// A banner is a text channel of one line of at most 62 UTF-16 units: the
+/// game's copy keeps one fewer than the 63 it is given, and a zero.
+#[test]
+fn a_banner_is_one_line_of_at_most_62_units() {
+    assert_eq!(banner_fault(&"A".repeat(BANNER_UNITS)), None);
+    assert!(banner_fault(&"A".repeat(BANNER_UNITS + 1)).is_some());
+    assert!(banner_fault("WAVE 3\nBOSS").is_some());
+    assert!(banner_fault("WAVE 3\r").is_some());
+    let k = Kind::Banner {
+        longest: "ROUND COMPLETE",
+    };
+    assert_eq!(k.name(), "banner");
+    assert!(k.is_channel() && k.is_lines());
+    assert_eq!(k.longest(), Some("ROUND COMPLETE"));
+    assert_eq!(k.art(), None);
+    let e = Element::channel("b", k);
+    assert_eq!(e.at, Place::GAME);
+    assert_eq!(BANNER_TICKS, 3 * 30);
 }
 
 // ---- K5: team styles and the line shape ----
@@ -574,12 +598,12 @@ fn a_team_style_names_its_team() {
     assert_eq!(crate::world::TEAMS, 8);
 }
 
-/// The Forge readout (`huds::forge_readout`, slice H1): its states, the
+/// The Forge readout (`views::forge_readout`, slice H1): its states, the
 /// texts a view gives, the widest each row may be and what an overrun
 /// drops.
 mod forge_readout_tests {
-    use crate::huds::forge_readout::{self as fr, Readout, View};
-    use crate::huds::superbounce_readout as sb;
+    use crate::views::forge_readout::{self as fr, Readout, View};
+    use crate::views::superbounce_readout as sb;
     use crate::model::*;
     use crate::Mode;
 
@@ -926,4 +950,47 @@ mod forge_readout_tests {
         // leaves no gap.
         assert_eq!(start("Red team", ""), "Starting point  Red team");
     }
+}
+
+/// A monitor's HUD (`Describe::monitor`) sees the grenade row with the
+/// retail pills gated off: its next pill and count are the row's first
+/// place, one step back from the frag's (the plasma pill's and count's),
+/// in every mode; the pills' crop is the frag pill's still.
+#[test]
+fn a_monitors_grenade_row_is_its_first_place() {
+    let hud = block_and_bar();
+    let t = templates::resolve(&mut Invented, TagId(0xe000_0001), &hud);
+    let row = *t.row.as_ref().unwrap();
+    assert_eq!(row.step[0], (53, 0));
+    let first = row.first();
+    assert_eq!((first.pill[0], first.count[0]), ((0, 0), (12, -1)));
+    for i in 0..3 {
+        let (s, p, c) = (row.step[i], row.pill[i], row.count[i]);
+        assert_eq!(first.pill[i], (p.0 - 2 * s.0, p.1 - 2 * s.1));
+        assert_eq!(first.count[i], (c.0 - 2 * s.0, c.1 - 2 * s.1));
+    }
+    assert_eq!((first.panel, first.frag), (row.panel, row.frag));
+    let m = t.for_monitor();
+    assert_eq!(*m.row.as_ref().unwrap(), first);
+    let at = Place::in_grenade_row(Origin::NextGrenadePill);
+    assert_eq!(records::placed(&at, &m).unwrap().1[0], (0, 0));
+}
+
+/// The retail bitmap widgets a monitor keeps are named by
+/// `MONITOR_KEEPS`, counted among the bitmap widgets alone: a text widget
+/// of the same name, or a bitmap of another, is not kept.
+#[test]
+fn a_monitor_keeps_the_motion_tracker_alone() {
+    let hud = RawHud {
+        name: "invented".into(),
+        widgets: vec![
+            widget(WidgetKind::Bitmap, "shield", 0, 0, (0, 0), 1),
+            widget(WidgetKind::Text, "motion_sensor", 0, 0, (0, 0), 0),
+            widget(WidgetKind::Bitmap, "motion_sensor", 0, 0, (0, 0), 2),
+            widget(WidgetKind::Bitmap, "grenade", 0, 0, (0, 0), 3),
+            widget(WidgetKind::Bitmap, "motion_sensor", 0, 0, (0, 0), 4),
+        ],
+    };
+    assert_eq!(templates::monitor_keeps(&hud), [1, 3]);
+    assert_eq!(MONITOR_KEEPS, ["motion_sensor"]);
 }

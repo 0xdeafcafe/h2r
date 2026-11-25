@@ -15,10 +15,10 @@ use crate::app::App;
 use crate::theme;
 
 /// Pushes line segments of one colour.
-struct Lines(Vec<render::Vertex>);
+pub(super) struct Lines(pub(super) Vec<render::Vertex>);
 
 impl Lines {
-    fn segment(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
+    pub(super) fn segment(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
         for position in [a, b] {
             self.0.push(render::Vertex {
                 position,
@@ -30,7 +30,7 @@ impl Lines {
     }
 
     /// `a` to `b` with an arrowhead at `b`.
-    fn arrow(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
+    pub(super) fn arrow(&mut self, a: Vec3, b: Vec3, color: [f32; 3]) {
         self.segment(a, b, color);
         let d = sub(b, a);
         let len = dot(d, d).sqrt();
@@ -61,7 +61,7 @@ fn faces(ring: &[Vec3], normal: Vec3, color: [f32; 3]) -> Vec<render::Vertex> {
     render::overlay_vertices(&tris, color)
 }
 
-fn ring_lines(lines: &mut Lines, ring: &[Vec3], color: [f32; 3]) {
+pub(super) fn ring_lines(lines: &mut Lines, ring: &[Vec3], color: [f32; 3]) {
     for i in 0..ring.len() {
         lines.segment(ring[i], ring[(i + 1) % ring.len()], color);
     }

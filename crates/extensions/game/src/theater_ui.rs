@@ -309,7 +309,7 @@ impl State {
             .iter()
             .filter(|film| match self.tab {
                 Tab::Recent => {
-                    film.archive_id().is_none() || self.recent_archives.contains(&film.id)
+                    !film.saved && (film.archive_id().is_none() || self.recent_archives.contains(&film.id))
                 }
                 Tab::Saved => film.saved,
                 Tab::Clips => false,
@@ -571,7 +571,6 @@ impl Theater {
         let current = archive
             .as_ref()
             .and_then(|a| a.library().inspect_err(|e| errors.push(e.clone())).ok());
-        let authoritative = current.is_some();
         let recent = if let Some(rows) = current {
             if let Some(s) = &sync
                 && let Err(e) = s.remember_library(&rows)
@@ -646,21 +645,18 @@ impl Theater {
             return;
         }
         if let Load::Ready(list) = &mut state.load {
-            list.retain_mut(|local| {
+            for local in list.iter_mut() {
                 let remote = local
                     .live_game_id
                     .clone()
                     .or_else(|| published.remove(&local.id));
-                let Some(remote) = remote else { return true };
+                let Some(remote) = remote else { continue };
                 if let Some(row) = films.remove(&format!("live:{remote}")) {
                     local.live_game_id = Some(remote);
                     local.shared = row.shared;
-                    local.saved = row.saved;
-                    return true;
+                    local.saved |= row.saved;
                 }
-                // The file stays on disk when removed or evicted on another machine.
-                !authoritative
-            });
+            }
             list.extend(films.into_values());
         }
         state.archive_clips = archive_clips;

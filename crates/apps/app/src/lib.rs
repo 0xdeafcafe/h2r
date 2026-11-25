@@ -73,11 +73,16 @@ pub struct AppConfig {
     pub status_in_title: bool,
     /// Initial inner size in logical points.
     pub window_size: (u32, u32),
+    /// Fit the initial window inside `window_size` at the monitor aspect.
+    pub window_matches_monitor_aspect: bool,
     /// Column `.0` of `.1` across the primary screen ([`tile::tile`]),
     /// in place of `window_size` and the system's placement.
     pub tile: Option<(u32, u32)>,
     /// Start in borderless fullscreen.
     pub fullscreen: bool,
+    /// Create the window invisible: a game a tool holds (`h2 play
+    /// --editor`) presents to its frame handoff and `render.picture` only.
+    pub hidden: bool,
     /// Displayed shape of the guest frame.
     pub aspect: DisplayAspect,
     pub scaling: Scaling,
@@ -154,8 +159,10 @@ impl Default for AppConfig {
             title: "h2recomp".into(),
             status_in_title: true,
             window_size: (1280, 960),
+            window_matches_monitor_aspect: false,
             tile: None,
             fullscreen: false,
+            hidden: false,
             aspect: DisplayAspect::Standard,
             scaling: Scaling::Fit,
             native_fit: None,
@@ -331,10 +338,9 @@ impl GuestHost {
         })
     }
 
-    /// Reads the native render extent in physical pixels. Explicit display
-    /// aspects fit inside the drawable. The handle follows window resizes
-    /// and can move to the render thread.
-    pub fn native_size(&self) -> impl Fn() -> (u32, u32) + Clone + Send + Sync + 'static + use<> {
+    /// Reads the physical drawable, fitted viewport and fullscreen mode
+    /// together. The handle follows window resizes on the render thread.
+    pub fn native_target(&self) -> impl Fn() -> settings::NativeTarget + Clone + Send + Sync + 'static + use<> {
         let size = self.native_size.clone();
         move || size.get()
     }

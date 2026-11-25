@@ -512,6 +512,64 @@ mod tests {
     use crate::app::Action;
     use scenario_edit::{BlockKind, fixture};
 
+    /// The Game panel uploads the paired game's newest frame from its ring
+    /// and says how long a ring has been still. The ring is written by the
+    /// test, as the game would. Skipped without a wgpu adapter.
+    #[cfg(unix)]
+    #[test]
+    fn the_game_panel_shows_the_picture_and_its_stall() {
+        use crate::play::picture::Picture;
+        use crate::play::testing::{Temp, fake};
+        use agent_proto::picture::{Opened, Ring, SlotMeta, Transport};
+        use agent_proto::sim::SessionKind;
+        use std::time::{Duration, Instant};
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let mut app = App::new();
+        let temp = Temp::new("game-panel");
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        let game = fake::Game::start("game-panel", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+
+        let path = temp.0.join("picture.ring");
+        let writer = Ring::create(&path, (8, 8)).unwrap();
+        let opened = Opened {
+            id: 1,
+            transport: Transport::Ring,
+            path: Some(path.clone()),
+            size: [8, 8],
+            format: "rgba8".into(),
+            fps: 60,
+        };
+        writer.publish(
+            SlotMeta { frame: 1, tick: Some(5), present: 1, time_us: 0, width: 4, height: 2 },
+            &[120; 32],
+        );
+        let reader = || Ring::open(&path).unwrap();
+        app.pairing.picture = Some(Picture::with_ring(reader(), opened.clone(), Instant::now()));
+        h.frames(&mut app, 3).unwrap();
+        let view = &h.studio.play.game_view;
+        assert_eq!(view.uploaded, Some((1, [4, 2])), "the frame reached the texture");
+        assert!(view.line.contains("4x2") && view.line.contains("tick 5"), "{}", view.line);
+
+        // A ring that has published nothing for longer than the stall says so.
+        let old = Instant::now() - Duration::from_secs(6);
+        let quiet = temp.0.join("quiet.ring");
+        let _quiet_writer = Ring::create(&quiet, (8, 8)).unwrap();
+        let opened = Opened { path: Some(quiet.clone()), ..opened };
+        app.pairing.picture =
+            Some(Picture::with_ring(Ring::open(&quiet).unwrap(), opened, old));
+        h.frames(&mut app, 2).unwrap();
+        assert!(
+            h.studio.play.game_view.line.contains("no new frame for 6"),
+            "{}",
+            h.studio.play.game_view.line
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_game_link_shows_in_every_tool() {
@@ -591,7 +649,7 @@ mod tests {
         let mut app = App::new();
         app.set_data_root(source.0.join("data"));
         let workspaces = [
-            (ToolKind::Scenario, ["maps", "viewport", "inspector"]),
+            (ToolKind::Scenario, ["browser", "viewport", "inspector"]),
             (ToolKind::Tags, ["tags", "viewport", "inspector"]),
             (ToolKind::Scripts, ["scripts", "viewport", "inspector"]),
             (ToolKind::Variants, ["variants-list", "variants-settings", "variants-inspector"]),
@@ -674,22 +732,6 @@ mod tests {
             h.scene.find(&format!("win:###{name}")).unwrap().0
         });
         assert_eq!(variants, before);
-    }
-
-    #[test]
-    fn the_legacy_scenario_click_switches_to_map() {
-        use crate::ToolKind;
-        let Some((_turn, mut h)) = headless() else { return };
-        let source = crate::app::map_cards_tests::Temp::new("legacy-scenario");
-        let mut app = App::new();
-        app.set_data_root(source.0.join("data"));
-        app.dispatch(Action::SetTool(ToolKind::Variants));
-        h.frames(&mut app, 3).unwrap();
-        let script = crate::script::parse("click ###tools>Scenario").unwrap();
-        h.step(&mut app, &script[0]).unwrap();
-        assert_eq!(app.tool, ToolKind::Scenario);
-        assert!(h.scene.find("##studio-bar>###tool-Map").is_ok());
-        assert!(h.scene.find("Open a disc or map...").is_ok());
     }
 
     #[test]
@@ -788,9 +830,9 @@ mod tests {
         check(&src.join("fields"));
     }
 
-    /// At 1000 by 420 every tool draws no child window but a panel body or
-    /// a bounded list, and the scene outliner's filter is above its body.
-    /// Skipped without a wgpu adapter.
+    /// At 1000 by 420 every tool, and every document tab in front, draws
+    /// no child window but a panel body or a bounded list, and the scene
+    /// outliner's filter is above its body. Skipped without a wgpu adapter.
     #[test]
     fn every_panel_scrolls_as_a_whole_on_a_short_window() {
         use crate::ToolKind;
@@ -811,7 +853,7 @@ mod tests {
         app.dispatch(Action::OpenSource(map));
         // The ids of `theme::panel_body` and `theme::bounded_list` callers
         // (and the empty card).
-        const ALLOWED: [&str; 10] = [
+        const ALLOWED: [&str; 11] = [
             "##outliner-body",
             // The script editor's text scrolls on its own, as an editor does.
             "##rules-body",
@@ -823,7 +865,21 @@ mod tests {
             "##palette-results",
             "##empty-card",
             "##bsp-bytes",
+            "##browser-rows",
         ];
+        let check = |h: &Headless, what: &str| {
+            for window in &h.scene.windows {
+                let Some((_, child)) = window.name.rsplit_once('/') else {
+                    continue;
+                };
+                let id = child.rsplit_once('_').map_or(child, |(id, _)| id);
+                assert!(
+                    !id.starts_with("##") || ALLOWED.contains(&id) || id.starts_with("##Table"),
+                    "{what} draws child window {:?}",
+                    window.name
+                );
+            }
+        };
         for tool in [
             ToolKind::Scenario,
             ToolKind::Tags,
@@ -834,20 +890,148 @@ mod tests {
         ] {
             app.dispatch(Action::SetTool(tool));
             h.frames(&mut app, 4).unwrap();
-            for window in &h.scene.windows {
-                let Some((_, child)) = window.name.rsplit_once('/') else {
-                    continue;
-                };
-                let id = child.rsplit_once('_').map_or(child, |(id, _)| id);
-                assert!(
-                    !id.starts_with("##") || ALLOWED.contains(&id) || id.starts_with("##Table"),
-                    "{tool:?} draws child window {:?}",
-                    window.name
-                );
+            check(&h, &format!("{tool:?}"));
+        }
+        // Each document tab in front: the map, and a tag of each group.
+        for slot in [0, 2, 3] {
+            app.dispatch(Action::OpenDoc(crate::app::Doc::Tag(fixture::id(slot))));
+        }
+        let docs: Vec<_> = app.tabs().iter().map(|t| t.doc).collect();
+        assert!(docs.len() >= 4, "{docs:?}");
+        for doc in docs {
+            app.dispatch(Action::FocusDoc(doc));
+            h.frames(&mut app, 4).unwrap();
+            assert_eq!(app.front_doc(), Some(doc));
+            assert!(h.scene.find("##studio-bar>###doc-tab-").is_ok(), "the tab strip");
+            for label in ["Undo", "Links", "Open with"] {
+                assert!(h.scene.find(label).is_ok(), "{} missing {label}", app.doc_id(doc));
             }
+            check(&h, &app.doc_id(doc));
         }
         drop(turn);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn following_a_link_and_back_restores_the_document_and_selection() {
+        use crate::app::{Doc, NavAction, shell_tests, tag_tests};
+        let dir = shell_tests::Temp::new("header-back");
+        let mut app = shell_tests::app(&dir.0);
+        let weapon = tag_tests::weap_id();
+        let target = shell_tests::kit_id();
+        app.dispatch(Action::OpenDoc(Doc::Tag(weapon)));
+        app.dispatch(Action::Navigate(NavAction::Go {
+            tag: weapon, path: Some("parts[0].item".into()), element: None,
+        }));
+        let selection = app.nav_location();
+        let tag = app.tags.tag(target).unwrap();
+        let id = format!("tag:{}:{}", tags::defs::fourcc_text(tag.group), tag.name);
+        app.dispatch(Action::OpenAsset { asset: id, map: None });
+        assert_eq!(app.front_doc(), Some(Doc::Tag(target)));
+        app.dispatch(Action::Navigate(NavAction::Back));
+        assert_eq!(app.front_doc(), Some(Doc::Tag(weapon)));
+        assert_eq!(app.nav_location(), selection);
+    }
+
+    /// The header over an invented weapon and a fake tags repository: the
+    /// Links menu, drawn, lists the model the weapon names, and the path
+    /// names the tag. Skipped without a wgpu adapter.
+    #[test]
+    fn the_header_menu_lists_the_links_of_a_weapon_in_a_fake_repository() {
+        use crate::app::{Doc, shell_tests, tag_tests};
+        use ::tags::repo::{Body, LooseTag, Node, Region, TagKey, TagRepo, Tree, Value as Field};
+        let Some((_turn, mut h)) = tags_headless() else {
+            return;
+        };
+        let dir = shell_tests::Temp::new("header-links");
+        let mut app = shell_tests::app(&dir.0);
+        let key = |g: &[u8; 4], p: &str| TagKey::new(map::FourCC(*g), p);
+        let weapon = key(b"weap", "objects\\test\\blaster");
+        let model = key(b"hlmt", "objects\\test\\blaster_model");
+        let tag = |k: &TagKey, refs: Vec<(u32, TagKey)>| LooseTag {
+            key: k.clone(),
+            body: Body::Tree(Tree {
+                region: Region::Metadata,
+                nodes: vec![Node {
+                    bytes: vec![0; 32],
+                    count: 1,
+                    size: 32,
+                    align: 4,
+                    fields: refs.into_iter().map(|(at, r)| (at, Field::Ref(r))).collect(),
+                }],
+                raws: Vec::new(),
+                losses: Vec::new(),
+            }),
+        };
+        let mut repo = TagRepo::create(&app.tags_root()).unwrap();
+        repo.put(&tag(&weapon, vec![(0, model.clone())])).unwrap();
+        repo.put(&tag(&model, Vec::new())).unwrap();
+        app.dispatch(Action::OpenDoc(Doc::Tag(tag_tests::weap_id())));
+        assert_eq!(
+            app.doc_asset(Doc::Tag(tag_tests::weap_id())).as_deref(),
+            Some("tag:weap:objects\\test\\blaster")
+        );
+        let c = crate::ui::doc_header_crumbs(&app, "tag:weap:objects\\test\\blaster").unwrap();
+        assert_eq!((c.origin.as_str(), c.kind.as_str()), ("Disc", "Objects"));
+        h.frames(&mut app, 4).unwrap();
+        h.step(&mut app, &Step::Click("Links".into(), Button::Left)).unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert!(
+            h.scene.find("tag:hlmt:objects\\test\\blaster_model").is_ok(),
+            "the Links menu lists the weapon's model"
+        );
+        assert!(h.scene.find("Show all in the Browser").is_ok());
+    }
+
+    /// The tab strip's clicks (a double-click in the Tags tree, a tab, a
+    /// close button) and the same `shell.*` calls leave the same tabs.
+    /// Skipped without a wgpu adapter.
+    #[test]
+    fn the_tab_strip_clicks_and_shell_calls_leave_the_same_state() {
+        use crate::api::Api;
+        use crate::app::{Doc, shell_tests, tag_tests};
+        use studio_proto::method as m;
+
+        let Some((_turn, mut h)) = tags_headless() else {
+            return;
+        };
+        let (ta, tb) = (shell_tests::Temp::new("strip"), shell_tests::Temp::new("strip-api"));
+        let mut window = shell_tests::app(&ta.0);
+        let mut agent = shell_tests::app(&tb.0);
+        let weap = Doc::Tag(tag_tests::weap_id());
+        let kit = Doc::Tag(shell_tests::kit_id());
+        h.frames(&mut window, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut window, &click("weap  (1)")).unwrap();
+        h.frames(&mut window, 2).unwrap();
+        h.step(
+            &mut window,
+            &Step::Click("objects\\test\\blaster".into(), Button::Double),
+        )
+        .unwrap();
+        assert_eq!(window.front_doc(), Some(weap), "a double-click opens the tag");
+        window.dispatch(Action::OpenDoc(kit));
+        h.frames(&mut window, 3).unwrap();
+        h.step(&mut window, &click("##studio-bar>###doc-tab-map")).unwrap();
+        assert_eq!(window.front_doc(), Some(Doc::Map));
+        let weap_id = window.doc_id(weap);
+        h.step(&mut window, &click(&format!("##studio-bar>###doc-close-{weap_id}")))
+            .unwrap();
+        assert!(!window.tabs().iter().any(|t| t.doc == weap));
+
+        let mut api = Api::new();
+        let mut call = |app: &mut App, method: &str, p: serde_json::Value| {
+            api.call(app, method, p.clone())
+                .unwrap_or_else(|e| panic!("{method} {p}: {e}"))
+        };
+        call(&mut agent, m::SHELL_OPEN, serde_json::json!({ "tag": weap_id }));
+        call(&mut agent, m::SHELL_OPEN, serde_json::json!({ "tag": "itmc" }));
+        call(&mut agent, m::SHELL_FOCUS, serde_json::json!({ "doc": "map" }));
+        call(&mut agent, m::SHELL_CLOSE, serde_json::json!({ "doc": weap_id }));
+        let a = call(&mut window, m::SHELL_TABS, serde_json::Value::Null);
+        let b = call(&mut agent, m::SHELL_TABS, serde_json::Value::Null);
+        assert_eq!(a, b);
+        assert_eq!(window.tool, agent.tool);
     }
 
     /// One real frame of the shell over the invented test map, read back:
@@ -930,7 +1114,13 @@ mod tests {
         let Some((_turn, mut h)) = headless() else {
             return;
         };
+        // A tag tree under a data root of its own: with none, the first
+        // start's floating page covers the middle of the window, and the
+        // picture below it is never hovered.
+        let t = crate::app::map_cards_tests::Temp::new("ui-screens-tool");
         let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        tags::repo::TagRepo::create(&app.tags_root()).unwrap();
         app.dispatch(Action::SetTool(ToolKind::UiScreens));
         h.frames(&mut app, 3).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
@@ -999,7 +1189,8 @@ mod tests {
         use crate::app::ToolKind;
         use crate::script::{Button, Step};
         use hud_edit::{WidgetKey, WidgetKind};
-        let Some((_turn, mut h)) = headless() else {
+        // Leave room for the HUD's document header and the bottom dock.
+        let Some((_turn, mut h)) = headless_sized([1280.0, 1100.0]) else {
             return;
         };
         // A combo reports no label of its own: name it to the probe.
@@ -1025,13 +1216,25 @@ mod tests {
         h.step(&mut app, &click("##hud-w-Bitmap-2")).unwrap();
         assert_eq!(app.hud.selected, Some(stray));
         let (origin, zoom) = h.studio.hud.shown.expect("the picture is shown");
-        // The stray's middle (88..152, 396..412), then 20 HUD pixels right.
+        let rect = app
+            .hud
+            .shot()
+            .unwrap()
+            .picture
+            .placed
+            .iter()
+            .find(|p| p.hud == 0 && p.key == stray)
+            .and_then(|p| p.rect)
+            .expect("the stray has a rectangle");
+        let (x, y) = ((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        assert_eq!(app.hud.widget_at([x, y]), Some(stray));
+        // Move from the widget's middle by 20 HUD pixels.
         let at = |x: f32, y: f32| format!("{},{}", origin[0] + x * zoom, origin[1] + y * zoom);
         for step in [
-            Step::Move(at(120.0, 404.0)),
+            Step::Move(at(x, y)),
             Step::Down,
-            Step::Move(at(130.0, 404.0)),
-            Step::Move(at(140.0, 404.0)),
+            Step::Move(at(x + 10.0, y)),
+            Step::Move(at(x + 20.0, y)),
             Step::Up,
         ] {
             h.step(&mut app, &step).unwrap();
@@ -1099,7 +1302,8 @@ mod tests {
         let mut app = App::new();
         app.set_data_root(t.0.join("data"));
         app.dispatch(Action::OpenSource(map));
-        app.dispatch(Action::SavePackage(app.session.form_defaults()));
+        let form = app.session.form_defaults();
+        app.save_map_package(&form);
         app.dispatch(Action::SelectMap("example".into()));
         app.dispatch(Action::OpenPackageEntry("example-edit".into()));
         let manifest = app.session.maps_dir().join("example-edit/manifest.toml");
@@ -1116,7 +1320,6 @@ mod tests {
         h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
         h.step(&mut app, &Step::Key(Key::S, 1)).unwrap();
         h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
-        assert!(app.package_form.is_none());
         assert!(!app.is_dirty());
         assert_ne!(std::fs::read(manifest).unwrap(), first);
     }
@@ -1556,85 +1759,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The Maps list's Map Pack group through its widgets: with nothing
-    /// installed it says how to install it; with an (invented) install it
-    /// lists the map by its record's name with the picture beside it, and
-    /// a click opens it in the scenario tool. The window is tall enough
-    /// for the Maps tab to show the group unscrolled: Dear ImGui names a
-    /// clipped row to nobody, so the probe would not find it. Skipped
-    /// without a wgpu adapter.
-    #[test]
-    fn the_map_pack_group_lists_and_opens_a_pack_map() {
-        use crate::app::map_pack::content_root;
-        use crate::script::{Button, Step};
-        use crate::ui::map_list::{Group, Shown};
-        let _turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
-        let mut h = match Headless::new([1280.0, 1600.0], 1.0) {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("skipping: {e}");
-                return;
-            }
-        };
-        let dir = std::env::temp_dir().join(format!("h2-editor-mp-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut app = App::new();
-        app.set_data_root(dir.join("data"));
-        h.frames(&mut app, 3).unwrap();
-        assert_eq!(h.studio.map_list.shown(Group::MapPack), Some(&Shown::Hint));
-
-        let pack = content_root(&dir.join("data")).join("4d53006400000101");
-        std::fs::create_dir_all(&pack).unwrap();
-        std::fs::write(pack.join("ridge.map"), fixture::fixture()).unwrap();
-        let e = content::map_list::Entry {
-            scenario: "scenarios\\multi\\ridge\\ridge".into(),
-            map_id: 1001,
-            names: std::array::from_fn(|_| "Ridge".to_owned()),
-            descriptions: std::array::from_fn(|_| String::new()),
-            sort: 100,
-            flags: 0,
-            teams: [8; 16],
-            preview: [0x20u8, 0x80, 0xe0, 0xbf].repeat(content::map_list::PREVIEW_LEN / 4),
-        };
-        std::fs::write(pack.join("patch.lvl"), e.to_v2().unwrap()).unwrap();
-        app.refresh_packages();
-        h.frames(&mut app, 3).unwrap();
-        assert_eq!(
-            h.studio.map_list.shown(Group::MapPack),
-            Some(&Shown::Maps(vec![("Ridge".into(), true)]))
-        );
-        let (rgba, _) = h.capture(&mut app, 2).unwrap();
-        // The picture (R 0xe0, G 0x80, B 0x20 at the record's alpha 0xbf,
-        // so blended a quarter with the dark panel) fills the thumbnail.
-        let orange = rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|p| (150..215).contains(&p[0]) && (80..135).contains(&p[1]) && p[2] < 70)
-            .count();
-        assert!(orange >= 100, "the thumbnail is drawn: {orange} pixels");
-        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
-            .unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(app.opened_pack_map(), Some("ridge"));
-        assert!(app.session.is_open());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The Maps list names and pictures every group through its widgets
-    /// (`app::map_cards_tests`' invented files): a folder of maps with a
-    /// main menu lists its campaign level and multiplayer map by the
-    /// menu's names, each with its picture beside it, and the shared cache
-    /// and the menu itself by file name with none; a package with an image
-    /// of its own shows it; the Map Pack, not installed, its hint. A click
-    /// on a named map opens it. The window is tall enough for the Maps
-    /// tab to show every group unscrolled. Skipped without a wgpu
+    /// The map grid, shown while no map is open, names and pictures a
+    /// folder's maps through its widgets (`app::map_cards_tests`' invented
+    /// files): a click on a named map opens it. Skipped without a wgpu
     /// adapter.
     #[test]
-    fn the_maps_list_names_and_pictures_every_group() {
+    fn the_map_grid_opens_a_named_map() {
         use crate::app::map_cards_tests::{Temp, maps_folder, package_with_picture};
         use crate::script::{Button, Step};
-        use crate::ui::map_list::{Group, Shown};
         let _turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = match Headless::new([1280.0, 1600.0], 1.0) {
             Ok(h) => h,
@@ -1651,25 +1783,6 @@ mod tests {
         app.dispatch(Action::OpenSource(maps));
         app.wait_cards();
         h.frames(&mut app, 3).unwrap();
-        let rows = |v: &[(&str, bool)]| {
-            Some(Shown::Maps(
-                v.iter().map(|(l, p)| (l.to_string(), *p)).collect(),
-            ))
-        };
-        assert_eq!(
-            h.studio.map_list.shown(Group::Halo2).cloned(),
-            rows(&[("Yard", true), ("The Pier", true)])
-        );
-        assert_eq!(
-            h.studio.map_list.shown(Group::SharedAndMenu).cloned(),
-            rows(&[("mainmenu", false), ("shared", false)])
-        );
-        assert_eq!(
-            h.studio.map_list.shown(Group::Packages).cloned(),
-            rows(&[("Yard Edit", true)])
-        );
-        assert_eq!(h.studio.map_list.shown(Group::MapPack), Some(&Shown::Hint));
-        assert_eq!(h.studio.map_list.shown(Group::Halo1), None);
         h.step(
             &mut app,
             &Step::Click("##map-grid>The Pier##map-02_pier".into(), Button::Left),
@@ -1858,5 +1971,241 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An invented tags tree for the browser: the maps `example` (the
+    /// fixture's own name) and `other` share a rifle and each hold their
+    /// own bitmap named `objects\\pixels` (a variant of it), and a local
+    /// package `kit-test` edits the rifle. Placeholder bytes: the browser
+    /// never decodes them.
+    fn browser_tree(data: &std::path::Path) -> std::path::PathBuf {
+        use map::FourCC;
+        use tags::repo::store::Manifest;
+        use tags::repo::{TagKey, TagRepo};
+        let mut repo = TagRepo::create(&data.join("tags")).unwrap();
+        let key = |g: &[u8; 4], p: &str| TagKey::new(FourCC(*g), p);
+        let place = |repo: &TagRepo, k: &TagKey, v: Option<&str>| {
+            let p = repo.path_of(k, v);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"placeholder").unwrap();
+        };
+        let rifle = key(b"weap", "objects\\weapons\\rifle");
+        let pixels = key(b"bitm", "objects\\pixels");
+        let (se, so) = (key(b"scnr", "scenarios\\example"), key(b"scnr", "scenarios\\other"));
+        for k in [&rifle, &pixels, &se, &so] {
+            place(&repo, k, None);
+        }
+        place(&repo, &pixels, Some("v2"));
+        for (map, scenario, variant) in [("example", &se, None), ("other", &so, Some("v2"))] {
+            repo.put_manifest(
+                &Manifest {
+                    map: map.to_owned(),
+                    name: map.to_owned(),
+                    scenario: Some(scenario.clone()),
+                    tags: vec![
+                        (rifle.clone(), None),
+                        (pixels.clone(), variant.map(str::to_owned)),
+                        (scenario.clone(), None),
+                    ],
+                    ..Default::default()
+                },
+                b"header",
+            )
+            .unwrap();
+        }
+        let pkg = data.join("packages/kit-test");
+        std::fs::create_dir_all(pkg.join("edits")).unwrap();
+        std::fs::write(
+            pkg.join("package.toml"),
+            "[package]\nformat = 1\nid = \"kit-test\"\nname = \"Kit test\"\n\n[[item]]\nkind = \"edits\"\nsource = \"edits/kit.yaml\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("edits/kit.yaml"),
+            "- tag: 'weap:objects\\weapons\\rifle'\n  set:\n    - {path: x, value: 1}\n",
+        )
+        .unwrap();
+        pkg
+    }
+
+    /// The rows shown, bar the baked packages' own tags (the Pogo Stick's
+    /// weapons are in every tree), sorted.
+    fn shown(h: &Headless) -> Vec<String> {
+        let mut v = h.studio.browser.shown.clone();
+        v.retain(|row| !row.contains("\\multiplayer\\pogo\\"));
+        v.sort();
+        v
+    }
+
+    /// The browser lists the invented tree's rows (one for a shared tag,
+    /// one with its variants for a tag the maps hold differently), the
+    /// Kind picker and the search narrow them, a double-click on a map's
+    /// scenario row opens the map's editor, and the Packages root lists
+    /// the set. Skipped without a wgpu adapter.
+    #[test]
+    fn the_browser_lists_the_tree_and_a_double_click_opens_its_editor() {
+        use crate::app::Doc;
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else { return };
+        let t = crate::app::map_cards_tests::Temp::new("browser-panel");
+        let data = t.0.join("data");
+        browser_tree(&data);
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(data);
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::CloseDoc(Doc::Map));
+        assert_eq!(app.front_doc(), None);
+        h.frames(&mut app, 4).unwrap();
+        h.scene.find("win:###browser").unwrap();
+        assert_eq!(
+            shown(&h),
+            [
+                "tag:bitm:objects\\pixels",
+                "tag:scnr:scenarios\\example",
+                "tag:scnr:scenarios\\other",
+                "tag:weap:objects\\weapons\\rifle",
+            ]
+        );
+        // The variants of the differing bitmap are lines under its row.
+        h.scene.find("##browser-tag:bitm:objects\\pixels-v-1").unwrap();
+        // The rifle's package edit is its badge.
+        h.scene.find("[edited by kit-test]").unwrap();
+
+        // The Kind picker and the search narrow the list.
+        h.studio.browser.kind = Some("Maps".into());
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(
+            shown(&h),
+            ["tag:scnr:scenarios\\example", "tag:scnr:scenarios\\other"]
+        );
+        h.studio.browser.kind = None;
+        h.step(&mut app, &Step::Click("##browser-search".into(), Button::Left))
+            .unwrap();
+        h.step(&mut app, &Step::Type("weapons rifle".into())).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(shown(&h), ["tag:weap:objects\\weapons\\rifle"]);
+        // The Packages root lists the set. The click takes the focus from
+        // the search box first, so the cleared query is not written back.
+        h.step(&mut app, &Step::Click("##browser-root-1".into(), Button::Left))
+            .unwrap();
+        h.studio.browser.query.clear();
+        h.frames(&mut app, 2).unwrap();
+        assert!(h.studio.browser.shown.contains(&"package:kit-test".to_owned()));
+        h.step(&mut app, &Step::Click("##browser-root-0".into(), Button::Left))
+            .unwrap();
+        h.studio.browser.kind = Some("Maps".into());
+        h.frames(&mut app, 2).unwrap();
+
+
+        // A double-click on the map's scenario opens the map's editor.
+        h.step(
+            &mut app,
+            &Step::Click("##browser-tag:scnr:scenarios\\example".into(), Button::Double),
+        )
+        .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.loaded_map(), Some("example"));
+        assert_eq!(app.front_doc(), Some(Doc::Map));
+        assert_eq!(app.tool, crate::ToolKind::Scenario);
+    }
+
+    /// The Problems panel lists the rows it was given, and a double-click
+    /// on a row opens what it is about: the tool of a HUD finding, and the
+    /// package of a package finding in the browser. Skipped without a wgpu
+    /// adapter.
+    #[test]
+    fn the_problems_panel_lists_rows_and_a_double_click_opens_them() {
+        use crate::api::checks::Severity;
+        use crate::app::problems::{Problem, Problems, SOURCES};
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else { return };
+        let t = crate::app::map_cards_tests::Temp::new("problems-panel");
+        let data = t.0.join("data");
+        browser_tree(&data);
+        let mut app = App::new();
+        app.set_data_root(data);
+        let row = |source: &'static str, message: &str| Problem {
+            source,
+            area: source.to_owned(),
+            code: format!("{source}.invented"),
+            severity: Severity::Error,
+            message: message.to_owned(),
+            target: String::new(),
+            path: None,
+            asset: None,
+            tool: None,
+            field: None,
+            at: None,
+        };
+        let hud = Problem {
+            tool: Some(crate::ToolKind::Hud),
+            ..row("hud", "a HUD finding")
+        };
+        let package = Problem {
+            asset: Some("item:pogo:0".into()),
+            ..row("package", "a package finding")
+        };
+        app.problems.merge(
+            Problems {
+                rows: vec![package, hud],
+                ..Default::default()
+            },
+            &SOURCES,
+        );
+        h.studio.problems.focus = 4;
+        h.frames(&mut app, 6).unwrap();
+        assert_eq!(h.studio.problems.shown, [0, 1]);
+        // The list is worst first, then by source: the HUD's row is first.
+        h.step(&mut app, &Step::Click("##problem-0".into(), Button::Double))
+            .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.tool, crate::ToolKind::Hud);
+        h.studio.problems.focus = 4;
+        h.frames(&mut app, 4).unwrap();
+        h.step(&mut app, &Step::Click("##problem-1".into(), Button::Double))
+            .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert!(
+            h.studio.browser.shown.iter().any(|a| a.starts_with("item:pogo:")),
+            "{:?}",
+            h.studio.browser.shown
+        );
+    }
+
+    /// New from this uses the edit target picker and opens the copy.
+    #[test]
+    fn new_from_this_resumes_after_choosing_the_edit_target() {
+        let t = crate::app::map_cards_tests::Temp::new("browser-copy");
+        let data = t.0.join("data");
+        let pkg = browser_tree(&data);
+        let mut app = App::new();
+        app.set_data_root(data);
+        app.dispatch(Action::CreateAsset(crate::app::assets::CreateAsset::Copy {
+            asset: "tag:weap:objects\\weapons\\rifle".into(),
+            to: None,
+        }));
+        assert!(app.edits.picker.is_some());
+        assert!(app.front_doc().is_none());
+        app.dispatch(Action::ChooseEditTarget(crate::app::EditChoice::Existing("kit-test".into())));
+        let doc = app.front_doc().unwrap();
+        assert!(matches!(doc, crate::app::Doc::SourceAsset(_)));
+        assert_eq!(app.doc_asset(doc).as_deref(), Some("tag:weap:objects\\weapons\\rifle_copy"));
+        let like = pkg.join("tags/objects/weapons/rifle_copy.weap.yaml");
+        assert_eq!(
+            std::fs::read_to_string(like).unwrap(),
+            "like: 'weap:objects\\weapons\\rifle'\n"
+        );
+        let manifest = std::fs::read_to_string(pkg.join("package.toml")).unwrap();
+        assert!(manifest.contains("rifle_copy"), "{manifest}");
+        // A tag the tree lacks is a refusal in the log, not a file.
+        let before = app.log().len();
+        app.dispatch(Action::CreateAsset(crate::app::assets::CreateAsset::Copy {
+            asset: "tag:weap:objects\\nothing".into(),
+            to: None,
+        }));
+        assert!(app.log().len() > before);
+        assert!(!pkg.join("tags/objects/nothing_copy.weap.yaml").exists());
     }
 }

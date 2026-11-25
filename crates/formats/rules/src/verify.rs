@@ -11,11 +11,7 @@ use crate::caps::{self, Kind, VARIANT_FIELDS};
 use crate::ir::*;
 use crate::settings;
 use crate::ty::{MAX_ENUM_VARIANTS, MAX_ENUMS, Sizes, Ty};
-
-/// Engine indices a script may ride (`caps::CARRIERS`).
-fn carrier_known(index: u8) -> bool {
-    caps::CARRIERS.iter().any(|&(_, i)| i == index)
-}
+use crate::types::{self, Type};
 
 /// Why a blob was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -26,8 +22,8 @@ pub enum Refusal {
     IrVersion(u16),
     #[error("API version {0} is unsupported (this build has {api})", api = caps::API_VERSION)]
     ApiVersion(u16),
-    #[error("engine index {0} cannot carry a script")]
-    Carrier(u8),
+    #[error("uses names {}, which is no built-in game", .0.name())]
+    Uses(Type),
     #[error("the script needs {0} teams; at most 8 exist")]
     Teams(u8),
     #[error("{what} exceeds its limit of {max}")]
@@ -46,6 +42,8 @@ pub enum Refusal {
     Label { index: usize, reason: &'static str },
     #[error("{what} index {index} is out of range")]
     Index { what: &'static str, index: u32 },
+    #[error("a HUD slot (string {0}) is declared twice")]
+    HudSlot(u16),
     #[error("option {0} has an invalid type, range or default")]
     Option(usize),
     #[error("the options need {0} bits; a record carries {OPTION_BITS}")]
@@ -67,8 +65,8 @@ pub enum Refusal {
     Setting { index: u16, reason: &'static str },
     #[error("quick mark {index}: {reason}")]
     Quick { index: usize, reason: &'static str },
-    #[error("the carrier scores this script, so it may have no {0}")]
-    ScoringCarrier(&'static str),
+    #[error("the script uses a built-in game's rules, so it may have no {0}")]
+    UsesHolds(&'static str),
     #[error("handler {handler}, op {pc}: {fault}")]
     Op {
         handler: usize,
@@ -112,6 +110,8 @@ pub enum Fault {
     Label(u16),
     #[error("label {0} names starting locations, which a loop cannot visit")]
     SpawnSet(u16),
+    #[error("label {0} names a flight path, whose points a loop cannot visit")]
+    PathSet(u16),
     #[error("API entry {0} does not exist in this API version")]
     Entry(u16),
     #[error("{entry} takes {want} arguments, given {got}")]
@@ -147,6 +147,10 @@ pub enum Fault {
     Template,
     #[error("a jump or a loop lands inside a message's values")]
     IntoHoles,
+    #[error("{0} names its tag and its field as constants written directly before the call")]
+    FieldRead(&'static str),
+    #[error("{entry} names no valid field: {why}")]
+    FieldPath { entry: &'static str, why: String },
     #[error("string {0} is no message template")]
     NotTemplate(u32),
     #[error("the message's text has holes {want:?}, given values {got:?}")]
@@ -192,8 +196,10 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
     if h.api_version != caps::API_VERSION {
         return Err(Refusal::ApiVersion(h.api_version));
     }
-    if !carrier_known(h.carrier) {
-        return Err(Refusal::Carrier(h.carrier));
+    if let Some(u) = h.uses
+        && !u.is_retail()
+    {
+        return Err(Refusal::Uses(u));
     }
     if h.teams as usize > crate::ty::MAX_TEAMS {
         return Err(Refusal::Teams(h.teams));
@@ -203,6 +209,13 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
             table: "the name",
             index: 0,
             max: MAX_TEXT_BYTES,
+        });
+    }
+    if h.points.is_empty() || h.points.len() > types::MAX_POINTS_BYTES {
+        return Err(Refusal::Text {
+            table: "the points label",
+            index: 0,
+            max: types::MAX_POINTS_BYTES,
         });
     }
     if h.requires.len() > MAX_REQUIRES {
@@ -297,6 +310,39 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
     for (n, (what, max)) in per_scope.iter().zip(budgets) {
         if *n > max {
             return Err(Refusal::Limit { what, max });
+        }
+    }
+
+    if ir.widgets.len() > crate::ir::MAX_WIDGETS {
+        return Err(Refusal::Limit {
+            what: "HUD widgets",
+            max: crate::ir::MAX_WIDGETS,
+        });
+    }
+    if ir.waypoints.len() > crate::ir::MAX_WAYPOINTS {
+        return Err(Refusal::Limit {
+            what: "waypoints",
+            max: crate::ir::MAX_WAYPOINTS,
+        });
+    }
+    // A slot is one place: two declarations at one are an overlap.
+    let mut slots: Vec<u16> = Vec::new();
+    for d in &ir.widgets {
+        string(d.name)?;
+        string(d.slot)?;
+        if slots.contains(&d.slot) {
+            return Err(Refusal::HudSlot(d.slot));
+        }
+        slots.push(d.slot);
+    }
+    for d in &ir.waypoints {
+        string(d.name)?;
+        if let Some(slot) = d.slot {
+            string(slot)?;
+            if slots.contains(&slot) {
+                return Err(Refusal::HudSlot(slot));
+            }
+            slots.push(slot);
         }
     }
 
@@ -418,6 +464,11 @@ pub fn verify(ir: &Ir) -> Result<Report, Refusal> {
             })?;
         }
         message_runs(ir, hd).map_err(|(pc, fault)| Refusal::Op {
+            handler: hi,
+            pc,
+            fault,
+        })?;
+        field_reads(ir, hd).map_err(|(pc, fault)| Refusal::Op {
             handler: hi,
             pc,
             fault,
@@ -547,6 +598,45 @@ fn message_runs(ir: &Ir, hd: &Handler) -> Result<(), (usize, Fault)> {
     Ok(())
 }
 
+/// The tag read rule ("Advanced data" in `docs/game/rules-world-api.md`).
+/// A `tag_int` or `tag_fixed` call is directly after the two constants that
+/// write its tag and its field, nothing jumps or loops into them or onto
+/// the call, and the field is a valid path ([`crate::fields::valid_path`]),
+/// so a host resolves every read at load. Runs after the per-op checks, so
+/// every index here is valid.
+fn field_reads(ir: &Ir, hd: &Handler) -> Result<(), (usize, Fault)> {
+    let code = &hd.code;
+    let mut entered = vec![false; code.len() + 1];
+    for (pc, op) in code.iter().enumerate() {
+        let to = match *op {
+            Op::Jump { to } | Op::JumpIf { to, .. } | Op::JumpIfNot { to, .. } => to as usize,
+            Op::ForEach { body, .. } => pc + 1 + body as usize,
+            _ => continue,
+        };
+        if let Some(e) = entered.get_mut(to) {
+            *e = true;
+        }
+    }
+    for (pc, op) in code.iter().enumerate() {
+        let Op::Call { entry, .. } = *op else { continue };
+        if !crate::fields::is_read(entry) {
+            continue;
+        }
+        let name = caps::ENTRIES[entry as usize].name;
+        let Some((_, field)) = crate::fields::constants(code, pc) else {
+            return Err((pc, Fault::FieldRead(name)));
+        };
+        if pc < 2 || (pc - 1..=pc).any(|i| entered[i]) {
+            return Err((pc, Fault::FieldRead(name)));
+        }
+        let path = usize::try_from(field).ok().and_then(|i| ir.strings.get(i));
+        if let Err(why) = crate::fields::valid_path(path.map_or("", String::as_str)) {
+            return Err((pc, Fault::FieldPath { entry: name, why }));
+        }
+    }
+    Ok(())
+}
+
 fn enum_known(t: Ty, sizes: &Sizes) -> bool {
     match t {
         Ty::Enum(e) => (e as usize) < sizes.enum_variants.len(),
@@ -558,7 +648,7 @@ fn enum_known(t: Ty, sizes: &Sizes) -> bool {
 /// 32 [`label_char`]s that no other entry has, and requirements a map can
 /// meet.
 /// The description, the settings, the quick marks and the scorer: what the
-/// compiler holds a `settings` block, a `quick` line and `scoring carrier`
+/// compiler holds a `settings` block, a `quick` line and a `uses` line
 /// to (`docs/game/rules-variants.md`, "The IR").
 fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
     let h = &ir.header;
@@ -574,8 +664,8 @@ fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
         let Some(row) = settings::row_at(s.index) else {
             return bad("is not in the settings table");
         };
-        if !row.applies(h.carrier) {
-            return bad("does not apply to the header's carrier");
+        if !row.applies(h.engine()) {
+            return bad("does not apply to the header's game");
         }
         if !row.in_range(s.value) {
             return bad("has a value outside its range");
@@ -594,8 +684,8 @@ fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
         }
         match *q {
             Quick::Setting(s) => match settings::row_at(s) {
-                Some(row) if row.is_record() && row.applies(h.carrier) => {}
-                Some(row) if row.is_record() => return bad("names a setting of another carrier"),
+                Some(row) if row.is_record() && row.applies(h.engine()) => {}
+                Some(row) if row.is_record() => return bad("names a setting of another game"),
                 Some(_) => return bad("names no record setting"),
                 None => return bad("names no setting"),
             },
@@ -606,15 +696,15 @@ fn settings_and_marks(ir: &Ir) -> Result<(), Refusal> {
             }
         }
     }
-    if h.scoring == Scoring::Carrier {
+    if h.uses.is_some() {
         if !ir.handlers.is_empty() {
-            return Err(Refusal::ScoringCarrier("handlers"));
+            return Err(Refusal::UsesHolds("handlers"));
         }
         if !ir.slots.is_empty() {
-            return Err(Refusal::ScoringCarrier("variables"));
+            return Err(Refusal::UsesHolds("variables"));
         }
         if !ir.options.is_empty() {
-            return Err(Refusal::ScoringCarrier("options"));
+            return Err(Refusal::UsesHolds("options"));
         }
     }
     Ok(())
@@ -649,6 +739,17 @@ fn labels(list: &[LabelDef]) -> Result<(), Refusal> {
         }
         if l.kind == LabelKind::Spawn && (l.single() || l.per_team()) {
             return bad("starting locations are a set with no per team");
+        }
+        if l.kind == LabelKind::Path {
+            // A flight visits point 0, 1, 2 ... of a set the gate has
+            // checked (`labels::check`): at least two points, numbered
+            // with no range to state, no team.
+            if l.single() || l.per_team() || l.range().is_some() {
+                return bad("a path is a set of numbered points with no per team and no number range");
+            }
+            if !l.numbered() || l.min < 2 {
+                return bad("a path is numbered and needs at least 2 points");
+            }
         }
         match l.range() {
             Some(_) if !l.numbered() => return bad("a number range needs numbered"),
@@ -846,6 +947,9 @@ impl Cx<'_> {
                     if def.kind == LabelKind::Spawn {
                         return Err(Fault::SpawnSet(l));
                     }
+                    if def.kind == LabelKind::Path {
+                        return Err(Fault::PathSet(l));
+                    }
                 }
                 if let Some(n) = set.pick {
                     self.want(n, Ty::Int)?;
@@ -943,15 +1047,15 @@ impl Cx<'_> {
     }
 }
 
-/// The first entry a blob calls that a host cannot make on the blob's
-/// carrier ([`caps::Entry::hostable_on`]). A host refuses such a script by
+/// The first entry a blob calls that a host cannot make on the engine the
+/// blob's record is on ([`Header::engine`], [`caps::Entry::hostable_on`]). A host refuses such a script by
 /// that entry's name.
 pub fn unhostable(ir: &Ir) -> Option<&'static caps::Entry> {
     for hd in &ir.handlers {
         for op in &hd.code {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
-                && !e.hostable_on(ir.header.carrier)
+                && !e.hostable_on(ir.header.engine())
             {
                 return Some(e);
             }
@@ -993,8 +1097,27 @@ mod tests {
         assert_eq!(verify(&ir), Err(Refusal::ApiVersion(9)));
 
         let mut ir = sample();
-        ir.header.carrier = 5;
-        assert_eq!(verify(&ir), Err(Refusal::Carrier(5)));
+        ir.header.uses = Some(Type::Party);
+        ir.handlers.clear();
+        ir.slots.clear();
+        ir.options.clear();
+        ir.quick.retain(|q| matches!(q, Quick::Setting(_)));
+        assert_eq!(verify(&ir), Err(Refusal::Uses(Type::Party)));
+        ir.header.uses = Some(Type::Slayer);
+        assert!(verify(&ir).is_ok());
+
+        for points in [String::new(), "x".repeat(types::MAX_POINTS_BYTES + 1)] {
+            let mut ir = sample();
+            ir.header.points = points;
+            assert_eq!(
+                verify(&ir),
+                Err(Refusal::Text {
+                    table: "the points label",
+                    index: 0,
+                    max: types::MAX_POINTS_BYTES
+                })
+            );
+        }
     }
 
     /// The table index of a setting, by name.
@@ -1003,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_on_the_wrong_carrier_is_refused() {
+    fn a_setting_of_another_game_is_refused() {
         // The sample rides Slayer; Juggernaut's movement is Juggernaut's.
         let mut ir = sample();
         ir.settings.push(Setting {
@@ -1014,19 +1137,19 @@ mod tests {
         let index = row("juggernaut_movement");
         let refusal = Refusal::Setting {
             index,
-            reason: "does not apply to the header's carrier",
+            reason: "does not apply to the header's game",
         };
         assert_eq!(load(&ir.encode()).unwrap_err(), refusal);
-        ir.header.carrier = 7;
+        ir.header.game_type = Type::Juggernaut;
         assert!(load(&ir.encode()).is_ok(), "{:?}", load(&ir.encode()));
-        // A quick mark of another carrier's setting is refused too.
+        // A quick mark of another game's setting is refused too.
         let mut ir = sample();
         ir.quick.push(Quick::Setting(index));
         assert_eq!(
             load(&ir.encode()).unwrap_err(),
             Refusal::Quick {
                 index: 2,
-                reason: "names a setting of another carrier"
+                reason: "names a setting of another game"
             }
         );
     }
@@ -1130,16 +1253,16 @@ mod tests {
     }
 
     #[test]
-    fn scoring_carrier_takes_no_handlers() {
+    fn a_uses_script_takes_no_handlers() {
         let mut ir = sample();
-        ir.header.scoring = Scoring::Carrier;
-        assert_eq!(load(&ir.encode()).unwrap_err(), Refusal::ScoringCarrier("handlers"));
+        ir.header.uses = Some(Type::Slayer);
+        assert_eq!(load(&ir.encode()).unwrap_err(), Refusal::UsesHolds("handlers"));
         ir.handlers.clear();
-        assert_eq!(verify(&ir), Err(Refusal::ScoringCarrier("variables")));
+        assert_eq!(verify(&ir), Err(Refusal::UsesHolds("variables")));
         ir.slots.clear();
         // The sample's quick line marks its option.
         ir.quick.retain(|q| matches!(q, Quick::Setting(_)));
-        assert_eq!(verify(&ir), Err(Refusal::ScoringCarrier("options")));
+        assert_eq!(verify(&ir), Err(Refusal::UsesHolds("options")));
         ir.options.clear();
         let report = load(&ir.encode()).unwrap().1;
         assert_eq!(report.worst_tick, 0);
@@ -1496,6 +1619,68 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_cannot_visit_a_flight_path() {
+        let mut ir = sample();
+        ir.labels[0] = LabelDef {
+            kind: LabelKind::Path,
+            min: 2,
+            flags: crate::ir::label_flags::NUMBERED,
+            ..LabelDef::objects(ir.labels[0].text.clone())
+        };
+        assert_eq!(
+            verify(&ir),
+            Err(Refusal::Op {
+                handler: 0,
+                pc: 4,
+                fault: Fault::PathSet(0)
+            })
+        );
+    }
+
+    #[test]
+    fn a_path_label_is_a_numbered_set_of_at_least_two_points() {
+        use crate::ir::label_flags::*;
+        let refuse = |f: &dyn Fn(&mut LabelDef)| {
+            let mut ir = sample();
+            ir.labels[1] = LabelDef {
+                kind: LabelKind::Path,
+                min: 2,
+                flags: NUMBERED,
+                ..LabelDef::objects(ir.labels[1].text.clone())
+            };
+            f(&mut ir.labels[1]);
+            verify(&ir)
+        };
+        assert!(refuse(&|_| {}).is_ok());
+        let label = |reason| Err(Refusal::Label { index: 1, reason });
+        assert_eq!(
+            refuse(&|l| l.min = 1),
+            label("a path is numbered and needs at least 2 points")
+        );
+        assert_eq!(
+            refuse(&|l| l.flags = 0),
+            label("a path is numbered and needs at least 2 points")
+        );
+        let reason = "a path is a set of numbered points with no per team and no number range";
+        assert_eq!(refuse(&|l| l.flags |= PER_TEAM), label(reason));
+        assert_eq!(
+            refuse(&|l| {
+                l.flags |= RANGE;
+                l.hi = 3;
+            }),
+            label(reason)
+        );
+        assert_eq!(
+            refuse(&|l| {
+                l.flags = SINGLE;
+                l.max = 1;
+                l.min = 1;
+            }),
+            label(reason)
+        );
+    }
+
+    #[test]
     fn a_labelled_loop_costs_its_label_max() {
         let mut ir = sample();
         ir.handlers[0].code = vec![
@@ -1556,16 +1741,14 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_one_engine_makes_is_unhostable_on_another_carrier() {
-        let src = |carrier: &str| {
-            format!(
-                "rules \"Crown\" 1\ncarrier {carrier}\n\non kill(victim, killer) {{ role_traits(victim, false) }}\n"
-            )
+    fn any_script_can_give_its_players_role_traits() {
+        let src = |ty: &str| {
+            format!("rules \"Crown\" 1\ntype {ty}\n\non kill(victim, killer) {{ role_traits(victim, false) }}\n")
         };
         let on_juggernaut = crate::compile(&src("juggernaut")).unwrap();
         assert_eq!(unhostable(&on_juggernaut), None);
         let on_slayer = crate::compile(&src("slayer")).unwrap();
-        assert_eq!(unhostable(&on_slayer).map(|e| e.name), Some("role_traits"));
+        assert_eq!(unhostable(&on_slayer), None);
     }
 
     /// The sample with one `on kill` handler of `code`: registers victim,

@@ -6,7 +6,7 @@
 //!
 //! ```ignore
 //! const IDS: Family = ids::family("kit.example");
-//! // Title, legend, layout and labels: assets/ui/screens/kit.example.yaml.
+//! // Title, legend, layout and labels: content/ui/screens/kit.example.yaml.
 //! let s = KitScreen::new("kit-example", "kit.example", IDS)
 //!     .row(Row::value("Grunts", &["On", "Off"], get, set))
 //!     .row(Row::info("Status", status))
@@ -71,7 +71,9 @@ struct LiveHelp {
 enum Kind {
     Action(Get<Then>),
     Value {
-        values: Vec<String>,
+        /// The offered values, made as the row is drawn or pressed (the
+        /// wave sets a lobby's map offers, the choices a setting has).
+        values: Get<Vec<String>>,
         get: Get<usize>,
         set: Arc<dyn Fn(usize) -> String + Send + Sync>,
     },
@@ -127,10 +129,22 @@ impl Row {
         get: impl Fn() -> usize + Send + Sync + 'static,
         set: impl Fn(usize) -> String + Send + Sync + 'static,
     ) -> Self {
+        let values: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+        Self::menu(label, Arc::new(move || values.clone()), get, set)
+    }
+    /// [`Row::value`] whose offered values are made as the row is drawn or
+    /// pressed (the wave sets a lobby's map offers): `values` is the list
+    /// now. Left and right step through it as they come.
+    pub fn menu(
+        label: &str,
+        values: Get<Vec<String>>,
+        get: impl Fn() -> usize + Send + Sync + 'static,
+        set: impl Fn(usize) -> String + Send + Sync + 'static,
+    ) -> Self {
         Self::of(
             label,
             Kind::Value {
-                values: values.iter().map(|v| v.to_string()).collect(),
+                values,
                 get: Arc::new(get),
                 set: Arc::new(set),
             },
@@ -239,6 +253,7 @@ impl Row {
         let (row, loaded) = match &self.kind {
             Kind::Action(_) => (RowSpec::action(&self.label), true),
             Kind::Value { values, get, .. } => {
+                let values = (values)();
                 let choices: Vec<&str> = values.iter().map(String::as_str).collect();
                 (RowSpec::value(&self.label, &choices, get()), true)
             }
@@ -432,7 +447,7 @@ impl KitScreen {
     /// `feature` switches it (`features.<id>`), `name` is its screen in
     /// [`crate::ui_kit::screens::NAMES`] and what `Open` rows name, `ids`
     /// its family in [`crate::ui_kit::ids::FAMILIES`]. Its presentation is
-    /// its doc's, `assets/ui/screens/<name>.yaml` ([`KitScreen::from_doc`]).
+    /// its doc's, `content/ui/screens/<name>.yaml` ([`KitScreen::from_doc`]).
     /// Panics with the doc's named error when the screen has none or its
     /// doc can't be shown: the tests load every doc first.
     pub fn new(feature: &'static str, name: &'static str, ids: Family) -> Self {
@@ -492,7 +507,7 @@ impl KitScreen {
         if let Some(w) = doc.widget("description")
             && let Some(c) = &w.component
         {
-            let design = data::design();
+            let design = data::active_design();
             let preset = design.component(c)?;
             let (font, colour) = design.text_style(c)?;
             let [x, y] = w
@@ -1051,7 +1066,7 @@ impl Rows for KitScreen {
             Kind::Value { values, get, set } => {
                 let pick = crate::ui_kit::picker::Pick::new(
                     &r.label,
-                    values.clone(),
+                    (values)(),
                     get(),
                     r.explain
                         .as_deref()
@@ -1113,7 +1128,7 @@ impl Rows for KitScreen {
         let Kind::Value { values, get, set } = &r.kind else {
             return None;
         };
-        let n = values.len().max(1);
+        let n = (values)().len().max(1);
         let next = if right {
             (get() + 1) % n
         } else {
@@ -1813,7 +1828,7 @@ mod tests {
 
     #[test]
     fn a_doc_a_kit_screen_cannot_take_is_a_named_error() {
-        let d = doc("screen: t\nkind: hud\nlayout: none\nwidgets:\n  title:\n    text: \"T\"\n");
+        let d = doc("screen: t\nkind: picker\nlayout: picker\nwidgets:\n  title:\n    text: \"T\"\n");
         let e = KitScreen::from_doc("t", "t", IDS, &d).err().unwrap();
         assert_eq!(e.at, "layout");
         let d = doc("screen: t\nkind: list\nlayout: controls\n");

@@ -153,6 +153,7 @@ impl Hle {
             // Diagnostics.
             stops: _,
             signal_failures: _,
+            tracing_voices: _,
         } = self;
         let ds = lock(ds);
         let mut w = Writer::new();

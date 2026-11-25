@@ -1,0 +1,15 @@
+rules "Slayer" 1
+type slayer
+
+option kill_points: int 1..5 = 1 "Kill points" "Points for each kill"
+option suicide_costs: bool = true "Suicide penalty" "A suicide costs a point"
+
+on kill(victim, killer) {
+    if killer == none or killer == victim {
+        if suicide_costs { score(victim, -1) }
+    } else if variant.team_play and killer.team == victim.team {
+        score(killer, -1)
+    } else {
+        score(killer, kill_points)
+    }
+}

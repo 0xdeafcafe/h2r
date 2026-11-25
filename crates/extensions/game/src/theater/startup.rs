@@ -78,7 +78,10 @@ pub fn configure_replay_child<R: Read + Seek>(
     };
     let e = start.execution;
     for def in setting_defs::defs() {
+        // The recorded Video row is restored from BOOT. The LOD override
+        // stays available to the separate display settings store.
         if def.scope != settings::Scope::Host
+            && def.key != setting_defs::LOD_DISTANCE.key
             && let Some(name) = def.env
         {
             child.env_remove(name);
@@ -158,12 +161,14 @@ impl Settings {
     /// Earlier films used the same integral render scale for raster size
     /// and visual geometry selection. Recover its startup geometry only.
     fn legacy_lod_multiplier(&self) -> Option<f32> {
-        use crate::setting_defs::{GUEST_FRAME, LEGACY_SCALE, LOD_DISTANCE, lod_pixel_multiplier};
+        use crate::setting_defs::{GUEST_FRAME, LEGACY_SCALE, LOD_DISTANCE, LOD_HIGHEST, lod_pixel_multiplier};
 
         let effective = |key: &str| self.locked.get(key).or_else(|| self.values.get(key));
         let size = LEGACY_SCALE.parse(effective(LEGACY_SCALE.key)?).ok()?;
         let units = LOD_DISTANCE.parse(effective(LOD_DISTANCE.key)?).ok()?.as_int()?;
-        Some(lod_pixel_multiplier(size.size(GUEST_FRAME).1, units as u32))
+        (units != i64::from(LOD_HIGHEST)).then(||
+            lod_pixel_multiplier(size.size(settings::NativeTarget::windowed(GUEST_FRAME)).1, units as u32)
+        )
     }
 
     // Only keys and value types from this build's schema may reach the private

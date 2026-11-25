@@ -1,0 +1,17 @@
+[package]
+name = "sim-sound"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Sound source, scheduling and environment kernels for the native simulation"
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["engine/sim-rewrite.md", "audio/dsound.md"]
+
+[dependencies]
+simd.workspace = true
+x87.workspace = true
+
+[lints]
+workspace = true

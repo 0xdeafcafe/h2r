@@ -143,7 +143,7 @@ pub fn rows_with(
     ir.quick
         .iter()
         .filter_map(|&q| match q {
-            Quick::Setting(index) => setting_row(record, ir, index, offered),
+            Quick::Setting(index) => setting_row(record, index, offered),
             Quick::Option(index) => option_row(ir, index, bits),
         })
         .collect()
@@ -151,15 +151,13 @@ pub fn rows_with(
 
 fn setting_row(
     record: &GameVariant,
-    ir: &Ir,
     index: u16,
     offered: Option<&HashMap<u32, Vec<i32>>>,
 ) -> Option<QuickRow> {
     use ::rules::settings::{row_at, value_label};
-    // `verify::load` holds every mark to a row that applies to the
-    // carrier, and the table to `record::field`, so neither is missed.
+    // A script-index record can expose only common settings.
     let row = row_at(index)?;
-    let setting = row.setting(ir.header.carrier)?;
+    let setting = row.setting(u8::try_from(record.game_type().engine()).ok()?)?;
     let value = record.get(SettingId(setting))?;
     let mut values: Vec<(i32, String)> = Vec::new();
     for &v in offered.and_then(|o| o.get(&setting)).into_iter().flatten() {

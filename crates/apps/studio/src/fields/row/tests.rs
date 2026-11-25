@@ -264,6 +264,7 @@ fn field(offset: u32, kind: Kind) -> Field {
         label: None,
         unit: None,
         axes: Vec::new(),
+        view: None,
     }
 }
 

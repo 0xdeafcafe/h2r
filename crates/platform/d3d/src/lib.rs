@@ -29,11 +29,15 @@
 //!   (docs/graphics/framescene.md, slice 2);
 //! * [`scene_sink`]: the frame's carried part, filled from the guest's
 //!   work by slot (docs/graphics/framescene.md, slice 6);
-//! * `interp`: in-between frames replayed with interpolated matrices
-//!   (opt-in, docs/game/high-framerate.md).
+//! * `clip_space`: where a vertex program puts its clip position, which
+//!   the carried draws' camera classification reads;
+//! * [`screen_rect`]: where a small draw's vertices land in the guest
+//!   window, for the UI fit and `render.frame_layout`.
 
 pub mod abi;
 pub mod backend;
+#[cfg(feature = "gpu")]
+pub mod clip_space;
 pub mod descriptor;
 pub mod device;
 pub mod dirty;
@@ -43,8 +47,6 @@ pub mod gfx_backend;
 pub mod glyph;
 pub mod guest;
 pub mod hw;
-#[cfg(feature = "gpu")]
-pub mod interp;
 pub mod layout;
 #[cfg(feature = "gpu")]
 pub mod nv2a;
@@ -60,6 +62,7 @@ pub mod runtime_glue;
 pub mod scaled;
 pub mod scene_sink;
 pub mod scene_stage;
+pub mod screen_rect;
 pub mod shader;
 pub mod state;
 mod texdesc;
@@ -75,6 +78,7 @@ pub use backend::{
 };
 pub use device::{
     Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, PreparedExternal, SceneReservation,
+    ExternalStep, ExternalTargets, PreparedSequence,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
     SwallowTarget, WritebackCause, WritebackCauses,
 };
@@ -84,8 +88,6 @@ pub use events::{D3dError, Event, HleStop};
 #[cfg(feature = "gpu")]
 pub use gfx_backend::{GfxBackend, SwapFinish};
 pub use guest::{GuestError, GuestMemory, SparseMemory};
-#[cfg(feature = "gpu")]
-pub use interp::InterpBackend;
 pub use layout::GuestLayout;
 #[cfg(feature = "gpu")]
 pub use nv2a::Nv2aShaders;
@@ -117,4 +119,25 @@ pub enum Lighting {
     /// The Lighting row on E3: shadow maps at `shadow_scale` times their
     /// size in the view, compared with one tap.
     E3,
+    /// The privately reconstructed BSP lightmap with its selected lamp on.
+    RelightOn,
+    /// The privately reconstructed BSP lightmap with its selected lamp off.
+    RelightOff,
+}
+
+impl Lighting {
+    pub fn is_relight(self) -> bool {
+        matches!(self, Self::RelightOn | Self::RelightOff)
+    }
+
+    /// The two startup-only arms that need private BSP resources.
+    pub fn relight_from_name(name: &str) -> Option<Self> {
+        if name.trim().eq_ignore_ascii_case("relight-on") {
+            Some(Self::RelightOn)
+        } else if name.trim().eq_ignore_ascii_case("relight-off") {
+            Some(Self::RelightOff)
+        } else {
+            None
+        }
+    }
 }

@@ -20,6 +20,7 @@ use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::cell::Cell;
 use std::io::{Read, Seek};
+use std::sync::Arc;
 
 pub const SHAD: FourCC = FourCC(*b"shad");
 pub const STEM: FourCC = FourCC(*b"stem");
@@ -150,10 +151,13 @@ impl RawBlock {
 #[derive(Clone, Debug)]
 pub struct Metadata {
     base: u32,
-    bytes: Vec<u8>,
+    bytes: Arc<Vec<u8>>,
 }
 impl Metadata {
     pub fn new(base: u32, bytes: Vec<u8>) -> Self {
+        Self::from_shared(base, Arc::new(bytes))
+    }
+    pub(crate) fn from_shared(base: u32, bytes: Arc<Vec<u8>>) -> Self {
         Self { base, bytes }
     }
     /// Reads the map's whole ordinary metadata region (BSP regions excluded:
@@ -365,11 +369,16 @@ pub struct PropertyRef {
 /// shad +0x54 (stride 4): one animation binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnimationBinding {
-    /// byte 0: target (texture slot, state table index, or register).
+    /// Byte 0: texture slot or state table index. For a constant this is
+    /// the low byte of its destination word (`target | b1 << 8`).
     pub target: u8,
-    /// byte 1: kind-specific (render-state animations: 1 = scalar output).
+    /// Byte 1: high byte of the constant destination. A pixel word packs
+    /// fragment, selector, register and C1 in bits 0..2, 3..5, 6..9 and
+    /// 10. A vertex word packs register, bank, mode and texture slot
+    /// in bits 0..3, 4, 5..9 and 10..12. Render-state kind 1 is scalar.
     pub b1: u8,
-    /// byte 2: kind-specific (colour: channel mask & transform).
+    /// Byte 2: pixel component mode in bits 0..2 and scalar transform in
+    /// bits 3..5 (`0x000176e3`). Vertex constants use only the word.
     pub b2: u8,
     /// byte 3: index into `property_ranges`.
     pub properties: u8,
@@ -567,7 +576,7 @@ impl ShaderPostprocess {
         imp: usize,
     ) -> Option<&AnimationRanges> {
         let l = self.lods.get(lod)?;
-        if layer >= 32 || l.layer_mask & (1 << layer) == 0 || layer >= usize::from(l.layers.count) {
+        if layer >= usize::from(l.layers.count) || layer >= 32 || l.layer_mask & (1 << layer) == 0 || layer >= usize::from(l.layers.count) {
             return None;
         }
         let pr = *self.layers.get(usize::from(l.layers.start) + layer)?;

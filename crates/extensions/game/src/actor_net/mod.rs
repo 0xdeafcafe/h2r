@@ -4,7 +4,10 @@ pub mod client;
 pub mod creature;
 mod dialogue;
 pub mod host;
+#[cfg(feature = "rules")]
+pub mod pick;
 pub mod report;
+pub mod roles;
 pub mod squads;
 
 use std::sync::{Arc, Mutex};
@@ -27,11 +30,28 @@ fn show_cues() -> Vec<Record> {
     }
 }
 
-/// Forgets the show cues waiting for the channel: a new match, a lost
-/// host tick or a snapshot restore starts it empty.
+/// The running rules script's show state, encoded
+/// (`crate::rules::world::show::take_state`); none without the `rules`
+/// feature or when no script runs.
+fn show_state() -> Option<Vec<u8>> {
+    #[cfg(feature = "rules")]
+    {
+        crate::rules::world::show::take_state()
+    }
+    #[cfg(not(feature = "rules"))]
+    {
+        None
+    }
+}
+
+/// Forgets the show cues and the state waiting for the channel, and the
+/// state a client holds: a new match, a lost host tick or a snapshot
+/// restore starts it all empty.
 fn clear_show_cues() {
     #[cfg(feature = "rules")]
     crate::rules::world::show::clear_cues();
+    #[cfg(feature = "rules")]
+    crate::rules::world::show::clear_held();
 }
 
 /// The host log head of the mode running on this machine, for the
@@ -122,8 +142,8 @@ impl Feature for Capture {
         let in_flight = pending.clone();
         b.frame().on_tick("capture replicated actors", move |o| {
             let memory = o.guest();
-            let mut state = ticks.lock().unwrap();
             let Some(tick) = host_tick(&*memory) else {
+                let mut state = ticks.lock().unwrap();
                 if state.last_tick.is_some() {
                     report::clear(agent::actors::Role::Host);
                     *state = State::default();
@@ -133,6 +153,11 @@ impl Feature for Capture {
                 }
                 return;
             };
+            #[cfg(feature = "rules")]
+            let roles = crate::rules::feature::network_roles(&*memory);
+            #[cfg(not(feature = "rules"))]
+            let roles = None;
+            let mut state = ticks.lock().unwrap();
             if let Some(previous) = state.last_tick {
                 let elapsed = tick.wrapping_sub(previous);
                 if elapsed == 0 {
@@ -149,15 +174,15 @@ impl Feature for Capture {
             // Probe P3 decides whether the client's walk cycle needs controls.
             match state.host.capture(&*memory, tick, false, &lines) {
                 Ok(()) => {
-                    // The Firefight HUD's mode blob rides the channel; empty
-                    // when no mode runs.
-                    let mode = crate::firefight::hud::slot().get().unwrap_or_default();
+                    let hud = crate::firefight::hud::slot().get().unwrap_or_default();
+                    let mode = roles::encode(hud, roles);
                     if let Err(error) = state.host.set_mode(&mode) {
                         eprintln!("actor-net: mode state at tick {tick}: {error}");
                     }
                     // The running rules script's show cues (`message`
                     // calls); empty when no script runs.
                     state.host.set_cues(show_cues());
+                    state.host.set_show(show_state());
                     state.host.set_log_head(log_head());
                     after_capture(&*memory, tick, &state.host)
                 }
@@ -175,6 +200,9 @@ impl Feature for Capture {
             *state.lock().unwrap() = State::default();
             if let Some(client) = &client {
                 *client.lock().unwrap() = client::Client::default();
+                roles::receive(&[]);
+                #[cfg(feature = "rules")]
+                crate::rules::world::pick::client_reset();
             }
             pending.clear();
             clear_show_cues();

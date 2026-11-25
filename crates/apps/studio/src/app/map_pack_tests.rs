@@ -283,7 +283,7 @@ fn a_pack_map_saves_as_a_package_over_it_that_reopens_with_the_edit() {
     move_flag(&mut app, 9.0);
     let form = app.session.form_defaults();
     assert_eq!(form.dir, "basin-edit");
-    app.dispatch(Action::SavePackage(form));
+    app.save_map_package(&form);
     assert!(!app.is_dirty(), "{:?}", app.status());
     assert_eq!(app.opened_package(), Some("basin-edit"));
     assert_eq!(app.opened_pack_map(), None);

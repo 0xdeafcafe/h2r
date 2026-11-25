@@ -30,6 +30,72 @@ fn material_visible(m: &dyn GuestMemory, material: u32, placement: u32) -> Optio
     Some(word & (1 << (bit%32)) != 0)
 }
 
+/// Read the live BSP part and material at the layer boundary. Native late
+/// programs come from LOD zero. Without a guest item carrying the selected
+/// LOD, only a single-LOD shader can supply a display-only part.
+pub fn display_late_shader(m: &dyn GuestMemory, cluster: u16, part: u8, layer: u8) -> Option<u16> {
+    let bsp = m.u32(super::ACTIVE_BSP).ok()?;
+    if bsp == 0 || u32::from(cluster) >= m.u32(bsp.checked_add(0x9c)?).ok()? { return None; }
+    let section = m.u32(bsp.checked_add(0xa0)?).ok()?.checked_add(u32::from(cluster)*0xb0)?;
+    if m.u8(section.checked_add(0x46)?).ok()? == 0 { return None; }
+    let geometry = m.u32(section.checked_add(0x50)?).ok()?;
+    if geometry == 0 || u32::from(part) >= m.u32(geometry).ok()? { return None; }
+    let p = m.u32(geometry.checked_add(4)?).ok()?.checked_add(u32::from(part)*PART_SIZE as u32)?;
+    let kind = m.u16(p).ok()?;
+    if matches!(kind, 0 | 5) || (kind == 4) != (layer == 6) || m.u16(p.checked_add(12)?).ok()? == 0 {
+        return None;
+    }
+    let index = u32::from(m.u16(p.checked_add(4)?).ok()?);
+    if index >= m.u32(bsp.checked_add(0xa4)?).ok()? { return None; }
+    let material = m.u32(bsp.checked_add(0xa8)?).ok()?.checked_add(index*32)?;
+    if !material_visible(m, material, 0x7ff)? { return None; }
+    let shader = m.u32(material.checked_add(12)?).ok()?;
+    let plan = LodPlan::read(m, m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?, shader)?;
+    let &[(mask, _)] = plan.levels.as_slice() else { return None; };
+    (mask & 1u32.checked_shl(u32::from(layer))? != 0
+        && !(mask & 0x8080 != 0 && mask & 0xa == 0 && mask & (1 << 21) != 0)).then_some(shader as u16)
+}
+
+/// The layers the display supplement draws for a display-only cluster:
+/// layer 3 (the native world's display stage), the water edge blend (6)
+/// and the fog (16), each at its own layer boundary. A part that also
+/// draws in any other layer (the texture accumulation of layer 1 that a
+/// combined layer-3 shader samples, the overlays 5, 7, 8, 20, 2 and 17,
+/// a layer-15 pool surface, the sorted 18, 19 and 21) has no display draw
+/// there.
+pub const DISPLAY_LAYERS: u32 = 1 << 3 | 1 << 6 | 1 << 16;
+
+/// Whether the display supplement completes every drawn part of
+/// `cluster`: each visible material's layers, over all its LODs, lie in
+/// [`DISPLAY_LAYERS`]. A cluster it cannot complete is not drawn at all,
+/// rather than drawn without the layers it lacks (a terrain without its
+/// accumulation pass, a bay floor without its pool surface). `None` when
+/// the BSP, a part or a shader does not read.
+pub fn display_cluster_complete(m: &dyn GuestMemory, cluster: u16) -> Option<bool> {
+    let bsp = m.u32(super::ACTIVE_BSP).ok()?;
+    if bsp == 0 || u32::from(cluster) >= m.u32(bsp.checked_add(0x9c)?).ok()? { return None; }
+    let section = m.u32(bsp.checked_add(0xa0)?).ok()?.checked_add(u32::from(cluster)*0xb0)?;
+    let geometry = m.u32(section.checked_add(0x50)?).ok()?;
+    if geometry == 0 { return None; }
+    let parts = m.u32(geometry).ok()?;
+    if parts > 256 { return None; }
+    let first = m.u32(geometry.checked_add(4)?).ok()?;
+    let materials = m.u32(bsp.checked_add(0xa4)?).ok()?;
+    let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+    for part in 0..parts {
+        let p = first.checked_add(part*PART_SIZE as u32)?;
+        if matches!(m.u16(p).ok()?, 0 | 5) || m.u16(p.checked_add(12)?).ok()? == 0 { continue; }
+        let index = u32::from(m.u16(p.checked_add(4)?).ok()?);
+        if index >= materials { return None; }
+        let material = m.u32(bsp.checked_add(0xa8)?).ok()?.checked_add(index*32)?;
+        if !material_visible(m, material, 0x7ff)? { continue; }
+        let shader = m.u32(material.checked_add(12)?).ok()?;
+        let layers = LodPlan::read(m, table, shader)?.levels.iter().fold(0, |all, &(mask, _)| all | mask);
+        if layers & !DISPLAY_LAYERS != 0 { return Some(false); }
+    }
+    Some(true)
+}
+
 fn part_visible(m: &dyn GuestMemory, part: &Part, mask: u32, masked: bool) -> Option<bool> {
     if !masked { return Some(true); }
     let first = u32::from(part.first_subpart);
@@ -380,6 +446,85 @@ mod tests {
         m.set_u16(PARTS+0x48, 2).unwrap();
         m.set_u16(PARTS+0x48+4, 1).unwrap();
         m
+    }
+
+    #[test]
+    fn display_only_cluster_supplies_water_and_fog_at_their_live_layer() {
+        use scene_extract::visibility::frusta::{Frustum, WindowFrusta};
+        let mut m = fixture();
+        m.bytes.resize(0x170000, 0);
+        let section = BSP + 0xd00;
+        m.set_u32(BSP + 0x9c, 1).unwrap();
+        m.set_u32(BSP + 0xa0, section).unwrap();
+        m.set_u32(section + 0x50, GEOM).unwrap();
+        m.set_u16(section + 0x24, 2).unwrap();
+        m.set_u8(section + 0x46, 1).unwrap();
+        for (n, v) in [1.10, 1.25, -0.2, 0.2, 0.1, 0.5].into_iter().enumerate() {
+            m.set_f32(section + 0x54 + 4*n as u32, v).unwrap();
+        }
+        m.set_u16(PARTS, 4).unwrap();
+        m.set_u16(PARTS + 12, 1).unwrap();
+        m.set_u16(PARTS + 0x48 + 12, 1).unwrap();
+        m.set_u32(HEADER + 0x42, 1 << 6 | 1 << 16).unwrap();
+
+        let window = |right: f32| WindowFrusta(vec![(0, Frustum {
+            bounds: [-right, right, -1., 1., 0., 1.],
+            planes: [[0.; 4]; 6],
+        })]);
+        let bounds = crate::native_scene_lists::late_cluster_bounds(&m, 0).unwrap();
+        assert!(!window(1.).contains_cluster(0, bounds));
+        assert!(!window(1.2).contains_cluster(0, bounds), "only part of the section is visible");
+        assert!(window(4./3.).contains_cluster(0, bounds));
+        assert_eq!(display_late_shader(&m, 0, 0, 6), Some(1));
+        assert_eq!(display_late_shader(&m, 0, 1, 16), Some(1));
+        m.set_u32(0x004b_9ef0, 3).unwrap(); // fog view
+        m.set_u32(0x004b_9f8c, u32::MAX).unwrap();
+        let flags = crate::native_scene_lists::display_cluster_fog_flags(&m, 0).unwrap();
+        assert_eq!(native_render::fog::layer_implementation(flags, false), Some(0));
+
+        m.set_u8(MAT + 32 + 28, 0).unwrap();
+        assert_eq!(display_late_shader(&m, 0, 1, 16), None, "hidden material");
+        m.set_u32(HEADER, 2).unwrap();
+        assert_eq!(display_late_shader(&m, 0, 0, 6), None, "part needs a per-view LOD");
+    }
+
+    /// The left edge of a wide Delta Towers view: a display-only cluster
+    /// whose shaders also draw in layers the supplement has no display
+    /// draw for is left out whole, not drawn as a flat, unaccumulated or
+    /// uncovered slab.
+    #[test]
+    fn a_display_only_cluster_is_drawn_only_when_every_layer_of_it_is() {
+        let mut m = fixture();
+        m.bytes.resize(0x170000, 0);
+        let section = BSP + 0xd00;
+        m.set_u32(BSP + 0x9c, 1).unwrap();
+        m.set_u32(BSP + 0xa0, section).unwrap();
+        m.set_u32(section + 0x50, GEOM).unwrap();
+        m.set_u16(PARTS + 12, 1).unwrap();
+        m.set_u16(PARTS + 0x48 + 12, 1).unwrap();
+        for (layers, complete) in [
+            (1 << 3, true),
+            (1 << 3 | 1 << 16, true),
+            (1 << 6 | 1 << 16, true),
+            (1 << 1 | 1 << 3, false),  // layer 3 samples layer 1's accumulation
+            (1 << 3 | 1 << 7, false),
+            (1 << 15, false),          // a pool surface: layer 15
+            (1 << 3 | 1 << 18, false),
+        ] {
+            m.set_u32(HEADER + 0x42, layers).unwrap();
+            assert_eq!(display_cluster_complete(&m, 0), Some(complete), "layers {layers:#x}");
+        }
+        // Every LOD counts: a far level that adds a layer refuses too.
+        m.set_u32(HEADER + 0x42, 1 << 3).unwrap();
+        m.set_u32(HEADER, 2).unwrap();
+        m.set_u32(HEADER + 0x40 + 10 + 2, 1 << 3 | 1 << 1).unwrap();
+        assert_eq!(display_cluster_complete(&m, 0), Some(false));
+        // A part with no subparts draws nothing and does not count.
+        m.set_u32(HEADER, 1).unwrap();
+        m.set_u16(PARTS + 0x48 + 12, 0).unwrap();
+        m.set_u16(PARTS + 0x48 + 4, 0).unwrap();
+        assert_eq!(display_cluster_complete(&m, 0), Some(true));
+        assert_eq!(display_cluster_complete(&m, 1), None, "no such cluster");
     }
 
     #[test]

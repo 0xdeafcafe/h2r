@@ -157,7 +157,10 @@ fn screen_view(
     let id = m.u32(screen.wrapping_add(SCREEN_ID)).ok();
     let list = screen.wrapping_add(SCREEN_LIST);
     let mode = nav.maps.mode_of(list);
-    let setup = nav.setup_parent(screen).map(|_| json!({"id": GAME_SETUP_ID}));
+    let setup = nav.setup_parent(screen).map(|_| json!({"id": GAME_SETUP_ID})).or_else(|| {
+        nav.category_parent(screen).map(|p| json!({"id": ui_back::CATEGORY_ID,
+            "parent": p.setup.map(|_| json!({"id": GAME_SETUP_ID}))}))
+    });
     let parent = match mode {
         Some(Mode::Pack(_)) => json!({"id": SELECT_MAP_ID, "mode":"maps", "folder":"Mods",
             "parent":{"id": SELECT_MAP_ID, "mode":"folders", "parent":setup}}),

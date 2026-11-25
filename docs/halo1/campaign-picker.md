@@ -1,11 +1,13 @@
 # More than one campaign in the menus
 
-**Built.** With Halo: Combat Evolved installed, Campaign on
+Status: **Built.** With Halo: Combat Evolved installed, Campaign on
 the main menu opens a game picker. Each game has its own Campaign Options,
 level list and Resume. With no installed Halo 1 mission, Campaign uses
 the retail path and no campaign hooks or artwork rewrite are installed.
-The picker flow and the per-game checkpoints are not yet confirmed in a
-game run.
+The level lists, level select and progress are confirmed in a game run.
+The picker flow and checkpoint isolation are covered by tests and not yet
+run in the game.
+Measurements: [notes/campaign-picker.md](notes/campaign-picker.md).
 
 Labels: **E** read from the retail XBE with `h2 disasm` (a full linear
 disassembly of `.text`), **V** measured on the user's disc (the ignored
@@ -97,26 +99,12 @@ path starting `t:\` or `w:\` becomes `<path>.map`; anything else becomes
 path into the options, so a level's map file is named by the basename of
 its record's path.
 
-Halo 1's converted maps go in `<data>/campaigns/halo1/`; `h2 import
-halo1`, or `h2 play` with `halo1.iso` beside the disc, writes them there
-([campaign.md](campaign.md) §10).
-Choices:
-
-1. **The VFS serves them as `maps\<name>.map`** (chosen). The records keep
-   `scenarios\solo\<map>\<map>`; the game copies the map into a cache slot
-   exactly as it does a Halo 2 level. The VFS already serves `maps\` from
-   packages ([maps.md](../game/maps.md)); it gains names the disc lacks, from an
-   installed campaign's folder. Halo 1's names (`a10` ... `d40`) don't
-   meet any Halo 2 name, and the manifest refuses a map named twice.
-   **Built:** `vfs::CampaignMapsBackend`, directly over the disc (so map
-   packages still apply over it). A level whose map the disc lacks is
-   served from `<data>/campaigns/<key>/<map>.map` with the disc's
-   `mainmenu.map` metadata resized; a name the disc has is never shadowed.
-   A level is listed only when one of the two exists.
-2. A `t:\` path (the title's own data partition, as Map Pack packages
-   are). No VFS change, but the maps would have to live under the emulated
-   hard disk, and they would load through the content path rather than the
-   one Halo 2's own levels use. Rejected.
+`h2 import halo1` and the automatic import store the converted levels
+under distinct names for each asset choice ([campaign.md](campaign.md)
+§10). `vfs::CampaignMapsBackend` serves them as `maps\<name>.map` using
+the disc's `mainmenu.map` metadata resized to the selected level's
+length. The records keep `scenarios\solo\<map>\<map>` and the game
+copies the map into a campaign cache slot.
 
 ## What we do
 
@@ -144,10 +132,10 @@ picture = "01b_spacestation"  # optional: a Halo 2 level whose picture it shows
 `campaign_list::HALO1` is Halo 1's: a10, a30, a50, b30, b40, c10, c20,
 c40, d20, d40 with their names; their pictures are Halo 1's own ("Pictures", below). `campaign_list::FIXTURE`
 is a **test campaign** of three retail Halo 2 levels (Outskirts, Delta
-Halo, Gravemind, named "(2)", each with its own picture), for use alongside an installed Halo 1 campaign. At boot the Halo 1 manifest must parse, match the folder key and have at least one listed local map. Only then does `campaigns::boot_state` read the Halo 2 disc. An additional campaign is listed when its manifest parses,
-its key is its folder's name, and at least one level has a map (in its
-folder, or on the disc); levels with no map yet are left out and the log
-says how many. The picker uses the files on disk and does not read the
+Halo, Gravemind, named "(2)", each with its own picture), for use alongside an installed Halo 1 campaign. At boot the Halo 1 manifest must parse, match the folder key and have at least one listed level in the store. Only then does `campaigns::boot_state` read the Halo 2 disc. An additional campaign is listed when its manifest parses,
+its key matches the folder name, and at least one level is available.
+Halo 1 needs a verified store entry and other campaigns use disc maps.
+The log gives the count of missing levels. The picker uses this list and does not read the
 import stamp. A failed level leaves any successfully imported levels
 available. The Halo 2-assets files in `halo1/h2/` are alternates for
 levels listed by their main maps.
@@ -188,8 +176,9 @@ free slots, so they are not reused.
 - **At boot**, `campaign_cards::CardRewrite` reads the cards of the
   levels listed.
 - **When the VFS first serves `maps\mainmenu.map`**, CardRewrite adds one
-  `bitm` per card. It is a `vfs::Rewrite`, chained after the button
-  icons' font rewrite (`vfs::Chain`).
+  `bitm` per card. It runs as the `campaign-cards` kit of the `halo1`
+  package (`content/halo1/`) inside `workspace::PackageRewrite`, before
+  the set's other items on mainmenu; the boot gives the rewrite the cards.
   - The disc's map is decomposed with every tag where it was
     (`TagSet::from_map`), and the index is given room for more tags.
   - Each card is scaled to cover 220x207: centred, the overflow cropped,
@@ -211,10 +200,14 @@ free slots, so they are not reused.
 
 **The frame is in the pixels (V).** Halo 2's level pictures
 show a pale border with the bottom-right corner cut off. The screen draws
-none of it: the level select's picture widget is one plain bitmap block,
-and every used picture carries the frame itself, the same alpha in each
-pixel ([note](notes/campaign-picker.md)). So a card goes in the same
-frame: `campaign_cards::framed` takes
+none of it: the level select's picture widget is one plain bitmap block
+(`[177 39 -30 259]`, `h2 ui mainmenu load_level`), and every used picture
+(`campaign0` to `campaign14`) carries the frame itself. All fifteen have
+the same alpha, pixel for pixel: 834 opaque border pixels (a one-pixel
+rim and the diagonal of the cut, `(154, 171, 189)`, `campaign14` a little
+lighter), 136 clear pixels past the cut, and the picture at alpha 191, so
+it is drawn a quarter see-through. The free slots' five are fully clear.
+So a card goes in the same frame: `campaign_cards::framed` takes
 `campaign0`'s own pixels from the disc's mainmenu at rewrite time
 (`Template::rgba`) and, pixel by pixel, keeps the template's where it is
 opaque (the border), clears where it is clear (the corner), and puts the
@@ -226,8 +219,7 @@ plain, and the log says so.
 **Descriptions.** Each Halo 1 level has a one-line description in
 `HALO1`, written for this project (not the game's text), which goes to
 the record's `+0x250` in all nine languages, where the level select reads
-Halo 2's own. The import never rewrites a `campaign.toml` it finds, so a
-manifest from an older import can lack descriptions;
+Halo 2's own. The import never rewrites a `campaign.toml` it finds, so
 `campaigns::installed` fills a manifest's missing descriptions from the
 built-in one (`CampaignManifest::fill_from`); a description the user
 wrote is kept.
@@ -239,9 +231,11 @@ progress it is given. For one of our campaigns `PROGRESS_MAX` answers our
 own progress (`progress.toml`), which counts a level only when it is
 **won** (`PROGRESS_RAISE`, from the game-won path). With nothing won it
 answers `-1`, and the list is the first level alone, as Halo 2's is on a
-new profile ([note](notes/campaign-picker.md)).
+new profile. A started but unfinished level shows as `finished =
+[-1, -1, -1, -1]` with `last` set in `progress.toml`; finishing it lists
+the next level, and so on.
 - Retail tags keep their bytes and addresses. On the user's disc the map
-  stays under the rewrite's 64 MiB limit (the boot disc test). If the
+  stays under the rewrite's 64 MiB limit (`campaign_cards_tests::the_disc_s_mainmenu_takes_ten_cards`). If the
   rewrite fails, mainmenu is served as it is and levels keep the pictures
   they had.
 
@@ -318,7 +312,7 @@ box and description text: `skulls_menu::LIST_LAYOUT`, `FRAME`,
 - Boot writes the available pictures under
   `<data>/campaigns/game-picker/{halo1,halo2}.png`. The mainmenu rewrite
   adds their framed bitmaps. The picker selects the focused campaign's
-  bitmap through `Rows::picture`. If Cairo Station is unavailable,
+  bitmap through `PickerRows::picture`. If Cairo Station is unavailable,
   Halo 2 uses its first level's picture. Other installed campaigns can
   use their first level's picture. A row with no picture clears the
   artwork area. Boot logs missing or unreadable sources. Game artwork
@@ -330,7 +324,7 @@ box and description text: `skulls_menu::LIST_LAYOUT`, `FRAME`,
 
 The texts are our strings (family `campaign picker info`), installed as
 placeholders of `INFO_ROOM` bytes and rewritten in place while the picker
-is up (`Rows::live_text`), so progress and options are current. The
+is up (`PickerRows::live_text`), so progress and options are current. The
 profiles and pictures are read as the picker opens (the `SCREEN_REQUEST`
 hook already there: no new hook, no order changed).
 
@@ -371,8 +365,8 @@ when restoring it. Older progress with only a numeric last level resumes
 the level on Normal. The UI resolves newer records by map basename, and
 omits Resume if that mission has been removed.
 
-A retail profile's checkpoint file can hold a converted mission. On
-entering Campaign Options, resolve
+A profile created before the split can have a converted mission in its
+retail checkpoint file. **Built:** on entering Campaign Options, resolve
 the signed-in profile's local U: directory using the same record as
 `0x216800`. Read the campaign, scenario and difficulty from the saved
 options at header +0x130 (`0x124520`, `0x2b17c3`). For a recognized
@@ -380,8 +374,8 @@ imported mission, preserve its signed bytes in the game's scoped file
 and recover its progress before offering Resume. The original stays in
 place, newer scoped saves take precedence, and Halo 2 omits the foreign
 checkpoint. At `0x2b178e` the native completion also rejects a foreign
-campaign header if it arrived through a retail slot that has not been
-migrated. Recovery covers the local hard disk. New checkpoints on other
+campaign header if it arrived through an unmigrated retail slot. Recovery
+of historical files covers the local hard disk. New checkpoints on other
 profile devices use the same per-game guest filename routing.
 
 ### The lookups by `(campaign, map)`
@@ -409,14 +403,14 @@ reads the multiplayer list, which campaign ids never reach.
 
 ## Tests
 
-- `content` `campaign_list::tests` (9): the Halo 1 manifest's levels and
+- `content` `campaign_list::tests`: the Halo 1 manifest's levels and
   order; ids after retail and rising; several campaigns ordered by `order`
   then key and never sharing an id; campaign ids after the disc's largest;
   repeats and taken ids refused; manifest validation (format, key, names,
   20 levels, duplicate maps, scenario paths that don't end in the map's
   name, pictures); the shared-id and 20-level rules; records read back
   field for field; names cut to fit.
-- `boot` `campaigns::tests` (11, over a fake guest with retail-shaped
+- `game` `campaigns::tests` (over a fake guest with retail-shaped
   lists): a small campaign goes into the free slots and nothing moves; a
   campaign past the free slots is copied into our memory and the blocks
   repointed; two campaigns keep apart; a level map's start list alone;
@@ -426,7 +420,7 @@ reads the multiplayer list, which campaign ids never reach.
   installed campaigns and the reasons others aren't; the picker's rows.
   Each extension is checked through transcriptions of the game's readers
   (`0x19c270`, `0x19c6d0` with its 20-entry limit, `0x19c440`, `0x19c1f0`).
-- `tags` `rgba_bitmap::tests` (3): BGRA rows padded to 64 bytes and the
+- `tags` `rgba_bitmap::tests`: BGRA rows padded to 64 bytes and the
   LOD to 128 (220x207 gives the retail `0x2d480`); a new bitmap takes the
   template's shape and its own pixels on a decomposed map, the template
   untouched; a bad template refused.
@@ -437,69 +431,49 @@ reads the multiplayer list, which campaign ids never reach.
   puts ten cards into the disc's mainmenu: every retail tag is unchanged,
   each card is a 220x207 `0x2d480`-byte LOD holding the scaled pixels,
   the checksum is good, tag memory grows by at most two pages (it grows
-  by one), and the map is under 64 MiB (61.6 MB, 31 ms for the rebuild:
-  [note](notes/campaign-picker.md)).
-  `H2_DISC=disc/halo2.iso cargo test -p game --lib the_disc_s_mainmenu_takes_ten_cards --
-  --ignored`.
+  by one), and the map is under 64 MiB (61.6 MB). The rebuild takes 31 ms.
+  Run with `H2_DISC=disc/halo2.iso` set.
 - `vfs` `rewrite::tests::a_chain_rewrites_what_either_wants_one_after_the_other`.
-- `vfs` `campaign_maps::tests` (2): a map the disc lacks is served from
+- `vfs` `campaign_maps::tests`: a map the disc lacks is served from
   its campaign folder (stat, read, listing, host file, `MapId`); the
   disc's own map is never shadowed; a missing host file stays missing.
-- `boot` `campaigns::tests::every_lookup_caller_finds_a_halo1_level`: each
+- `game` `campaigns::tests::every_lookup_caller_finds_a_halo1_level`: each
   call in the table above, with a Halo 1 map id and the campaign it passes,
   finds nothing without the rewrite and Halo 1's record or next level with
   it; `the_picker_lists_halo_1_then_halo_2_then_the_rest`.
-- `boot` `campaign_menu::tests` (2): a press picks the campaign and asks
+- `game` `campaign_menu::tests`: a press picks the campaign and asks
   for `0x19c6d0([0x4ee4e8], id)` then Campaign Options; the hooks are on
   the plan where the table says.
-- `boot` `campaigns::tests::real_disc_lists_take_both_campaigns`
+- `game` `campaigns::tests::real_disc_lists_take_both_campaigns`
   (ignored): `mainmenu.map`'s real lists, laid into a fake guest at their
   own addresses, take Halo 1 and the test campaign (5 into free slots, 8
   copied); every level resolves through the transcribed readers, the
   fixture's levels show their Halo 2 level's picture, and Halo 2's own
   lookups, list and next levels read exactly as before. Passes on the
-  user's disc. `H2_DISC=disc/halo2.iso cargo test -p boot --lib
-  campaigns::tests::real_disc -- --ignored --nocapture`
+  user's disc (run with `H2_DISC=disc/halo2.iso` set).
+- `game` `campaign_cards::picker::tests::picker_tiles_match_the_pngs_and_halo2_works_without_halo1_art`
+  (ignored, `H2_DISC` set to the Halo 2 disc): the generated PNGs against
+  the in-memory bitmaps, and Halo 2's artwork loading with no Halo 1
+  picture.
 
-## Verifying in a game run
-
-The synthetic tests cover picker navigation, native row allocation,
-separate game/profile saves, old progress, exact served descriptions,
-cover cropping, artwork selection and fallback, and agent menu state.
-The ignored disc test reads the owner's Halo 2 disc and checks the
-generated PNGs against the in-memory bitmaps, and that Halo 2 artwork
-loads with no Halo 1 picture; give it an absolute disc path when the
-checkout has no `disc/` directory.
-
-```sh
-cargo xtask test -p game -p boot -p guest-layout -p agent-proto
-cargo test -p agent-proto --lib sim::menu
-H2_DISC="$PWD/disc/halo2.iso" cargo test -p game --lib picker_tiles_match_the_pngs_and_halo2_works_without_halo1_art -- --ignored
-```
-
-With both games installed, check a fresh profile and one with an existing
-Halo 2 checkpoint. Use `ui.campaign` to read `card.description` and
-`card.picture_datum` on each row. Use pad presses to choose each game,
-check its actions and missions, and back out. Start a Halo 1 mission,
-save a checkpoint, then reload and resume each game in turn. Check the
-restored position as well as the displayed mission. Repeat the main-menu
-press with only Halo 2 installed. The agent method and response fields are
-documented in [the agent API](../runtime/agent-api.md).
+The agent API's `ui.campaign` reads `card.description` and
+`card.picture_datum` on each picker row
+([the agent API](../runtime/agent-api.md)).
 
 ## Open questions
 
 - Whether the cache-slot copier and the header checks accept a converted
-  map served this way: the same path as a Halo 2 level, but the first
-  converted map will tell.
+  map served this way: the same path as a Halo 2 level, and only a run
+  shows it.
 - **The lobby's level select** (`0x2b136d`, co-op) reads the same data
   array: after picking Halo 1 in the main menu, it lists Halo 1 until
-  Halo 2 is picked again or the main menu reloads. The lobby gets no
-  picker yet.
+  Halo 2 is picked again or the main menu reloads. The lobby has no
+  picker.
 - Where a level ends the campaign: Halo 2's last level is followed by the
   credits through scripts; a campaign's last level (no next id) returns to
   the menu as `0x163610` returns 0. Unchecked in a run.
 - Whether the free slots' own pictures are blank placeholders or images.
-  Halo 1's levels use their own pictures instead ("Pictures").
+  Halo 1's levels do not use them ("Pictures").
 - Whether the engine accepts mainmenu with its index tail cleared and one
   page more tag memory than retail's. The
   converted maps already do (sounds.md, "Open questions"). Only a run

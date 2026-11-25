@@ -13,7 +13,8 @@ use live_proto::hopper::{MAX_DESCRIPTION, MAX_RECORDS, MAX_TITLE};
 use scenario_edit::layout::{self, Role};
 use scenario_edit::{BlockKind, Command, Value};
 
-use super::{Action, App, NavAction, Selection, ToolKind, tag_tree};
+use super::assets::{self, Query, Root};
+use super::{Action, App, NavAction, Selection, Surface, ToolKind};
 
 /// Commands that the menus and the palette can dispatch directly.
 #[derive(Clone, Copy)]
@@ -136,21 +137,40 @@ impl MenuCommand {
 
 pub(crate) const PALETTE_LIMIT: usize = 20;
 
-#[derive(Clone, Copy)]
+/// How many rows of one root the palette reads. Only [`PALETTE_LIMIT`]
+/// are offered; the kind's count under the list is the root's own
+/// untruncated total.
+const PALETTE_SCAN: usize = 2000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Map,
     Tag,
+    Package,
+    Item,
+    Voice,
     Placement,
     Command,
 }
 
 impl Kind {
-    pub const ALL: [Self; 4] = [Self::Map, Self::Tag, Self::Placement, Self::Command];
+    pub const ALL: [Self; 7] = [
+        Self::Map,
+        Self::Tag,
+        Self::Package,
+        Self::Item,
+        Self::Voice,
+        Self::Placement,
+        Self::Command,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Map => "map",
             Self::Tag => "tag",
+            Self::Package => "package",
+            Self::Item => "item",
+            Self::Voice => "voice",
             Self::Placement => "placement",
             Self::Command => "command",
         }
@@ -160,12 +180,16 @@ impl Kind {
         match self {
             Self::Map => "Maps",
             Self::Tag => "Tags",
+            Self::Package => "Packages",
+            Self::Item => "Items",
+            Self::Voice => "Voices",
             Self::Placement => "Placements",
             Self::Command => "Commands",
         }
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Entry {
     pub kind: Kind,
     pub label: String,
@@ -173,7 +197,7 @@ pub(crate) struct Entry {
     pub action: Action,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Palette {
     pub entries: Vec<Entry>,
     totals: [usize; Kind::ALL.len()],
@@ -202,6 +226,24 @@ impl Palette {
             });
         }
     }
+
+    /// A kind's untruncated total, as the root that answers it counted.
+    fn count(&mut self, kind: Kind, total: usize) {
+        self.totals[kind as usize] = total;
+    }
+
+    /// One row of a root `asset.list` already filtered by the query,
+    /// under the kind's cap.
+    fn push_row(&mut self, kind: Kind, label: String, detail: String, action: Action) {
+        if self.entries.iter().filter(|e| e.kind == kind).count() < PALETTE_LIMIT {
+            self.entries.push(Entry {
+                kind,
+                label,
+                detail,
+                action,
+            });
+        }
+    }
 }
 
 fn words_match(query: &str, label: &str, detail: &str) -> bool {
@@ -216,9 +258,156 @@ pub(crate) fn placement_matches(query: &str, block: &str, label: &str, index: us
     words_match(query, label, &format!("{block} #{index}"))
 }
 
-/// The palette's visible entries and untruncated counts, in display order.
-pub(crate) fn palette(app: &mut App, query: &str) -> Palette {
-    app.sync_tags();
+/// The palette's asset rows: what `asset.list` answers for the query —
+/// every tag of the tree, the set's packages and the items of each
+/// package that is on (docs/editor/studio-flow.md, "One way in"). No map
+/// needs to be open. A tree that is not there yet (before the first
+/// start builds it) leaves the palette without rows rather than failing.
+/// One pass per query; the window keeps the answer for the query it
+/// shows ([`crate::ui::palette::PaletteUi`]).
+pub(crate) fn palette_assets(app: &App, query: &str) -> Palette {
+    let mut out = Palette::default();
+    let set = assets::read_set(&app.data_root());
+    let q = |root: Root, package: Option<String>| Query {
+        root,
+        package,
+        kind: None,
+        map: None,
+        text: query.to_owned(),
+        limit: PALETTE_SCAN,
+    };
+    fn rows(v: &serde_json::Value) -> &[serde_json::Value] {
+        v["rows"].as_array().map(Vec::as_slice).unwrap_or(&[])
+    }
+    // The map a tag opens on: the open map when it holds it, else the
+    // first that does, as the browser opens a row.
+    let on_map = |maps: &[String]| -> Option<String> {
+        app.loaded_map()
+            .filter(|open| maps.iter().any(|m| m.eq_ignore_ascii_case(open)))
+            .map(str::to_owned)
+            .or_else(|| maps.first().cloned())
+    };
+    let maps_of = |row: &serde_json::Value| -> Vec<String> {
+        row["maps"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Every tag of the tree, with the tags packages add.
+    if let Ok(v) = assets::list(&app.tags_root(), &set, &q(Root::Tags, None)) {
+        out.count(Kind::Tag, v["total"].as_u64().unwrap_or(0) as usize);
+        for row in rows(&v) {
+            let Some(asset) = row["asset"].as_str() else {
+                continue;
+            };
+            let detail = format!(
+                "{} · {}",
+                row["group"].as_str().unwrap_or(""),
+                row["path"].as_str().unwrap_or(""),
+            );
+            out.push_row(
+                Kind::Tag,
+                row["name"].as_str().unwrap_or(asset).to_owned(),
+                detail,
+                Action::OpenAsset {
+                    asset: asset.to_owned(),
+                    map: on_map(&maps_of(row)),
+                },
+            );
+        }
+    }
+    // The set's packages.
+    if let Ok(v) = assets::list(&app.tags_root(), &set, &q(Root::Packages, None)) {
+        out.count(Kind::Package, v["total"].as_u64().unwrap_or(0) as usize);
+        for row in rows(&v) {
+            let Some(asset) = row["asset"].as_str() else {
+                continue;
+            };
+            let detail = format!(
+                "{} · {}",
+                row["id"].as_str().unwrap_or(""),
+                row["origin"].as_str().unwrap_or(""),
+            );
+            out.push_row(
+                Kind::Package,
+                row["name"].as_str().unwrap_or(asset).to_owned(),
+                detail,
+                Action::OpenAsset {
+                    asset: asset.to_owned(),
+                    map: None,
+                },
+            );
+        }
+    }
+    // The items of each package that is on. Every package is searched
+    // even past the cap, so the kind's count stays the set's.
+    let mut items = 0usize;
+    for listed in set.listed.iter().filter(|l| l.on) {
+        let Ok(v) = assets::list(
+            &app.tags_root(),
+            &set,
+            &q(Root::Packages, Some(listed.id.clone())),
+        ) else {
+            continue;
+        };
+        items += v["total"].as_u64().unwrap_or(0) as usize;
+        for row in rows(&v) {
+            let Some(asset) = row["asset"].as_str() else {
+                continue;
+            };
+            let detail = format!(
+                "{} · {}",
+                row["package"].as_str().unwrap_or(&listed.id),
+                row["kind"].as_str().unwrap_or(""),
+            );
+            out.push_row(
+                Kind::Item,
+                row["name"].as_str().unwrap_or(asset).to_owned(),
+                detail,
+                Action::OpenAsset {
+                    asset: asset.to_owned(),
+                    map: None,
+                },
+            );
+        }
+    }
+    out.count(Kind::Item, items);
+    // The voices, each opening its document.
+    let v = app.voice_asset_list(query, PALETTE_SCAN);
+    out.count(Kind::Voice, v["total"].as_u64().unwrap_or(0) as usize);
+    for row in rows(&v) {
+        let Some(asset) = row["asset"].as_str() else {
+            continue;
+        };
+        out.push_row(
+            Kind::Voice,
+            row["name"].as_str().unwrap_or(asset).to_owned(),
+            format!("voice · {}", row["label"].as_str().unwrap_or("")),
+            Action::OpenAsset {
+                asset: asset.to_owned(),
+                map: None,
+            },
+        );
+    }
+    out
+}
+
+/// The palette's visible entries and untruncated counts, in display
+/// order: the maps to open, then the asset rows ([`palette_assets`]),
+/// the placements of the open map and the commands.
+pub(crate) fn palette(app: &App, query: &str) -> Palette {
+    let assets = palette_assets(app, query);
+    palette_with(app, query, &assets)
+}
+
+/// [`palette`] over asset rows already read: the window keeps
+/// [`palette_assets`]'s answer for the query it shows and calls this
+/// every frame.
+pub(crate) fn palette_with(app: &App, query: &str, assets: &Palette) -> Palette {
     let mut results = Palette::default();
     let mut map = |label: &str, detail: String, action: Action| {
         if words_match(query, label, &detail) {
@@ -267,16 +456,12 @@ pub(crate) fn palette(app: &mut App, query: &str) -> Palette {
         map(entry.label, format!("{}.map · Halo 1", entry.stem), action);
     }
 
-    let tags = app.tags.tags();
-    for i in tag_tree::search(tags, query) {
-        let tag = &tags[i];
-        results.add(
-            Kind::Tag,
-            tag.name.as_str(),
-            tags::defs::fourcc_text(tag.group),
-            Action::GoTo(Selection::Tag(tag.id)),
-        );
+    // The asset rows arrive already filtered by the query, so they are
+    // listed as they were read.
+    for kind in [Kind::Tag, Kind::Package, Kind::Item, Kind::Voice] {
+        results.count(kind, assets.total(kind));
     }
+    results.entries.extend(assets.entries.iter().cloned());
 
     if let Some(scenario) = app.session.scenario() {
         for block in &scenario.blocks {
@@ -295,6 +480,14 @@ pub(crate) fn palette(app: &mut App, query: &str) -> Palette {
         }
     }
 
+    // The editors and windows the View menu opens, so every one is found
+    // by name (docs/editor/studio-flow.md, "One way in").
+    for (surface, name) in Surface::EDITORS {
+        let label = format!("Open editor: {name}");
+        if words_match(query, &label, OPEN_DETAIL) {
+            results.add(Kind::Command, label, OPEN_DETAIL, Action::Show(surface));
+        }
+    }
     for command in MenuCommand::ALL {
         let item = command.item(app);
         if let Some(action) = item.action
@@ -305,6 +498,9 @@ pub(crate) fn palette(app: &mut App, query: &str) -> Palette {
     }
     results
 }
+
+/// The detail line of the palette's editor entries.
+const OPEN_DETAIL: &str = "Open an editor";
 
 /// One playlist edit, applied to the working copy as one undo step. The
 /// playlist table's row buttons and weight drags, and `playlist.*` calls,
@@ -565,6 +761,27 @@ impl App {
         }
     }
 
+    /// [`Action::SetArea`]: a refusal's sentence goes to the status line
+    /// and the document stays as it was.
+    pub(super) fn set_area(
+        &mut self,
+        index: usize,
+        area: Option<scenario_edit::marker_view::game_markers::Area>,
+        merge: Option<u64>,
+    ) {
+        if let Err(e) = self.session.set_area(index, area, merge) {
+            self.error(refusal_text(&e));
+        }
+    }
+
+    /// [`Action::ConvertHill`].
+    pub(super) fn convert_hill(&mut self, index: usize) {
+        match self.session.convert_hill(index) {
+            Ok(_) => self.info("converted the hill to one flag with an area"),
+            Err(e) => self.error(refusal_text(&e)),
+        }
+    }
+
     /// [`Action::MovePlacement`]: the position and, given, the rotation (or
     /// facing) as one undo step.
     pub(super) fn move_placement(
@@ -611,5 +828,14 @@ impl App {
             Some(Err(e)) => self.error(e),
             None => self.error("no playlist file is open"),
         }
+    }
+}
+
+/// An edit's refusal as the status line says it: a refusal that names
+/// itself is the sentence alone.
+fn refusal_text(e: &scenario_edit::Error) -> String {
+    match e {
+        scenario_edit::Error::Declined(why) => why.clone(),
+        other => other.to_string(),
     }
 }

@@ -26,7 +26,7 @@ fn the_design_system_parses_and_names_what_it_uses() {
 #[test]
 fn every_screen_has_its_doc_and_every_doc_a_screen() {
     let missing: Vec<&str> = NAMES.iter().copied().filter(|n| screen(n).is_none()).collect();
-    assert!(missing.is_empty(), "no doc in assets/ui/screens for {missing:?}");
+    assert!(missing.is_empty(), "no doc in content/ui/screens for {missing:?}");
     let extra: Vec<&str> = names().into_iter().filter(|n| !NAMES.contains(n)).collect();
     assert!(extra.is_empty(), "docs of no screen: {extra:?}");
 }
@@ -123,6 +123,23 @@ fn a_doc_naming_what_does_not_exist_is_a_named_error() {
     assert!(doc("screen: t\nkind: list\nlayout: controls\nsurprise: 1\n").is_err(), "an unknown key");
 }
 
+/// A HUD over the running game is the HUD kit's, never a screen of ours:
+/// no doc may say `kind: hud`, and the compositor's Forge pages are gone
+/// from the sheet (docs/game/forge-firefight-ui.md, slice U7).
+#[test]
+fn no_screen_is_a_hud_and_the_forge_compositor_pages_are_gone() {
+    assert_eq!(doc("screen: t\nkind: hud\nlayout: none\nbacking: none\n").unwrap_err().at, "kind");
+    for name in ["forge.hud", "forge.palette", "forge.menu", "layout.hud"] {
+        assert!(!NAMES.contains(&name), "{name} is still in the sheet");
+        assert!(screen(name).is_none(), "{name} still has a doc");
+        assert!(screens::live(name).is_none(), "{name} still has a page");
+    }
+    for (name, text) in baked::SCREENS {
+        let d = ScreenDoc::parse(name, text, design()).unwrap_or_else(|e| panic!("{e}"));
+        assert_ne!(d.kind, "hud", "{name}");
+    }
+}
+
 #[test]
 fn slots_are_filled_or_named_as_missing() {
     assert_eq!(slots_of("Sign in as {gamertag} {{x}}").unwrap(), ["gamertag"]);
@@ -150,7 +167,7 @@ fn a_reloaded_doc_shows_until_the_reloads_are_forgotten() {
 
 #[test]
 fn a_doc_path_is_its_screen_under_assets_ui() {
-    assert_eq!(path_of("coop.join"), std::path::Path::new("assets/ui/screens/coop.join.yaml"));
+    assert_eq!(path_of("coop.join"), std::path::Path::new("content/ui/screens/coop.join.yaml"));
 }
 
 /// The tokens are the numbers the kit's geometry draws with: the Controls
@@ -287,4 +304,29 @@ fn the_converter_puts_a_doc_drawn_dialogs_title_in_capitals() {
     d.widgets.get_mut("title").unwrap().text = Some("Sign in".into());
     export::house_rules(&mut d);
     assert_eq!(d.widgets["title"].text.as_deref(), Some("Sign in"));
+}
+
+/// A page's property rows round-trip byte for byte, and each rule of
+/// them is a named error at the row's field.
+#[test]
+fn property_rows_round_trip_and_name_what_is_wrong() {
+    let head = "screen: t\nkind: list\nlayout: controls\nbacking: shell\n";
+    let row = |extra: &str| format!("{head}props:\n  prop.0:\n    text: \"Team\"\n{extra}");
+    let good = row("    on: [goal, starting-point]\n    prop: team\n    open: picker\n    values: [\"None\", \"Red\"]\n");
+    let d = doc(&good).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(to_yaml(&d), good);
+    assert_eq!(d.props["prop.0"].on, ["goal", "starting-point"]);
+    let quoted = row("    prop: \"respawn time\"\n    open: keyboard\n");
+    assert_eq!(to_yaml(&doc(&quoted).unwrap()), quoted);
+    let at = |yaml: String| doc(&yaml).unwrap_err().to_string();
+    let e = at(row("    prop: no-such\n    open: keyboard\n"));
+    assert!(e.contains("props.prop.0.prop"), "{e}");
+    let e = at(row("    on: [bridge]\n    prop: team\n    open: picker\n    values: [\"A\"]\n"));
+    assert!(e.contains("props.prop.0.on"), "{e}");
+    let e = at(row("    prop: team\n    open: wheel\n"));
+    assert!(e.contains("props.prop.0.open"), "{e}");
+    let e = at(row("    prop: team\n    open: picker\n"));
+    assert!(e.contains("props.prop.0.values"), "{e}");
+    let e = at(format!("{head}props:\n  row.0:\n    text: \"A\"\n    prop: team\n    open: keyboard\n"));
+    assert!(e.contains("props.row.0"), "{e}");
 }

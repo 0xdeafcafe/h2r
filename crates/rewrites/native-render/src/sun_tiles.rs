@@ -49,6 +49,8 @@ pub struct SunCaster {
 pub struct SunWork {
     /// Tiles in the atlas this frame: one per admitted caster.
     pub sun_tiles: u32,
+    /// Offscreen casters with a receiver draw in this view, summed across views.
+    pub sun_tiles_offscreen: u32,
     /// Tiles cleared and drawn again this frame.
     pub sun_tiles_redrawn: u32,
     /// Times the largest tile class was halved to fit the atlas.
@@ -91,13 +93,22 @@ impl SunTile {
     /// Whether a sphere receives this tile: it meets the tile's box swept
     /// away from the light. The caster itself always does.
     pub fn meets(&self, centre: [f32; 3], radius: f32) -> bool {
-        let p = [centre[0], centre[1], centre[2], 1.0];
-        let x = dot4(self.rows[0], p) * self.radius;
-        let y = dot4(self.rows[1], p) * self.radius;
-        // Distance along the light's travel from the sphere's near plane.
-        let along = dot4(self.rows[2], p) * 2.0 * self.radius;
-        x.abs() <= self.radius + radius && y.abs() <= self.radius + radius && along >= -radius
+        meets(&self.rows, self.radius, centre, radius)
     }
+}
+
+pub(super) fn meets(
+    rows: &[[f32; 4]; 4],
+    caster_radius: f32,
+    centre: [f32; 3],
+    radius: f32,
+) -> bool {
+    let p = [centre[0], centre[1], centre[2], 1.0];
+    let x = dot4(rows[0], p) * caster_radius;
+    let y = dot4(rows[1], p) * caster_radius;
+    // Distance along the light's travel from the sphere's near plane.
+    let along = dot4(rows[2], p) * 2.0 * caster_radius;
+    x.abs() <= caster_radius + radius && y.abs() <= caster_radius + radius && along >= -radius
 }
 
 /// The frame's tiles.
@@ -151,6 +162,7 @@ pub fn floats_hash(values: &[f32]) -> u64 {
 /// What a kept tile was drawn from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Drawn {
+    sphere: [u32; 4],
     rows: u64,
     towards_light: [u32; 3],
     rect: [u32; 4],
@@ -235,7 +247,9 @@ impl SunTilePlanner {
             let (cx, cy) = morton(cursor);
             cursor += span;
             let rect = [cx * MIN_EDGE, cy * MIN_EDGE, edge, edge];
+            let [x, y, z] = c.centre;
             let now = Drawn {
+                sphere: [x, y, z, c.radius].map(f32::to_bits),
                 rows: c.rows,
                 towards_light: l.map(f32::to_bits),
                 rect,
@@ -400,6 +414,8 @@ mod tests {
         assert_eq!(third.work.sun_tiles_redrawn, 1);
         assert!(!third.tiles.iter().find(|t| t.id == 1).unwrap().redraw);
         assert!(third.tiles.iter().find(|t| t.id == 2).unwrap().redraw);
+        moving.radius += 0.25;
+        assert_eq!(planner.plan(&[still, moving]).work.sun_tiles_redrawn, 1);
         moving.towards_light = [0.0, 1.0, 1.0];
         assert_eq!(planner.plan(&[still, moving]).work.sun_tiles_redrawn, 1);
         planner.invalidate();

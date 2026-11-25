@@ -1,17 +1,15 @@
-# Skies: measurements
+# Halo 1 sky conversion: measurements
 
 Evidence for [../sky.md](../sky.md).
 
-All numbers come from the ignored tests named in the entries, run against
-the owner's Halo 1 and Halo 2 discs.
+## 2026-11-19: a10's grey slab under `sky\space\space`
 
-## 2026-11-19: the a10 grey slab
-
-Commit: `90a5be1fd`. Method: `render.frame` on a10 with the cryo bay's
-clusters (no sky) forced to sky 0 (`+0x6e` = 0 on all 33), per-draw depth
-state, vertex program and constants from the agent API, and a WGSL override
-of the clip z for every program. Reproduce by forcing the clusters and
-reading pass 11's draws.
+Commit: `90a5be1fd`. Method: a converted a10 with the cryo bay's 33
+clusters forced to sky 0 (`+0x6e` = 0), `render.frame` on the running game
+(per-draw depth state, vertex program and constants), and pass 11's
+slab-grey pixel count with the vertex programs overridden. The slab is the
+sky drawn over walls 5 to 10 units away. Reproduce with a build of that
+commit and `render.frame` on the forced map.
 
 - The sky's draws are W-buffered and depth-clamped, LessEqual with no depth
   write, after the level. Their constants match the walls'.
@@ -28,17 +26,19 @@ reading pass 11's draws.
 - A fixed n is no fix: the full-screen clamped fan drawn after the sky
   (`inline Begin/End`, a pass-through program) sits at w of about 16,000
   (1 unit) and would be culled.
-- On a build with `unclipped_depth` for clamped draws the slab is unchanged
-  (138,803 pixels). With every program overridden to clip z = `k * w - e`,
-  k = -1 or e = 1e30 changes nothing, so the depth really is unclipped. Yet
-  z still changes coverage: e from 5,000 to 5,000,000 leaves about 88,400
-  slab pixels, and e of 5e7 or more the full 138,803, though no vertex has
-  w between 1e4 and 1e8.
+- With `unclipped_depth` on clamped draws, the slab is unchanged (138,803
+  pixels). With every program overridden to clip z = `k * w - e`, k = -1 or
+  e = 1e30 changes nothing, so the depth really is unclipped. Yet z still
+  changes coverage: e from 5,000 to 5,000,000 leaves about 88,400 slab
+  pixels, and e of 5e7 or more the full 138,803, though no vertex has w
+  between 1e4 and 1e8.
 
-Open hypothesis (untested, needs a build): the host rasterizer mishandles
-the parts of these triangles near w = 0 that lie far off screen (a
-guard-band problem), which clip distances `K w +- x` and `K w +- y`
-(wgpu `CLIP_DISTANCES`) would bound.
+Open hypothesis: the host rasterizer mishandles the parts of these
+triangles that lie far off screen near w = 0 (huge x / w), a guard-band
+problem rather than a depth-range one. Guard-band clip planes for clamped
+draws, clip distances `K w +- x` and `K w +- y` (wgpu `CLIP_DISTANCES`),
+would bound x / w and y / w without culling anything on screen, the fan
+included. Untested: it needs a build, not an override.
 
 ## 2026-11-19: sky pictures, scale and edge-on triangles
 

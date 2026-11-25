@@ -1,10 +1,10 @@
 //! Firefight definitions and admission rules for a Slayer match of one
 //! player team, or two that also fight each other, against the AI.
 //!
-//! The definitions carry authored tuning and kit class names. The director
-//! turns a definition and what the host observes into host commands;
-//! [`script`] compiles a definition to a rules script that does the same.
-//! See [the design](../../../../docs/game/firefight.md).
+//! The definitions carry authored tuning and kit class names. [`script`]
+//! loads the definition as data for the handwritten director, which turns
+//! what the host observes into host commands
+//! ([`ScriptDirector`]). See [the design](../../../../docs/game/firefight.md).
 #![forbid(unsafe_code)]
 
 pub mod builtin;
@@ -17,7 +17,7 @@ mod wire;
 
 pub use content::Sha256;
 pub use def::*;
-pub use director::{Command, Director, Observed, Outcome, PlayerKill, Settings};
+pub use director::{Command, Observed, Outcome, PlayerKill, Settings};
 pub use scoring::ScoreReason;
 pub use script::{ScriptDirector, ScriptRefusal};
 pub use validate::{HOST_ACTOR_CAPS, Limits, validate};

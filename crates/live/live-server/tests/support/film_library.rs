@@ -489,4 +489,90 @@ pub async fn exercise(live: Arc<Live>) {
         204
     );
     assert!(list().await.iter().all(|r| r["game_id"] != host));
+    host_film_file(&live).await;
+}
+
+/// A sealed host film file of `game` (docs/game/input-film.md, "Layout"):
+/// a seed naming the game and `chunks` tick chunks that are not zstd
+/// frames, so an ingest that inflated one would refuse it.
+fn host_film(game: &str, chunks: u32) -> Vec<u8> {
+    let seed = pack(
+        &serde_json::to_vec(
+            &json!({"header":{"meta":{"id":"parity-film"},"game_id":game},"descriptor":{}}),
+        )
+        .unwrap(),
+    );
+    let mut data = vec![0; 64];
+    data.extend_from_slice(&seed);
+    let mut offsets = Vec::new();
+    for i in 0..chunks {
+        offsets.push(data.len() as u64);
+        let payload = format!("tick chunk {i}");
+        data.push(0);
+        data.extend((payload.len() as u32).to_le_bytes());
+        data.extend_from_slice(payload.as_bytes());
+    }
+    let trailer = data.len() as u64;
+    data.extend(chunks.to_le_bytes());
+    for offset in offsets {
+        data.extend(offset.to_le_bytes());
+    }
+    data[..8].copy_from_slice(b"H2FILM4!");
+    data[8..16].copy_from_slice(&[4, 0, 2, 0, 30, 16, 0, 1]);
+    data[16..32].copy_from_slice(&live_proto::film::sharing::header_id("parity-film"));
+    data[32..36].copy_from_slice(&(chunks * 256).to_le_bytes());
+    data[36..40].copy_from_slice(&(seed.len() as u32).to_le_bytes());
+    data[40..48].copy_from_slice(&trailer.to_le_bytes());
+    data
+}
+
+/// A Live game's host sends its film file beside its stats stream; both
+/// homes store it as sent and keep the first.
+async fn host_film_file(live: &Arc<Live>) {
+    use live_proto::hosts::{HostClass, HostLease, ProviderKind, Transport};
+    let lease = HostLease {
+        id: "hl-PARITYPARITYPARITYPARI".into(),
+        assignment_id: "custom-parity".into(),
+        provider: ProviderKind::Local,
+        region: None,
+        class: HostClass::Small,
+        map: "lockout".into(),
+        map_id: None,
+        variant: None,
+        firefight: None,
+        hopper: None,
+        max_players: 4,
+        roster: vec![],
+        bots: vec![],
+        transport: Transport::Udp,
+        idle_timeout_s: 120,
+        max_match_s: 1800,
+        created_ms: now() * 1000,
+    };
+    let token = live.issue_host_token(&lease);
+    let send = |body: Vec<u8>| {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/games/{}/film?object=film", lease.id))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body))
+            .unwrap();
+        live_server::http::router(live.clone()).oneshot(req)
+    };
+    let film = host_film(&lease.id, 3);
+    assert_eq!(send(host_film("another-game", 3)).await.unwrap().status(), 400);
+    for _ in 0..2 {
+        assert_eq!(send(film.clone()).await.unwrap().status(), 204);
+    }
+    assert_eq!(send(host_film(&lease.id, 2)).await.unwrap().status(), 409);
+    let store = &live.blobs().unwrap().private;
+    let stored = store
+        .list(&format!("input-films/{}/", lease.id))
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        store.get(&stored[0].key).await.unwrap().unwrap().as_ref(),
+        film.as_slice()
+    );
 }

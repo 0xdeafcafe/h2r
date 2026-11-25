@@ -417,6 +417,19 @@ impl Mesh {
         best
     }
 
+    /// Whether a ray from `origin` along `dir` (a unit vector) meets a
+    /// face of bay `bay` other than face `skip`, from either side: the
+    /// sun's shadow test (`crate::light`).
+    pub fn occluded(&self, bay: usize, skip: usize, origin: V3, dir: V3) -> bool {
+        self.faces.iter().enumerate().any(|(i, f)| {
+            i != skip
+                && f.bay == bay
+                && (1..f.points.len() - 1).any(|k| {
+                    ray_triangle(origin, dir, f.points[0], f.points[k], f.points[k + 1]).is_some()
+                })
+        })
+    }
+
     /// Every face as little-endian bytes: the build's identity.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();

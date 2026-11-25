@@ -14,6 +14,16 @@ pub use crate::native_gels_replace::Binding;
 use crate::native_gels_replace::Replacements;
 use crate::native_lights_glue::DeviceMemory;
 
+static REFUSALS: crate::native_refusals::Counts = crate::native_refusals::Counts::new();
+
+pub(crate) fn report_refusals() {
+    REFUSALS.report("native-gels");
+}
+
+fn refuse(reason: &'static str) {
+    REFUSALS.count("production", reason);
+}
+
 struct Ro<'a>(&'a dyn GuestMemory);
 impl GuestRead for Ro<'_> {
     fn read_u32(&self, address: u32) -> Option<u32> {
@@ -49,12 +59,21 @@ impl Outputs {
         shader: u32,
         surface: u32,
     ) -> Option<Binding> {
+        self.produced_after(before, definition, shader)
+            .filter(|binding| binding.key.surface == surface)
+    }
+
+    /// The indexed draw validates the produced surface against its actual
+    /// sampled texture on every copy when the packet is recorded.
+    pub(crate) fn produced_after(
+        &self,
+        before: Checkpoint,
+        definition: u32,
+        shader: u32,
+    ) -> Option<Binding> {
         let binding = (*self.binding.lock().ok()?)?;
         let key = binding.key;
-        (key.sequence > before.0
-            && key.definition == definition
-            && key.shader == shader
-            && key.surface == surface)
+        (key.sequence > before.0 && key.definition == definition && key.shader == shader)
             .then_some(binding)
     }
 }
@@ -65,10 +84,11 @@ struct Loaded {
     generation: u64,
 }
 
+#[derive(Clone)]
 struct Pending {
     call: Call,
     name: String,
-    key: Key,
+    sequence: u64,
 }
 
 struct Glue<B: d3d::Backend + Send + 'static> {
@@ -78,17 +98,9 @@ struct Glue<B: d3d::Backend + Send + 'static> {
     loaded: Arc<Mutex<Loaded>>,
     pending: Mutex<Option<Pending>>,
     outputs: Arc<Outputs>,
-    refused: AtomicU64,
 }
 
 impl<B: d3d::Backend + Send + 'static> Glue<B> {
-    fn refuse(&self, why: &str) {
-        let n = self.refused.fetch_add(1, Ordering::Relaxed) + 1;
-        if n <= 8 || n.is_multiple_of(1800) {
-            eprintln!("native-gels: production refused ({n}): {why}; D3D retained");
-        }
-    }
-
     fn generation(&self, name: &str) -> u64 {
         let mut loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
         if loaded.name != name {
@@ -101,34 +113,40 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
     fn replace(
         &self,
         mem: &mut dyn GuestMemory,
-        pending: Pending,
+        pending: &Pending,
         target: Target,
-    ) -> Result<(), String> {
+    ) -> Result<(), &'static str> {
         let mut device = self.device.lock().map_err(|_| "device lock")?;
         if !device
             .begin_external_boundary(&mut DeviceMemory(mem))
-            .map_err(|e| e.to_string())?
+            .map_err(|_| "gel D3D boundary failed")?
         {
-            return Err("gel waits for a preceding guest callback".into());
+            return Err("gel waits for a preceding guest callback");
         }
         let generation = self
             .loaded
             .lock()
             .map_err(|_| "gel map generation lock")?
             .generation;
-        let view = mem.u32(0x004b_a050).map_err(|e| format!("view: {e:?}"))?;
+        let view = mem.u32(0x004b_a050).map_err(|_| "gel view unavailable")?;
         // Only the enabled feature's replacement path reaches here. Keep
         // disabled runs out of the device's admission list.
         self.admission_registered.call_once(|| {
             device.add_draw_admission(self.replacements.clone());
         });
-        self.replacements.arm(pending.key, target, view, generation);
+        let key = Key {
+            sequence: pending.sequence,
+            definition: pending.call.definition,
+            shader: pending.call.shader,
+            surface: target.surface,
+        };
+        self.replacements.arm(key, target, view, generation);
         *self
             .outputs
             .binding
             .lock()
             .map_err(|_| "gel binding lock")? = Some(Binding {
-            key: pending.key,
+            key,
             guest_size: target.size,
         });
         Ok(())
@@ -148,46 +166,56 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         let Some(call) = call else { return };
-        let Some(target) = Target::read(&Ro(mem)) else {
-            self.refuse("target 13 is unresolved or has mip levels");
-            return;
-        };
         let Ok(name) = crate::health::loaded_map_name(mem) else {
             return;
         };
         self.generation(&name);
-        let key = Key {
-            sequence: self.outputs.sequence.fetch_add(1, Ordering::AcqRel) + 1,
-            definition: call.definition,
-            shader: call.shader,
-            surface: target.surface,
-        };
-        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { call, name, key });
+        let sequence = self.outputs.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending {
+            call,
+            name,
+            sequence,
+        });
     }
 
     fn quad(&self, mem: &mut dyn GuestMemory) {
+        self.replacements.cancel();
         let pending = self
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take();
+            .clone();
         let Some(pending) = pending else {
             return;
         };
-        let Some(target) = Target::read(&Ro(mem)) else {
-            self.refuse("target 13 is unresolved");
-            return;
-        };
-        if target.surface != pending.key.surface
-            || mem.u32(gels::DEFINITION).ok() != Some(pending.call.definition)
+        if mem.u32(gels::DEFINITION).ok() != Some(pending.call.definition)
             || mem.u32(pending.call.definition.wrapping_add(0xe0)).ok() != Some(pending.call.shader)
             || crate::health::loaded_map_name(mem).ok().as_ref() != Some(&pending.name)
         {
-            self.refuse("gel invocation changed before its quad");
+            refuse("gel invocation changed before its quad");
             return;
         }
-        if let Err(e) = self.replace(mem, pending, target) {
-            self.refuse(&e);
+        let Some(target) = Target::read(&Ro(mem)) else {
+            refuse("target 13 descriptor is unavailable or invalid at the quad");
+            return;
+        };
+        if let Err(e) = self.replace(mem, &pending, target) {
+            refuse(e);
+        }
+    }
+
+    fn quad_end(&self, mem: &mut dyn GuestMemory) {
+        if !self.replacements.active() {
+            return;
+        }
+        // The last inline mip draw can still be queued when the helper
+        // returns. Drain it while this invocation owns the scope.
+        let drained = self.device.lock().ok().and_then(|mut device| {
+            device.begin_external_boundary(&mut DeviceMemory(mem)).ok()
+        });
+        self.replacements.cancel();
+        if drained != Some(true) {
+            refuse("gel quad exit could not drain its pending draw");
         }
     }
 }
@@ -206,7 +234,6 @@ pub fn install<B: d3d::Backend + Send + 'static>(
         loaded: Arc::new(Mutex::new(Loaded::default())),
         pending: Mutex::new(None),
         outputs: Arc::clone(&outputs),
-        refused: AtomicU64::new(0),
     }));
     outputs
 }

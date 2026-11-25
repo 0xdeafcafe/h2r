@@ -7,7 +7,7 @@ use rules::{Input, Vm, build};
 
 const SRC: &str = r#"
 rules "Entries" 1
-carrier slayer
+type slayer
 requires firefight.director
 global var t: time = 0t
 global var r: int = 0

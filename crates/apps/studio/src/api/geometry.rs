@@ -15,8 +15,10 @@ use studio_proto::{code, method as m};
 use super::scenario::refused;
 use super::{MethodDef, P, Provider, Reply, err};
 use crate::App;
-use crate::app::Action;
 use crate::app::modeling::ModelAction;
+use crate::app::{Action, Refused};
+
+mod physics;
 
 /// The Modeling tool's provider.
 #[derive(Default)]
@@ -40,13 +42,15 @@ const fn def(
 }
 
 /// `target` is `kind:tag:index` (`cluster:e1000004:0`, `instance_def:…`,
-/// `mode_section:…`); the target in edit mode otherwise.
+/// `mode_section:…`, `coll_bsp:…`); the target in edit mode otherwise.
 const METHODS: &[MethodDef] = &[
+    physics::SHAPES,
+    physics::SET,
     def(
         m::GEOMETRY_LIST,
         "The open map's editable geometry: every structure BSP's clusters and instanced definitions, and a render model's sections when `model` names one (its tag id), with counts, whether the raw data is the map's own and whether it is open",
         r#"{"model?":"string"}"#,
-        r#"[{"target":"string","kind":"cluster|instance_def|mode_section","tag":"string","name":"string","vertices":"integer","triangles":"integer","parts":"integer","local":"boolean","open":"boolean"}]"#,
+        r#"[{"target":"string","kind":"cluster|instance_def|mode_section|coll_bsp","tag":"string","name":"string","vertices":"integer","triangles":"integer","parts":"integer","local":"boolean","open":"boolean"}]"#,
         r#"{}"#,
     ),
     def(
@@ -76,6 +80,20 @@ const METHODS: &[MethodDef] = &[
         r#"{"target?":"string"}"#,
         r#"{"targets":"[{target,class,verts,faces,moved,lightmap_stale,ops,refused}]","allow_unverified":"boolean","save_refusal":"string|null"}"#,
         r#"{}"#,
+    ),
+    def(
+        m::MODEL_COLLISION_FROM_RENDER,
+        "Replace an open collision BSP with polygons from an open render section in the same coordinate space. Optional materials maps each render material index to a collision material (default all 0). One undo step",
+        r#"{"render":"string","target?":"string","materials?":"[integer]"}"#,
+        r#"{"target":"string","verts":"integer","faces":"integer"}"#,
+        r#"{"render":"cluster:e1000004:0","target":"coll_bsp:e100000a:0"}"#,
+    ),
+    def(
+        m::GEOMETRY_LOWER_LODS,
+        "Use for lower LODs: point every lower level of detail of each permutation that draws an open model section (`mode_section:…`) at it (`on`, default true), or leave them as the file has them (false): one undo step, saved as patches of the permutations' LOD indices. A target that is not a model section is refused",
+        r#"{"target?":"string","on?":"boolean"}"#,
+        r#"{"target":"string","on":"boolean","changed":"boolean"}"#,
+        r#"{"target":"mode_section:e1000002:0"}"#,
     ),
     def(
         m::GEOMETRY_COLLISION_ADD_BOX,
@@ -148,12 +166,7 @@ fn run(app: &mut App, a: ModelAction) -> Result<Vec<String>, RpcError> {
 /// The `target` param, else the target in edit mode.
 fn target(app: &App, p: &P) -> Result<Target, RpcError> {
     match p.opt_str("target")? {
-        Some(id) => Target::parse(id).ok_or_else(|| {
-            err(
-                code::INVALID_PARAMS,
-                format!("target: {id:?} is not kind:tag:index (cluster:e1000004:0)"),
-            )
-        }),
+        Some(id) => parse_target("target", id),
         None => app.modeling.session.active.ok_or_else(|| {
             err(
                 code::NO_DOCUMENT,
@@ -161,6 +174,15 @@ fn target(app: &App, p: &P) -> Result<Target, RpcError> {
             )
         }),
     }
+}
+
+fn parse_target(param: &str, id: &str) -> Result<Target, RpcError> {
+    Target::parse(id).ok_or_else(|| {
+        err(
+            code::INVALID_PARAMS,
+            format!("{param}: {id:?} is not kind:tag:index (cluster:e1000004:0)"),
+        )
+    })
 }
 
 /// [`target`], which must be open.
@@ -202,6 +224,7 @@ fn summary(app: &App, t: Target) -> Value {
 fn call(app: &mut App, method: &str, p: &P) -> Reply {
     app.sync_modeling();
     match method {
+        m::MODEL_PHYSICS_SHAPES | m::MODEL_PHYSICS_SET => physics::call(app, method, p),
         m::GEOMETRY_LIST => {
             let model = match p.opt_str("model")? {
                 Some(s) => Some(parse_tag(s)?),
@@ -312,6 +335,49 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "allow_unverified": app.modeling.allow_unverified,
                 "save_refusal": save_refusal,
             }))
+        }
+        m::MODEL_COLLISION_FROM_RENDER => {
+            let target = open_target(app, p)?;
+            let render = parse_target("render", p.str("render")?)?;
+            let materials = p
+                .get("materials")
+                .map(|value| {
+                    serde_json::from_value(value.clone())
+                        .map_err(|e| err(code::INVALID_PARAMS, format!("materials: {e}")))
+                })
+                .transpose()?
+                .unwrap_or_default();
+            if !app.modeling.session.is_open(render) {
+                return Err(err(
+                    code::NO_DOCUMENT,
+                    format!("{render} is not open (geometry.open)"),
+                ));
+            }
+            app.perform(
+                Action::Model(ModelAction::CollisionFromRender {
+                    render,
+                    target,
+                    materials,
+                }),
+                false,
+            )
+            .map_err(|failure| match failure {
+                Refused::Failed(reason) => err(code::REFUSED, reason),
+                other => refused(other),
+            })?;
+            let (verts, _, faces) = app.modeling.session.mesh(target).expect("open target").counts();
+            Ok(json!({ "target": target.id(), "verts": verts, "faces": faces }))
+        }
+        m::GEOMETRY_LOWER_LODS => {
+            let t = open_target(app, p)?;
+            let on = match p.get("on") {
+                None | Some(Value::Null) => true,
+                Some(_) => p.bool("on")?,
+            };
+            run(app, ModelAction::Seal)?;
+            let was = app.modeling.session.uses_for_lower_lods(t);
+            run(app, ModelAction::UseForLowerLods { target: t, on })?;
+            Ok(json!({ "target": t.id(), "on": on, "changed": was != on }))
         }
         m::GEOMETRY_COLLISION_ADD_BOX => {
             let structure = parse_tag(p.str("structure")?)?;

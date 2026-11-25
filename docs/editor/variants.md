@@ -30,7 +30,7 @@ slot, after `record::check` finds nothing (docs/editor/editor.md).
 | `+0x02` | u8 | unknown, preserved | |
 | `+0x03` | u8 | built-in description number (0..=100) | confirmed |
 | `+0x04` | UTF-16 [32] | name; the last unit is always 0 | confirmed |
-| `+0x44` | i32 | game-engine index: 1 CTF, 2 Slayer, 3 Oddball, 4 King, 7 Juggernaut, 8 Territories, 9 Assault | confirmed |
+| `+0x44` | i32 | game-engine index: 1 CTF, 2 Slayer, 3 Oddball, 4 King, 6 Script, 7 Juggernaut, 8 Territories, 9 Assault | confirmed for retail, `record::SCRIPT_INDEX` for scripts |
 | `+0x48` | u32 | flags: bit 0 team play, other bits are settings (below) | confirmed |
 | `+0x4c..+0xf0` | | common settings (below) | confirmed |
 | `+0xf0..+0x10c` | | game-type area: its meaning depends on the engine index | confirmed |
@@ -73,7 +73,10 @@ rule changed the record; otherwise it overwrites the whole record with a
 default Slayer and the load fails. So an edited record must satisfy every
 rule. `record::check` reports the broken ones:
 
-- `+0` only bit 0; `+0x42` (last name unit) 0; engine 1..=4 or 7..=9;
+- `+0` only bit 0; `+0x42` (last name unit) 0; engine 1..=4 or 7..=9,
+  or the script index 6, whose type area must be all zero (the game's
+  body refuses 6; the `rules` feature answers it natively,
+  `record::clean_up`, [game-types-without-carriers.md](../game/game-types-without-carriers.md#no-retail-engine-object));
   `+0x48` below bit 15; `+0xb0` 0.
 - i32 `+0x4c` 0..6; `+0x50`, `+0x54`, `+0x7c`, `+0x80`, `+0x84`, `+0xac`
   0..0x7fff; `+0x58`, `+0x88`, `+0xa4`, `+0xa8` 0..2; `+0x74`, `+0x78`
@@ -105,7 +108,8 @@ the others, respawn modifier 2, betrayal penalty 10, map-default weapons
 and vehicles, and each type's own area (Juggernaut fast with an
 overshield, a hill that moves every 60 s, one ball, a 30 s flag reset,
 three territories). It is named by our label of the type. Every stock
-record passes `record::refused`. The ignored test
+record passes `record::refused`. The stock script record uses Slayer's common
+settings and a zeroed type area. The ignored test
 `the_stock_record_is_offered` (`tests/settings_table.rs`) checks that the
 retail editor offers each stock value.
 
@@ -132,6 +136,9 @@ A `sily` tag: `+0` setting number, `+8` its `unic` reference (datum
 `+0xc`), `+0x10` title, `+0x14` the title in capitals and `+0x18` help
 string ids (checked by reading their text), `+0x1c` the options block of 0xc-byte options
 (`+0` default flag, `+4` value, `+8` label string id). Confirmed layout.
+
+Script-index records take the common match, team, player, vehicle and weapon
+settings from Slayer's pages and defaults. The type area stays zero.
 
 Without a disc, `Schema::fallback` lists every setting the record stores
 with our names, any value the record accepts, and no built-ins.
@@ -168,7 +175,9 @@ One file per save directory, no extension, named by the content type
 Content types: 0 profile, 1 Slayer, 2 King, 3 Race, 4 Oddball,
 5 Juggernaut, 6 Headhunter, 7 CTF, 8 Assault, 9 Territories, 10 playlist.
 The listing tries each type's file name in turn (`0x216537`); the first
-that exists gives the type.
+that exists gives the content category. The script index shares Slayer's
+payload filename. The record in that file retains engine 6 and the script
+reference that the game type list resolves to a row.
 
 | Offset | Size | Content |
 |---|---|---|
@@ -227,18 +236,49 @@ file, so it carries no signature.
   `description` (at most 150 characters), `author` (`{xuid, gamertag}`,
   written by Live on publish), `game_type` (for people), `engine`,
   `record_hex` and, when the record's block names a rules script (mode
-  2), `script: {name, hash, ir_b64, source?}`: the IR blob (at most 64
-  KiB) and its source (at most 256 KiB). The record carries the 8-byte
+  2), `script: {name, hash, ir_b64, source?, modules?}`: the IR blob (at most
+  64 KiB) and its source (at most 256 KiB, with `modules`, the files
+  its `use` lines name by file name, in all: `Attach::from_files`,
+  `Bundle::with_modules`, [rules-engine.md](../game/rules-engine.md)
+  "Modules"; absent for a one-file script). The record carries the 8-byte
   hash prefix that names the script; the file carries the script itself
   ([rules-engine.md](../game/rules-engine.md#carrying-a-script)).
   `Bundle::canonical` is compact JSON in field order, and `Bundle::id` is
   its SHA-256: the same variant has the same id everywhere.
+- **Suggested maps** are `maps: [{base, variant, name}]`, at most eight
+  (`MAX_MAPS`): the base map's SHA-256, the map variant's document id (both
+  64 lowercase hex digits) and its name (1 to 63 characters, under the
+  name rules below), none listed twice. The field is absent when empty, so
+  a bundle without suggestions keeps its bytes and id. `Bundle::with_maps`
+  sets them and `portable::read` refuses a file over the cap, by
+  name. Two writers set them. Studio's variant tool has a **Suggest map
+  variants** section under Export: it lists this machine's map variants
+  (`forge::files::variants::suggestable`: every map's, saved then
+  fetched, the map tier and other builders' files left out), ticks up to
+  eight in order, and Export then writes a version-2 file
+  (`VariantEditor::export_current_with`, `Action::ExportVariantWith`);
+  with none ticked it writes the version-1 text it always did. A record
+  that names a built-in script carries it in the file
+  (`portable::builtin_attach`): its engine's built-in, or for a record on
+  the script index, which has no engine to name one by (a new Slayer
+  variant's, as Slayer's built-in rides that index), whichever of
+  `rules::builtin::ALL` has the hash prefix the record names. A record
+  that names another script is refused by name, as its blob is not at
+  hand. `variant.maps` lists the same choices and `variant.export`
+  takes `maps` (variant ids). In the game, `Store::set_maps` writes a
+  kept game variant's suggestions into its own file
+  (`game_variants::suggest` lists the choices); a Live variant is
+  refused, because Live keeps its own copy. A suggestion only focuses a map variant in the lobby's picker
+  ([forge-map-variants.md](../game/forge-map-variants.md), "How a pick names a map variant");
+  the record is untouched.
 - **Reading** (`portable::read`) checks a version-2 file's integrity:
   the record decodes, `engine` and `name` match it, and a script is
   present exactly when the record names one, its IR hashes to `hash`,
   `hash` starts with the record's prefix, `rules::verify::load` takes it
-  and its carrier is the record's engine. `Bundle::check`, which Live
-  runs before publishing, adds the name rules (1 to 31 characters, no
+  and its carrier matches a retail record's engine. A script-index bundle
+  requires the script and takes its display type from the header.
+  `Bundle::check` accepts only common settings and extension fields on the
+  script index. Before publishing, Live runs this check, which adds the name rules (1 to 31 characters, no
   leading or trailing space, no control character, no `|`, none of
   U+E405..U+E407, nothing past U+FFFF; game-options.md section 4), a
   record the clean-up keeps and our rules allow (`record::refused`), and
@@ -255,8 +295,8 @@ file, so it carries no signature.
   blob is not at hand), and `Ir` or `Source` attach a given script. The
   block's extras are the script's `settings` and nothing else:
   `Bundle::new` does not keep the input record's `hx` extras, and
-  `Bundle::check` refuses an extra no settings row stores (movement
-  speed, weapon ids, team size, the superbounce flag). The same inputs
+  `Bundle::check` refuses an extra no settings row stores (weapon
+  ids, team size, the superbounce flag). The same inputs
   give the same id. `portable::port_input` takes a raw record, a
   saved-variant file (record and signature), a hopper record slot
   (`0x37c` bytes, the record at `+0x24c`) or a `.h2variant` of either
@@ -277,28 +317,31 @@ file, so it carries no signature.
 - **A script's own variant.** `portable::record_for(ir, options)` is the
   one builder of a variant from a rules script
   ([rules-variants.md](../game/rules-variants.md#the-record-of-a-script)):
-  the stock record of the script's carrier (`GameVariant::stock`, below),
-  each setting of the script's `settings` block written where its row of
+  a script using Slayer's template and writing no type-area setting starts
+  from `GameVariant::stock(GameType::Script)` with engine 6. Its common
+  fields start at Slayer's stock values and its type area is zero. Every
+  other script starts from its retail template. Each setting of the
+  script's `settings` block is written where its row of
   `rules::settings::TABLE` stores it (a record setting through
   `GameVariant::set`, the carrier's own score setting for `score_limit`,
   CTF's or Assault's setting for the paired `ctf_*` rows, an `hx` field
-  for `gravity`, `damage`, `shield`, `health` and `unlimited_grenades`),
-  the script's name, and the script reference (mode 2, the IR hash's
-  first 8 bytes and the option bits, the defaults for options not
-  given). It refuses a setting past the table, on a carrier it does not
+  for `gravity`, `damage`, `shield`, `health`, `speed` and `unlimited_grenades`).
+  The builder writes the script's name and mode-2 reference, the IR
+  hash's first eight bytes and the option bits with defaults for
+  omitted values. It refuses a setting past the table, on a carrier it does not
   apply to or out of its range, a name the name rules refuse, and a
   record `record::refused` refuses (a Juggernaut script with team play,
   a CTF script without), in those rules' words; nothing falls back.
   `portable::settings_record` is the same record before the name and the
-  reference: `Bundle::check` and `h2 rules check` refuse a script whose
-  settings it refuses. `portable::from_script(ir, source, options)`
+  reference. `h2 rules check` reports its engine and rejects settings
+  the record cannot store. `portable::from_script(ir, source, options)`
   makes the bundle: that record, the script's name and `about` as the
   bundle's name and description, and the script part. `h2 variants
   from-script <file.rules> [--option KEY=VALUE]... [-o DIR]` writes it
   and prints its id and path; the same script and options give the same
-  id. `h2 rules settings <file.rules>` prints the record: every setting
-  of the carrier a script may name, with its value and `script` or
-  `stock`, then the record's settings no script names.
+  id. `h2 rules settings <file.rules>` prints the generated record's
+  engine and each available setting with its value and `script` or
+  `stock`, then the record fields no script setting names.
 
 ## The editor
 
@@ -314,7 +357,7 @@ update in place, but new saves cannot be named).
   (a settings-table row, the way the `hx` extras are edited),
   `copy_builtin(name)`, `new_variant(type)`, `open_builtin`/`open_saved`,
   `delete`,
-  `export_current`/`import`, `current`, `origin`, `issues`, `status`.
+  `export_current`/`export_current_with(maps)`/`import`, `current`, `origin`, `issues`, `status`.
 
 Built-ins are read-only; `copy_builtin(name)` (the editor's **Copy**)
 makes a named copy and clears the built-in flag like the game's Edit.

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use map::TagId;
 use serde_json::{Value, json};
+use tags::defs::FieldView;
 use tags::registry::{Field, Hint, Kind, Layout, Unit};
 
 use crate::App;
@@ -284,7 +285,12 @@ fn row<'a>(
         field: f,
         address: a,
         label: label(f),
-        type_words: type_words(&f.kind),
+        // A colour field of any form reads as a colour.
+        type_words: if super::colour::form(f).is_some() {
+            "Colour"
+        } else {
+            type_words(&f.kind)
+        },
         unit: unit(f),
         edited,
         read_only,
@@ -774,6 +780,7 @@ impl Row<'_> {
             "named": f.named,
             "type": self.type_words,
             "unit": self.unit,
+            "view": super::rich::view_json(f),
             "editable": self.read_only.is_none(),
             "read_only": self.read_only,
             "edited": self.edited,
@@ -804,7 +811,17 @@ impl Row<'_> {
                 out["count"] = json!(self.list.map(|l| l.count));
                 out["capacity"] = json!(self.list.map(|l| l.capacity));
             }
-            _ => {}
+            // A function row: its curve's shape (null when the data is not
+            // a function blob; the row says why).
+            Kind::Data if f.view.is_some_and(|v| v == FieldView::Function) => {
+                out["function"] = super::curve::row_json(doc, tag, self.address);
+            }
+            // A colour row: its form, hex, channels and (hdr) intensity.
+            _ => {
+                if let Some(c) = super::colour::row_json(doc, tag, self.address, f) {
+                    out["colour"] = c;
+                }
+            }
         }
         out
     }

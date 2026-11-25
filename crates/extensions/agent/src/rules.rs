@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use agent_proto::rules::{ReloadParams, ReloadResult, State, method};
+use agent_proto::rules::{ReloadParams, ReloadResult, State, Zones, method};
 use agent_proto::{RpcError, code};
 use engine::GuestMemory;
 use serde_json::Value;
@@ -41,6 +41,12 @@ pub enum Reload {
 pub trait Source: Send + Sync {
     /// `rules.state`: always answers; `running` false says why not.
     fn state(&self) -> State;
+
+    /// `rules.zones`: the zones the running script's host built; none when
+    /// no script runs.
+    fn zones(&self) -> Zones {
+        Zones::default()
+    }
 
     /// `rules.reload` over the game at this boundary. `restart`: why this
     /// host cannot queue a game (no guest calls), or `None` when it can.
@@ -85,13 +91,18 @@ pub fn reload_params(params: Value) -> Result<ReloadParams, RpcError> {
     Ok(p)
 }
 
-/// Adds `rules.state` and `rules.reload` over `source`. `calls`: the
+/// Adds `rules.state`, `rules.zones` and `rules.reload` over `source`. `calls`: the
 /// agent's guest-call queue, which a restart needs.
 pub fn install(agent: &Agent, source: Arc<dyn Source>, calls: Option<calls::Shared>) {
     let state = Arc::clone(&source);
     agent.add_game_method(method::STATE, Access::Read, move |params, _ctx| {
         no_params(method::STATE, &params)?;
         Ok(serde_json::to_value(state.state()).expect("rules.state serialises"))
+    });
+    let zones = Arc::clone(&source);
+    agent.add_game_method(method::ZONES, Access::Read, move |params, _ctx| {
+        no_params(method::ZONES, &params)?;
+        Ok(serde_json::to_value(zones.zones()).expect("rules.zones serialises"))
     });
     agent.add_game_method(method::RELOAD, Access::Act, move |params, ctx| {
         let p = reload_params(params)?;

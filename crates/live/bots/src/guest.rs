@@ -399,6 +399,8 @@ pub(crate) fn perception_with(
     out.observations.pickups_scanned = false;
     out.observations.radar.clear();
     out.observations.radar_range = None;
+    out.observations.moving = 0;
+    out.observations.firing = 0;
     out.observations.ground_grenades.clear();
     out.observations.contacts.clear();
     out.observations.supply_players.clear();
@@ -504,6 +506,8 @@ pub(crate) fn perception_with(
             out.others.push(Seen { id, position, team });
         }
     }
+    out.observations.moving = moving;
+    out.observations.firing = firing(out.tick);
     if let Some(me) = me_index {
         out.observations.ahead =
             intel::ahead(m, me, out.teams, &scoreboard[..listed]).unwrap_or(false);
@@ -539,7 +543,7 @@ pub(crate) fn perception_with(
             && radar::enabled(m, globals, flags, out.objective.as_ref())
         {
             // A firing player shows whether it moves or not, crouched too.
-            let shown = moving | firing(out.tick);
+            let shown = moving | out.observations.firing;
             let mut dots = std::mem::take(&mut out.observations.radar);
             sensor.contacts(out, shown, &mut dots);
             out.observations.radar = dots;

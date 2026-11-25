@@ -96,7 +96,7 @@ fn kit_map(probe: bool) -> Map<Cursor<Vec<u8>>> {
     let elite = set
         .add_tag(FourCC(*b"char"), ELITE_PATH, TagPayload::Empty)
         .unwrap();
-    let kit = prepare(&mut map, vec![zone()], vec![base(0), base(1)], elite, probe).unwrap();
+    let kit = prepare(&mut map, vec![zone()], vec![base(0), base(1)], elite, &[], probe).unwrap();
     let TagPayload::Built(root) = &mut set.tag_mut(scnr).unwrap().payload else {
         unreachable!()
     };

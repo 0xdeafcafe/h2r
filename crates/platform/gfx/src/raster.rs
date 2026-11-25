@@ -79,6 +79,22 @@ impl RenderScale {
         (self.denom == [1, 1] && self.numer[0] == self.numer[1]).then_some(self.numer[0])
     }
 
+    /// The grid a `width x height` level drawn at this scale lands on: its
+    /// own rounded size over its guest size. A level whose edges round
+    /// gets its own reduced ratio; at a whole number it is `self`.
+    pub fn level(self, width: u32, height: u32) -> Option<Self> {
+        Self::between((width, height), self.size(width, height))
+    }
+
+    /// Neither axis minifies or magnifies past `max`: the grids a sealed
+    /// scene replays on (docs/graphics/framescene.md, slice 8).
+    pub fn replayable(self, max: u32) -> bool {
+        (0..2).all(|i| {
+            self.denom[i] <= self.numer[i]
+                && u64::from(self.numer[i]) <= u64::from(self.denom[i]) * u64::from(max)
+        })
+    }
+
     /// Shadow maps are square and follow the nearest integral vertical scale.
     pub fn vertical_rounded(self) -> u32 { self.edge(1, 1).max(1) }
 }
@@ -109,6 +125,37 @@ mod tests {
             assert_eq!(grid.rect(0, 0, 640, 480), [0, 0, w, h]);
             assert_eq!(grid.inverse().size(w, h), (640, 480));
         }
+    }
+
+    #[test]
+    fn a_level_keeps_the_ratio_its_rounded_edges_give_it() {
+        for s in 1..=4 {
+            assert_eq!(
+                RenderScale::from(s).level(640, 480),
+                Some(RenderScale::from(s))
+            );
+            assert_eq!(RenderScale::from(s).level(7, 3), Some(RenderScale::from(s)));
+        }
+        let grid = RenderScale::for_output(960, 720).unwrap();
+        assert_eq!(grid.level(640, 480), Some(grid));
+        assert_eq!(grid.level(320, 240), Some(grid));
+        // 3 * 3/2 = 4.5 rounds to 5: a level of its own.
+        assert_eq!(grid.size(3, 3), (5, 5));
+        assert_eq!(grid.level(3, 3), RenderScale::between((3, 3), (5, 5)));
+        assert_ne!(grid.level(3, 3), Some(grid));
+        assert_eq!(grid.level(0, 3), None);
+    }
+
+    #[test]
+    fn replayable_grids_magnify_up_to_the_limit() {
+        assert!(RenderScale::ONE.replayable(4));
+        assert!(RenderScale::from(4).replayable(4));
+        assert!(!RenderScale::from(5).replayable(4));
+        assert!(RenderScale::for_output(1366, 768).unwrap().replayable(4));
+        assert!(RenderScale::for_output(2560, 1440).unwrap().replayable(4));
+        assert!(!RenderScale::for_output(320, 240).unwrap().replayable(4));
+        assert!(!RenderScale::for_output(1280, 400).unwrap().replayable(4));
+        assert!(!RenderScale::for_output(2561, 480).unwrap().replayable(4));
     }
 
     #[test]

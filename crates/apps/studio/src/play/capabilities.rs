@@ -119,6 +119,15 @@ impl Play {
         } else {
             app.pairing.drop_stream();
         }
+        // The Game panel's picture; one that is over (the game restarted
+        // behind the same socket) is opened again.
+        if self.has_method(agent_proto::picture::OPEN) {
+            if app.pairing.picture.as_ref().is_none_or(super::picture::Picture::dead) {
+                app.pairing.picture = self.endpoint().cloned().map(super::picture::Picture::open);
+            }
+        } else {
+            app.pairing.picture = None;
+        }
         // A status-only host can reconnect, but cannot verify retained edits.
         if !self.has_method(hot::method::EDIT_MAP)
             && matches!(self.conn, Conn::Reconnecting { .. })

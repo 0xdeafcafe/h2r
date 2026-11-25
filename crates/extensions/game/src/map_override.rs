@@ -283,11 +283,12 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
 ) -> vfs::Result<vfs::Vfs> {
     if maps.is_none()
         && cfg.server_maps.is_none()
         && cfg.sim_store.is_none()
+        && cfg.store_maps.is_none()
         && campaign_maps.is_empty()
     {
         return match fonts {
@@ -303,15 +304,37 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     // verified server copy still wins where one is set, and everything
     // they do not serve comes from the store before the disc
     // (crates/runtime/vfs/src/sim_store.rs).
-    match cfg.sim_store.clone() {
-        Some(dir) => over_disc(
+    // Store maps (`store-maps`, docs/engine/asset-store.md) replace the
+    // disc's map files under everything else: the disc's are never read
+    // (crates/runtime/vfs/src/store_map.rs). A level with packages over it
+    // is served from its image (`cfg.store_levels`).
+    let levels = cfg.store_levels.clone();
+    match (cfg.store_maps.clone(), cfg.sim_store.clone()) {
+        (Some(root), Some(dir)) => over_disc(
+            cfg,
+            vfs::SimStoreBackend::new(
+                vfs::StoreMapBackend::new(dvd, root).with_levels(levels),
+                dir,
+            ),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        (Some(root), None) => over_disc(
+            cfg,
+            vfs::StoreMapBackend::new(dvd, root).with_levels(levels),
+            fonts,
+            maps,
+            campaign_maps,
+        ),
+        (None, Some(dir)) => over_disc(
             cfg,
             vfs::SimStoreBackend::new(dvd, dir),
             fonts,
             maps,
             campaign_maps,
         ),
-        None => over_disc(cfg, dvd, fonts, maps, campaign_maps),
+        (None, None) => over_disc(cfg, dvd, fonts, maps, campaign_maps),
     }
 }
 
@@ -322,7 +345,7 @@ pub fn mount_for_agent<R: vfs::Rewrite + 'static>(
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
     allow_rebind: bool,
 ) -> vfs::Result<(vfs::Vfs, Option<vfs::MapRebind>)> {
     let writable = allow_rebind && cfg.server_maps.is_none();
@@ -337,15 +360,15 @@ fn over_disc<B: vfs::Backend + 'static, R: vfs::Rewrite + 'static>(
     dvd: B,
     fonts: Option<R>,
     maps: Option<&Path>,
-    campaign_maps: &[(String, PathBuf)],
+    campaign_maps: &[(String, vfs::MapSource)],
 ) -> vfs::Result<vfs::Vfs> {
     let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned()).with_assets(
         crate::h1_variants::campaign_choice(),
-        crate::h1_variants::campaign_alternates(campaign_maps),
+        crate::campaigns::halo2_maps(&cfg.data_root),
     );
     if !campaign_maps.is_empty() {
         eprintln!(
-            "campaigns: {} map(s) served from <data>/campaigns",
+            "campaigns: {} map(s) served from the tag store",
             campaign_maps.len()
         );
     }

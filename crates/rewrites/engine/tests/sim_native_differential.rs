@@ -26,7 +26,23 @@ struct Ram<'a> {
     calls: Vec<Cpu>,
 }
 
-impl Ram<'_> {
+#[path = "sim_native_differential/unit_pose.rs"]
+mod full_pose;
+
+#[path = "sim_native_differential/manager_differential.rs"]
+mod manager_differential;
+
+impl<'a> Ram<'a> {
+    fn new(image: &'a [u8]) -> Self {
+        Self {
+            image,
+            overlay: BTreeMap::new(),
+            writes: Vec::new(),
+            callbacks: BTreeMap::new(),
+            calls: Vec::new(),
+        }
+    }
+
     fn read(&self, a: u32, dst: &mut [u8]) {
         for (i, byte) in dst.iter_mut().enumerate() {
             let p = a + i as u32;
@@ -82,6 +98,31 @@ struct Oracle<'a> {
     original: lifted::Original,
 }
 
+fn seeded_cpu(entry: u32, mode: usize) -> CpuAbi {
+    let mut c = CpuAbi {
+        eax: 0x1234_5678,
+        ecx: 0x3456_789a,
+        edx: 0x2345_6789,
+        ebx: 0x4567_89ab,
+        esi: 0x1773_5566,
+        edi: 0x6257_1918,
+        ebp: STACK - 0x80,
+        esp: STACK,
+        eip: entry,
+        eflags: 0x293,
+        mxcsr: [0x1f80, 0x1fa0, 0x3f80, 0x5f80, 0x7f80, 0x9fa0][mode % 6],
+        ..CpuAbi::default()
+    };
+    c.x87.control = [0x007f, 0x027f, 0x037f, 0x077f, 0x0b7f, 0x0f7f][mode % 6];
+    c.x87.status = ((mode % 8) as u16) << 11;
+    c.x87.st = std::array::from_fn(|i| [(i + 1) as u8; 10]);
+    c.xmm = std::array::from_fn(|i| {
+        let lane = [0x3f80_1000u32, 0x7f80_2001, 0x8000_0000, 0xffc0_1234][i % 4];
+        ((u128::from(lane) << 96) | (u128::from(lane) << 64) | 13).to_le_bytes()
+    });
+    c
+}
+
 impl Oracle<'_> {
     fn case(
         &mut self,
@@ -93,34 +134,8 @@ impl Oracle<'_> {
         if self.point != point.base {
             return;
         }
-        let mut c = CpuAbi {
-            eax: 0x1234_5678,
-            ecx: 0x3456_789a,
-            edx: 0x2345_6789,
-            ebx: 0x4567_89ab,
-            esi: 0x1773_5566,
-            edi: 0x6257_1918,
-            ebp: STACK - 0x80,
-            esp: STACK,
-            eip: point.base,
-            eflags: 0x293,
-            mxcsr: [0x1f80, 0x1fa0, 0x3f80, 0x5f80, 0x7f80, 0x9fa0][mode % 6],
-            ..CpuAbi::default()
-        };
-        c.x87.control = [0x007f, 0x027f, 0x037f, 0x077f, 0x0b7f, 0x0f7f][mode % 6];
-        c.x87.status = ((mode % 8) as u16) << 11;
-        c.x87.st = std::array::from_fn(|i| [(i + 1) as u8; 10]);
-        c.xmm = std::array::from_fn(|i| {
-            let lane = [0x3f80_1000u32, 0x7f80_2001, 0x8000_0000, 0xffc0_1234][i % 4];
-            ((u128::from(lane) << 96) | (u128::from(lane) << 64) | 13).to_le_bytes()
-        });
-        let mut mem = Ram {
-            image: self.image,
-            overlay: BTreeMap::new(),
-            writes: Vec::new(),
-            callbacks: BTreeMap::new(),
-            calls: Vec::new(),
-        };
+        let mut c = seeded_cpu(point.base, mode);
+        let mut mem = Ram::new(self.image);
         mem.word(STACK, HARNESS_EXIT);
         init(&mut c, &mut mem);
         mem.writes.clear();

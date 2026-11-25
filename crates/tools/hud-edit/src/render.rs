@@ -191,6 +191,54 @@ impl Art {
             .as_ref()
     }
 
+    /// Where bitmap `id`'s sequence `seq` is ([`sprite_at`]), without
+    /// decoding its pixels: what the overlay stage names
+    /// ([`crate::overlay`]).
+    pub fn sprite_place<R: Read + Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        id: TagId,
+        seq: i8,
+    ) -> Result<SpriteAt, String> {
+        let b = self
+            .bitmap(map, id)
+            .ok_or_else(|| format!("{id} is not a readable bitmap"))?;
+        sprite_at(b, seq)
+    }
+
+    /// Image `image` of bitmap `id` whole, decoded once: its top level's
+    /// width, height and RGBA texels (straight alpha). What a renderer
+    /// that names the image (the overlay stage) uploads.
+    pub fn image<R: Read + Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        id: TagId,
+        image: usize,
+    ) -> Result<(u32, u32, &[u8]), String> {
+        let img = self
+            .bitmap(map, id)
+            .ok_or_else(|| format!("{id} is not a readable bitmap"))?
+            .images
+            .get(image)
+            .ok_or_else(|| format!("image {image} is not in the bitmap"))?
+            .clone();
+        let files = &mut self.files;
+        let decoded = self.images.entry((id, image)).or_insert_with(|| {
+            let d = assets::decode_image(&img, files).map_err(|e| e.to_string())?;
+            let l = d
+                .levels
+                .into_iter()
+                .find(|l| l.face == 0 && l.level == 0)
+                .ok_or("no top level")?;
+            let n = (l.width * l.height * 4) as usize;
+            Ok((l.width, l.height, l.rgba.get(..n).ok_or("short level")?.to_vec()))
+        });
+        match decoded {
+            Ok((w, h, rgba)) => Ok((*w, *h, rgba.as_slice())),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
     /// Bitmap `id`'s sequence `seq` as a widget draws it ([`sprite_at`]).
     pub fn sprite<R: Read + Seek>(
         &mut self,
@@ -208,22 +256,7 @@ impl Art {
             mut note,
         } = sprite_at(b, seq)?;
         let px = size.map(|v| v.round().max(0.0) as u32);
-        let img = b.images[image].clone();
-        let decoded = self
-            .images
-            .entry((id, image))
-            .or_insert_with(|| {
-                let d = assets::decode_image(&img, &mut self.files).map_err(|e| e.to_string())?;
-                let l = d
-                    .levels
-                    .into_iter()
-                    .find(|l| l.face == 0 && l.level == 0)
-                    .ok_or("no top level")?;
-                let n = (l.width * l.height * 4) as usize;
-                Ok((l.width, l.height, l.rgba.get(..n).ok_or("short level")?.to_vec()))
-            })
-            .clone();
-        let rgba = match decoded {
+        let rgba = match self.image(map, id, image) {
             Ok((w, h, rgba)) => {
                 let x0 = (bounds[0] * w as f32).round() as u32;
                 let y0 = (bounds[2] * h as f32).round() as u32;
@@ -289,6 +322,14 @@ impl Fonts {
             .collect();
         Some(Fonts { table, files })
     }
+    /// The fonts as a running game serves them: `table` is
+    /// `font_table.txt` and `files` each font by the name the table gives
+    /// it, already as the guest reads them (the game's font rewrites
+    /// applied), so patched no further. A name without a file is a line
+    /// without a font.
+    pub fn served(table: &[u8], files: impl IntoIterator<Item = (String, Vec<u8>)>) -> Fonts {
+        Fonts { table: Self::table(table), files: files.into_iter().collect() }
+    }
     /// Font file `name` as the game's font rewrite serves it: the message
     /// fonts with the superbounce medals added (`font::medals`,
     /// docs/game/hud-kit.md, "The medals"), and every font with the
@@ -307,7 +348,11 @@ impl Fonts {
             .map(str::to_owned)
             .collect()
     }
-    fn font(&self, index: i16) -> Option<font::Font<'_>> {
+    /// Engine font `index` (a line of the table, from 0), parsed: what
+    /// lays a text out ([`font::layout`]) and decodes its glyphs by index
+    /// ([`font::Font::glyph_by_index`]). `None` for a line the table
+    /// lacks, a file not read or one that is not a font.
+    pub fn font(&self, index: i16) -> Option<font::Font<'_>> {
         let name = self.table.get(usize::try_from(index).ok()?)?;
         font::Font::parse(self.files.get(name)?).ok()
     }
@@ -352,8 +397,68 @@ impl Fonts {
     }
 }
 
-/// The colour text widgets are drawn in: a stand-in (how the engine gets
-/// a text widget's colour from its shader is not read).
+impl Fonts {
+    /// `text` in engine font `index` laid out as [`Fonts::render`] draws
+    /// it ([`font::layout`]), and the line height: where each glyph goes,
+    /// for a renderer with its own glyph atlas.
+    pub fn layout(&self, index: i16, text: &str) -> Option<(font::Layout, i32)> {
+        let f = self.font(index)?;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        Some((font::layout(&f, &units).ok()?, f.line_height()))
+    }
+}
+
+/// Whether widget `w` of HUD `h` is shown, and the point it is placed
+/// from (the frame's centre, with a note, when its anchor is not a
+/// corner): the start of the preview's walk and the overlay's.
+pub(crate) fn shown_and_point(
+    frame: &Frame,
+    mode: Mode,
+    masks: [u16; 4],
+    st: &HudState,
+    (h, answers): (usize, &dyn Answers),
+    w: &Widget,
+    notes: &mut Vec<String>,
+) -> (bool, Option<[f32; 2]>) {
+    let shown = answers
+        .shown(h, w)
+        .unwrap_or_else(|| !st.gate || state::shown(w.state(), masks));
+    let point = place::widget_point(frame, w.anchor(), w.offset(mode));
+    let point = point.or_else(|| {
+        notes.push(format!(
+            "anchor {} is not a corner: drawn at the frame's centre",
+            w.anchor()
+        ));
+        place::widget_point(frame, 4, w.offset(mode))
+    });
+    (shown, point)
+}
+
+/// The fill a bitmap widget shows when it is a meter, 0 to 1: a meter
+/// shader reads `hud_input1`; the shield meter (special type 5) the
+/// shield, through its shader's span of the arc's gradient
+/// (docs/halo1/health.md). `None` for a widget that is not a meter.
+pub(crate) fn meter_fill<R: Read + Seek>(
+    map: &Map<R>,
+    w: &Widget,
+    st: &HudState,
+    (h, answers): (usize, &dyn Answers),
+) -> Option<f32> {
+    if let Some(f) = answers.fill(h, w) {
+        return Some(f);
+    }
+    if w.special() == SPECIAL_SHIELD {
+        return Some(0.2156 + st.shield.clamp(0.0, 1.0) * (0.992 - 0.2156));
+    }
+    let shader = w
+        .shader()
+        .and_then(|s| map.tag(s).ok().and_then(|t| t.name.clone()))
+        .unwrap_or_default();
+    shader.contains("meter").then(|| st.input(w.inputs()[0]).0)
+}
+
+/// The colour the preview draws text widgets in: a stand-in (the engine's
+/// is its shader's, [`Answers::shader_colour`]).
 pub const TEXT_COLOUR: [u8; 4] = [140, 200, 255, 255];
 
 /// Fallback text metrics without the disc's fonts: per character and line.
@@ -390,6 +495,12 @@ pub trait Answers {
     }
     /// A text widget's colour (RGBA).
     fn colour(&self, _hud: usize, _w: &Widget) -> Option<[u8; 4]> {
+        None
+    }
+    /// The colour the text widget's bound shader gives a fully covered
+    /// glyph, from the capture of its state at the draw (RGBA): what the
+    /// engine shading draws text in, in place of a stand-in.
+    fn shader_colour(&self, _hud: usize, _w: &Widget) -> Option<[u8; 4]> {
         None
     }
     /// A bitmap widget's turn about its centre, radians clockwise.
@@ -581,18 +692,9 @@ pub fn draw_answered<R: Read + Seek>(
     let masks = st.masks();
     for (h, hud) in huds.iter().enumerate() {
         for w in &hud.widgets {
-            let shown = answers
-                .shown(h, w)
-                .unwrap_or_else(|| !st.gate || state::shown(w.state(), masks));
             let mut notes = Vec::new();
-            let point = place::widget_point(&frame, w.anchor(), w.offset(mode));
-            let point = point.or_else(|| {
-                notes.push(format!(
-                    "anchor {} is not a corner: drawn at the frame's centre",
-                    w.anchor()
-                ));
-                place::widget_point(&frame, 4, w.offset(mode))
-            });
+            let (shown, point) =
+                shown_and_point(&frame, mode, masks, st, (h, answers), w, &mut notes);
             let mut p = Placed {
                 hud: h,
                 key: w.key,
@@ -656,22 +758,7 @@ fn draw_bitmap<R: Read + Seek>(
     if !p.shown {
         return;
     }
-    // The fill a meter shows: a meter shader reads hud_input1; the shield
-    // meter (special type 5) the shield, through its shader's span of the
-    // arc's gradient (docs/halo1/health.md).
-    let shader = w
-        .shader()
-        .and_then(|s| map.tag(s).ok().and_then(|t| t.name.clone()))
-        .unwrap_or_default();
-    let fill = if let Some(f) = answers.fill(h, w) {
-        Some(f)
-    } else if w.special() == SPECIAL_SHIELD {
-        Some(0.2156 + st.shield.clamp(0.0, 1.0) * (0.992 - 0.2156))
-    } else if shader.contains("meter") {
-        Some(st.input(w.inputs()[0]).0)
-    } else {
-        None
-    };
+    let fill = meter_fill(map, w, st, (h, answers));
     let flags = w.flags();
     let [x0, y0] = [rect.x0.round() as i32, rect.y0.round() as i32];
     let [pw, ph] = sprite.px;
@@ -806,4 +893,53 @@ fn draw_text<R: Read + Seek>(
     }
     p.drawn = true;
     p.cover = Some(cover);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An invented font: a blank record every unit maps to, with one
+    /// glyph of its own for `unit`, `wide` by `high` pixels each of alpha
+    /// `alpha` (over 15) in the font's ascent of 12.
+    fn font_with(unit: u16, wide: u16, high: u16, alpha: u16) -> Vec<u8> {
+        let mut base = vec![0; font::RECORDS_OFFSET + font::RECORD_LEN];
+        let mut put = |at: usize, bytes: &[u8]| base[at..at + bytes.len()].copy_from_slice(bytes);
+        put(font::HEADER_OFFSET, &font::MAGIC.to_le_bytes());
+        put(font::HEADER_OFFSET + 4, &12u16.to_le_bytes());
+        put(font::HEADER_OFFSET + 0xc, &1u32.to_le_bytes());
+        let glyph = font::patch::Replacement {
+            unit,
+            width: wide,
+            height: high,
+            advance: wide as i16 + 1,
+            x_offset: 0,
+            y_offset: None,
+            pixels: vec![(alpha << 12) | 0x0fff; usize::from(wide) * usize::from(high)],
+        };
+        font::patch::apply(&base, &[glyph]).unwrap()
+    }
+
+    /// Fonts as a game serves them are found by their table line: parsed,
+    /// to lay a text out and to decode a glyph by its index.
+    #[test]
+    fn served_fonts_are_found_by_their_table_line() {
+        let a = font_with(u16::from(b'A'), 2, 2, 15);
+        let fonts = Fonts::served(
+            b"first\r\n\r\nthird",
+            [
+                ("third".to_owned(), font_with(u16::from(b'3'), 3, 1, 8)),
+                ("first".to_owned(), a),
+            ],
+        );
+        assert_eq!(fonts.table, ["first", "third"]);
+        let first = fonts.font(0).unwrap();
+        assert_eq!(first.header.ascent, 12);
+        assert_eq!(first.glyph(u16::from(b'A')).unwrap().pixels, [0xffff; 4]);
+        assert_eq!(fonts.font(1).unwrap().glyph_by_index(1).unwrap().pixels, [0x8fff; 3]);
+        assert!(fonts.font(2).is_none(), "no such line");
+        assert!(fonts.font(-1).is_none());
+        assert_eq!(fonts.has_glyph(0, u16::from(b'Z')), Some(false), "a unit the font lacks");
+        assert!(Fonts::served(b"", Vec::new()).table.is_empty());
+    }
 }

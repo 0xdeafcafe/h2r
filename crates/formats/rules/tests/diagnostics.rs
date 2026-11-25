@@ -6,7 +6,8 @@
 //! "Diagnostics", and `docs/game/rules-variants.md`.
 
 use rules::fake::FakeGame;
-use rules::ir::{LabelKind, Quick, Scoring, Setting, TagGroup, label_flags};
+use rules::ir::{LabelKind, Quick, Setting, TagGroup, label_flags};
+use rules::types::Type;
 use rules::{Event, Input, Severity, Vm, builtin, compile, diagnose, settings};
 
 /// Runs one tick of `src` with its default options and gives the global
@@ -21,7 +22,7 @@ fn tick_global(src: &str, name: &str) -> Option<i32> {
     vm.global(name)
 }
 
-const HEAD: &str = "rules \"T\" 1\ncarrier slayer\n";
+const HEAD: &str = "rules \"T\" 1\ntype slayer\n";
 
 /// A script of `HEAD`, the `requires` line if any, and `body`.
 fn script(requires: &str, body: &str) -> String {
@@ -396,6 +397,20 @@ on spawn(p) {
     assert_eq!(groups, [("objects/a", TagGroup::Any), ("objects/b", TagGroup::Weapon)]);
 }
 
+#[test]
+fn a_sound_is_a_tag_of_the_sound_group() {
+    let src = script(
+        "audio.play",
+        "on tick { sound_to_all(\"sound/a\") }\non init { sound_to_all(\"sound/b\") }\n",
+    );
+    let ir = compile(&src).unwrap();
+    assert!(ir.tags.iter().all(|t| t.group == TagGroup::Sound));
+    // The capability is needed.
+    error(&script("", "on tick { sound_to_all(\"sound/a\") }\n"), "cap.missing");
+    // A sound entry names its audience by type.
+    error(&script("audio.play", "on tick { sound_to(\"sound/a\", team 0) }\n"), "type.mismatch");
+}
+
 // ---- time ----
 
 #[test]
@@ -594,24 +609,14 @@ on tick {
 }
 
 #[test]
-fn variant_engine_is_the_carrier_enum() {
-    let src = script(
-        "",
-        "global var out: int = 0
-on tick {
-    if variant.engine == carrier.slayer { out = 1 }
-    match variant.engine {
-        carrier.ctf, carrier.assault { out = 2 }
-        else { }
-    }
-}
-",
-    );
-    assert!(compile(&src).is_ok(), "{:#?}", diagnose(&src).diagnostics);
-    let m = error(&src.replace("carrier.slayer", "2"), "type.mismatch");
-    assert!(m.contains("write carrier.slayer"), "{m}");
-    let m = error(&src.replace("else { }", ""), "match.missing");
-    assert!(m.contains("carrier.slayer"), "{m}");
+fn a_script_names_no_engine() {
+    // No carrier values, and no engine index to compare them with.
+    let src = script("", "global var out: int = 0\non tick { if variant.engine == 2 { out = 1 } }\n");
+    let m = error(&src, "name.unknown");
+    assert_eq!(m, "variant has no field engine");
+    let src = script("", "global var out: int = 0\non tick { if out == carrier.slayer { out = 1 } }\n");
+    let m = error(&src, "syntax");
+    assert!(m.contains("a script names no engine"), "{m}");
 }
 
 // ---- value functions ----
@@ -649,23 +654,27 @@ fn the_builtins_use_time_constants_and_match() {
     assert!(builtin::ODDBALL.contains("player var held: time"));
     assert!(builtin::VIP.contains("match victim.role"));
     assert!(builtin::KING.contains("fn rival(a: player, b: player) -> bool ="));
-    assert!(builtin::CTF.contains("carrier.assault"));
+    assert!(builtin::CTF.contains("const assault = 0") && builtin::ASSAULT.contains("const assault = 1"));
     // A time option's label carries its unit in the blob.
     let siege = compile(builtin::SIEGE).unwrap();
     let labels: Vec<&str> = siege.options.iter().map(|o| siege.strings[o.label as usize].as_str()).collect();
-    assert_eq!(labels, ["Phase time (seconds)", "Capture time (seconds)", "Sites"]);
+    assert_eq!(
+        labels,
+        ["Phase time (seconds)", "Capture time (seconds)", "Sites", "Respawn wave (seconds)", "Overtime (seconds)", "Loadouts"]
+    );
 }
 
 // ---- settings, quick marks and the scorer ----
 
-/// A script named V riding `carrier`, with `lines` after its header.
-fn riding(carrier: &str, lines: &str) -> String {
-    format!("rules \"V\" 1\ncarrier {carrier}\n{lines}")
+/// A script named V of type `ty`, with `lines` after its header.
+fn riding(ty: &str, lines: &str) -> String {
+    format!("rules \"V\" 1\ntype {ty}\n{lines}")
 }
 
-/// A settings-only script of `carrier` with a `settings` block of `lines`.
-fn carried(carrier: &str, lines: &str) -> String {
-    riding(carrier, &format!("scoring carrier\nsettings {{\n{lines}}}\n"))
+/// A settings-only script of the retail type `ty` that uses its built-in
+/// game, with a `settings` block of `lines`.
+fn carried(ty: &str, lines: &str) -> String {
+    riding(ty, &format!("uses {ty}\nsettings {{\n{lines}}}\n"))
 }
 
 /// The table index of a setting.
@@ -674,8 +683,8 @@ fn at(name: &str) -> u16 {
 }
 
 const SWAT: &str = "rules \"SWAT\" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about \"No shields, no motion sensor, battle rifles and magnums. One headshot kills. 50 points to win.\"
 quick score_limit, starting_weapon, secondary_weapon
 
@@ -699,7 +708,8 @@ fn the_settings_block_lowers_to_settings_in_table_order() {
     let c = diagnose(SWAT);
     assert!(c.diagnostics.is_empty(), "{:#?}", c.diagnostics);
     let ir = c.ir.unwrap();
-    assert_eq!(ir.header.scoring, Scoring::Carrier);
+    assert_eq!(ir.header.uses, Some(Type::Slayer));
+    assert_eq!(ir.header.points, "Kills");
     assert!(ir.header.about.starts_with("No shields, no motion sensor"));
     assert!(ir.handlers.is_empty() && ir.slots.is_empty() && ir.options.is_empty());
     let mut want = vec![
@@ -774,27 +784,32 @@ fn setting_codes() {
 }
 
 #[test]
-fn a_setting_on_the_wrong_carrier_is_refused() {
-    let m = error(&carried("slayer", "    juggernaut_movement = fast\n"), "setting.carrier");
-    assert_eq!(m, "juggernaut_movement is a Juggernaut setting; this script's carrier is slayer");
+fn a_setting_of_another_game_is_refused() {
+    let m = error(&carried("slayer", "    juggernaut_movement = fast\n"), "setting.type");
+    assert_eq!(m, "juggernaut_movement is a Juggernaut setting; this script's record is Slayer's");
     let ir = compile(&carried("juggernaut", "    juggernaut_movement = fast\n")).unwrap();
     assert_eq!(ir.settings, [Setting { index: at("juggernaut_movement"), value: 2 }]);
-    let m = error(&carried("king", "    ctf_flag_type = 1\n"), "setting.carrier");
+    let m = error(&carried("koth", "    ctf_flag_type = 1\n"), "setting.type");
     assert!(m.contains("a Capture the Flag and Assault setting"), "{m}");
     assert!(compile(&carried("assault", "    ctf_flag_type = 1\n")).is_ok());
-    // The blob of a wrong-carrier setting is refused by the verifier too.
+    // A party game that uses Juggernaut's rules takes Juggernaut's settings.
+    let src = riding("party", "uses juggernaut\nsettings { juggernaut_movement = fast }\n");
+    assert!(compile(&src).is_ok(), "{:#?}", diagnose(&src).diagnostics);
+    // The blob of another game's setting is refused by the verifier too.
     let mut ir = ir;
-    ir.header.carrier = 2;
+    ir.header.game_type = Type::Slayer;
+    ir.header.uses = Some(Type::Slayer);
     assert!(matches!(rules::load(&ir.encode()), Err(rules::Refusal::Setting { .. })));
 }
 
 #[test]
-fn score_limit_is_one_name_on_every_carrier() {
+fn score_limit_is_one_name_on_every_retail_type() {
     let row = &settings::TABLE[at("score_limit") as usize];
-    for &(name, engine) in rules::caps::CARRIERS {
+    for t in rules::types::TABLE.iter().filter(|t| t.ty.is_retail()) {
+        let (name, engine) = (t.name, t.engine);
         let ir = compile(&carried(name, "    score_limit = 3\n")).unwrap();
         assert_eq!(ir.settings, [Setting { index: at("score_limit"), value: 3 }], "{name}");
-        assert_eq!(ir.header.carrier, engine, "{name}");
+        assert_eq!(ir.header.engine(), engine, "{name}");
         assert_eq!(row.setting(engine), settings::score_setting(engine), "{name}");
         assert!(row.setting(engine).is_some(), "{name}");
     }
@@ -803,9 +818,9 @@ fn score_limit_is_one_name_on_every_carrier() {
 #[test]
 fn a_sixth_quick_mark_is_refused() {
     let five = "score_limit, time_limit, lives, respawn_time, rounds";
-    let ir = compile(&riding("slayer", &format!("scoring carrier\nquick {five}\n"))).unwrap();
+    let ir = compile(&riding("slayer", &format!("uses slayer\nquick {five}\n"))).unwrap();
     assert_eq!(ir.quick.len(), 5);
-    let m = error(&riding("slayer", &format!("scoring carrier\nquick {five}, shields\n")), "quick.many");
+    let m = error(&riding("slayer", &format!("uses slayer\nquick {five}, shields\n")), "quick.many");
     assert_eq!(m, "Quick Options has five rows; this line names 6");
 }
 
@@ -818,15 +833,15 @@ fn a_quick_mark_names_a_setting_or_an_option() {
     );
     let ir = compile(&src).unwrap();
     assert_eq!(ir.quick, [Quick::Setting(at("time_limit")), Quick::Option(0)]);
-    let m = error(&riding("slayer", "scoring carrier\nquick bounce_points\n"), "quick.unknown");
+    let m = error(&riding("slayer", "uses slayer\nquick bounce_points\n"), "quick.unknown");
     assert_eq!(m, "bounce_points is no setting and no option of this script");
-    let m = error(&riding("slayer", "scoring carrier\nquick live\n"), "quick.unknown");
+    let m = error(&riding("slayer", "uses slayer\nquick live\n"), "quick.unknown");
     assert!(m.ends_with("Did you mean lives?"), "{m}");
-    let m = error(&riding("slayer", "scoring carrier\nquick gravity\n"), "quick.unknown");
+    let m = error(&riding("slayer", "uses slayer\nquick gravity\n"), "quick.unknown");
     assert!(m.contains("More Options"), "{m}");
-    let m = error(&riding("slayer", "scoring carrier\nquick lives, lives\n"), "quick.twice");
+    let m = error(&riding("slayer", "uses slayer\nquick lives, lives\n"), "quick.twice");
     assert_eq!(m, "lives is marked twice");
-    let m = error(&riding("slayer", "scoring carrier\nquick juggernaut_movement\n"), "setting.carrier");
+    let m = error(&riding("slayer", "uses slayer\nquick juggernaut_movement\n"), "setting.type");
     assert!(m.starts_with("juggernaut_movement is a Juggernaut setting"), "{m}");
     // A setting and an option share one namespace.
     let m = error(&riding("slayer", "option lives: int 1..5 = 1\non kill(v, k) { }\n"), "option.setting");
@@ -834,59 +849,112 @@ fn a_quick_mark_names_a_setting_or_an_option() {
 }
 
 #[test]
-fn scoring_carrier_takes_no_handlers() {
+fn a_uses_script_takes_no_handlers() {
     for item in [
         "on kill(v, k) { }",
         "option points: int 1..5 = 1",
         "global var n: int = 0",
         "fn f() { }",
     ] {
-        let src = riding("slayer", &format!("scoring carrier\n{item}\n"));
-        let m = error(&src, "scoring.handlers");
-        assert!(m.contains("with scoring carrier the carrier's engine scores the game"), "{item}: {m}");
+        let src = riding("slayer", &format!("uses slayer\n{item}\n"));
+        let m = error(&src, "uses.handlers");
+        assert!(m.contains("with uses slayer the built-in game scores"), "{item}: {m}");
     }
-    // requires, list, settings, quick and about are its whole script.
+    // Its header lines, settings and quick are its whole script.
     let src = riding(
-        "slayer",
-        "scoring carrier\nrequires hud.superbounce\nlist research\nabout \"Bounce.\"\nquick lives\nsettings { lives = 3 }\n",
+        "research",
+        "uses slayer\nrequires hud.superbounce\npoints \"Bounces\"\nabout \"Bounce.\"\nquick lives\nsettings { lives = 3 }\n",
     );
     let c = diagnose(&src);
     assert!(c.diagnostics.is_empty(), "{:#?}", c.diagnostics);
     let ir = c.ir.unwrap();
-    assert_eq!((ir.header.scoring, ir.header.about.as_str()), (Scoring::Carrier, "Bounce."));
-    let m = error(&riding("slayer", "scoring script\non tick { }\n"), "name.unknown");
-    assert!(m.starts_with("unknown scoring script"), "{m}");
+    assert_eq!((ir.header.game_type, ir.header.uses), (Type::Research, Some(Type::Slayer)));
+    assert_eq!((ir.header.points.as_str(), ir.header.about.as_str()), ("Bounces", "Bounce."));
+    assert_eq!(ir.header.engine(), 2);
+    // `uses` names a built-in game: a retail type.
+    let m = error(&riding("party", "uses party\n"), "name.unknown");
+    assert_eq!(m, "uses names a built-in game: slayer, ctf, assault, oddball, koth, juggernaut, territories");
+    let m = error(&riding("party", "uses king\n"), "name.unknown");
+    assert!(m.starts_with("uses names a built-in game"), "{m}");
 }
 
 #[test]
-fn a_script_with_no_handlers_needs_scoring_carrier() {
+fn a_script_with_no_handlers_needs_uses() {
     let m = error(&riding("slayer", "settings { lives = 3 }\n"), "scoring.none");
-    assert_eq!(m, "this script scores nothing. Write `scoring carrier` to play Slayer's rules.");
+    assert_eq!(m, "this script scores nothing. Write `uses slayer` to play Slayer's rules.");
     let m = error(&riding("oddball", "global var n: int = 0\n"), "scoring.none");
-    assert!(m.ends_with("to play Oddball's rules."), "{m}");
+    assert!(m.ends_with("Write `uses oddball` to play Oddball's rules."), "{m}");
+    // A type with no built-in game offers Slayer's.
+    let m = error(&riding("party", "settings { lives = 3 }\n"), "scoring.none");
+    assert!(m.contains("`uses slayer`"), "{m}");
     // Reported once the rest is clean: another error comes alone.
     let c = diagnose(&riding("slayer", "global var j: player = none\n"));
     let codes: Vec<&str> = c.errors().map(|d| d.code).collect();
     assert_eq!(codes, ["null.var"]);
-    // With a handler, or with `scoring carrier`, it compiles.
-    assert_eq!(compile(&riding("slayer", "on tick { }\n")).unwrap().header.scoring, Scoring::Script);
-    assert!(compile(&riding("slayer", "scoring carrier\n")).is_ok());
+    // With a handler, or with `uses`, it compiles.
+    assert_eq!(compile(&riding("slayer", "on tick { }\n")).unwrap().header.uses, None);
+    assert!(compile(&riding("slayer", "uses slayer\n")).is_ok());
 }
 
 #[test]
-fn list_and_about_codes() {
-    let m = error(&riding("king", "scoring carrier\nlist party\n"), "list.carrier");
-    assert_eq!(
-        m,
-        "list party files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is king"
-    );
-    assert!(compile(&riding("juggernaut", "scoring carrier\nlist party\n")).is_ok());
-    assert!(compile(&riding("slayer", "scoring carrier\nlist research\n")).is_ok());
+fn type_points_and_about_codes() {
+    // The type is required, and one of the table's.
+    let m = error("rules \"V\" 1\non tick { }\n", "decl");
+    assert_eq!(m, "a script names its game type: type slayer");
+    let m = error(&riding("king", "on tick { }\n"), "name.unknown");
+    assert!(m.starts_with("unknown type king: a type is slayer, ctf, assault"), "{m}");
+    assert!(m.ends_with("research, party, firefight, siege"), "{m}");
+    let m = error(&riding("slayer", "type ctf\non tick { }\n"), "syntax");
+    assert!(m.contains("the type is named twice"), "{m}");
+    // Points defaults to the type's and takes 1 to 32 bytes.
+    for (ty, points) in [("slayer", "Kills"), ("ctf", "Captures"), ("assault", "Detonations"), ("koth", "Time"), ("party", "Points")] {
+        assert_eq!(compile(&riding(ty, "on tick { }\n")).unwrap().header.points, points, "{ty}");
+    }
+    let ir = compile(&riding("party", "points \"Laps\"\non tick { }\n")).unwrap();
+    assert_eq!(ir.header.points, "Laps");
+    let m = error(&riding("party", "points \"\"\non tick { }\n"), "limit");
+    assert_eq!(m, "points is 1 to 32 bytes");
+    error(&riding("party", &format!("points \"{}\"\non tick {{ }}\n", "x".repeat(33))), "limit");
+    // A type files and announces; it changes no rule.
+    let party = compile(&riding("party", "on kill(v, k) { if k != none { score(k, 1) } }\n")).unwrap();
+    let slayer = compile(&riding("slayer", "on kill(v, k) { if k != none { score(k, 1) } }\n")).unwrap();
+    assert_eq!(party.handlers, slayer.handlers);
+    assert_eq!(party.header.engine(), slayer.header.engine());
+    assert_ne!(party.id(), slayer.id());
     let long = "x".repeat(151);
-    let m = error(&riding("slayer", &format!("scoring carrier\nabout \"{long}\"\n")), "limit");
+    let m = error(&riding("slayer", &format!("uses slayer\nabout \"{long}\"\n")), "limit");
     assert!(m.starts_with("about is 151 UTF-16 units"), "{m}");
     let fits = "x".repeat(150);
-    assert!(compile(&riding("slayer", &format!("scoring carrier\nabout \"{fits}\"\n"))).is_ok());
+    assert!(compile(&riding("slayer", &format!("uses slayer\nabout \"{fits}\"\n"))).is_ok());
+}
+
+#[test]
+fn carrier_list_and_scoring_lines_are_refused_with_their_replacement() {
+    let retired = |src: &str| -> Vec<String> {
+        diagnose(src)
+            .errors()
+            .filter(|d| d.code == "header.retired")
+            .map(|d| d.message.clone())
+            .collect()
+    };
+    let m = retired("rules \"V\" 1\ntype slayer\ncarrier slayer\non tick { }\n");
+    assert_eq!(m, ["carrier is gone: write `type slayer`. A script names its game type, not an engine"]);
+    let m = retired("rules \"V\" 1\ntype koth\ncarrier king\non tick { }\n");
+    assert!(m[0].starts_with("carrier is gone: write `type koth`"), "{m:?}");
+    let m = retired("rules \"V\" 1\ntype slayer\ncarrier tetris\non tick { }\n");
+    assert!(m[0].starts_with("carrier is gone: write `type` and one of slayer, ctf"), "{m:?}");
+    let m = retired("rules \"V\" 1\ntype slayer\nlist party\non tick { }\n");
+    assert_eq!(m, ["list is gone: write `type party`, which files the game in its row"]);
+    let m = retired("rules \"V\" 1\ntype juggernaut\nscoring carrier\n");
+    assert!(m[0].starts_with("scoring carrier is gone: write `uses juggernaut`"), "{m:?}");
+    // With the old carrier line beside it, the uses line names that game.
+    let m = retired("rules \"V\" 1\ncarrier oddball\nscoring carrier\n");
+    assert!(m[1].starts_with("scoring carrier is gone: write `uses oddball`"), "{m:?}");
+    // The old header alone: every line is named, and the carrier line's own
+    // error says which type to write, so no second error asks for it.
+    let c = diagnose("rules \"V\" 1\ncarrier slayer\nlist research\nscoring carrier\n");
+    let codes: Vec<&str> = c.errors().map(|d| d.code).collect();
+    assert_eq!(codes, ["header.retired", "header.retired", "header.retired"]);
 }
 
 #[test]
@@ -912,4 +980,20 @@ fn the_hash_covers_settings_marks_and_about() {
     );
     assert_ne!(swapped, SWAT);
     assert_eq!(compile(&swapped).unwrap().id(), base);
+}
+
+#[test]
+fn body_codes() {
+    let m = error(
+        &script("player.disguise", "on round_start { set_body(team 0, \"objects/characters/elite/elite\") }\n"),
+        "body.unknown",
+    );
+    assert!(m.contains("objects/characters/elite/elite is not a player body"), "{m}");
+    assert!(m.contains("objects/characters/masterchief/masterchief_mp or objects/characters/elite/elite_mp"), "{m}");
+    // Both bodies, and none, check.
+    let ok = script(
+        "player.disguise",
+        "on round_start {\n    set_body(team 0, \"objects/characters/masterchief/masterchief_mp\")\n    set_body(team 0, \"objects/characters/elite/elite_mp\")\n    set_body(team 0, none)\n}\n",
+    );
+    assert!(compile(&ok).is_ok(), "{:#?}", diagnose(&ok).diagnostics);
 }

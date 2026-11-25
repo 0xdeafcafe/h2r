@@ -16,6 +16,11 @@ impl Temp {
         let dir = std::env::temp_dir().join(format!("h2s-uiedit-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(ours::SCREENS_DIR)).unwrap();
+        std::fs::write(
+            dir.join(ours::UI_MANIFEST),
+            include_str!("../../../../../../content/ui/package.toml"),
+        )
+        .unwrap();
         Temp(dir)
     }
 }
@@ -276,8 +281,11 @@ fn a_settings_dialogs_header_and_help_edit_its_doc() {
 }
 
 #[test]
-fn save_writes_the_yaml_into_the_checkout_only() {
+fn save_changes_only_a_screen_source_in_the_ui_package() {
     let t = Temp::new("save");
+    let path = t.0.join("content/ui/screens/kit.example.yaml");
+    let before = include_str!("../../../../../../content/ui/screens/kit.example.yaml");
+    std::fs::write(&path, before).unwrap();
     let mut app = app(&t);
     edit(
         &mut app,
@@ -287,9 +295,13 @@ fn save_writes_the_yaml_into_the_checkout_only() {
         },
     )
     .unwrap();
+    let old_manifest = std::fs::read(t.0.join(ours::UI_MANIFEST)).unwrap();
     edit(&mut app, EditAction::Save).unwrap();
-    let path = ours::file_of(&t.0, SCREEN);
+    assert_eq!(std::fs::read(t.0.join(ours::UI_MANIFEST)).unwrap(), old_manifest);
+    assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    assert!(!t.0.join("assets").exists());
     let text = std::fs::read_to_string(&path).unwrap();
+    assert_ne!(text, before);
     assert!(text.contains("Saved title"), "{text}");
     assert!(!app.tool_dirty(ToolKind::UiScreens));
     // Read back: the file is what the screen shows from now on.
@@ -323,8 +335,12 @@ fn a_file_changed_on_disk_shows_unless_edited() {
         },
     )
     .unwrap();
+    let old_manifest = std::fs::read(t.0.join(ours::UI_MANIFEST)).unwrap();
     edit(&mut app, EditAction::Save).unwrap();
-    let path = ours::file_of(&t.0, SCREEN);
+    let path = t.0.join("content/ui/screens/kit.example.yaml");
+    assert_eq!(std::fs::read(t.0.join(ours::UI_MANIFEST)).unwrap(), old_manifest);
+    assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    assert!(!t.0.join("assets").exists());
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, text.replace("On disk", "Changed outside")).unwrap();
     edit(&mut app, EditAction::Reload).unwrap();

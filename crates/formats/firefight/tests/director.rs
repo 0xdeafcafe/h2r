@@ -3,8 +3,8 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::*;
-use firefight::director::{Kill, State};
-use firefight::{Command, Difficulty, Director, Observed, Outcome, ScoreReason, Skull};
+use firefight::director::Kill;
+use firefight::{Command, Observed, Outcome, ScoreReason, ScriptDirector, Skull};
 
 fn place(slot: u8) -> Command {
     Command::PlaceSquad {
@@ -26,7 +26,7 @@ fn score(points: u32) -> Command {
 
 #[test]
 fn a_scripted_match_issues_the_golden_command_list() {
-    let mut director = Director::new(small_def(1, true), settings(7)).unwrap();
+    let mut director = ScriptDirector::new(small_def(1, true), settings(7)).unwrap();
     let mut world = World::new(1, two_zones());
     let run = run(
         &mut director,
@@ -157,7 +157,7 @@ fn zone_choice_follows_the_definition_and_the_seed() {
     let def = zone_choice_def();
     let zones = six_zones;
     let picks = |seed| {
-        let mut director = Director::new(def.clone(), settings(seed)).unwrap();
+        let mut director = ScriptDirector::new(def.clone(), settings(seed)).unwrap();
         let mut world = World::new(1, zones());
         run(
             &mut director,
@@ -200,7 +200,7 @@ fn same_seed_same_commands() {
 #[test]
 fn a_replay_of_the_observed_sequence_issues_the_same_commands() {
     let (def, original) = random_match(5, |_, _, _, _, _| {});
-    let mut director = Director::new(def, settings(5)).unwrap();
+    let mut director = ScriptDirector::new(def, settings(5)).unwrap();
     let mut replayed = Vec::new();
     for (tick, seen) in original.observed.iter().enumerate() {
         let tick = tick as u32;
@@ -215,28 +215,8 @@ fn a_replay_of_the_observed_sequence_issues_the_same_commands() {
 }
 
 #[test]
-fn a_resumed_mode_blob_issues_the_same_commands() {
-    let (def, original) = random_match(9, |_, _, _, _, _| {});
-    let split = original.observed.len() / 2;
-    let mut director = Director::new(def.clone(), settings(9)).unwrap();
-    let mut commands = Vec::new();
-    for (tick, seen) in original.observed[..split].iter().enumerate() {
-        let tick = tick as u32;
-        commands.extend(director.step(tick, seen).into_iter().map(|c| (tick, c)));
-    }
-    let blob = serde_json::to_string(director.state()).unwrap();
-    let state: State = serde_json::from_str(&blob).unwrap();
-    let mut resumed = Director::resume(def, Difficulty::Legendary, state).unwrap();
-    for (tick, seen) in original.observed.iter().enumerate().skip(split) {
-        let tick = tick as u32;
-        commands.extend(resumed.step(tick, seen).into_iter().map(|c| (tick, c)));
-    }
-    assert_eq!(commands, original.commands);
-}
-
-#[test]
 fn the_pool_at_zero_holds_respawns_until_the_wave_ends() {
-    let mut director = Director::new(small_def(0, true), settings(1)).unwrap();
+    let mut director = ScriptDirector::new(small_def(0, true), settings(1)).unwrap();
     let mut world = World::new(2, two_zones());
     let run = run(
         &mut director,
@@ -262,7 +242,7 @@ fn the_pool_at_zero_holds_respawns_until_the_wave_ends() {
 
 #[test]
 fn everyone_dead_and_no_lives_finishes_lost() {
-    let mut director = Director::new(small_def(0, true), settings(1)).unwrap();
+    let mut director = ScriptDirector::new(small_def(0, true), settings(1)).unwrap();
     let mut world = World::new(1, two_zones());
     let run = run(
         &mut director,
@@ -291,7 +271,7 @@ fn everyone_dead_and_no_lives_finishes_lost() {
 
 #[test]
 fn unshared_lives_are_counted_per_player() {
-    let mut director = Director::new(small_def(1, false), settings(1)).unwrap();
+    let mut director = ScriptDirector::new(small_def(1, false), settings(1)).unwrap();
     let mut world = World::new(2, two_zones());
     let run = run(
         &mut director,
@@ -341,7 +321,7 @@ fn unshared_lives_are_counted_per_player() {
 
 #[test]
 fn kills_score_by_the_definition_with_assists() {
-    let mut director = Director::new(small_def(1, true), settings(1)).unwrap();
+    let mut director = ScriptDirector::new(small_def(1, true), settings(1)).unwrap();
     let mut world = World::new(2, two_zones());
     let mut seen = world.observe();
     seen.kills = vec![

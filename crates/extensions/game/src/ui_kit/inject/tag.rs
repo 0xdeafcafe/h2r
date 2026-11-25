@@ -184,15 +184,6 @@ pub fn screen_block(e: &Entry, t: &Template, wigl: &Wigl) -> Result<Block, Strin
             pane.block(PANE_BITMAPS, kept.len() as u32, bitmaps_child(&kept));
             root.block(ROOT_PANES, 1, pane);
         }
-        Shape::Bare => {
-            let p = pane_of()?;
-            let mut pane = Block::zeroed(PANE_SIZE as usize);
-            pane.bytes[..4].copy_from_slice(&p.bytes[..4]);
-            if let Some((pane_track, _)) = want {
-                pane.put_u16(PANE_ANIMATION, pane_track);
-            }
-            root.block(ROOT_PANES, 1, pane);
-        }
     }
     Ok(root)
 }
@@ -377,10 +368,31 @@ pub struct Added {
 pub fn add_screens(original: &[u8], plan: &[Entry]) -> Result<Added> {
     let mut map = Map::from_reader(Cursor::new(original)).context("not a map")?;
     let facts = read_facts(&mut map, plan)?;
+    let mut set = TagSet::from_map(&mut map).context("decomposing the map")?;
+    let injection = add_screens_to(&mut set, &facts, plan)?;
+    let (map, _) = set.build().context("building the map")?;
+    Ok(Added {
+        map,
+        injected: injection.injected,
+        skipped: injection.skipped,
+    })
+}
+
+/// Tags added or changed by the screen generator.
+pub struct Injection {
+    pub injected: Vec<(String, i16)>,
+    pub skipped: Vec<(String, String)>,
+    pub changed: Vec<TagId>,
+    /// Templates whose old bytes a later relocation must keep.
+    pub templates: BTreeSet<TagId>,
+}
+
+/// Add the screens to a map decomposed from the snapshot that supplied
+/// `facts`. The template's other blocks keep their snapshot addresses.
+pub fn add_screens_to(set: &mut TagSet, facts: &Facts, plan: &[Entry]) -> Result<Injection> {
     if facts.wgtz.is_empty() {
         bail!("the map has no wgtz");
     }
-    let mut set = TagSet::from_map(&mut map).context("decomposing the map")?;
     // The index takes more tags (as campaign_cards::add_cards does, and
     // for the same reason: the tag-memory bound is empirical and retail
     // maps already meet it; the tags add a few kilobytes).
@@ -477,10 +489,10 @@ pub fn add_screens(original: &[u8], plan: &[Entry]) -> Result<Added> {
         root.block(WGTZ_SCREENS as u32, (old + refs.len()) as u32, block);
         tag.payload = TagPayload::Built(root);
     }
-    let (map, _) = set.build().context("building the map")?;
-    Ok(Added {
-        map,
+    Ok(Injection {
         injected: injected.into_iter().collect(),
         skipped: skipped.into_iter().collect(),
+        changed: facts.wgtz.iter().map(|w| w.tag).collect(),
+        templates: made.keys().map(|(_, template)| *template).collect(),
     })
 }

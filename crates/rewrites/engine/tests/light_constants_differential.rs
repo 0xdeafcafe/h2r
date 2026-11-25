@@ -6,7 +6,7 @@
 //! The two callees the port does not take over are stubs on the original's
 //! side: `0x001650a0` (the sphere's screen bounds) answers from the case's
 //! seeded generator, the same answer the port's `bounds` gets, and
-//! `0x0003a550` (the scissor) only returns. Each case seeds the light
+//! `0x0003a550` (shader inputs, frame upload and optional gel) only returns. Each case seeds the light
 //! array, a record, the definition, the view context, the view, the special
 //! frame's globals, the viewport words, the old frame block and the
 //! arguments, with any float bits now and then (zeros, infinities, NaNs,
@@ -30,8 +30,8 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::light_constants::{
-    self as lc, BoundsQuery, Call, Fpu, SCISSOR, SCREEN_BOUNDS, SCREEN_BOUNDS_CLEANUP, SET_LIGHT,
-    global,
+    self as lc, BoundsQuery, Call, Fpu, SCREEN_BOUNDS, SCREEN_BOUNDS_CLEANUP, SET_LIGHT,
+    UPLOAD_LIGHT_FRAME, global,
 };
 use engine::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
@@ -297,10 +297,10 @@ impl Lifted<'_> {
         cpu.x87.control = c.fpu.x87_control;
         let mem = &mut c.mem;
         let mut pc = SET_LIGHT;
-        let (mut bounds_calls, mut scissors) = (0, 0);
+        let (mut bounds_calls, mut uploads) = (0, 0);
         let mut steps = 0;
         while pc != HARNESS_EXIT {
-            if pc == SCREEN_BOUNDS || pc == SCISSOR {
+            if pc == SCREEN_BOUNDS || pc == UPLOAD_LIGHT_FRAME {
                 let esp = cpu.gpr[4];
                 let mut cleanup = 0;
                 if pc == SCREEN_BOUNDS {
@@ -316,7 +316,7 @@ impl Lifted<'_> {
                         None => cpu.gpr[0] = 0x100,
                     }
                 } else {
-                    scissors += 1;
+                    uploads += 1;
                 }
                 pc = word(mem, esp);
                 cpu.gpr[4] = esp + 4 + cleanup;
@@ -344,7 +344,7 @@ impl Lifted<'_> {
         if cpu.gpr[4] != c.esp + 4 + lc::SET_LIGHT_CLEANUP {
             return Err(format!("esp at return {:#x}", cpu.gpr[4]));
         }
-        Ok((bounds_calls, scissors))
+        Ok((bounds_calls, uploads))
     }
 }
 
@@ -375,8 +375,8 @@ fn light_globals_match_the_lifted_original() {
                 base: a.mem.base,
                 bytes: a.mem.bytes.clone(),
             };
-            let (bounds_calls, scissors) = lifted.run(&mut a).unwrap();
-            assert_eq!(scissors, 1, "seed {seed} case {n}: the scissor runs once");
+            let (bounds_calls, uploads) = lifted.run(&mut a).unwrap();
+            assert_eq!(uploads, 1, "seed {seed} case {n}: the frame uploads once");
 
             let mut asked = Vec::new();
             let answer = a.bounds;

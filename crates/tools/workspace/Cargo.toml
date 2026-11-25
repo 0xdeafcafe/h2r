@@ -1,0 +1,69 @@
+[package]
+name = "workspace"
+description = "The package build: the builder registry, Layered tag sources and the build of a package set onto a map's TagSet (docs/editor/studio-redesign.md, \"Packages\")"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["editor/studio-redesign.md", "editor/tag-workspace.md"]
+status = "in progress"
+
+[dependencies]
+# Manifest, lock, PackageId and the set's order (PK1), Sha256 and canonical JSON.
+content.workspace = true
+# The tag set the build changes.
+map.workspace = true
+# Tag definitions (`defs`), the loose tag sources (`repo`), the relocator
+# and the bitmap writer.
+tags.workspace = true
+# The animation builder reads authored keys and bakes the jmad stream.
+anim-edit.workspace = true
+# The sound builder renders a sidecar's edit list before it encodes.
+sound-edit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# A `map` item's `map.toml` and a `map-patch` item's base file.
+toml.workspace = true
+# The `tag` and `edits` item files.
+serde_yaml_ng.workspace = true
+# The `bitmap` builder's input.
+png = { workspace = true }
+thiserror.workspace = true
+# The `hud` builder reads a HUD kit YAML (`hud_kit_core::data`).
+hud-kit-core.workspace = true
+# The `rules` and `variant` builders compile a script; `registry` is the
+# built-in scripts of a set.
+rules.workspace = true
+# A `variant` item makes a record of its script.
+variants = { path = "../../formats/variants" }
+# The `sound` builder's import: Xbox ADPCM encoding and resampling.
+audio = { path = "../../platform/audio", default-features = false }
+# The sound gestalt model and the converter's sound entries, which a
+# `sound` item with a `tag` is written through (`import`).
+h1-assets = { path = "../h1-assets" }
+# `PackageRewrite` is the VFS's rewrite of the game's maps.
+vfs.workspace = true
+# The `model` builder: the primitive YAML's mesh, the atlas and the tags a
+# look is built into.
+pogo-kit = { path = "../pogo-kit" }
+
+# Firefight's wave sets: the `rules` items the director script is built from.
+firefight = { path = "../../formats/firefight" }
+
+# The UI screen tag generator and retail edit format.
+game = { path = "../../extensions/game", default-features = false }
+
+# Validate the playlist editor's hopper images and download envelopes.
+live-proto.workspace = true
+
+[dev-dependencies]
+# An invented font the `glyphs` kit's test patches.
+font = { path = "../../formats/font" }
+game = { path = "../../extensions/game", default-features = false, features = ["ui-fixture"] }
+# An invented multiplayer map and the kit built on it (PK4's test).
+pogo-kit = { path = "../pogo-kit", features = ["fixture"] }
+
+[lints]
+workspace = true

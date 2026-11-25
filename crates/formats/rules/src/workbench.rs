@@ -14,6 +14,7 @@ use crate::ir::{self, Event, Handler, Ir, LabelDef, LabelKind, Op, Scope};
 use crate::labels;
 use crate::scenario::{self, ScenarioLabel};
 use crate::settings;
+use crate::show;
 use crate::ty::{MAX_LABELLED, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty};
 use crate::vm::{self, Arg, ErrorKind, Fired, Input, ScriptError, Vm, Warning};
 
@@ -192,6 +193,7 @@ fn label_line(def: &LabelDef) -> LabelLine {
             LabelKind::Object => "object",
             LabelKind::Zone => "zone",
             LabelKind::Spawn => "spawn",
+            LabelKind::Path => "path",
         },
         min: def.min,
         max: def.bounded().then_some(def.max),
@@ -286,7 +288,7 @@ pub fn unhostable_all(ir: &Ir) -> Vec<&'static str> {
         for op in &hd.code {
             if let Op::Call { entry, .. } = *op
                 && let Some(e) = caps::entry(entry, ir.header.api_version)
-                && !e.hostable_on(ir.header.carrier)
+                && !e.hostable_on(ir.header.engine())
                 && !out.contains(&caps::spelled(e))
             {
                 out.push(caps::spelled(e));
@@ -486,6 +488,70 @@ pub struct TracedCall {
     pub args: Vec<String>,
 }
 
+/// One row of the script's HUD after a tick, as the scenario's first
+/// seated player sees it (`rules::show::view`): what the workbench's HUD
+/// strip shows for the tick.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct HudLine {
+    /// The declaration's name.
+    pub name: String,
+    /// The kit element it is at (`koth.hill`), when it has one.
+    pub slot: Option<String>,
+    /// `text`, `banner`, `meter` or `waypoint`.
+    pub kind: &'static str,
+    /// Whether it draws.
+    pub shown: bool,
+    /// The number the HUD words beside it; 0 for a waypoint.
+    pub value: i32,
+    /// What it says, when it says anything.
+    pub text: Option<String>,
+    /// What a waypoint marks: the object's handle.
+    pub at: Option<u32>,
+}
+
+/// The HUD rows one viewer sees of the state, as [`HudLine`]s, for the
+/// workbench's HUD strip: the scenario's first seated player, or nobody
+/// when the match seats none. Waypoint rows keep the object they mark in
+/// `at`, for the strip to name by the scenario's things.
+fn hud_lines(vm: &Vm, g: &FakeGame) -> Vec<HudLine> {
+    let Some((&slot, seated)) = g.players.iter().next() else {
+        return Vec::new();
+    };
+    let viewer = show::Viewer {
+        slot: Some(slot),
+        team: Some(seated.team),
+    };
+    let seen = show::view(vm.show(), vm.ir(), viewer);
+    let mut out = Vec::new();
+    for w in &seen.widgets {
+        out.push(HudLine {
+            name: w.name.clone(),
+            slot: Some(w.slot.clone()),
+            kind: match w.kind {
+                crate::ir::WidgetKind::Text => "text",
+                crate::ir::WidgetKind::Banner => "banner",
+                crate::ir::WidgetKind::Meter => "meter",
+            },
+            shown: w.shown,
+            value: w.value,
+            text: w.text.clone(),
+            at: None,
+        });
+    }
+    for w in &seen.waypoints {
+        out.push(HudLine {
+            name: w.name.clone(),
+            slot: w.slot.clone(),
+            kind: "waypoint",
+            shown: true,
+            value: 0,
+            text: None,
+            at: Some(w.at),
+        });
+    }
+    out
+}
+
 /// A player's table row and variables after a tick.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerState {
@@ -509,6 +575,9 @@ pub struct TickTrace {
     pub warnings: Vec<String>,
     pub globals: Vec<(String, String)>,
     pub players: Vec<PlayerState>,
+    /// The script's HUD as the first seated player sees it, when it shows
+    /// anything (`rules::show::view`); the workbench's HUD strip reads it.
+    pub hud: Vec<HudLine>,
     pub error: Option<String>,
 }
 
@@ -625,11 +694,15 @@ fn validate(s: &Scenario) -> Result<(), String> {
             | Input::Press(p, _)
             | Input::Bounced(p)
             | Input::Bounce { player: p, .. }
+            | Input::Touchdown { player: p, .. }
+            | Input::Launch { player: p, .. }
+            | Input::Grounded(p)
             | Input::Edit(p, _) => player(*p),
             Input::ActorKill { killer, .. } => killer.is_none_or(player),
             Input::ActorAssist { killer, assist, .. } => {
                 killer.is_none_or(player) && assist.is_none_or(player)
             }
+            Input::Damage { by, .. } => by.is_none_or(player),
             Input::SquadDead(s) => (*s as usize) < MAX_SQUADS,
             _ => true,
         };
@@ -716,6 +789,30 @@ fn kind_words(kind: ErrorKind) -> String {
         ErrorKind::Zones => format!(
             "more than {} zones are named to ticks_held",
             vm::MAX_HELD_ZONES
+        ),
+        ErrorKind::Body => "set_body names a tag that is no player body".into(),
+        ErrorKind::Areas => format!(
+            "more than {} areas are shown at once; hide_area takes one off",
+            vm::MAX_SHOWN_AREAS
+        ),
+        ErrorKind::Hud => "a HUD call names a widget or waypoint the script does not declare".into(),
+        ErrorKind::Movers => format!(
+            "more than {} objects are moving at once; stop takes one off",
+            vm::MAX_MOVERS
+        ),
+        ErrorKind::Sight => format!(
+            "more than {} pairs are asked to sees within {} ticks",
+            vm::MAX_SIGHT_PAIRS,
+            vm::SIGHT_KEEP
+        ),
+        ErrorKind::Gates => format!(
+            "more than {} barriers are open at once; set_open(b, false) closes one",
+            vm::MAX_GATES
+        ),
+        ErrorKind::Picks => format!(
+            "a picker is numbered past {}, a pick_row names a picker not offered, or a picker has more than {} rows",
+            vm::MAX_PICKS - 1,
+            vm::MAX_PICK_ROWS
         ),
     }
 }
@@ -891,7 +988,7 @@ impl Runner {
         validate(scenario).map_err(RunError::Scenario)?;
         let hash = ir.id().to_string();
         let options = scenario.options.unwrap_or_else(|| ir.default_options());
-        let carrier = ir.header.carrier;
+        let carrier = ir.header.engine();
         let vm = Vm::new(ir, options, scenario.seed).map_err(refused)?;
 
         let mut g = FakeGame {
@@ -1072,6 +1169,7 @@ impl Runner {
                 }
                 if self.trace.ticks.len() < MAX_TRACED_TICKS {
                     let (globals, players) = vars.unwrap_or_else(|| (globals(vm), players(vm, g)));
+                    let hud = hud_lines(vm, g);
                     self.trace.ticks.push(TickTrace {
                         tick,
                         ran,
@@ -1080,6 +1178,7 @@ impl Runner {
                         warnings,
                         globals,
                         players,
+                        hud,
                         error: error.clone(),
                     });
                 } else if self.trace.cut.is_none() {
@@ -1161,7 +1260,7 @@ mod tests {
 
     #[test]
     fn the_report_lists_the_settings_and_the_quick_rows() {
-        let src = "rules \"Swat\" 1\ncarrier slayer\nscoring carrier\nquick score_limit, shields, lives\n\
+        let src = "rules \"Swat\" 1\ntype slayer\nuses slayer\nquick score_limit, shields, lives\n\
                    settings {\n    score_limit = 50\n    shields = none\n    time_limit = 300s\n}\n";
         let c = check(src);
         assert!(c.ok, "{:?}", c.errors);
@@ -1178,7 +1277,7 @@ mod tests {
 
     #[test]
     fn a_compile_error_has_its_place() {
-        let c = check("rules \"X\" 1\ncarrier slayer\non kill(v, k) { score(k, ) }\n");
+        let c = check("rules \"X\" 1\ntype slayer\non kill(v, k) { score(k, ) }\n");
         assert!(!c.ok);
         assert!(c.report.is_none());
         assert_eq!(c.errors[0].line, 3);
@@ -1187,7 +1286,7 @@ mod tests {
 
     #[test]
     fn capabilities_read_in_plain_words() {
-        let src = "rules \"T\" 1\ncarrier slayer\nteams 2\nrequires player.team, forge.move\non spawn(p) { set_team(p, team 1) }\n";
+        let src = "rules \"T\" 1\ntype slayer\nteams 2\nrequires player.team, forge.move\non spawn(p) { set_team(p, team 1) }\n";
         let c = check(src);
         let r = c.report.unwrap();
         let names: Vec<_> = r.capabilities.iter().map(|c| c.name.as_str()).collect();
@@ -1195,6 +1294,45 @@ mod tests {
         assert_eq!(r.capabilities[0].words, "moves players between teams");
         assert!(!r.capabilities[0].grantable && r.capabilities[1].grantable);
         assert_eq!(r.unhostable, ["set_team"]);
+    }
+
+    /// The HUD strip's rows are the first seated player's view of the
+    /// state: what the script set, with its text and its mark's object.
+    #[test]
+    fn the_trace_keeps_the_hud_rows_one_viewer_sees() {
+        let src = "rules \"Strip\" 1\ntype slayer\nrequires hud.widgets, hud.waypoints\n\
+             label hill: zones numbered\n\
+             hud wave: text at koth.hill\nwaypoint spot at koth.mark\n\
+             on round_start {\n\
+                 hud_text(wave, \"Wave two\")\n\
+                 hud_value(wave, 2)\n\
+                 hud_show(wave, true)\n\
+                 if let z = hill[0] { mark(spot, z) }\n\
+             }\n";
+        let mut scenario = slayer_scenario();
+        scenario.map = Some(vec![scenario::ScenarioLabel {
+            number: Some(0),
+            ..scenario::ScenarioLabel::new("hill", 0x4001_0000)
+        }]);
+        let t = run(src, &scenario).unwrap();
+        let kept = t
+            .ticks
+            .iter()
+            .find(|k| !k.hud.is_empty())
+            .expect("a kept tick with hud rows");
+        let wave = kept.hud.iter().find(|h| h.name == "wave").unwrap();
+        assert_eq!(
+            (
+                wave.kind,
+                wave.slot.as_deref(),
+                wave.shown,
+                wave.value,
+                wave.text.as_deref()
+            ),
+            ("text", Some("koth.hill"), true, 2, Some("Wave two"))
+        );
+        let spot = kept.hud.iter().find(|h| h.name == "spot").unwrap();
+        assert_eq!((spot.kind, spot.at), ("waypoint", Some(0x4001_0000)));
     }
 
     fn slayer_scenario() -> Scenario {
@@ -1234,7 +1372,7 @@ mod tests {
 
     #[test]
     fn timers_end_round_and_variables_show() {
-        let src = "rules \"T\" 1\ncarrier slayer\nglobal var left: timer = 5t\nglobal var n: int = 0\non timer(left) { n = n + 1; end_round(none) }\n";
+        let src = "rules \"T\" 1\ntype slayer\nglobal var left: timer = 5t\nglobal var n: int = 0\non timer(left) { n = n + 1; end_round(none) }\n";
         let t = run(src, &Scenario { ticks: 100, ..Scenario::default() }).unwrap();
         let last = t.ticks.last().unwrap();
         assert_eq!(t.round_ended, Some(last.tick));

@@ -57,6 +57,14 @@ pub mod method {
     /// functions ([`super::SpawnParams`]): host only, never in a co-op
     /// session.
     pub const SPAWN: &str = "sim.spawn";
+    /// Play a sound tag at a player's unit through the game's own sound
+    /// start ([`super::PlayParams`]): presentation only, nothing is
+    /// filed or sent.
+    pub const AUDIO_PLAY: &str = "audio.play";
+    /// Play one of the scenario's recorded animations on a player's unit
+    /// through the engine's own recording player
+    /// ([`super::RecordingPlayParams`]).
+    pub const RECORDING_PLAY: &str = "recording.play";
     /// Every live object through the simulation's typed views
     /// ([`super::objects`]).
     pub const OBJECTS: &str = "sim.objects";
@@ -84,6 +92,10 @@ pub mod method {
     pub const MAP_RELOAD: &str = "map.reload";
     /// One transaction on a scenario placement block ([`super::PlacementEditParams`]).
     pub const PLACEMENT_EDIT: &str = "world.placement.edit";
+    /// Play a named animation of an object's own graph from its first
+    /// frame ([`super::AnimateParams`]): host only, never in a co-op
+    /// session. Not in [`EDITS`]: it changes no placement.
+    pub const OBJECT_ANIMATE: &str = "world.object.animate";
 
     /// The edit methods above.
     pub const EDITS: &[&str] =
@@ -100,6 +112,8 @@ pub mod method {
         SESSION,
         GIVE,
         SPAWN,
+        AUDIO_PLAY,
+        RECORDING_PLAY,
         OBJECTS,
         EVENTS,
         PLAYER_MARK,
@@ -109,6 +123,7 @@ pub mod method {
         OBJECT_RESPAWN,
         MAP_RELOAD,
         PLACEMENT_EDIT,
+        OBJECT_ANIMATE,
     ];
 }
 
@@ -516,6 +531,53 @@ pub struct GiveParams {
     /// unit's weapons go and it holds the new one (mode 2).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub keep: bool,
+}
+
+/// `audio.play`: a sound tag started at a player's unit by the game's own
+/// sound start (`SOUND_START_AT_MARKER`, the unit's head marker), as it
+/// starts a dialogue line.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayParams {
+    /// The `snd!` tag: a datum (`0xe1230045`) or a name, as `edit.tags`
+    /// lists them.
+    pub sound: String,
+    /// `player.<index>`, or a simulated player's `sim.<n>`. Default
+    /// `player.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<String>,
+}
+
+/// `world.object.animate`: an animation of an object's own graph, started
+/// on its first channel at frame 0.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnimateParams {
+    /// The object, as `world.object` spells it (`scenery.12340000`).
+    pub id: String,
+    /// The animation's name in the object's graph (`idle`), one the graph
+    /// itself holds: an inherited one is refused.
+    pub animation: String,
+}
+
+/// `recording.play`: a recorded animation of the loaded scenario
+/// (`scnr +0x110`) played on a player's unit by the recording player
+/// (`0x1fb360`), as the script call `recording_play` and its relatives do.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingPlayParams {
+    /// The recording's name (without case), as the scenario's block names
+    /// it.
+    pub recording: String,
+    /// `player.<index>`, or a simulated player's `sim.<n>`. Default
+    /// `player.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<String>,
+    /// What happens at the end: `play` (the unit keeps what it was given;
+    /// default), `delete` (`recording_play_and_delete`: the unit is
+    /// deleted) or `hover` (`recording_play_and_hover`: a vehicle hovers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 /// `sim.spawn`: an object made from its tag at a position.

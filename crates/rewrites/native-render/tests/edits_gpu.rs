@@ -147,7 +147,12 @@ fn a_replaced_section_draws_as_a_world_loaded_from_the_edited_bytes() {
     let (_, visible) = draw(&ctx, &mut live);
     assert_eq!(visible, 1, "before: only the side wall");
 
+    live.set_lights(native_render::light_gpu::LightSet::new(&ctx.device, &ctx.queue, None, None));
+    let (_, original_vertices, original_indices) = live.retain_light(&ctx.device, None).unwrap();
     let run = live.replace_section(&ctx.queue, Owner::Cluster(0), &edited).unwrap();
+    let (_, edited_vertices, edited_indices) = live.retain_light(&ctx.device, None).unwrap();
+    assert_ne!(original_vertices, edited_vertices, "retained scene still owns the old vertices");
+    assert_eq!(original_indices, edited_indices, "section edits preserve topology");
     assert_eq!((run.first_vertex, run.vertex_count), (0, 4));
     assert_eq!(live.world().vertices, loaded.world().vertices);
     assert_eq!(live.world().draws, loaded.world().draws, "draw bounds recomputed");

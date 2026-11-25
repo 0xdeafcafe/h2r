@@ -218,11 +218,9 @@ per-title storage facility 4 (envelope and delivery:
 [live-motd.md](live-motd.md) §2 and §5).
 What matters for matchmaking:
 
-- The tag `matchmaking_hopper_descriptions` defines the universe of
-  playlists; the file's 16 hopper entries (0x614-byte descriptors) each
-  reference up to 100 records in it by id and supply live-tunable
-  parameters (0x15cb8-byte blocks). Unknown record ids mark the slot as
-  error, so **the server may only advertise playlists the tag knows**.
+- Descriptor titles and descriptions come from the file. Rotation entries
+  reference multiplayer map IDs in the loaded globals tag. Retail marks a
+  descriptor in error if an entry cannot resolve (§6.5).
 - The playlist UI (`0x00065530`) iterates the descriptors filtering types
   {2, 4, 5}; Quickmatch's start (`0x00231066`, the profile's last
   hopper) and the playlist screen's press (`0x002b2149` → `0x002b2181`,
@@ -614,7 +612,7 @@ variant (`0x00212f40`, 28 of them), then clear settings 12..14
 limits (`0x0019d650`) a variant is held to.
 
 Our default entries write the same records as scripts. Each of the ten
-built-in matchmaking variants is a `scoring carrier` script of its engine
+built-in matchmaking variants is a `uses` script of its type
 (`rules::builtin::MATCHMAKING`): the settings block holds the changes and
 the three settings the defaults writer clears (`setting_twelve`,
 `setting_thirteen`, `join_in_progress`). `defaults::variants` builds the
@@ -622,6 +620,12 @@ record of each with `variants::portable::record_for`, so every default
 entry is mode 2 and names its script by hash. Live and the game both find
 the script by that prefix among their compiled-in scripts. A hopper takes
 scripted variants only ([live-admin.md](live-admin.md), "`PUT /v1/titles/{title}/hopper`").
+
+With a profile signed in to local Live at the Xbox Live menu, run
+`python3 scripts/repro-mm-hopper.py` against the default lineup. It chooses
+Clanker Doubles, checks descriptor 10 and phantom membership in
+`live.matchmaking.trace`, and waits for gameplay. Pass `--socket PATH` to
+select the running game.
 
 ### 6.6 The game's own defaults
 
@@ -666,18 +670,17 @@ variants in one playlist rather than having a separate Big Team Objective.
 | 5 | Team Objective | Human, ranked | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
 | 6 | Free for All | Human, unranked | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
 | 7 | Unranked Teams | Human, unranked | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
-| 8 | Rumble Pit | Clanker, ranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
-| 9 | Team Slayer | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
-| 10 | Team Skirmish | Clanker, ranked | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer, Teamball |
-| 11 | Team Snipers | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Snipers |
-| 12 | Big Team Battle | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Slayer, Classic CTF, Assault, Territories |
+| 8 | Clanker Rumble | Clanker, ranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
+| 9 | Clanker Slayer | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
+| 10 | Clanker Doubles | Clanker, ranked | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer, Teamball |
+| 11 | Clanker Snipers | Clanker, ranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Snipers |
+| 12 | Clanker BTB | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Slayer, Classic CTF, Assault, Territories |
 | 13 | BTB Heavies | Clanker, ranked | 3 | 2 x 1..8, uneven allowed, the rest bots | Team Heavies |
 | 14 | Solo Training | Clanker, unranked | 1 | 2..8, the rest bots | Rumble Slayer, Oddball, King of the Hill |
 | 15 | Team Training | Clanker, unranked | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer, Classic CTF, Team King, Teamball |
 
 Hoppers 8..15 are **clanker hoppers** (Clankermatch, docs/game/bots.md
-§8): one human or a party, and bots the host runs in every other seat. The
-Clankermatch screen supplies the Clanker context, so their canonical titles
+§8): one human or a party, and bots the host runs in every other seat. Titles shared with human modes carry a Clanker prefix in the combined picker and
 fit the descriptor's 16-byte title slot (15 bytes and a NUL). Their
 descriptions say **Ranked Clanker** or **Unranked Clanker**. Every clanker
 descriptor is an unranked type because the ranked types' rules are for
@@ -1342,6 +1345,7 @@ cohort. Mixed cohorts can still match on eligible peers
 
 `live_proto::hopper::retain_block_maps` compacts full entry records so
 their weights, variants and opaque fields stay intact. The native hook
+checks each map ID against the active menu’s multiplayer level list when available and
 filters the result of the hopper block read before the picker consumes
 the count and weights. Capability uses the installed content, as
 `h2 import-mappack` lays it out, and covers every local seat on that

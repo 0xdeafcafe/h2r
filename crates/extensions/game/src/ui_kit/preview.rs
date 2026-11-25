@@ -2769,19 +2769,7 @@ impl From<'_> {
         state: &str,
         metrics: &dyn Metrics,
     ) -> Result<View> {
-        let mut view = if let Some(hud) = &s.hud {
-            View {
-                screen: s.name.clone(),
-                state: state.into(),
-                // Over a live picture, or (a specimen of widgets that sit
-                // on the shell's bands) over the game shell.
-                backing: if s.transparent { Backing::None } else { Backing::GameShell },
-                widgets: hud.widgets.clone(),
-                focus: None,
-                list: None,
-                underlay: None,
-            }
-        } else if let Some(d) = &s.dialog {
+        let mut view = if let Some(d) = &s.dialog {
             let mut geometry = match self {
                 From::Disc(disc) => disc.dialog_geometry_for(d.base)?,
                 From::Synthetic => DialogGeometry::fallback_for(d.base),

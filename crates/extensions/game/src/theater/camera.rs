@@ -8,7 +8,7 @@ use agent_proto::theater::{self as api, CameraMode};
 use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
 use hooks::{Builder, Flow};
 
-use super::{Mode, Presentation, Session, rig::ReplayCamera};
+use super::{Mode, Presentation, Session, forge_film, rig::ReplayCamera};
 use crate::spectator_view::{Pose, draw_world_view, put_fov, retail_view, vertical_fov};
 
 #[derive(Default)]
@@ -28,8 +28,10 @@ struct Views {
 
 impl Views {
     fn has_viewport(&self) -> bool {
+        // A monitor seat has no guest viewport: the film's own records give
+        // its first-person view.
         self.rig.seat.map_or(self.available != 0, |seat| {
-            self.available & (1 << seat) != 0
+            self.available & (1 << seat) != 0 || forge_film::is_monitor(seat)
         })
     }
 
@@ -127,6 +129,17 @@ impl FilmCamera {
             Some(seat) => eyes.clone().find(|e| e.seat == seat),
             None => eyes.clone().next(),
         };
+        if let Some((seat, pose)) = monitor_subject(&v.rig) {
+            v.subject = Some(seat);
+            let requested = v.rig.mode;
+            let pose = v.rig.resolve_monitor(requested, pose);
+            return Some(ObserverView {
+                position: pose.position,
+                forward: pose.axes().0,
+                fov: vertical_fov(v.rig.reported_pose()?.fov),
+                hide_subject: None,
+            });
+        }
         v.subject = subject.map(|e| e.seat);
         let eye = subject.and_then(|eye| Some((Pose::looking(eye.position, eye.aim)?, eye.fov)));
         let body = subject.and_then(|eye| Pose::looking(eye.position, eye.facing));
@@ -158,6 +171,15 @@ impl FilmCamera {
             Some(wanted) => viewports.clone().find(|&(seat, _)| seat == wanted),
             None => viewports.clone().next(),
         };
+        // A camera on a monitor seat: the guest has no biped there, and the
+        // film's own monitor records give the pose.
+        if let Some((seat, pose)) = monitor_subject(&v.rig) {
+            v.subject = Some(seat);
+            v.crop_seat = None;
+            let requested = v.rig.mode;
+            let pose = v.rig.resolve_monitor(requested, pose);
+            return Some((pose, Some(v.rig.reported_pose()?.fov)));
+        }
         let mode = v.mode();
         v.crop_seat = selected
             .filter(|_| mode == CameraMode::FirstPerson)
@@ -231,6 +253,26 @@ pub(super) struct ObserverView {
     pub forward: [f32; 3],
     pub fov: f32,
     pub hide_subject: Option<u8>,
+}
+
+/// The seat and pose a camera on a monitor seat follows or looks from now,
+/// when the rig names such a seat in follow, orbit or first person
+/// ([`forge_film::subject`]). A seat that is not a monitor at this moment
+/// is the guest's to give; no monitor seat hides any body.
+fn monitor_subject(rig: &ReplayCamera) -> Option<(u8, Pose)> {
+    let found = rig.seat.zip(forge_film::view_of(rig.mode)).and_then(|(seat, view)| {
+        forge_film::subject(seat, view)
+    });
+    let Some(subject) = found else {
+        forge_film::release();
+        return None;
+    };
+    let pose = Pose {
+        position: subject.pose.position,
+        yaw: subject.pose.yaw,
+        pitch: subject.pose.pitch,
+    };
+    Some((subject.seat, pose))
 }
 
 fn subject(guest: &runtime::Guest, seat: Option<u8>, name: Option<&str>) -> Option<(u8, Pose)> {
@@ -407,7 +449,9 @@ impl hooks::Feature for RenderHooks {
             })
             .optional();
 
-        let seeds = Arc::new(Mutex::new(Seeds::default()));
+        // The render's private random stream, shared with `render_rng`'s
+        // feature: whichever enters first enters the frame.
+        let seeds = crate::render_rng::shared();
         let frame_seeds = seeds.clone();
         let camera = self.0.clone();
         b.raw()
@@ -449,51 +493,12 @@ impl hooks::Feature for RenderHooks {
     }
 }
 
-#[derive(Default)]
-struct Seeds {
-    restore: Option<(u32, [u8; 8])>,
-    private: Option<[u8; 8]>,
-}
-
-impl Seeds {
-    fn enter(&mut self, guest: &mut dyn GuestMemory) {
-        if self.restore.is_some() {
-            return;
-        }
-        let Ok(addr) = guest.u32(crate::sim_glue::RANDOM_SEED_PTR) else {
-            return;
-        };
-        if addr == 0 {
-            return;
-        }
-        let mut original = [0; 8];
-        if guest.read(addr, &mut original).is_ok()
-            && guest
-                .write(addr, self.private.as_ref().unwrap_or(&original))
-                .is_ok()
-        {
-            self.restore = Some((addr, original));
-        }
-    }
-
-    fn leave(&mut self, guest: &mut dyn GuestMemory) {
-        let Some((addr, original)) = self.restore.take() else {
-            return;
-        };
-        let mut advanced = [0; 8];
-        if guest.read(addr, &mut advanced).is_ok() {
-            self.private = Some(advanced);
-        }
-        let _ = guest.write(addr, &original);
-    }
-}
-
 #[cfg(test)]
 pub(super) fn with_render_seeds(
     guest: &mut runtime::Guest,
     draw: impl FnOnce(&mut runtime::Guest),
 ) {
-    let mut seeds = Seeds::default();
+    let mut seeds = crate::render_rng::Seeds::default();
     seeds.enter(guest);
     draw(guest);
     seeds.leave(guest);

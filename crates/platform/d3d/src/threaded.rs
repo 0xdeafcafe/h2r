@@ -31,7 +31,8 @@
 //!   the same reason, as with a synchronous backend. Without a judge they
 //!   are speculated as drawn.
 //! - **Other outcomes** (`clear_rects`, `write_surface`, `copy_surface`,
-//!   `snapshot_surface`, `surface_texture`, `depth_alias_texture`) are
+//!   `snapshot_surface`, `snapshot_surface_into`, `surface_texture`,
+//!   `depth_alias_texture`) are
 //!   answered as the inner backend answers every valid call: drawn,
 //!   `true`, `Some`.
 //! - When the inner backend later gives another answer than the one
@@ -254,6 +255,9 @@ pub struct Worker<B: Backend> {
     /// Emptied draw boxes of this batch, returned to
     /// [`Shared::spent_boxes`] at its end.
     spent_boxes: Vec<DrawBox>,
+    /// Display frames between owned presents
+    /// ([`ThreadedBackend::with_display_rate`]).
+    display_rate: Option<Box<dyn owner::DisplayRate<B>>>,
 }
 
 #[derive(Default)]
@@ -661,10 +665,11 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     spent: Vec::new(),
                     spent_constants: Vec::new(),
                     spent_boxes: Vec::new(),
+                    display_rate: None,
                 };
-                // When the inner backend wants its idle step
-                // (`Backend::idle`: host-only work such as interpolated
-                // frames). It runs only with nothing queued, so the
+                // When the display-rate loop wants its next frame
+                // (`owner::DisplayRate`: display frames between owned
+                // presents). It runs only with nothing queued, so the
                 // guest's commands always go first.
                 let mut wake: Option<std::time::Instant> = None;
                 'batches: loop {
@@ -680,7 +685,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                                 Ok(b) => b,
                                 Err(mpsc::RecvTimeoutError::Timeout) => {
                                     let t = std::time::Instant::now();
-                                    wake = w.inner.idle();
+                                    wake = w.display_idle();
                                     let ns = t.elapsed().as_nanos() as u64;
                                     w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
                                     BUSY_NS.fetch_add(ns, Ordering::Relaxed);
@@ -718,8 +723,9 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     w.return_spent();
                     w.shared.scene_stages.store(w.inner.runs_scene_stages(), Ordering::Relaxed);
                     // Ask once nothing is queued: a batch already waiting
-                    // is taken first (a zero timeout). Backends without
-                    // idle work answer `None` and the loop blocks again.
+                    // is taken first (a zero timeout). Without a display
+                    // frame due the answer is `None` and the loop blocks
+                    // again.
                     wake = Some(std::time::Instant::now());
                 }
             })?;
@@ -1218,9 +1224,6 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.presents += 1;
         self.first_frame_ticket = self.next_ticket;
         let n = self.presents;
-        // The arrival, read on the guest's thread (the render thread may
-        // reach this present a frame later).
-        let at = std::time::Instant::now();
         let metadata = crate::present_camera::current();
         let owned = self.frame_owner.is_some();
         if owned {
@@ -1233,12 +1236,11 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let generation = events.generation();
             let candidate = (owner.select)(n, generation);
             self.push(Cmd::OwnerPresent(Box::new(owner::Present {
-                n, surface, at, flags, gamma, candidate, generation, events, metadata,
+                n, surface, flags, gamma, candidate, generation, events, metadata,
             })));
         } else {
             self.post(move |w| {
                 let raster = w.measure_present_raster(surface);
-                w.inner.stamp_present(at);
                 let r = w.surface(surface).and_then(|s| crate::present_camera::with(metadata, || {
                     w.inner.present_with_gamma(s, flags, gamma.as_deref())
                 }));
@@ -1414,6 +1416,39 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         Ok(Some(t))
     }
 
+    /// Queued as a sample of the same proxy: the render thread refills the
+    /// texture it holds for `into` in queue order, after the draws queued
+    /// before that read it. Where the inner backend cannot refill it (or
+    /// holds none, as after a frame owner's replay kept another), the
+    /// proxy gets a new copy instead, so the answer is always `true`.
+    fn snapshot_surface_into(
+        &mut self,
+        surface: u32,
+        opaque: bool,
+        into: &mut ProxyTexture<B>,
+    ) -> Result<bool, String> {
+        self.check()?;
+        let id = into.id;
+        let shared = Arc::clone(&self.shared);
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Snapshot { opaque });
+        self.post_sample(surface, id, sample, move |w| {
+            let s = w.surface(surface)?;
+            if let Some(t) = w.textures.get_mut(&id)
+                && w.inner.snapshot_surface_into(s, opaque, t)?
+            {
+                return Ok(());
+            }
+            match w.inner.snapshot_surface(s, opaque)? {
+                Some(h) => {
+                    w.textures.insert(id, h);
+                }
+                None => shared.miss("snapshot_surface returned None".into()),
+            }
+            Ok(())
+        });
+        Ok(true)
+    }
+
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.check()?;
         if self.frame_owner.is_some() {
@@ -1577,7 +1612,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
-        if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Objects | timeline::native::Stage::Lights)
+        if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Objects | timeline::native::Stage::Lights | timeline::native::Stage::Sky)
             && pass.lock().map_err(|_| "native pass poisoned")?.resolved_fallback().is_some()
         {
             // This is a resolved admission the queue declined. Keep its
@@ -1604,6 +1639,48 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             if (0..4).any(|i| ids[i].is_some() && textures[i].is_none()) { return Ok(None); }
             w.inner.prepare_external(surfaces, request, textures, &plan, copy, pass)
         })
+    }
+
+    fn can_commit_carried(&self) -> bool {
+        self.queues_scene_stages()
+    }
+
+    fn prepare_carried_stage(
+        &mut self, stage: &crate::SceneStage<u32>,
+    ) -> Result<Option<Vec<ExternalRecording>>, String> {
+        if !self.can_commit_carried() { return Ok(None); }
+        if self.frame_owner.is_none() {
+            return self.prepare_external(stage.surfaces.clone(), stage.request, [None; 4],
+                &stage.plan, TargetCopy::Reference, Arc::clone(&stage.pass));
+        }
+
+        // These lights compile draws from owned geometry and static textures.
+        // Pinning attachments records handles and commands, without consuming
+        // the results of earlier draws. A general worker query would flush the
+        // held commands and disqualify the very frame the light belongs to.
+        if stage.plan.stage != timeline::native::Stage::Lights
+            || !stage.surfaces.sampled.is_empty() || !stage.surfaces.slots.is_empty()
+            || !stage.pass.lock().map_err(|_| "native pass poisoned")?.replays_scene()
+        {
+            return Ok(None);
+        }
+        let surfaces = stage.surfaces.clone();
+        let plan = stage.plan.clone();
+        let request = stage.request;
+        let pass = Arc::clone(&stage.pass);
+        count_external_wait(plan.stage);
+        self.call_job(Cmd::Independent, move |worker| {
+            if !worker.inner.runs_scene_stages() { return Ok(None); }
+            let Some(surfaces) = surfaces.try_map(|s| worker.surfaces.get(s).copied()) else {
+                return Ok(None);
+            };
+            worker.inner.prepare_carried_stage(&crate::SceneStage { surfaces, request, plan, pass })
+        })
+    }
+
+    fn commit_carried_stage(&mut self, stage: crate::SceneStage<u32>, copies: Vec<ExternalRecording>) {
+        self.pinned_external_run = None;
+        self.push(Cmd::Render(owner::RenderOp::SealedStage { stage: Box::new(stage), copies }));
     }
 
     fn queue_external_draw(
@@ -1723,6 +1800,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             return Ok(false);
         }
         let confirm = pass.confirm_issue();
+        let producer = pass.diagnostic_name();
         let issue = move |w: &mut Worker<B>| {
             let (c, d) = (w.surface(color)?, w.surface(depth)?);
             let sampled = sampled.into_iter().map(|s| s.and_then(|s| w.surface(s).ok())).collect();
@@ -1734,7 +1812,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             if !issue(w)? {
-                shared.miss("external_pass returned false".into());
+                shared.miss(format!("{producer}: the worker declined an untyped external pass"));
             }
             Ok(())
         });

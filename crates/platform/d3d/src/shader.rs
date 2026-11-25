@@ -89,7 +89,7 @@ pub struct Microcode {
     hash: u64,
     ends_at_first_final: bool,
     #[cfg(feature = "gpu")]
-    position: std::sync::Arc<std::sync::OnceLock<crate::interp::epilogue::Position>>,
+    position: std::sync::Arc<std::sync::OnceLock<crate::clip_space::epilogue::Position>>,
 }
 
 impl Microcode {
@@ -105,8 +105,8 @@ impl Microcode {
     }
 
     #[cfg(feature = "gpu")]
-    pub(crate) fn clip_position(&self) -> crate::interp::epilogue::Position {
-        *self.position.get_or_init(|| crate::interp::epilogue::position(&self.words))
+    pub(crate) fn clip_position(&self) -> crate::clip_space::epilogue::Position {
+        *self.position.get_or_init(|| crate::clip_space::epilogue::position(&self.words))
     }
 
     /// The hash [`new`](Self::new) gives `words`: FNV-1a over the dwords
@@ -280,6 +280,10 @@ pub trait ShaderProvider: Send {
 
     /// A frame was presented (per-frame caches may drop what went unused).
     fn end_frame(&mut self) {}
+
+    /// `gone` were destroyed (frame-buffer copies the backend released):
+    /// drop cached bind groups over them.
+    fn forget_textures(&mut self, _gone: &[wgpu::Texture]) {}
 
     /// Called once when the backend is set up and then after every frame,
     /// with the pipelines draws needed since the last call that were not

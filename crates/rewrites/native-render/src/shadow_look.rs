@@ -249,8 +249,11 @@ fn compile(
     let vs = shaders::vsh::Program::parse(microcode)
         .map_err(|e| format!("shadow vertex program: {e:?}"))?;
     let set = set_constants(&look.vertex_constants);
+    // Layer 14 draws without a shadow projection, including after a shadowed light.
     let projection = |c: u8| {
-        (PROJECTION_REGISTER..PROJECTION_REGISTER + PROJECTION_DWORDS / 4).contains(&usize::from(c))
+        look.layer != OPACITY_LAYER
+            && (PROJECTION_REGISTER..PROJECTION_REGISTER + PROJECTION_DWORDS / 4)
+                .contains(&usize::from(c))
     };
     if model {
         use crate::program::{MODEL_ROWS, POSITION_DECOMPRESSION};
@@ -320,7 +323,7 @@ mod tests {
 
     use super::*;
 
-    fn program() -> Vec<u8> {
+    fn program(texcoord_constant: u8) -> Vec<u8> {
         use shaders::vsh::encode::{Inst, Operand as O, program};
         use shaders::vsh::{MacOp, OutReg};
         let row = |c, mask| {
@@ -335,7 +338,8 @@ mod tests {
             row(1, 4),
             row(2, 2),
             row(3, 1),
-            Inst::mac(MacOp::Mov, Some(O::c(40)), None, None).to_out(false, OutReg::T(0), 0xf),
+            Inst::mac(MacOp::Mov, Some(O::c(texcoord_constant)), None, None)
+                .to_out(false, OutReg::T(0), 0xf),
         ])
     }
 
@@ -369,7 +373,7 @@ mod tests {
 
     #[test]
     fn a_caster_compiles_wgsl_with_its_projection_and_no_light_frame() {
-        let p = compile_shadow(&look(), &program()).expect("caster program");
+        let p = compile_shadow(&look(), &program(40)).expect("caster program");
         shaders::validate(&p.wgsl).expect("valid WGSL");
         let mut base = VertexUniforms::default();
         base.constants[39] = [7.0; 4];
@@ -387,14 +391,43 @@ mod tests {
         let mut look = look();
         look.layer = RECEIVER_LAYER;
         look.textures[0] = LightStage::DepthShadow;
-        let p = compile_receiver(&look, &program()).expect("receiver program");
+        let p = compile_receiver(&look, &program(40)).expect("receiver program");
         shaders::validate(&p.wgsl).expect("valid WGSL");
         let shadow = p.pixel_options.shadow[0].expect("D24 stage");
         assert_eq!(shadow.format, DepthFormat::D24);
         assert_eq!(shadow.func, AlphaFunc::Greater);
         assert!(!shadow.linear);
         assert_eq!(shadow.address, [ShadowAddress::Clamp; 2]);
-        assert_eq!(p.dims[0], Some(shaders::psh::TextureDim::D2));
+        // `dims` are the stages the pixel shader samples (this test's
+        // default combiner samples none); the bound stage is the option's.
+        assert_eq!(
+            p.pixel_options.texture_dims[0],
+            Some(shaders::psh::TextureDim::D2)
+        );
+    }
+
+    #[test]
+    fn opacity_shaders_must_source_their_coordinates_without_a_shadow_projection() {
+        let mut look = look();
+        look.layer = OPACITY_LAYER;
+        let options = light_look::vertex_options();
+        for register in [40, 48, 0] {
+            let code = program(register);
+            for compiled in [
+                compile_receiver(&look, &code),
+                compile_receiver_model(&look, &code, options.provided_inputs, options.input_fetch),
+            ] {
+                if register == 0 {
+                    compiled.expect("view constant is supplied on layer 14");
+                } else {
+                    let reason = compiled.unwrap_err();
+                    assert!(
+                        reason.contains(&format!("unsupplied c[{register}]")),
+                        "{reason}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -407,7 +440,7 @@ mod tests {
             origin: tags::material::Origin::Instance,
         });
         assert!(
-            compile_shadow(&look, &program())
+            compile_shadow(&look, &program(40))
                 .unwrap_err()
                 .contains("projection constants")
         );

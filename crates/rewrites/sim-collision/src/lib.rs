@@ -3,9 +3,12 @@
 //! docs/engine/collision-queries.md).
 //!
 //! Each collision BSP the guest names is decoded once, from the bytes the
-//! guest itself would read, into flat arrays ([`Bsp`]). A query is then one
+//! guest itself would read, into flat arrays ([`Bsp`]), and each MOPP
+//! program into a flat tree ([`mopp::Tree`]). A query is then one
 //! Rust call over those arrays and a few live guest words read through
-//! [`GuestRead`]. Nothing here writes guest memory: a kernel returns plain
+//! [`GuestRead`]. The structure's portal graph is decoded the same way
+//! ([`Topology`]) for the cluster flood and the object visit. Nothing here
+//! writes guest memory: a kernel returns plain
 //! result structs, and the engine adapter (`engine::sim_collision`) writes
 //! them back once the whole answer is known.
 //!
@@ -16,9 +19,17 @@
 //! guest write, and the lifted code runs instead.
 #![deny(clippy::disallowed_methods)]
 
+pub mod batch;
 pub mod bsp;
+pub mod flood;
+pub mod instance;
 pub mod mem;
+pub mod model;
+pub mod objects;
+pub mod mopp;
+pub mod sphere;
 pub mod structure;
+mod store;
 mod world;
 
 #[cfg(any(test, feature = "synth"))]
@@ -26,8 +37,10 @@ pub mod synth;
 
 pub use bsp::segment::{Hit, Outcome, Segment};
 pub use bsp::{Bsp, Consts};
+pub use flood::{Flood, FloodQuery, Topology, TopologyKey};
 pub use mem::{Fault, GuestRead};
-pub use world::{CollisionWorld, Entry, EntryStats, Stats};
+pub use objects::{Visit, VisitQuery};
+pub use world::{CollisionWorld, Entry, EntryStats, RayParity, SourceFingerprint, Stats, VectorParity};
 
 /// Why a query was left to the lifted code. Nothing was written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,12 +63,16 @@ pub enum Bail {
     Alias,
     /// The debugger needs the original guest memory access sequence.
     Trap,
-    /// The resident budget or bounded address index cannot admit this BSP.
+    /// The resident budget or bounded address index cannot admit this BSP
+    /// or MOPP program.
     Budget,
+    /// The guest's output array is too small for the answer: the original
+    /// grows it with a guest call (entry F's `hkArray`).
+    Grow,
 }
 
 /// The number of [`Bail`] reasons.
-pub const BAILS: usize = 8;
+pub const BAILS: usize = 9;
 
 impl Bail {
     pub const ALL: [Bail; BAILS] = [
@@ -67,6 +84,7 @@ impl Bail {
         Bail::Alias,
         Bail::Trap,
         Bail::Budget,
+        Bail::Grow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -79,6 +97,7 @@ impl Bail {
             Bail::Alias => "alias",
             Bail::Trap => "trap",
             Bail::Budget => "budget",
+            Bail::Grow => "grow",
         }
     }
 }

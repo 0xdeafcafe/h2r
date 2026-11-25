@@ -271,7 +271,7 @@ fn opaque_simple_matches_serial_pushed_state_at_a_guest_boundary() {
 
 #[cfg(feature = "gpu")]
 #[test]
-fn warm_restore_releases_interpolation_mark_samples_with_the_same_ring() {
+fn warm_restore_releases_mark_samples_with_the_same_ring() {
     use std::cell::RefCell;
     use std::sync::Arc;
 
@@ -281,8 +281,7 @@ fn warm_restore_releases_interpolation_mark_samples_with_the_same_ring() {
         static SAMPLE: RefCell<Option<Image>> = const { RefCell::new(None) };
     }
 
-    let backend = d3d::InterpBackend::new(RecordingBackend::new(), || 60);
-    let backend = d3d::ThreadedBackend::new(backend).unwrap();
+    let backend = d3d::ThreadedBackend::new(RecordingBackend::new()).unwrap();
     let (mut device, mut ram) = create(backend, UploadPolicy::Tracked);
     let ring = [device.back_buffer().unwrap(), device.front_buffer().unwrap()];
     let mut saved = writer();

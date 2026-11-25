@@ -10,7 +10,7 @@
 //!   a converted Halo 1 map (`crate::h1_options_row`), opens the Halo 1
 //!   Options page ([`page`]): the shared settings dialog
 //!   (`crate::ui_kit::settings`) its doc declares,
-//!   `assets/ui/screens/h1-options.yaml`, with a row per [`MULTIPLAYER`]
+//!   `content/ui/screens/h1-options.yaml`, with a row per [`MULTIPLAYER`]
 //!   option, each its name and its choice ("Sandbox  Halo 1"). Its header
 //!   (icon, name and what the window is for) stays whatever has the
 //!   focus; the focused row's help is under the rows, and the value picker
@@ -260,7 +260,7 @@ pub const SCREEN: &str = "h1-options";
 
 /// The Halo 1 Options page over `store`: the shared settings dialog
 /// (`crate::ui_kit::settings`) its doc declares,
-/// `assets/ui/screens/h1-options.yaml`: its header, a row per
+/// `content/ui/screens/h1-options.yaml`: its header, a row per
 /// [`MULTIPLAYER`] option ("Halo 1" or "Halo 2" in its value column), and
 /// the Game Setup row's text and help (`settings.caller`). Its class is
 /// `features.h1-options-screen` (`crate::h1_options_row::SCREEN_FEATURE`).

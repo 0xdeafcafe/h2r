@@ -3,6 +3,7 @@
 use super::*;
 use super::spatial::{finish_fpu,fp_error,load_fpu,scalar};
 use crate::light_constants::{Sse,X87};
+use crate::{sim_anim::filter, sim_native::Memory};
 
 const USERS: u32 = 0x004e_9bc8;
 const PALETTES: u32 = 0x004e_9bc4;
@@ -16,20 +17,20 @@ pub(super) const POSE_SITES:&[u32]=&[0x16767f,0x1676ce,0x1676f5,0x1676fd,
     0x167a42,0x167a64,0x167a9f,0x167acc,0x167af9,0x167b33,0x167b5f,0x167b81,
     0x167bbc,0x167be9,0x167c0c,0x167c32,0x167c6b,0x167c7b,0x167cf8,0x167d53,
     0x167d6c,0x167d97,0x167db1,0x167dee,0x167e04];
-pub(super) const FILTER_SITES:&[u32]=&[0x166dbb,0x166edb,0x166f1e,0x166fcf,
+pub(crate) const FILTER_SITES:&[u32]=&[0x166dbb,0x166edb,0x166f1e,0x166fcf,
     0x16700c,0x16703b,0x167057,0x1670d0,0x1670dc,0x1670f6,0x167156,0x16716d,
     0x167175,0x167197,0x1671ab,0x1671cd,0x1671e5,0x16724a,0x167279,0x1672a6,
     0x1672b9,0x1672ef,0x167304,0x167314,0x167350,0x16738a,0x16739a,0x1673ab,
     0x1673b4,0x1673ff,0x167424,0x16742c,0x167441,0x1674fe,0x167507,0x16759d,
     0x1675ad,0x1675c3,0x1675d2,0x167607];
 
-fn frame(c:&mut CpuAbi,g:&mut Guest,locals:u32)->Result<()> {
+fn frame(c:&mut CpuAbi,g:&mut impl Memory,locals:u32)->Result<()> {
     push(c,g,c.ebp)?;
     c.ebp=c.esp;
     c.esp=c.esp.wrapping_sub(locals);
     push(c,g,c.ebx)
 }
-pub(super) fn leave(c:&mut CpuAbi,g:&Guest,n:u32)->Result<TransferAbi> {
+pub(super) fn leave(c:&mut CpuAbi,g:&impl Memory,n:u32)->Result<TransferAbi> {
     c.ebx=pop(c,g)?;
     c.esp=c.ebp;
     c.ebp=pop(c,g)?;
@@ -127,7 +128,13 @@ pub(super) fn copy_node<const N:usize>(g:&mut Guest,src:u32,dst:u32,backwards:bo
     Ok(())
 }
 
-fn palette(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+pub(crate) fn palette(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
+    // Phase 1c: the fill and overlays as one Rust call
+    // (engine::sim_anim::palette). The port's own loops run when it
+    // declines.
+    if let Some(transfer)=crate::sim_anim::palette::run(c,g)? {
+        return Ok(transfer);
+    }
     let nodes=c.eax as i16 as i32 as u32;
     let slot=g.u32(c.ebp+12)?;
     let user=g.u32(c.ebp+8)?;
@@ -181,92 +188,201 @@ fn palette(c:&mut CpuAbi,g:&mut Guest)->Result<TransferAbi> {
     g.call(c,0xb6780,0x167804)
 }
 
-pub(super) fn filters(c:&mut CpuAbi,g:&mut Guest,pc:u32)->Result<TransferAbi> {
-    if pc>=0x16700c {return super::weapon_slots::run(c,g,pc);}
-    if pc==points::FIRST_PERSON_FILTER_UPDATE.base {
-        frame(c,g,44)?;
-        c.ebx=g.u32(USERS)?.wrapping_add(g.u32(c.ebp+8)?.wrapping_mul(USER_BYTES));
-        c.eax=g.u32(c.ebx+4)?;
-        arithmetic(c,c.eax,u32::MAX,true);
-        if c.eax==u32::MAX {return leave(c,g,4);}
-        push(c,g,c.esi)?;
-        c.esi=g.u32(points::OBJECTS.base)?;
-        c.ecx=g.u32(c.esi+68)?;
-        push(c,g,c.edi)?;
-        c.edi=65535;
-        c.eax &= c.edi;
-        logic(c,c.eax,1<<31);
-        c.eax=g.u32(c.ecx+12*c.eax+8)?;
-        g.set_u32(c.ebp-28,c.eax)?;
-        c.eax=g.u32(c.ebp+8)?;
-        return g.call(c,0x166561,FILTER_SITES[0]);
-    }
-    let index=FILTER_SITES.iter().position(|&s|s==pc).unwrap();
-    if index==0 {
-        for (offset,constant) in [(12,0x45e590),(8,0x45dbf8),(16,0x45e58c),(20,0x45dbfc)] {
-            let v=g.u32(constant)?;
-            scalar(c,0,v);
-            g.set_u32(c.ebp-offset,v)?;
+/// Per-weapon filter bounds override the seat defaults when nonzero.
+fn filter_bounds(c: &mut CpuAbi, g: &mut impl Memory) -> Result<()> {
+    let frame = c.ebp;
+    let defaults = [
+        (12, 0x45e590),
+        (8, 0x45dbf8),
+        (16, 0x45e58c),
+        (20, 0x45dbfc),
+    ];
+    for (offset, addr) in defaults {
+        let value = g.u32(addr)?;
+        scalar(c, 0, value);
+        if offset == 16 {
+            g.set_u32(frame.wrapping_sub(24), c.eax)?;
+            c.eax = c.ebx.wrapping_add(12);
         }
-        g.set_u32(c.ebp-24,c.eax)?;
-        c.eax=c.ebx.wrapping_add(12);
-        if c.eax!=0 && g.u32(c.eax+4)?!=u32::MAX {
-            let handle=g.u32(c.eax+4)? & c.edi;
-            let object=g.u32(g.u32(c.esi+68)?+12*handle+8)?;
-            let tags=g.u32(points::TAG_ENTRIES.base)?;
-            let def=g.u32(tags+16*(g.u32(object)? & c.edi)+8)?;
-            scalar(c,0,0);
-            for (i,off) in [12,8,16,20].into_iter().enumerate() {
-                let at=def+736+4*i as u32;
-                if i<3 {c.edx=at;}
-                let v=g.u32(at)?;
-                scalar(c,1,v);
-                let cmp=simd::ucomiss(&mut c.mxcsr,v,0).map_err(super::havok::simd_fault)?;
-                if cmp & 0x44!=0x40 {
-                    g.set_u32(c.ebp-off,v)?;
-                    if i==3 {scalar(c,0,v);}
-                }
+        g.set_u32(frame.wrapping_sub(offset), value)?;
+    }
+    if c.eax == 0 {
+        return Ok(());
+    }
+    let weapon = g.u32(c.eax.wrapping_add(4))?;
+    if weapon == u32::MAX {
+        return Ok(());
+    }
+    let slots = g.u32(c.esi.wrapping_add(68))?;
+    let body = g.u32(slots.wrapping_add((weapon & c.edi).wrapping_mul(12)).wrapping_add(8))?;
+    let tag = g.u32(body)?;
+    let table = g.u32(points::TAG_ENTRIES.base)?;
+    let def = g.u32(table.wrapping_add((tag & c.edi) << 4).wrapping_add(8))?;
+    scalar(c, 0, 0);
+    for (index, (offset, _)) in defaults.into_iter().enumerate() {
+        let field = def.wrapping_add(736 + 4 * index as u32);
+        if index < 3 {
+            c.edx = field;
+        }
+        let value = g.u32(field)?;
+        scalar(c, 1, value);
+        let cmp = simd::ucomiss(&mut c.mxcsr, value, 0).map_err(super::havok::simd_fault)?;
+        if cmp & 0x44 != 0x40 {
+            if index == 3 {
+                c.xmm[0] = c.xmm[1];
             }
+            g.set_u32(frame.wrapping_sub(offset), value)?;
         }
     }
-    if index==2 {
-        let dt=g.u32(g.u32(TIME)?+4)?;
-        let lo=g.u32(0x45dbcc)?;
-        let hi=g.u32(0x45dbc0)?;
-        let mut s=Sse{mxcsr:c.mxcsr};
-        let yaw=s.div(g.u32(c.ebx+8280)?,dt).map_err(fp_error)?;
-        let roll=s.clamp(yaw,lo,hi).map_err(fp_error)?;
-        g.set_u32(c.ebp-44,roll)?;
-        let inv=s.div(lo,dt).map_err(fp_error)?;
-        let pitch=s.mul(inv,g.u32(c.ebx+8284)?).map_err(fp_error)?;
-        let pitch_clamped=s.clamp(pitch,lo,hi).map_err(fp_error)?;
-        g.set_u32(c.ebp-40,pitch_clamped)?;
-        c.mxcsr=s.mxcsr;
-        scalar(c,0,lo);
-        scalar(c,1,pitch);
-        scalar(c,2,hi);
+    Ok(())
+}
+
+/// The upper-bound branch stores the upper bound before it conditionally
+/// replaces that value with the input. Preserve both writes.
+fn clamp_input(
+    sse: &mut Sse,
+    g: &mut impl Memory,
+    dest: u32,
+    value: u32,
+    lo: u32,
+    hi: u32,
+) -> Result<()> {
+    if sse.above(lo, value).map_err(fp_error)? {
+        return g.set_u32(dest, lo);
     }
-    let clock=g.u32(TIME)?;
-    let position=g.u32(c.ebp-28)?;
-    let width=if index<2 {12} else {16};
-    if index==0 {c.ecx=clock;c.eax=position+432;g.set_u32(c.ebp-32,c.eax)?;}
-    else if index==1 {c.eax=position;} else {c.eax=clock;}
-    if index==0 || index==2 {scalar(c,5,g.u32(c.ebp-if index==0 {8} else {20})?);}
-    c.esp=arithmetic(c,c.esp,20,true);
-    c.edi=c.ebx+[8240,8244,8256,8260][index];
-    c.esi=c.edi+8;
-    let mut x=load_fpu(c);
-    X87::ok(x87::abi::ld_const(&mut x.0,x87::Const::One as u32)).map_err(fp_error)?;
-    g.set_u32(c.esp+16,x.fstp_m32().map_err(fp_error)?)?;
-    let sample=match index {0=>position+432,1=>position+436,2=>c.ebp-44,_=>c.ebp-40};
-    for (source,offset) in [(0x45dbcc,12),(c.ebp-width,8),(clock+4,4),(sample,0)] {
-        x.fld(g.u32(source)?).map_err(fp_error)?;
-        g.set_u32(c.esp+offset,x.fstp_m32().map_err(fp_error)?)?;
+    let over = sse.above(value, hi).map_err(fp_error)?;
+    g.set_u32(dest, hi)?;
+    if !over {
+        g.set_u32(dest, value)?;
     }
-    if index==0 || index==2 {c.edx &= !255;logic(c,0,128);}
-    finish_fpu(c,g,x,[0x166ed3,0x166f16,0x166fc7,0x167004][index],c.esp)?;
-    let next=FILTER_SITES[index+1];
-    g.call(c,0x11eed0,next)
+    Ok(())
+}
+
+fn motion_inputs(c: &mut CpuAbi, g: &mut impl Memory) -> Result<()> {
+    let mut sse = Sse { mxcsr: c.mxcsr };
+    let clock = g.u32(TIME)?;
+    let delta = g.u32(c.ebx.wrapping_add(8280))?;
+    let roll = sse.div(delta, g.u32(clock.wrapping_add(4))?).map_err(fp_error)?;
+    let lo = g.u32(0x45dbcc)?;
+    let hi = g.u32(0x45dbc0)?;
+    clamp_input(&mut sse, g, c.ebp.wrapping_sub(44), roll, lo, hi)?;
+
+    let clock = g.u32(TIME)?;
+    let inv = sse.div(lo, g.u32(clock.wrapping_add(4))?).map_err(fp_error)?;
+    let pitch = sse.mul(inv, g.u32(c.ebx.wrapping_add(8284))?).map_err(fp_error)?;
+    clamp_input(&mut sse, g, c.ebp.wrapping_sub(40), pitch, lo, hi)?;
+    c.mxcsr = sse.mxcsr;
+    scalar(c, 0, lo);
+    scalar(c, 1, pitch);
+    scalar(c, 2, hi);
+    Ok(())
+}
+
+fn spill_value(x: &mut X87, g: &mut impl Memory, from: u32, dest: u32) -> Result<()> {
+    x.fld(g.u32(from)?).map_err(fp_error)?;
+    g.set_u32(dest, x.fstp_m32().map_err(fp_error)?)
+}
+
+/// Prepare one axis's five stack arguments. The second axis reloads the
+/// object pointer between loading the timestep and spilling it.
+fn axis_args(c: &mut CpuAbi, g: &mut impl Memory, axis: usize) -> Result<()> {
+    let clock = g.u32(TIME)?;
+    let mut x = load_fpu(c);
+    X87::ok(x87::abi::ld_const(&mut x.0, x87::Const::One as u32)).map_err(fp_error)?;
+    if axis == 0 {
+        c.ecx = clock;
+        c.eax = g.u32(c.ebp.wrapping_sub(28))?;
+        scalar(c, 5, g.u32(c.ebp.wrapping_sub(8))?);
+    } else {
+        c.eax = clock;
+        if axis == 2 {
+            scalar(c, 5, g.u32(c.ebp.wrapping_sub(20))?);
+        }
+    }
+    c.esp = arithmetic(c, c.esp, 20, true);
+    g.set_u32(c.esp.wrapping_add(16), x.fstp_m32().map_err(fp_error)?)?;
+    if axis == 0 {
+        c.eax = c.eax.wrapping_add(432);
+    }
+    c.edi = c.ebx.wrapping_add([8240, 8244, 8256, 8260][axis]);
+    c.esi = c.edi.wrapping_add(8);
+    spill_value(&mut x, g, 0x45dbcc, c.esp.wrapping_add(12))?;
+    let accel = if axis < 2 { 12 } else { 16 };
+    spill_value(&mut x, g, c.ebp.wrapping_sub(accel), c.esp.wrapping_add(8))?;
+    if axis == 0 || axis == 2 {
+        c.edx &= !255;
+        logic(c, 0, 128);
+        if axis == 0 {
+            g.set_u32(c.ebp.wrapping_sub(32), c.eax)?;
+        }
+    }
+    x.fld(g.u32(clock.wrapping_add(4))?).map_err(fp_error)?;
+    if axis == 1 {
+        c.eax = g.u32(c.ebp.wrapping_sub(28))?;
+    }
+    g.set_u32(c.esp.wrapping_add(4), x.fstp_m32().map_err(fp_error)?)?;
+    let sample = match axis {
+        0 => c.eax,
+        1 => c.eax.wrapping_add(436),
+        2 => c.ebp.wrapping_sub(44),
+        _ => c.ebp.wrapping_sub(40),
+    };
+    spill_value(&mut x, g, sample, c.esp)?;
+    finish_fpu(c, g, x, [0x166ed3, 0x166f16, 0x166fc7, 0x167004][axis], c.esp)
+}
+
+pub(crate) fn filters(c: &mut CpuAbi, g: &mut impl Memory, pc: u32) -> Result<TransferAbi> {
+    let mut stats = filter::Stats::default();
+    let transfer = filters_counted(c, g, pc, &mut stats)?;
+    stats.record();
+    Ok(transfer)
+}
+
+pub(crate) fn filters_counted(
+    c: &mut CpuAbi,
+    g: &mut impl Memory,
+    pc: u32,
+    stats: &mut filter::Stats,
+) -> Result<TransferAbi> {
+    if pc == points::FIRST_PERSON_FILTER_UPDATE.base {
+        frame(c, g, 44)?;
+        let user = g.u32(c.ebp.wrapping_add(8))?;
+        c.ebx = user.wrapping_mul(USER_BYTES).wrapping_add(g.u32(USERS)?);
+        c.eax = g.u32(c.ebx.wrapping_add(4))?;
+        arithmetic(c, c.eax, u32::MAX, true);
+        if c.eax == u32::MAX {
+            return leave(c, g, 4);
+        }
+        push(c, g, c.esi)?;
+        c.esi = g.u32(points::OBJECTS.base)?;
+        c.ecx = g.u32(c.esi.wrapping_add(68))?;
+        push(c, g, c.edi)?;
+        c.edi = 65535;
+        c.eax &= c.edi;
+        logic(c, c.eax, 1 << 31);
+        c.eax = g.u32(c.ecx.wrapping_add(12 * c.eax).wrapping_add(8))?;
+        g.set_u32(c.ebp.wrapping_sub(28), c.eax)?;
+        c.eax = g.u32(c.ebp.wrapping_add(8))?;
+        return g.call(c, 0x166561, FILTER_SITES[0]);
+    }
+    if pc >= FILTER_SITES[4] {
+        return super::weapon_slots::run(c, g, pc, stats);
+    }
+
+    let start = FILTER_SITES[..4].iter().position(|&s| s == pc).expect("filter continuation");
+    for axis in start..4 {
+        if axis == 0 {
+            filter_bounds(c, g)?;
+        } else if axis == 2 {
+            motion_inputs(c, g)?;
+        }
+        axis_args(c, g, axis)?;
+        let next = FILTER_SITES[axis + 1];
+        if !filter::run_counted(c, g, next, stats)? {
+            return g.call(c, filter::FILTER, next);
+        }
+    }
+    super::weapon_slots::run(c, g, FILTER_SITES[4], stats)
 }
 
 #[cfg(test)]

@@ -15,7 +15,11 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-pub(super) fn header(id: u64) -> Header {
+/// One batch of calls, as the recorder writes it.
+pub(super) fn tape_chunk<W: Write + Seek>(w: &mut Writer<W>, calls: &[Call]) {
+    w.chunk_bytes(tape::TAPE, &tape::encode_batch(calls).unwrap()).unwrap();
+}
+pub(crate) fn header(id: u64) -> Header {
     Header {
         version: 1,
         meta: FilmMeta {
@@ -48,6 +52,7 @@ pub(super) fn header(id: u64) -> Header {
         telemetry: false,
         telemetry_hooks: None,
         render_hooks: None,
+        inputs_in_film: false,
         live_service: false,
         features: String::new(),
         player_features: false,
@@ -100,20 +105,18 @@ fn render_hook_profiles_round_trip_and_require_the_recorders_groups() {
 fn encoded() -> Vec<u8> {
     let mut w = Writer::new(Cursor::new(Vec::new()), &header(1)).unwrap();
     w.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    for (i, (tag, op)) in [(NETR, "Recv"), (RAND, "Random")].into_iter().enumerate() {
-        w.chunk(
-            tag,
-            &vec![Call {
-                index: i as u64,
-                op: op.into(),
-                thread: 7,
-                args: vec![2],
-                result: Ok(1),
-                outputs: vec![vec![42]],
-            }],
-        )
-        .unwrap();
-    }
+    let calls: Vec<Call> = [(0, "Recv"), (1, "Random")]
+        .into_iter()
+        .map(|(index, op)| Call {
+            index,
+            op: op.into(),
+            thread: 7,
+            args: vec![2],
+            result: Ok(1),
+            outputs: vec![vec![42]],
+        })
+        .collect();
+    tape_chunk(&mut w, &calls);
     w.chunk(KEYF, &vec![1, 2, 3]).unwrap();
     w.chunk(
         HASH,
@@ -145,7 +148,7 @@ fn round_trip_all_chunks_index_and_wrong_stamp() {
     assert!(r.finalized);
     assert_eq!(
         r.entries.iter().map(|e| e.tag).collect::<Vec<_>>(),
-        vec![HEAD, DATA, NETR, RAND, KEYF, HASH, MARK]
+        vec![HEAD, DATA, tape::TAPE, KEYF, HASH, MARK]
     );
     for e in &r.entries {
         assert_eq!(b[e.offset as usize..][..4], e.tag);
@@ -219,6 +222,16 @@ fn library_keeps_25_recent_plus_pins_by_header_id() {
     reopened.unsave("0").unwrap();
     assert_eq!(reopened.list().unwrap().len(), 25);
     reopened.save("26").unwrap();
+    let mut menus = header(100);
+    menus.meta.source = Source::Local;
+    menus.meta.map.clear();
+    menus.meta.players.clear();
+    Writer::new(File::create(dir.0.join("menus.h2film")).unwrap(), &menus)
+        .unwrap().finish().unwrap();
+    let rows = reopened.list().unwrap();
+    assert_eq!(rows.len(), 26, "25 recent games plus the pin");
+    assert!(rows.iter().all(LibraryEntry::is_game));
+    assert_eq!(rows.last().unwrap().meta.id, "1");
     reopened.delete("26").unwrap();
     assert_eq!(reopened.list().unwrap()[0].meta.id, "25");
     assert!(!dir.0.join("other-26.h2film.saved").exists());
@@ -339,6 +352,24 @@ fn upload_posts_the_exact_bytes_then_advances_without_resending_them() {
 }
 
 #[test]
+fn a_film_file_beside_the_stats_stream_follows_it_as_its_own_object() {
+    let dir = Temp::new();
+    let path = dir.0.join("host.h2film");
+    let stats = encoded();
+    fs::write(&path, &stats).unwrap();
+    let film = b"H2FILM4! stands in for the film file".to_vec();
+    fs::write(crate::file::beside(&path), &film).unwrap();
+    run_upload(&path, move |listener| {
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film");
+        assert_eq!(body, stats);
+        film_reply(stream, "204 No Content");
+        let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film?object=film");
+        assert_eq!(body, film);
+        film_reply(stream, "204 No Content");
+    });
+}
+
+#[test]
 fn multipart_upload_advances_each_part_before_uploading_the_next_and_waits_for_publication() {
     use live_proto::film::{PART_BYTES, SINGLE_UPLOAD_BYTES};
     use sha2::{Digest, Sha256};
@@ -454,7 +485,7 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
         params: serde_json::Value::Null,
     };
     w.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    w.chunk(RAND, &vec![call(0)]).unwrap();
+    tape_chunk(&mut w, &[call(0)]);
     w.chunk(MARK, &lobby(9)).unwrap();
     w.chunk(
         HASH,
@@ -473,12 +504,12 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
         .unwrap();
     w.chunk(MARK, &lobby(10)).unwrap();
     w.chunk(MARK, &Mark::D3dBarrier { slices: 64, tick: 31, saved: true }).unwrap();
-    w.chunk(RAND, &vec![call(1)]).unwrap();
+    tape_chunk(&mut w, &[call(1)]);
     let size = Call {
         index: 2, op: tape::VIDEO_MENU_SIZE.into(), thread: 0, args: vec![],
         result: Ok((3440 << 16) | 1440), outputs: vec![],
     };
-    w.chunk(tape::VSIZ, &[&size]).unwrap();
+    tape_chunk(&mut w, &[size.clone()]);
     w.chunk(
         MARK,
         &Mark::End {
@@ -530,7 +561,7 @@ fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
     };
     let check = Check { tick: 30, calls: 2, sim: Some(7) };
     writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    writer.chunk(RAND, &[call(0), call(1)]).unwrap();
+    tape_chunk(&mut writer, &[call(0), call(1)]);
     writer.chunk(MARK, &Mark::D3dBarrier { slices: 40, tick: 22, saved: true }).unwrap();
     writer.chunk(MARK, &Mark::Lobby {
         boundary: 15, method: "host.lobby.state".into(), params: serde_json::Value::Null,
@@ -550,6 +581,57 @@ fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
         assert!(tape.exhausted());
         tape.resume_cursor(cursor).unwrap();
     }
+}
+
+#[test]
+fn streams_interleave_in_one_batch_and_a_json_batch_is_refused() {
+    let dir = Temp::new();
+    let call = |index: u64, op: &str| Call {
+        index,
+        op: op.into(),
+        thread: 1,
+        args: vec![index as u32 % 2],
+        result: Ok(0),
+        outputs: vec![vec![index as u8; 4]],
+    };
+    let ops = ["XInputGetState", "Recv", "XInputGetState", "Random", "XInputGetState"];
+    let make = |name: &str, json: bool| {
+        let path = dir.0.join(name);
+        let mut header = header(0);
+        header.version = 2;
+        let mut writer = Writer::new(File::create(&path).unwrap(), &header).unwrap();
+        writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
+        if json {
+            let calls: Vec<Call> = ops.iter().enumerate().map(|(i, op)| call(i as u64, op)).collect();
+            writer.chunk(tape::TAPE, &calls).unwrap();
+        } else {
+            let mut batch = tape::Batch::default();
+            for (i, op) in ops.iter().enumerate() {
+                batch.append(&mut writer, call(i as u64, op)).unwrap();
+            }
+            batch.flush(&mut writer).unwrap();
+        }
+        writer.chunk(HASH, &Check { tick: 30, calls: 5, sim: Some(1) }).unwrap();
+        writer.chunk(MARK, &Mark::End { slices: 10, tick: 30, calls: 5 }).unwrap();
+        writer.finish().unwrap();
+        path
+    };
+    let path = make("binary.h2film", false);
+    let reader = Reader::open(&path).unwrap();
+    // Pad reads, socket calls and entropy share one chunk: no stream
+    // change closes a batch.
+    assert_eq!(reader.entries.iter().filter(|e| e.tag == tape::TAPE).count(), 1);
+    let mut playback = Playback::load(reader).unwrap();
+    for (i, op) in ops.iter().enumerate() {
+        assert_eq!(playback.call(i as u64, op, &[i as u32 % 2], 1).unwrap(), call(i as u64, op));
+    }
+    // The calls are used up; the hash check is a separate row.
+    assert!(playback.call(5, ops[0], &[1], 1).is_err());
+
+    let path = make("json.h2film", true);
+    let mut playback = Playback::load(Reader::open(&path).unwrap()).unwrap();
+    let error = playback.call(0, ops[0], &[0], 1).unwrap_err().to_string();
+    assert!(error.contains("JSON encoding"), "{error}");
 }
 
 #[test]
@@ -603,6 +685,7 @@ fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
         closing_events: vec![],
         post_hash: None,
         forge: vec![],
+        firefight: vec![],
     };
     let mut tape_header = header(7);
     tape_header.version = 3;
@@ -685,6 +768,7 @@ fn dead_tape(path: &std::path::Path) -> Vec<Entry> {
                     closing_events: vec![],
                     post_hash: None,
                     forge: vec![],
+                    firefight: vec![],
                 },
             )
             .unwrap();
@@ -701,22 +785,18 @@ fn dead_tape(path: &std::path::Path) -> Vec<Entry> {
         }
         if matches!(n, 50 | 200 | 280) {
             // The recorder flushes its call batch, then writes the mark.
-            tape.chunk(
-                NETR,
-                &vec![Call {
-                    index: match n {
-                        50 => 0,
-                        200 => 1,
-                        _ => 2,
-                    },
-                    op: "Recv".into(),
-                    thread: 7,
-                    args: vec![2],
-                    result: Ok(1),
-                    outputs: vec![],
-                }],
-            )
-            .unwrap();
+            tape_chunk(&mut tape, &[Call {
+                index: match n {
+                    50 => 0,
+                    200 => 1,
+                    _ => 2,
+                },
+                op: "Recv".into(),
+                thread: 7,
+                args: vec![2],
+                result: Ok(1),
+                outputs: vec![],
+            }]);
             tape.chunk(
                 MARK,
                 &Mark::D3dBarrier {
@@ -841,6 +921,7 @@ fn a_tape_with_no_capture_to_end_at_is_not_a_film() {
                     closing_events: vec![],
                     post_hash: None,
                     forge: vec![],
+                    firefight: vec![],
                 },
             )
             .unwrap();
@@ -880,6 +961,7 @@ fn a_film_whose_boot_header_differs_without_naming_its_tape_is_refused() {
                 closing_events: vec![],
                 post_hash: None,
                 forge: vec![],
+                firefight: vec![],
             },
         )
         .unwrap();

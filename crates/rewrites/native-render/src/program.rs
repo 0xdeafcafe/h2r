@@ -145,6 +145,37 @@ pub const FLOAT_INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
 /// Bit `n` for each supplied `v<n>`.
 pub const INPUT_MASK: u16 = 0x7f;
 
+/// Convert the per-vertex lighting classification's input registers into the
+/// streams required of a section. The shader still reads v6. Its declaration
+/// maps that register to the baked colour from the bucket's second descriptor.
+pub fn vertex_lit_inputs(inputs: u16, semantics: &[u16]) -> Result<u16, String> {
+    if semantics.len() > 7 || inputs >> semantics.len() != 0 {
+        return Err("per-vertex lighting program reads outside its world declaration".into());
+    }
+    // The geometry binder tests every declared semantic before emitting,
+    // including those the vertex microcode happens to leave unused.
+    let mut required = 0;
+    for (register, &semantic) in semantics.iter().enumerate() {
+        // Position, UV, tangent frame, lighting vector and baked colour.
+        let mapped = matches!((register, semantic),
+            (0, 0) | (1, 3) | (2, 4) | (3, 5) | (4, 6) | (5, 8) | (6, 14));
+        if !mapped {
+            return Err(format!("per-vertex lighting v{register} has unsupported semantic {semantic}"));
+        }
+        required |= if register == 6 { crate::world::BAKED_COLOR_INPUT } else { 1 << register };
+    }
+    Ok(required)
+}
+
+fn material_attributes(required: u16) -> [(u32, u64, wgpu::VertexFormat); 7] {
+    let mut attributes = INPUTS;
+    if required & crate::world::BAKED_COLOR_INPUT != 0 {
+        attributes[6] = (6, std::mem::offset_of!(WorldVertex, baked_color) as u64,
+            wgpu::VertexFormat::Unorm8x4);
+    }
+    attributes
+}
+
 /// A material's compiled pass.
 #[derive(Clone, Debug)]
 pub struct MaterialProgram {
@@ -161,8 +192,8 @@ pub struct MaterialProgram {
     /// The vertex uniforms but for the view's constants, surface and depth.
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
-    /// The vertex registers (bit `n` for `v<n>`) the program reads from
-    /// the world vertex ([`INPUTS`]).
+    /// Required world streams. Bits 0..6 name [`INPUTS`]; a per-vertex
+    /// lighting program that reads v6 requires [`crate::world::BAKED_COLOR_INPUT`].
     pub inputs: u16,
     /// The pixel shader definition and options it was translated with.
     pub def: PixelShaderDef,
@@ -179,6 +210,14 @@ pub struct MaterialProgram {
     /// draws the material's instanced placements ([`compile_rigid`]);
     /// `None` leaves them to the D3D path.
     pub rigid: Option<RigidProgram>,
+    /// A world layer-3 pass's animated constants
+    /// ([`crate::look::layer3_pass_sampled`]): its uniforms hold them at
+    /// clock 0, and each frame's selection samples them at the render
+    /// clock ([`crate::gpu::GpuWorld::animate_selection`]). `None` for a
+    /// pass that animates nothing and for the other paths' programs,
+    /// which keep their animation themselves.
+    pub animation: Option<crate::layer_pass::PassAnimation>,
+    pub(crate) texaccum_dimensions: Vec<(tags::material::EngineVertexConstant, u8)>,
 }
 
 /// A world pass linked with its vertex program's rigid classification
@@ -191,7 +230,7 @@ pub struct RigidProgram {
     pub wgsl: String,
     /// The vertex uniforms but for the view's constants and the rows.
     pub vertex: VertexUniforms,
-    /// The vertex registers the rigid program reads.
+    /// Required world streams, as in [`MaterialProgram::inputs`].
     pub inputs: u16,
     /// The program's instruction words (four per instruction, no
     /// header): what the D3D path's draw of a placement binds.
@@ -214,6 +253,30 @@ pub enum ProgramChange {
 }
 
 impl MaterialProgram {
+    fn texaccum_stages(&self) -> [bool; 4] {
+        std::array::from_fn(|n| self.dims[n].is_some() && self.stages[n] == Stage::Engine(crate::object_program::TEXACCUM_TEXTURE))
+    }
+
+    pub(crate) fn needs_texaccum(&self) -> bool {
+        self.texaccum_stages().contains(&true) || !self.texaccum_dimensions.is_empty()
+    }
+
+    fn apply_texaccum_dimensions(&self, vertex: &mut VertexUniforms, size: (u32, u32)) {
+        for &(d, mask) in &self.texaccum_dimensions {
+            let row = if d.bank == 1 { &mut vertex.constants[18 + usize::from(d.reg)] }
+                else { &mut vertex.defaults[usize::from(d.reg)] };
+            let mut value = *row;
+            d.eval_size(&mut value, (size.0 as f32, size.1 as f32));
+            for (lane, dst) in row.iter_mut().enumerate() {
+                if mask & (1 << lane) != 0 { *dst = value[lane]; }
+            }
+        }
+    }
+
+    fn samples_lightmap(&self) -> bool {
+        self.stages.iter().zip(&self.dims).any(|(s, dim)| *s == Stage::Lightmap && dim.is_some())
+    }
+
     /// What drawing `edited` instead of `self` takes. The pixel shader
     /// definition is not compared: its embedded constants reach the
     /// program only through the pixel uniforms, and everything else of it
@@ -228,6 +291,7 @@ impl MaterialProgram {
             && self.stages == edited.stages
             && self.samplers == edited.samplers
             && self.dims == edited.dims
+            && self.texaccum_dimensions == edited.texaccum_dimensions
             && self.signed == edited.signed
             && self.inputs == edited.inputs
             && self.pixel_options == edited.pixel_options
@@ -283,7 +347,7 @@ fn compile_with_textures(
         // functions, lighting, time) are not evaluated here.
         return Err("per-draw engine inputs".into());
     }
-    let t = translate_pass(&PassParts {
+    let parts = PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
         dims,
@@ -297,7 +361,8 @@ fn compile_with_textures(
         input_fetch: WORLD_FETCH,
         w_buffer: true,
         shadow: [None; 4],
-    })?;
+    };
+    let t = translate_program(&parts, psh::translate, true)?;
     Ok(MaterialProgram {
         wgsl: t.wgsl,
         stages: look.textures,
@@ -312,6 +377,8 @@ fn compile_with_textures(
         state: None,
         inherits_cull: false,
         rigid: None,
+        animation: None,
+        texaccum_dimensions: Vec::new(),
     })
 }
 
@@ -341,6 +408,7 @@ pub fn compile_section(
     world_parity(&pass.look)?;
     world_constants_read(&pass.look, microcode)?;
     let mut p = compile_with_textures(&pass.look, microcode, pass.state.alpha_test, dims)?;
+    p.texaccum_dimensions.clone_from(&pass.texaccum_dimensions);
     p.state = Some(pass.state);
     p.inherits_cull = pass.inherits_cull;
     Ok(p)
@@ -355,12 +423,124 @@ pub fn compile_section(
 pub fn world_constants_read(look: &PassLook, microcode: &[u8]) -> Result<(), String> {
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let set = set_constants(&look.vertex_constants);
-    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !set(c)) {
+    constants_read(&program)?;
+    if let Some(c) = live_unset_read(&program, &set, dead_texcoords(look)) {
         return Err(format!(
             "vertex program reads c[{c}], which the native pass does not set"
         ));
     }
     Ok(())
+}
+
+/// Explicit register reads in the active general combiners and final combiner.
+/// Implicit inputs, such as the initial r0.a from texture 0, are the caller's.
+pub(crate) fn combiner_reads(c: &psh::Combiners, reg: psh::Reg) -> bool {
+    c.stages.iter().any(|s| {
+        s.rgb.inputs.iter().chain(&s.alpha.inputs).any(|i| i.reg == reg)
+    }) || c.final_combiner.as_ref().is_some_and(|f| {
+        [f.a, f.b, f.c, f.d, f.e, f.f, f.g].iter().any(|i| i.reg == reg)
+    })
+}
+
+/// Coordinates ignored by the fragment shader. PASSTHRU copies oTn into tn
+/// without sampling. Its result matters only if the fragment program reads it.
+pub(crate) fn dead_texcoords(look: &PassLook) -> [bool; 4] {
+    use psh::TexMode;
+    let Ok(def) = PixelShaderDef::from_bytes(&look.pixel_shader) else {
+        return [false; 4];
+    };
+    let c = def.decode();
+    std::array::from_fn(|n| {
+        // Reflection can read other stages' interpolants directly (the
+        // normal's third row and the per-vertex eye), even with no fetch.
+        if c.texture_modes[2] == TexMode::DotRflctDiff
+            || c.texture_modes[3] == TexMode::DotRflctSpec
+        {
+            return false;
+        }
+        match c.texture_modes[n] {
+            TexMode::None => true,
+            TexMode::Passthru => {
+                n != 0 // r0.a starts at t0.a
+                    && !combiner_reads(&c, psh::Reg::T(n as u8))
+                    && !c.texture_modes.iter().enumerate().any(|(i, mode)| {
+                        mode.reads_input_texture() && c.input_stage(i) == Some(n)
+                    })
+            }
+            _ => false,
+        }
+    })
+}
+
+fn live_unset_read(
+    program: &vsh::Program,
+    set: &impl Fn(u8) -> bool,
+    dead: [bool; 4],
+) -> Option<u8> {
+    live_source_read(
+        program,
+        |reg| match reg {
+            vsh::SrcReg::Const { index, .. } if !set(index) => Some(index),
+            _ => None,
+        },
+        |out| matches!(out, vsh::OutReg::T(k) if dead.get(usize::from(k)) == Some(&true)),
+    )
+}
+
+/// First missing source whose value may reach a live output, address register
+/// or constant write. Track a whole temporary conservatively, including after
+/// a partial overwrite. Both units read the temporary bank before either writes.
+pub(crate) fn live_source_read(
+    program: &vsh::Program,
+    missing: impl Fn(vsh::SrcReg) -> Option<u8>,
+    dead_output: impl Fn(vsh::OutReg) -> bool,
+) -> Option<u8> {
+    use vsh::{IluOp, MacOp, OutDest, SrcReg, Unit};
+    let mut tainted = [None::<u8>; 16];
+    let taint = |s: &vsh::Source, tainted: &[Option<u8>; 16]| match s.reg {
+        SrcReg::Temp(n) => tainted[usize::from(n) & 15],
+        reg => missing(reg),
+    };
+    for i in &program.instructions {
+        let (ra, rb, rc) = i.mac_reads();
+        let first = |picks: [(bool, &vsh::Source); 3]| {
+            picks
+                .into_iter()
+                .filter(|(used, _)| *used)
+                .find_map(|(_, s)| taint(s, &tainted))
+        };
+        let mac = first([(ra, &i.a), (rb, &i.b), (rc, &i.c)]);
+        let ilu = if i.ilu != IluOp::Nop { taint(&i.c, &tainted) } else { None };
+        if i.mac == MacOp::Arl && mac.is_some() {
+            return mac;
+        }
+        if let Some(o) = i.out {
+            let value = match o.unit {
+                Unit::Mac => mac,
+                Unit::Ilu => ilu,
+            };
+            if let Some(c) = value {
+                match o.dest {
+                    OutDest::Output(out) if dead_output(out) => {}
+                    _ => return Some(c),
+                }
+            }
+        }
+        // A temporary write to r12 writes oPos on both paths.
+        if i.mac_writes_temp() && mac.is_some() {
+            if i.mac_temp == 12 {
+                return mac;
+            }
+            tainted[usize::from(i.mac_temp) & 15] = mac;
+        }
+        if i.ilu_writes_temp() && ilu.is_some() {
+            if i.ilu_temp == 12 {
+                return ilu;
+            }
+            tainted[usize::from(i.ilu_temp) & 15] = ilu;
+        }
+    }
+    None
 }
 
 /// `pass` with its vertex program's rigid classification `microcode`
@@ -398,7 +578,7 @@ pub fn compile_section_rigid(
         return Err("the rigid vertex program does not read the model rows c[50..52]".into());
     }
     let set = set_constants(&look.vertex_constants);
-    if let Some(c) = read.into_iter().find(|&c| !set(c)) {
+    if let Some(c) = live_unset_read(&program, &set, dead_texcoords(look)) {
         return Err(format!(
             "rigid vertex program reads c[{c}], which the native pass does not set"
         ));
@@ -588,12 +768,10 @@ pub fn part_fit(
         "lighting vectors",
         "lightmap coordinates",
     ];
-    let lightmap = program
-        .stages
-        .iter()
-        .zip(&program.dims)
-        .any(|(s, d)| *s == Stage::Lightmap && d.is_some());
     let missing = inputs & !d.inputs;
+    if missing == crate::world::BAKED_COLOR_INPUT {
+        return Err("a part has no baked vertex colours (v6)".into());
+    }
     if missing != 0 {
         let n = missing.trailing_zeros() as usize;
         return Err(format!(
@@ -601,7 +779,7 @@ pub fn part_fit(
             NAMES.get(n).unwrap_or(&"stream")
         ));
     }
-    if lightmap {
+    if program.samples_lightmap() {
         page(d.lightmap.ok_or("a part has no lightmap page")?)?;
     }
     Ok(())
@@ -636,6 +814,7 @@ pub(crate) struct PassParts<'a> {
 /// A translated pass.
 pub(crate) struct Translated {
     pub wgsl: String,
+    pub vertex_shader: vsh::wgsl::VertexShader,
     pub samplers: [Option<StageStates>; 4],
     pub dims: [Option<TextureDim>; 4],
     pub signed: [[bool; 4]; 4],
@@ -657,9 +836,19 @@ pub(crate) fn translate_pass_with_pixel(
     p: &PassParts<'_>,
     translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
 ) -> Result<Translated, String> {
+    translate_program(p, translate_pixel, false)
+}
+
+fn translate_program(
+    p: &PassParts<'_>,
+    translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
+    allow_unused_diffuse: bool,
+) -> Result<Translated, String> {
     let program = vsh::Program::parse(p.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let unsupplied = program.inputs_read() & !p.provided_inputs & !defaults_mask(p.vertex_defaults);
-    if unsupplied != 0 {
+    let def =
+        PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    if unsupplied != 0 && !(allow_unused_diffuse && only_unused_diffuse(&program, unsupplied, &def)) {
         return Err(format!(
             "vertex program reads registers we do not supply ({unsupplied:#06x})"
         ));
@@ -673,8 +862,6 @@ pub(crate) fn translate_pass_with_pixel(
         },
     )
     .map_err(|e| format!("vertex program: {e:?}"))?;
-    let def =
-        PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
     let samplers: [Option<StageStates>; 4] =
         std::array::from_fn(|n| p.stage_states.get(n).copied());
     let mut options = PixelOptions {
@@ -748,6 +935,7 @@ pub(crate) fn translate_pass_with_pixel(
     let inputs = program.inputs_read() & p.provided_inputs;
     Ok(Translated {
         wgsl,
+        vertex_shader: vs,
         samplers,
         dims: ps.textures,
         signed,
@@ -759,6 +947,27 @@ pub(crate) fn translate_pass_with_pixel(
     })
 }
 
+/// The layer-1 vertex program can forward an unstreamed immediate register
+/// to oD0 even when the pixel program only samples textures. For ordinary
+/// projected fetches the texture units read oT, and only a combiner can
+/// consume diffuse. A missing input reaching any other output stays live.
+fn only_unused_diffuse(program: &vsh::Program, missing: u16, def: &PixelShaderDef) -> bool {
+    let c = def.decode();
+    c.final_combiner.is_some()
+        && c.texture_modes.iter().all(|m| {
+            matches!(m, psh::TexMode::None | psh::TexMode::Project2d)
+        })
+        && !combiner_reads(&c, psh::Reg::V0)
+        && live_source_read(
+            program,
+            |reg| match reg {
+                vsh::SrcReg::Input(n) if missing & (1 << n) != 0 => Some(n),
+                _ => None,
+            },
+            |out| out == vsh::OutReg::D0,
+        ).is_none()
+}
+
 /// Each stage's `D3DTSS_MIPMAPLODBIAS` (f32 bits), zero when not finite,
 /// as `d3d::nv2a` passes it (the shader clamps it to the NV2A's range).
 pub fn lod_bias(samplers: [Option<StageStates>; 4]) -> [f32; 4] {
@@ -768,7 +977,7 @@ pub fn lod_bias(samplers: [Option<StageStates>; 4]) -> [f32; 4] {
     })
 }
 
-fn alpha_func(f: wgpu::CompareFunction) -> psh::AlphaFunc {
+pub(crate) fn alpha_func(f: wgpu::CompareFunction) -> psh::AlphaFunc {
     use wgpu::CompareFunction as C;
     match f {
         C::Never => psh::AlphaFunc::Never,
@@ -872,8 +1081,7 @@ pub fn describe_image(image: &Image, bc: bool) -> String {
 pub fn bias_signed(image: &mut Image, signed: [bool; 4]) {
     if signed.iter().any(|&s| s) {
         // BC blocks no longer represent the biased channels.
-        image.blocks = None;
-        bias_levels(&mut image.rgba, &mut image.mips, signed);
+        image.edit_rgba(|rgba, mips| bias_levels(rgba, mips, signed));
     }
 }
 
@@ -902,7 +1110,7 @@ pub fn defaults_mask(defaults: &[Register]) -> u16 {
 }
 
 /// Writes the components `r` writes into its register of `regs`.
-fn put(regs: &mut [[f32; 4]], r: &Register) {
+pub(crate) fn put(regs: &mut [[f32; 4]], r: &Register) {
     let Some(reg) = regs.get_mut(usize::from(r.index)) else {
         return;
     };
@@ -1250,6 +1458,7 @@ impl WorldPipelines {
         source: &str,
         layout: wgpu::PipelineLayout,
         shader: ShaderId,
+        required: u16,
     ) -> Option<Self> {
         let module = gfx::program::validated_resource(device, || {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1257,7 +1466,7 @@ impl WorldPipelines {
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
         })?;
-        let attributes = INPUTS
+        let attributes = material_attributes(required)
             .into_iter()
             .map(|(shader_location, offset, format)| wgpu::VertexAttribute {
                 format,
@@ -1331,7 +1540,10 @@ pub struct ProgramSet {
     rigid: HashMap<u16, Rigid>,
     /// Per batch of the world: the texture group, when the batch's
     /// material has a program.
-    batch_groups: Vec<Option<wgpu::BindGroup>>,
+    batch_groups: Vec<Option<BatchTextures>>,
+    /// Only groups sampling the structure lightmap have alternate bindings.
+    /// `None` keeps ordinary loads free of replacement textures and groups.
+    relit: Option<Vec<Option<RelitBatch>>>,
     /// The cull the passes that inherit it draw with
     /// ([`ProgramSet::pipelines`]).
     cull: InheritedCull,
@@ -1340,6 +1552,27 @@ pub struct ProgramSet {
     /// ([`ProgramSet::refresh`]) and a live edit rewrites
     /// ([`ProgramSet::page_textures`]).
     pages: HashMap<LightmapKey, Option<wgpu::TextureView>>,
+}
+
+#[derive(Clone)]
+struct RelitBatch {
+    on: BatchTextures,
+    off: BatchTextures,
+    /// This page/palette pair includes texels affected by the chosen lamp.
+    changed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BatchTextures {
+    Resident(wgpu::BindGroup),
+    /// The page (retail or relit) is resident. Target 1 is pinned per draw.
+    Accumulation { page: Option<wgpu::TextureView> },
+}
+
+impl BatchTextures {
+    fn resident(&self) -> Option<&wgpu::BindGroup> {
+        match self { Self::Resident(group) => Some(group), Self::Accumulation { .. } => None }
+    }
 }
 
 /// What [`ProgramSet::refresh`] did, by material, ascending.
@@ -1359,7 +1592,7 @@ enum Planned {
     Rebuild(
         Box<Gpu>,
         Option<Rigid>,
-        Vec<(usize, Option<wgpu::BindGroup>)>,
+        Vec<(usize, Option<BatchTextures>)>,
     ),
 }
 
@@ -1536,7 +1769,7 @@ impl Gpu {
             device.create_sampler(&sampler_descriptor(program.samplers[n].as_ref()))
         });
         let pipelines =
-            WorldPipelines::material(device, &program.wgsl, layout, WORLD_CLUSTER_PROGRAM)?;
+            WorldPipelines::material(device, &program.wgsl, layout, WORLD_CLUSTER_PROGRAM, program.inputs)?;
         Some(Gpu {
             program,
             pipelines,
@@ -1547,6 +1780,15 @@ impl Gpu {
             samplers,
             stage_views,
         })
+    }
+
+    fn batch_binding(&self, device: &wgpu::Device, page: Option<&wgpu::TextureView>) -> Option<BatchTextures> {
+        if self.program.texaccum_stages().contains(&true) {
+            if self.program.samples_lightmap() && page.is_none() { return None; }
+            Some(BatchTextures::Accumulation { page: page.cloned() })
+        } else {
+            self.textures(device, page).map(BatchTextures::Resident)
+        }
     }
 
     /// The texture group with `page` bound where the program samples the
@@ -1602,8 +1844,8 @@ impl Gpu {
         ))
     }
 
-    /// The frame's uniforms with `pixel` in place of the program's own pixel
-    /// uniforms, written through the submission's upload arena (the
+    /// The frame's vertex and pixel uniforms, written through the submission's
+    /// upload arena (the
     /// reservation path records into an isolated encoder, where a queue
     /// write would escape cancellation): for a pass whose pixel state is
     /// resolved per view (the fog layer's `PixelUniforms::fog` and
@@ -1612,12 +1854,13 @@ impl Gpu {
         &self,
         uploads: &mut gfx::ring::EncoderUploads<'_>,
         view: &ViewInputs,
+        vertex: &VertexUniforms,
         pixel: &PixelUniforms,
     ) {
         uploads.write(
             &self.vertex_buffer,
             0,
-            &frame_vertex(&self.program.vertex, view).to_bytes(),
+            &frame_vertex(vertex, view).to_bytes(),
         );
         uploads.write(&self.pixel_buffer, 0, &frame_pixel(pixel, view).to_bytes());
     }
@@ -1627,13 +1870,14 @@ impl Gpu {
     pub(crate) fn prepare_writes(
         &self,
         view: &ViewInputs,
+        vertex: &VertexUniforms,
         pixel: &PixelUniforms,
     ) -> [(wgpu::Buffer, u64, Vec<u8>); 2] {
         [
             (
                 self.vertex_buffer.clone(),
                 0,
-                frame_vertex(&self.program.vertex, view).to_bytes().to_vec(),
+                frame_vertex(vertex, view).to_bytes(),
             ),
             (
                 self.pixel_buffer.clone(),
@@ -1690,7 +1934,7 @@ pub(crate) fn described_pipeline(
 /// that slot's dynamic offset for the placement's draws, with the
 /// material's pixel uniforms and texture groups.
 pub(crate) struct Rigid {
-    program: RigidProgram,
+    pub(crate) program: RigidProgram,
     buffer: wgpu::Buffer,
     pub(crate) uniforms: wgpu::BindGroup,
     /// Bytes between slots (the device's offset alignment).
@@ -1817,7 +2061,7 @@ impl Rigid {
             },
         );
         let pipelines =
-            WorldPipelines::material(device, &program.wgsl, layout, WORLD_RIGID_PROGRAM)?;
+            WorldPipelines::material(device, &program.wgsl, layout, WORLD_RIGID_PROGRAM, program.inputs)?;
         Some(Self {
             program,
             buffer,
@@ -1849,20 +2093,33 @@ impl Rigid {
         );
     }
 
+    /// Upload the sampled material registers and each placement's own rows.
+    pub(crate) fn prepare_sampled(
+        &self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs, vertex: &VertexUniforms,
+    ) {
+        for (slot, (_, rows)) in self.slots.iter().enumerate() {
+            uploads.write(&self.buffer, self.stride * slot as u64, &rigid_vertex(vertex, view, rows).to_bytes());
+        }
+    }
+
     /// [`Rigid::prepare`]'s view rows for the slots of `instances` only, as
     /// writes ahead of a pass's packets. Unknown instances are skipped.
     pub(crate) fn prepare_writes(
         &self,
         view: &ViewInputs,
         instances: impl IntoIterator<Item = u32>,
+        sampled: Option<&VertexUniforms>,
     ) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
         let v = frame_vertex(&self.program.vertex, view).to_bytes();
         let mut writes = Vec::new();
         for instance in instances {
-            let Some(offset) = self.offset(instance) else {
+            let Ok(slot) = self.slots.binary_search_by_key(&instance, |s| s.0) else { continue };
+            let offset = self.stride * slot as u64;
+            if let Some(vertex) = sampled {
+                let vertex = rigid_vertex(vertex, view, &self.slots[slot].1);
+                writes.push((self.buffer.clone(), offset, vertex.to_bytes()));
                 continue;
-            };
-            let offset = u64::from(offset);
+            }
             writes.push((
                 self.buffer.clone(),
                 offset,
@@ -1963,7 +2220,7 @@ impl ProgramSet {
                                 })
                                 .clone()
                         });
-                        g.textures(device, page.as_ref())
+                        g.batch_binding(device, page.as_ref())
                     })
                     .clone()
             })
@@ -1972,9 +2229,90 @@ impl ProgramSet {
             materials,
             rigid,
             batch_groups,
+            relit: None,
             cull: InheritedCull::default(),
             pages,
         }
+    }
+
+    /// Bind complete reconstructed RGBA pages at the same sampler slots as
+    /// retail. Both arms share all other stage views, programs and uniforms.
+    /// Publish only after every lightmap-using batch has both bindings.
+    pub fn install_relight(
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, world: &World,
+        [on, off]: &[HashMap<LightmapKey, Image>; 2],
+    ) -> Result<(), &'static str> {
+        let mut pages = HashMap::new();
+        let mut groups = HashMap::new();
+        let mut batches = Vec::with_capacity(world.batches.len());
+        for (index, batch) in world.batches.iter().enumerate() {
+            let gpu = self.materials.get(&batch.material).ok_or("world material unavailable")?;
+            if !gpu.program.samples_lightmap() {
+                batches.push(None);
+                continue;
+            }
+            let key = batch.lightmap.ok_or("world batch has no lightmap key")?;
+            self.lit_batch_binding(index, d3d::Lighting::Retail).ok_or("world batch has no retail binding")?;
+            let (on_view, off_view, changed) = match pages.entry(key) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let a = on.get(&key).ok_or("lamp-on lightmap page missing")?;
+                    let b = off.get(&key).ok_or("lamp-off lightmap page missing")?;
+                    e.insert((texture(device, queue, a, "lamp on"), texture(device, queue, b, "lamp off"), a != b))
+                }
+            };
+            let bindings = match groups.entry((batch.material, key)) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => e.insert(RelitBatch {
+                    on: gpu.batch_binding(device, Some(on_view)).ok_or("lamp-on binding unavailable")?,
+                    off: gpu.batch_binding(device, Some(off_view)).ok_or("lamp-off binding unavailable")?,
+                    changed: *changed,
+                }),
+            };
+            batches.push(Some(bindings.clone()));
+        }
+        if !batches.iter().flatten().any(|b| b.changed) {
+            return Err("no native world batch samples a changed lightmap page");
+        }
+        self.relit = Some(batches);
+        Ok(())
+    }
+
+    pub(crate) fn has_relight(&self) -> bool {
+        self.relit.is_some()
+    }
+
+    pub(crate) fn discard_relight(&mut self) -> bool {
+        self.relit.take().is_some()
+    }
+
+    pub(crate) fn changed_lightmap_batch(&self, index: usize) -> bool {
+        self.relit.as_ref().and_then(|v| v.get(index)).and_then(Option::as_ref)
+            .is_some_and(|b| b.changed)
+    }
+
+    pub(crate) fn lit_batch_textures(&self, index: usize, lighting: d3d::Lighting) -> Option<&wgpu::BindGroup> {
+        self.lit_batch_binding(index, lighting)?.resident()
+    }
+
+    pub(crate) fn lit_batch_binding(&self, index: usize, lighting: d3d::Lighting) -> Option<&BatchTextures> {
+        if let Some(batch) = self.relit.as_ref().and_then(|v| v.get(index)).and_then(Option::as_ref) {
+            match lighting {
+                d3d::Lighting::RelightOn => return Some(&batch.on),
+                d3d::Lighting::RelightOff => return Some(&batch.off),
+                _ => {}
+            }
+        }
+        self.batch_groups.get(index)?.as_ref()
+    }
+
+    pub(crate) fn accumulation_group(
+        &self, device: &wgpu::Device, material: u16, page: Option<&wgpu::TextureView>, target: &wgpu::TextureView,
+    ) -> Option<wgpu::BindGroup> {
+        let gpu = self.materials.get(&material)?;
+        let supplied = gpu.program.texaccum_stages().into_iter().enumerate()
+            .filter(|(_, on)| *on).map(|(n, _)| (n, target.clone())).collect();
+        gpu.textures_supplied(device, page, &supplied)
     }
 
     /// The program material `material` draws with, if it has one.
@@ -2025,7 +2363,7 @@ impl ProgramSet {
                     // One group per page, as the load makes them; a page
                     // that did not decode leaves its batches unbound, as
                     // at the load.
-                    let mut by_page: HashMap<Option<LightmapKey>, Option<wgpu::BindGroup>> =
+                    let mut by_page: HashMap<Option<LightmapKey>, Option<BatchTextures>> =
                         HashMap::new();
                     let mut groups = Vec::new();
                     for (n, b) in world
@@ -2038,7 +2376,7 @@ impl ProgramSet {
                             let page = b
                                 .lightmap
                                 .and_then(|k| self.pages.get(&k).cloned().flatten());
-                            g.textures(device, page.as_ref())
+                            g.batch_binding(device, page.as_ref())
                         });
                         groups.push((n, group.clone()));
                     }
@@ -2297,11 +2635,18 @@ impl ProgramSet {
         view: &ViewInputs,
         selection: &crate::gpu::WorldSelection,
     ) {
+        // A sampled material's blocks are written whole, its view parts in.
+        for (buffer, offset, bytes) in self.sampled_writes(view, selection) {
+            uploads.write(&buffer, offset, &bytes);
+        }
         let (source, start) = uploads
             .arena
             .stage(uploads.device, uploads.queue, &view_bytes(view));
         let viewport = start + VIEW_PREFIX as u64;
         for material in selection.materials.keys() {
+            if selection.constants.contains_key(material) || self.materials[material].program.needs_texaccum() {
+                continue;
+            }
             uploads.copy(
                 &source,
                 viewport + 32,
@@ -2311,6 +2656,9 @@ impl ProgramSet {
             );
         }
         for &(material, instance) in &selection.vertices {
+            if selection.constants.contains_key(&material) || self.materials[&material].program.needs_texaccum() {
+                continue;
+            }
             let (buffer, offset) = if let Some(n) = instance {
                 let r = &self.rigid[&material];
                 (&r.buffer, u64::from(r.offset(n).expect("selected slot")))
@@ -2332,9 +2680,11 @@ impl ProgramSet {
         let bytes = view_bytes(view);
         let (prefix, rest) = bytes.split_at(VIEW_PREFIX);
         let (viewport, pixel) = rest.split_at(32);
-        let mut writes =
-            Vec::with_capacity(selection.materials.len() + 2 * selection.vertices.len());
+        let mut writes = self.sampled_writes(view, selection);
         for material in selection.materials.keys() {
+            if selection.constants.contains_key(material) || self.materials[material].program.needs_texaccum() {
+                continue;
+            }
             writes.push((
                 self.materials[material].pixel_buffer.clone(),
                 PIXEL_TAIL as u64,
@@ -2342,6 +2692,9 @@ impl ProgramSet {
             ));
         }
         for &(material, instance) in &selection.vertices {
+            if selection.constants.contains_key(&material) || self.materials[&material].program.needs_texaccum() {
+                continue;
+            }
             let (buffer, offset) = if let Some(n) = instance {
                 let r = &self.rigid[&material];
                 (&r.buffer, u64::from(r.offset(n).expect("selected slot")))
@@ -2354,6 +2707,81 @@ impl ProgramSet {
                 offset + VERTEX_VIEW as u64,
                 viewport.to_vec(),
             ));
+        }
+        writes
+    }
+
+    /// The selected materials' animated constants at the render clock
+    /// `time` ([`MaterialProgram::animation`]) into `selection`, which
+    /// [`ProgramSet::write_selected`] and [`ProgramSet::selected_writes`]
+    /// then write whole for those materials. Counted in
+    /// `native_shader_animation_layer3_*`; an error is how many selected
+    /// materials' animation refused (the clock did not read), and leaves
+    /// none sampled.
+    pub(crate) fn animate(&self, selection: &mut crate::gpu::WorldSelection, time: Option<f64>) -> Result<(), usize> {
+        use timeline::native::ShaderAnimation;
+        selection.constants.clear();
+        let mut refused = 0;
+        for material in selection.materials.keys() {
+            let Some(animation) = self.materials.get(material).and_then(|g| g.program.animation.as_ref()) else {
+                continue;
+            };
+            match animation.sample(time) {
+                Ok(c) => {
+                    selection.constants.insert(*material, c);
+                }
+                Err(_) => refused += 1,
+            }
+        }
+        if refused > 0 {
+            ShaderAnimation::Layer3Refused.count(refused as u64);
+            selection.constants.clear();
+            return Err(refused);
+        }
+        ShaderAnimation::Layer3Drawn.count(selection.constants.len() as u64);
+        Ok(())
+    }
+
+    /// The whole blocks of the selection's sampled materials
+    /// ([`ProgramSet::animate`]) with `view` in: the material's pixel
+    /// block, its clusters' vertex block, and each selected placement's
+    /// slot with its rows.
+    fn sampled_writes(&self, view: &ViewInputs, selection: &crate::gpu::WorldSelection) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
+        let mut writes = Vec::new();
+        for material in selection.materials.keys() {
+            let sampled = selection.constants.get(material);
+            let program = &self.materials[material].program;
+            let size = selection.texaccum.filter(|_| program.needs_texaccum()).map(|t| t.size);
+            if sampled.is_none() && size.is_none() { continue; }
+            let mut pixel = sampled.map_or(program.pixel, |s| s.pixel(&program.pixel));
+            if let Some(size) = size {
+                crate::object_program_gpu::texaccum_scale(&mut pixel, program.texaccum_stages(), size);
+            }
+            let g = &self.materials[material];
+            writes.push((g.pixel_buffer.clone(), 0, frame_pixel(&pixel, view).to_bytes()));
+        }
+        for &(material, instance) in &selection.vertices {
+            let sampled = selection.constants.get(&material);
+            let program = &self.materials[&material].program;
+            let size = selection.texaccum.filter(|_| program.needs_texaccum()).map(|t| t.size);
+            if sampled.is_none() && size.is_none() { continue; }
+            let vertex = |base: &VertexUniforms| {
+                let mut vertex = sampled.map_or_else(|| base.clone(), |s| s.vertex(base));
+                if let Some(size) = size { program.apply_texaccum_dimensions(&mut vertex, size); }
+                vertex
+            };
+            match instance {
+                Some(n) => {
+                    let r = &self.rigid[&material];
+                    let slot = r.slots.binary_search_by_key(&n, |s| s.0).expect("selected slot");
+                    let vertex = rigid_vertex(&vertex(&r.program.vertex), view, &r.slots[slot].1);
+                    writes.push((r.buffer.clone(), r.stride * slot as u64, vertex.to_bytes()));
+                }
+                None => {
+                    let g = &self.materials[&material];
+                    writes.push((g.vertex_buffer.clone(), 0, frame_vertex(&vertex(&g.program.vertex), view).to_bytes()));
+                }
+            }
         }
         writes
     }
@@ -2402,7 +2830,7 @@ impl ProgramSet {
     }
 
     pub(crate) fn batch_textures(&self, index: usize) -> Option<&wgpu::BindGroup> {
-        self.batch_groups.get(index)?.as_ref()
+        self.batch_groups.get(index)?.as_ref()?.resident()
     }
 
     pub(crate) fn cluster(
@@ -2482,7 +2910,46 @@ mod tests {
             assert_eq!(WORLD_FETCH[n] == InputFetch::NormPacked3, packed, "v{n}");
         }
         assert_eq!(FLOAT_INPUTS.iter().map(|i| i.0).collect::<Vec<_>>(), regs);
-        assert_eq!(std::mem::size_of::<WorldVertex>(), 92);
+        assert_eq!(std::mem::size_of::<WorldVertex>(), 96);
+    }
+
+    #[test]
+    fn classified_baked_colour_uses_v6_without_a_lightmap() {
+        use crate::world::{BAKED_COLOR_INPUT, Owner, PartInput, Placement, SectionInput, WorldBuilder};
+        let mut section = SectionInput {
+            positions: vec![[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+            uvs: vec![[0.; 2]; 3],
+            normals: vec![[0., 0., 1.]; 3],
+            binormals: vec![[0., 1., 0.]; 3],
+            tangents: vec![[1., 0., 0.]; 3],
+            lighting: vec![[1., 0., 0.]; 3],
+            baked_colors: vec![[11, 31, 52, 73]; 3],
+            parts: vec![PartInput { material: 2, transparent: false, triangles: vec![[0, 1, 2]] }],
+            ..Default::default()
+        };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Instance(2), &section, &Placement::IDENTITY, None);
+        section.baked_colors.clear();
+        section.lightmap_uvs = vec![[0.25, 0.75]; 3];
+        b.add_section(Owner::Instance(3), &section, &Placement::IDENTITY, None);
+        let w = b.finish();
+        let mut program = compile(&plain_look(), &plain_program()).unwrap();
+        program.stages = [Stage::Empty; 4];
+        // The synthetic shader reads only position and colour. Admission
+        // also checks the tangent frame declared by this classification.
+        let semantics = [0, 3, 4, 5, 6, 8, 14];
+        let required = vertex_lit_inputs(0x41, &semantics).unwrap();
+        assert_eq!(required, 0x3f | BAKED_COLOR_INPUT);
+        let no_page = |_| panic!("a vertex-lit pass has no lightmap fetch");
+        assert_eq!(part_fit(&w.draws[0], required, &program, &no_page), Ok(()));
+        assert!(part_fit(&w.draws[1], required, &program, &no_page).is_err());
+        let (_, offset, format) = material_attributes(required)[6];
+        assert_eq!(format, wgpu::VertexFormat::Unorm8x4);
+        let offset = offset as usize;
+        assert_eq!(&bytemuck::bytes_of(&w.program_vertices[0])[offset..offset + 4], &[11, 31, 52, 73]);
+        assert_eq!(material_attributes(0x41)[6], INPUTS[6]);
+        assert!(vertex_lit_inputs(0x41, &[0, 1, 2]).is_err());
+        assert!(vertex_lit_inputs(0x41, &[0, 1, 2, 3, 4, 5, 9]).is_err());
     }
 
     #[test]
@@ -3333,6 +3800,15 @@ mod tests {
     /// write exactly the ranges the ordered path writes.
     #[test]
     fn world_packets_draw_what_the_selected_pass_draws_with_the_view_written_up_front() {
+        draw_world_samples(false);
+    }
+
+    #[test]
+    fn combined_world_packets_sample_each_copys_accumulation_level_in_guest_texels() {
+        draw_world_samples(true);
+    }
+
+    fn draw_world_samples(accumulation: bool) {
         use crate::camera::RenderCamera;
         use crate::gpu::{DepthRule, GpuWorld, PassViewport};
         use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
@@ -3382,21 +3858,40 @@ mod tests {
             page,
         );
         let world = b.finish();
-        let mut program = compile(&plain_look(), &plain_program()).unwrap();
-        program.dims[..2].fill(Some(TextureDim::D2));
-        program.stages[0] = Stage::Bitmap {
-            bitmap: map::TagId(7),
-            image: 1,
+        // The shader returns the bound atlas texel, making a wrong copy
+        // or a missed bind visible in the target (including the packet path).
+        use psh::bits::{CHAN_ALPHA, REG_T1, TEX_PROJECT2D, texture_modes};
+        let shader = PixelShaderDef {
+            final_inputs_abcd: u32::from(REG_T1),
+            final_inputs_efg: u32::from(REG_T1 | CHAN_ALPHA) << 8,
+            texture_modes: texture_modes([0, TEX_PROJECT2D, 0, 0]),
+            ..Default::default()
         };
-        program.stages[1] = Stage::Lightmap;
-        let set = ProgramSet::new(
-            &ctx.device,
-            &ctx.queue,
-            &world,
-            [(0, program.clone()), (1, program)].into(),
-            &mut |_| Some(Image::solid([200, 100, 50, 255])),
-            &mut |_| Some(Image::solid([255; 4])),
+        let stage = if accumulation { Stage::Engine(crate::object_program::TEXACCUM_TEXTURE) } else { Stage::Lightmap };
+        let look = PassLook {
+            textures: [Stage::Empty, stage, Stage::Empty, Stage::Empty],
+            pixel_shader: shader.to_bytes(),
+            ..plain_look()
+        };
+        let mut program = compile(&look, &plain_program()).unwrap();
+        if accumulation {
+            program.texaccum_dimensions.push((
+                tags::material::EngineVertexConstant { bank: 1, reg: 2, mode: 9, stage: 2, source: 0 },
+                0b0011,
+            ));
+            program.vertex.constants[20] = [0.0, 0.0, -7.0, 11.0];
+        }
+        let mut set = ProgramSet::new(
+            &ctx.device, &ctx.queue, &world, [(0, program.clone()), (1, program)].into(),
+            &mut |_| None, &mut |_| Some(Image::solid([10, 50, 90, 255])),
         );
+        if !accumulation {
+            let on = HashMap::from([(page.unwrap(), Image::solid([240, 60, 90, 255]))]);
+            let off = HashMap::from([(page.unwrap(), Image::solid([20, 60, 90, 255]))]);
+            assert!(set.install_relight(&ctx.device, &ctx.queue, &world, &[on.clone(), HashMap::new()]).is_err());
+            assert!(!set.has_relight(), "a missing lamp-off page refuses both arms");
+            set.install_relight(&ctx.device, &ctx.queue, &world, &[on, off]).unwrap();
+        }
         let mut gpu = GpuWorld::with_programs(&ctx.device, &ctx.queue, world, set);
         let camera = RenderCamera {
             position: [0.0; 3],
@@ -3413,9 +3908,14 @@ mod tests {
             (Owner::Cluster(1), 0),
             (Owner::Cluster(2), 0),
         ];
-        let selection = gpu
+        let mut selection = gpu
             .select_parts(&parts, &camera)
             .expect("all parts in view");
+        if accumulation {
+            assert!(!gpu.select_texaccum(&mut selection, None));
+            let target = crate::world_layers::Texaccum { surface: Some(17), texture: 21, size: (4, 2) };
+            assert!(gpu.select_texaccum(&mut selection, Some(target)));
+        }
         assert!(gpu.prepare_selection(&ctx.device, F::Rgba8Unorm, F::Depth32Float, &selection));
         let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
         constants[..4].copy_from_slice(&[
@@ -3447,9 +3947,24 @@ mod tests {
                 view_formats: &[],
             })
         };
+        assert_eq!(gpu.relit_lightmap_ranges(&selection), if accumulation { 0 } else { parts.len() });
         let mut images = Vec::new();
         // Packets first: the rows they read are only those written ahead.
-        for packets in [true, false] {
+        let retail_cases = [
+            (d3d::Lighting::Retail, true, [10, 50, 90]),
+            (d3d::Lighting::Retail, false, [10, 50, 90]),
+            (d3d::Lighting::RelightOn, true, [240, 60, 90]),
+            (d3d::Lighting::RelightOn, false, [240, 60, 90]),
+            (d3d::Lighting::RelightOff, true, [20, 60, 90]),
+            (d3d::Lighting::RelightOff, false, [20, 60, 90]),
+            (d3d::Lighting::Retail, true, [10, 50, 90]),
+        ];
+        let combined_cases = [
+            (d3d::Lighting::Retail, true, [31, 75, 95]),
+            (d3d::Lighting::Retail, true, [75, 31, 95]),
+        ];
+        let cases: &[_] = if accumulation { &combined_cases } else { &retail_cases };
+        for &(lighting, packets, expected) in cases {
             let (color, depth) = (texture(F::Rgba8Unorm), texture(F::Depth32Float));
             let (cv, dv) = (
                 color.create_view(&Default::default()),
@@ -3488,13 +4003,30 @@ mod tests {
                 occlusion_query_set: None,
                 multiview_mask: None,
             }));
+            let source = accumulation.then(|| {
+                // The constant texture coordinate (.5,.5) is the centre of
+                // guest texel zero. Scale this copy 2x; every texel outside
+                // its top-left 2x2 is black.
+                let mut rgba = vec![0; 8 * 4 * 4];
+                for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let at = (y * 8 + x) * 4;
+                    rgba[at..at + 4].copy_from_slice(&[expected[0], expected[1], expected[2], 255]);
+                }
+                crate::gpu::texture(&ctx.device, &ctx.queue, &Image::level(8, 4, rgba).unwrap(), "synthetic target 1")
+            });
+            if accumulation {
+                assert!(gpu.selection_draws_lit(F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE),
+                    &selection, &view, lighting).is_err());
+            }
             let draws = gpu
-                .selection_draws(
+                .selection_draws_bound(
                     F::Rgba8Unorm,
                     F::Depth32Float,
                     (SIZE, SIZE),
                     &selection,
                     &view,
+                    lighting,
+                    source.as_ref().map(|v| (&ctx.device, v)),
                 )
                 .unwrap();
             assert_eq!(
@@ -3504,9 +4036,17 @@ mod tests {
             );
             assert_eq!(
                 draws.writes.len(),
-                2 + 2 * 2,
+                if accumulation { 4 } else { 2 + 2 * 2 },
                 "each material's pixel tail, its vertex prefix and viewport"
             );
+            if accumulation {
+                let vertex_blocks: Vec<_> = draws.writes.iter().filter(|(_, _, data)| data.len() == VertexUniforms::SIZE).collect();
+                assert_eq!(vertex_blocks.len(), 2);
+                for (_, offset, data) in vertex_blocks {
+                    assert_eq!(*offset, 0);
+                    assert_eq!(&data[20 * 16..21 * 16], bytemuck::bytes_of(&[4.0f32, 2.0, -7.0, 11.0]));
+                }
+            }
             if packets {
                 // Ahead of the submission (`GfxBackend::write_ahead`).
                 for (buffer, offset, bytes) in &draws.writes {
@@ -3548,7 +4088,7 @@ mod tests {
                     height: SIZE as f32,
                 };
                 assert_eq!(
-                    gpu.encode_selection(
+                    gpu.encode_selection_lit(
                         &mut enc,
                         &cv,
                         F::Rgba8Unorm,
@@ -3556,7 +4096,8 @@ mod tests {
                         F::Depth32Float,
                         vp,
                         (SIZE, SIZE),
-                        &selection
+                        &selection,
+                        lighting,
                     ),
                     3
                 );
@@ -3567,12 +4108,22 @@ mod tests {
                 .poll(wgpu::PollType::wait_indefinitely())
                 .unwrap();
             let read = |t, aspect| gfx::readback::read_texture(&ctx, t, aspect, 4, (SIZE, SIZE));
-            images.push((
-                read(&color, wgpu::TextureAspect::All),
-                read(&depth, wgpu::TextureAspect::DepthOnly),
-            ));
+            let pixels = read(&color, wgpu::TextureAspect::All);
+            assert!(pixels.chunks_exact(4).any(|p| p[..3] == expected), "{lighting:?}, packets {packets}");
+            images.push((pixels, read(&depth, wgpu::TextureAspect::DepthOnly)));
+        }
+        if accumulation {
+            assert_ne!(images[0].0, images[1].0);
+            assert_eq!(images[0].1, images[1].1);
+            return;
         }
         assert_eq!(images[0], images[1]);
+        assert_eq!(images[2], images[3]);
+        assert_eq!(images[4], images[5]);
+        assert_eq!(images[0], images[6], "reference survives both display draws");
+        assert_eq!(images[0].1, images[4].1, "swapping the lightmap cannot move a surface");
+        assert!(gpu.discard_relight());
+        assert_eq!(gpu.relit_lightmap_ranges(&selection), 0);
     }
 
     #[test]
@@ -3677,6 +4228,66 @@ mod tests {
         )]);
         let e = compile(&plain_look(), &reads_v9).unwrap_err();
         assert!(e.contains("do not supply"), "{e}");
+    }
+
+    #[test]
+    fn layer_1_accepts_an_unstreamed_colour_only_when_its_diffuse_output_is_unused() {
+        use crate::fog_gpu::{FogPass, FogProgram};
+        use psh::bits;
+        use vsh::encode::{Inst, Operand as O, program};
+
+        let mov = |src, dst| Inst::mac(vsh::MacOp::Mov, Some(src), None, None)
+            .to_out(false, dst, 0xf);
+        let colour = mov(O::v(10), vsh::OutReg::D0);
+        let pos = mov(O::v(0), vsh::OutReg::Pos);
+        let uv = mov(O::v(1), vsh::OutReg::T(0));
+        let code = program(&[pos.clone(), uv.clone(), colour.clone()]);
+        let mut pass = FogPass {
+            state: world_pass(plain_look()).state,
+            look: plain_look(),
+            fog: Default::default(),
+            planar: None,
+        };
+        pass.look.textures[0] = Stage::Bitmap { bitmap: map::TagId(9), image: 0 };
+        let mut def = PixelShaderDef {
+            texture_modes: bits::TEX_PROJECT2D,
+            final_inputs_abcd: bits::inputs(0, 0, 0, bits::REG_T0),
+            final_inputs_efg: bits::final_efg(0, 0, bits::REG_T0 | bits::CHAN_ALPHA, 0),
+            ..Default::default()
+        };
+        pass.look.pixel_shader = def.to_bytes();
+        let layer = FogProgram::compile(&pass, &code).unwrap();
+        assert_eq!(layer.program.inputs, 0b11);
+        shaders::validate(&layer.program.wgsl).unwrap();
+        struct Texture;
+        impl psh::interp::Sampler for Texture {
+            fn sample(&self, _: usize, _: TextureDim, _: [f32; 3]) -> [f32; 4] {
+                [0.25, 0.5, 0.75, 1.0]
+            }
+        }
+        for d0 in [[0.0; 4], [1.0; 4]] {
+            let inputs = psh::interp::Inputs { d0, t: [[0.0, 0.0, 0.0, 1.0]; 4], ..Default::default() };
+            let result = psh::interp::run(
+                &def, &layer.program.pixel_options, &inputs, &layer.program.pixel, &Texture,
+            );
+            assert_eq!(result, Some([0.25, 0.5, 0.75, 1.0]));
+        }
+
+        let refused = |pass: &FogPass, code: &[u8]| {
+            assert!(FogProgram::compile(pass, code).unwrap_err().contains("0x0400"));
+        };
+        // The diffuse copy is dead, but the same immediate also reaches oPos.
+        refused(&pass, &program(&[pos, uv, colour, mov(O::v(10), vsh::OutReg::Pos)]));
+        // Both the general and the final combiners can consume diffuse.
+        def.final_inputs_efg = bits::final_efg(0, 0, bits::REG_V0 | bits::CHAN_ALPHA, 0);
+        pass.look.pixel_shader = def.to_bytes();
+        refused(&pass, &code);
+        def.final_inputs_efg = bits::final_efg(0, 0, bits::REG_T0 | bits::CHAN_ALPHA, 0);
+        def.combiner_count = 1;
+        def.rgb_inputs[0] = bits::inputs(bits::REG_V0, bits::ONE, 0, 0);
+        def.rgb_outputs[0] = bits::outputs(bits::REG_T0, 0, 0, 0);
+        pass.look.pixel_shader = def.to_bytes();
+        refused(&pass, &code);
     }
 
     #[test]
@@ -3903,6 +4514,7 @@ mod tests {
             look,
             state,
             inherits_cull: false,
+            texaccum_dimensions: Vec::new(),
         }
     }
 
@@ -4040,6 +4652,99 @@ mod tests {
                 .unwrap_err()
                 .contains("relative")
         );
+    }
+
+    /// The world programs' stage-2 coordinate: `oT2.xy = v1 · c[20].xy +
+    /// c[20].zw`, optionally through a temporary, after the position.
+    fn stage_two_program(via_temp: bool, also_pos: bool) -> Vec<u8> {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        let mut v = vec![
+            Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 8),
+            Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+        ];
+        if via_temp {
+            v.push(
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(20)), Some(O::c(20))).to_temp(3, 0xf),
+            );
+            v.push(Inst::mac(MacOp::Mov, Some(O::r(3)), None, None).to_out(false, OutReg::T(2), 3));
+        } else {
+            v.push(
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(20)), Some(O::c(20)))
+                    .to_out(false, OutReg::T(2), 3),
+            );
+        }
+        if also_pos {
+            v.push(Inst::mac(MacOp::Mov, Some(O::c(20)), None, None).to_out(false, OutReg::Pos, 4));
+        }
+        program(&v)
+    }
+
+    #[test]
+    fn an_unset_constant_that_only_feeds_a_dead_texcoord_is_not_a_read() {
+        let read = |look: &PassLook, program: Vec<u8>| world_constants_read(look, &program);
+        const C20: &str = "vertex program reads c[20], which the native pass does not set";
+        // c[20] unbound, stage 2's texture mode NONE (the default): oT2
+        // is never fetched with, directly or through a temporary.
+        let dead = final_look(false);
+        for via_temp in [false, true] {
+            assert_eq!(read(&dead, stage_two_program(via_temp, false)), Ok(()), "{via_temp}");
+        }
+        // The same value also reaching oPos is a live read.
+        assert_eq!(read(&dead, stage_two_program(false, true)).unwrap_err(), C20);
+        // Stage 2 fetching (a 2D projective mode): the coordinate is live.
+        let mut def = PixelShaderDef::from_bytes(&dead.pixel_shader).unwrap();
+        def.texture_modes = 0x01 << 10;
+        let live = PassLook { pixel_shader: def.to_bytes(), ..final_look(false) };
+        for via_temp in [false, true] {
+            assert_eq!(read(&live, stage_two_program(via_temp, false)).unwrap_err(), C20);
+        }
+        // A bound c[20] was never in question.
+        let bound = PassLook {
+            vertex_constants: vec![Register {
+                index: 20,
+                value: [1.0; 4],
+                written: 0xf,
+                origin: tags::material::Origin::Instance,
+            }],
+            ..live
+        };
+        assert_eq!(read(&bound, stage_two_program(false, true)), Ok(()));
+    }
+
+    #[test]
+    fn c20_can_feed_a_passthrough_coordinate_unused_by_the_fragment() {
+        let mut look = final_look(false);
+        let mut def = PixelShaderDef::from_bytes(&look.pixel_shader).unwrap();
+        def.texture_modes = 4 << 10; // stage 2 passes its coordinates through
+        let code = stage_two_program(true, false);
+        look.pixel_shader = def.to_bytes();
+        let program = compile_world(&world_pass(look.clone()), &code).unwrap();
+        shaders::validate(&program.wgsl).unwrap();
+
+        let rejected = |def: PixelShaderDef| {
+            let mut live = look.clone();
+            live.pixel_shader = def.to_bytes();
+            assert_eq!(world_constants_read(&live, &code),
+                Err("vertex program reads c[20], which the native pass does not set".into()));
+        };
+        let mut general = def.clone();
+        general.combiner_count = 1;
+        general.rgb_inputs[0] = 0xa; // t2
+        rejected(general.clone());
+        general.rgb_inputs[0] = 0;
+        general.alpha_inputs[0] = 0x1a; // t2.a
+        rejected(general);
+        let mut final_read = def.clone();
+        final_read.final_inputs_abcd = 0xa; // D takes t2
+        rejected(final_read);
+        let mut dependent = def.clone();
+        dependent.texture_modes |= 0x0f << 15; // stage 3 samples using the selected stage's AR
+        dependent.input_texture = 2 << 20;
+        rejected(dependent);
+        let mut clip = def;
+        clip.texture_modes = 5 << 10; // clip plane can discard without a combiner read
+        rejected(clip);
     }
 
     /// The rigid classification's shape: `r10 = v0 · c[170] + c[171]`,
@@ -4331,12 +5036,15 @@ mod tests {
             palette: 0,
         };
         let section = |material, lit: bool, lighting: bool| SectionInput {
+            source: None,
             positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: vec![[0.0; 2]; 3],
             lightmap_uvs: if lit { vec![[0.5; 2]; 3] } else { Vec::new() },
             normals: vec![[0.0, 0.0, 1.0]; 3],
             binormals: vec![[1.0, 0.0, 0.0]; 3],
             tangents: vec![[0.0, 1.0, 0.0]; 3],
+            baked_colors: Vec::new(),
+            bucket_colors: false,
             lighting: if lighting {
                 vec![[0.0, 0.0, 1.0]; 3]
             } else {

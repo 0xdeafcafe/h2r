@@ -878,7 +878,6 @@ fn team_lives_and_team_won_reach_the_blob() {
     assert_eq!(mode.stage, hud::Stage::Team1Won);
     let view = hud::view(&hud::Mode::decode(&mode.encode()).unwrap(), 0);
     assert_eq!(view.get(hud::BANNER).unwrap().text, "BLUE TEAM WINS");
-    assert_eq!(view.get(hud::SCORE).unwrap().text, "RED 0 BLUE 0");
 }
 
 /// The engine keeps no team pool, so a `TeamLives` sets the director's:
@@ -970,4 +969,159 @@ fn the_actors_take_a_third_team_with_two_player_teams() {
     // One team keeps team 1 free for the actors.
     assert_eq!(actor_team(1, 0, &BTreeSet::new()), Ok(1));
     assert_eq!(actor_team(2, 0, &BTreeSet::new()), Ok(2));
+}
+
+/// One tick of [`scripted_match`]'s game, with what the runtime does
+/// around the host: the entries the pre-tick applied, as a film records
+/// them, and the step's mode blob into the log (`runtime::post_tick`).
+fn recorded_tick(host: &mut Host, game: &mut FakeGame, tick: u32) -> Vec<Vec<u8>> {
+    use crate::firefight::{film, hud};
+    if tick == 650 {
+        game.actors[0] = 0;
+        game.kills = vec![KillSeen {
+            character: ELITE,
+            killer: Some(0),
+            assist: None,
+        }];
+    }
+    if tick == 700 {
+        game.players[0].alive = false;
+        game.players[0].position = None;
+    }
+    let before = host.applied();
+    assert!(host.pre_tick(tick, game).is_empty());
+    let applied = host.applied();
+    let payloads = host
+        .log()
+        .since(before)
+        .iter()
+        .take_while(|entry| entry.seq <= applied)
+        .map(|entry| film::payload(entry).unwrap())
+        .collect();
+    if tick == 601 {
+        game.actors[0] = 1;
+    }
+    host.post_tick(tick, &*game).unwrap();
+    if let Ok(mode) = hud::Mode::of(host.director().unwrap(), 1, None) {
+        host.note_mode(tick, &mode.encode()).unwrap();
+    }
+    game.kills.clear();
+    payloads
+}
+
+/// The film's time chunks of `recorded` (film tick = game tick + 1), read
+/// back: each game tick's Firefight entry records, in record order.
+fn through_a_film(recorded: &[Vec<Vec<u8>>]) -> Vec<Vec<Vec<u8>>> {
+    use live_proto::film::stream;
+    let mut back = vec![Vec::new(); recorded.len()];
+    for (c, chunk) in recorded.chunks(stream::MAX_TICKS).enumerate() {
+        let first = (c * stream::MAX_TICKS) as u64 + 1;
+        let mut out = stream::ChunkWriter::new(first, chunk.len() as u16).unwrap();
+        for (i, payloads) in chunk.iter().enumerate() {
+            for p in payloads {
+                out.record(first + i as u64, stream::FIREFIGHT, p).unwrap();
+            }
+        }
+        let raw = out.finish();
+        for r in stream::Chunk::parse(&raw).unwrap().records() {
+            let r = r.unwrap();
+            assert_eq!(r.tag, stream::FIREFIGHT);
+            back[(r.tick - 1) as usize].push(r.payload.to_vec());
+        }
+    }
+    back
+}
+
+/// AN14: the host log carries the mode state. A film's playback, fed each
+/// tick's records before the tick as the theater hands them over, applies
+/// the host's entries at their ticks: the same engine calls, the same log,
+/// and at every tick the mode blob the host held.
+#[test]
+fn a_film_replays_entries_at_their_ticks() {
+    use crate::firefight::film;
+    let mut game = FakeGame::new();
+    game.ai = Some(AiGlobals {
+        on: false,
+        initialised: true,
+    });
+    let mut host = start(Role::Host, &game);
+    let mut recorded = Vec::new();
+    let mut held = Vec::new();
+    for tick in 0..=720 {
+        recorded.push(recorded_tick(&mut host, &mut game, tick));
+        held.push(host.mode_state().map(<[u8]>::to_vec));
+    }
+    assert_eq!(game.calls, expected_calls(), "the mode state makes no call");
+    let blobs: BTreeSet<_> = held.iter().flatten().collect();
+    assert!(blobs.len() > 1, "the blob changes over the match: {blobs:?}");
+    assert!(
+        host.log()
+            .since(0)
+            .iter()
+            .any(|e| matches!(e.op, Command::ModeState { .. }))
+    );
+
+    let mut replay = FakeGame::new();
+    replay.ai = Some(AiGlobals {
+        on: false,
+        initialised: true,
+    });
+    let mut replica = start(Role::Replica, &replay);
+    for (tick, payloads) in (0..).zip(through_a_film(&recorded)) {
+        for p in payloads {
+            replica.receive(film::parse(&p).unwrap()).unwrap();
+        }
+        assert!(replica.pre_tick(tick, &mut replay).is_empty());
+        assert_eq!(
+            replica.mode_state().map(<[u8]>::to_vec),
+            held[tick as usize],
+            "tick {tick}"
+        );
+    }
+    assert_eq!(replay.calls, expected_calls());
+    assert_eq!(replica.applied(), host.applied());
+    let applied = replica.log().since(0);
+    assert_eq!(applied, &host.log().since(0)[..applied.len()]);
+    replica.log().verify(replica.head()).unwrap();
+}
+
+/// A film's playback runs no producer: its director is none, so its steps
+/// append nothing and its mode state is only what the log brought.
+#[test]
+fn playback_never_runs_a_producer() {
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    for tick in 0..=10 {
+        recorded_tick(&mut host, &mut game, tick);
+    }
+    let mut replay = FakeGame::new();
+    let mut replica = start(Role::Replica, &replay);
+    assert!(replica.director().is_none());
+    for entry in host.log().since(0) {
+        replica.receive(entry.clone()).unwrap();
+    }
+    let head = replica.head();
+    for tick in 0..=10 {
+        assert!(replica.pre_tick(tick, &mut replay).is_empty());
+        assert_eq!(replica.post_tick(tick, &replay).unwrap(), 0);
+        assert!(!replica.note_mode(tick, b"not the host's").unwrap());
+    }
+    assert_eq!(replica.head(), head, "the replica appended nothing");
+    assert_eq!(replica.mode_state(), host.mode_state());
+}
+
+/// The host appends the mode blob only when it changes.
+#[test]
+fn the_mode_state_is_appended_when_it_changes() {
+    let game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    assert!(host.note_mode(4, &[3, 1]).unwrap());
+    assert!(!host.note_mode(5, &[3, 1]).unwrap());
+    assert!(host.note_mode(6, &[3, 2]).unwrap());
+    let ticks: Vec<_> = host.log().since(0).iter().map(|e| e.tick).collect();
+    assert_eq!(ticks, [5, 7], "each for the next tick");
+    assert_eq!(host.mode_state(), None, "until it applies");
+    let mut game = game;
+    assert!(host.pre_tick(7, &mut game).is_empty());
+    assert_eq!(host.mode_state(), Some(&[3, 2][..]));
 }

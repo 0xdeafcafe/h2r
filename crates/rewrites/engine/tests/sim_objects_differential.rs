@@ -34,7 +34,7 @@
 //! event per object it deletes.
 //!
 //! Every root also compares the float state at every callout and at its
-//! return: the eight XMM registers and the whole x87 state (the eight
+//! return: MXCSR, the eight XMM registers and the whole x87 state (the eight
 //! physical registers, TOP and the rest of the status word, the tag
 //! word, the control word, FIP, FOP, FDP and their selectors). A root
 //! leaves that comparison only through [`FLOAT_OPT_OUT`], with its
@@ -114,6 +114,13 @@ fn handle(slot: u32) -> u32 {
 /// whose shape depends on `case`: empty, a high-water mark at and across
 /// word boundaries, a hole, children linked under a parent.
 fn pool(g: &mut Guest, case: u32) {
+    // Any walk can dispatch a unit. Undressed units have no action
+    // callbacks, even if another synthetic field aliases an action bit.
+    let actions = g.u8(0x000e_68aa).unwrap();
+    word(g, IDLE_ACTION_DESCRIPTOR + 4, 0);
+    for bit in 0..u32::from(actions) {
+        word(g, ACTION_DESCRIPTORS + 4 * bit, IDLE_ACTION_DESCRIPTOR);
+    }
     word(g, PHASE_STATE, PHASE);
     word(g, LIST_OWNER, LIST);
     word(g, points::OBJECTS.base, HEADER);
@@ -370,6 +377,12 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     // The registers at the call: the stubs below that write through an
     // argument register read it here, not after the clobber.
     let at_call = cpu.gpr;
+    if target == ACTION_CALLBACK && at_call[5] == 1 {
+        // Disable the pending action at bit 31 and enable its neighbor.
+        // A callback returning false also clears its own bit on resume.
+        let flags = g.u32(at_call[3] + 4).unwrap();
+        word(g, at_call[3] + 4, (flags & !(1 << 31)) | (1 << 30));
+    }
     let sp = cpu.gpr[4];
     let ret = g.u32(sp).unwrap();
     if target == STACK_PROBE {
@@ -414,6 +427,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         // object (its `+13c` is read).
         0x101fb0 => if (n + case as usize) % 3 == 0 { u32::MAX } else { handle(3) },
         // Slice 10's callouts that answer in `al`: yes and no by turns.
+        ACTION_CALLBACK => (case ^ at_call[5]) & 1,
         t if SLICE_10_ANSWERS_AL.contains(&t) => (n as u32 + case) % 2,
         // The projectile step's: the attachment handle (none for some),
         // and the collision, flyby and refresh answers in `al`.
@@ -475,7 +489,8 @@ struct Callout {
     eflags: u32,
     defined: u32,
     ram: u64,
-    /// The XMM registers and the x87 state, unless the root opts out.
+    /// MXCSR, XMM registers and the x87 state, unless the root opts out.
+    mxcsr: Option<u32>,
     xmm: Option<[u128; 8]>,
     x87: Option<ir::interp::X87>,
 }
@@ -486,6 +501,7 @@ impl PartialEq for Callout {
         (self.kind, self.target, self.resume, self.gpr, self.ram)
             == (o.kind, o.target, o.resume, o.gpr, o.ram)
             && self.eflags & both == o.eflags & both
+            && self.mxcsr == o.mxcsr
             && self.xmm == o.xmm
             && self.x87 == o.x87
     }
@@ -552,6 +568,7 @@ fn digest(g: &Guest, esp: u32) -> u64 {
 fn callout(cpu: &Cpu, g: &Guest, t: TransferAbi) -> Callout {
     let floats = FLOATS.with(std::cell::Cell::get);
     Callout {
+        mxcsr: floats.then_some(cpu.mxcsr),
         xmm: floats.then_some(cpu.xmm),
         x87: floats.then(|| cpu.x87.clone()),
         kind: t.kind,
@@ -574,8 +591,6 @@ std::thread_local! {
 const FLOAT_OPT_OUT: &[(u32, &str)] = &[
     (0x000b_d090, "OBJECT_NODE_MATRICES: the body does not keep retail's XMM state (slice 4)"),
     (0x000b_c820, "OBJECT_POST_UPDATE: fuses OBJECT_NODE_MATRICES (slice 4)"),
-    (0x000c_1400, "LIGHTS_UPDATE: the body does not keep retail's XMM state (slice 5)"),
-    (0x000c_0c80, "LIGHT_RECORD_UPDATE: the body does not keep retail's XMM state (slice 5)"),
 ];
 
 /// Whether `root` compares the float state.
@@ -799,6 +814,10 @@ fn transcripts(point: &points::Point, cases: u32) {
         let fresh = || start(ram, point.base, case);
         let (cpu, g) = fresh();
         let reference = h.run(cpu, g, &|_| false);
+        if point.base == points::OBJECT_FUNCTION_VALUE.base && case == function_cases() {
+            let evaluations = reference.callouts.iter().filter(|call| call.target == 0x13bb90).count();
+            assert_eq!(evaluations, 2, "both trailing exports must reach the evaluator");
+        }
         let (cpu, g) = fresh();
         ::sim_objects::events::clear();
         let fused = h.run(cpu, g, &|_| true);
@@ -1236,6 +1255,30 @@ fn definitions(g: &mut Guest, case: u32) {
 /// Arguments for slice 3's roots: the name, the outputs, and the record
 /// for the export evaluator.
 fn function_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    if root == points::OBJECT_FUNCTION_VALUE.base && case == function_cases() {
+        // The last two records match after a long run of misses. The plain
+        // interpreter and every mixed frame must reach both in order.
+        const LONG_TABLE: u32 = 0x0070_0000;
+        const ROWS: u32 = 513;
+        let body = RECORDS + 2 * BODY;
+        word(g, STACK + 4, handle(2));
+        word(g, STACK + 8, EXPORT_NAME);
+        word(g, STACK + 12, VALUE_OUT);
+        word(g, body, 0);
+        byte(g, body + 0xaa, 0);
+        g.set_u16(body + 0xc0, 0).unwrap();
+        // Empty ancestry so the import passes the name to the exports.
+        word(g, 0x0046_8630, DEFS + 0x300);
+        word(g, DEFS + 0x384, 0);
+        word(g, DEFS + 0x64, ROWS);
+        word(g, DEFS + 0x68, LONG_TABLE);
+        for i in 0..ROWS {
+            let row = LONG_TABLE + i * 32;
+            word(g, row + 8, if i >= ROWS - 2 { EXPORT_NAME } else { OTHER_NAME });
+            word(g, row + 0x18, INPUT_KINDS + 1);
+        }
+        return;
+    }
     let name = pick(g, case / 2);
     word(g, VALUE_OUT, 0xdead_beef);
     word(g, ACTIVE_OUT, 0xdead_beef);
@@ -1265,7 +1308,7 @@ fn function_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
 
 #[test]
 fn function_value() {
-    transcripts(&points::OBJECT_FUNCTION_VALUE, function_cases());
+    transcripts(&points::OBJECT_FUNCTION_VALUE, function_cases() + 1);
 }
 
 #[test]
@@ -2148,7 +2191,14 @@ fn lights(g: &mut Guest, case: u32) {
             _ => u32::MAX,
         };
         word(g, l + 0x4c, owner);
-        g.set_u16(l + 0x54, u16::MAX).unwrap();
+        // One owner drives its attached light from the built-in constant
+        // function. Both colour calls remain visible in the transcript.
+        let animated = i == 1 && case == 1;
+        if animated {
+            word(g, l + 0x4c, handle(1));
+            word(g, l + 0x50, 0);
+        }
+        g.set_u16(l + 0x54, if animated { 0 } else { u16::MAX }).unwrap();
         word(g, l + 0x58, if (i + case) % 3 == 1 { handle(3) } else { u32::MAX });
         g.set_u16(l + 0x5c, 0).unwrap();
         for k in 0..9 {
@@ -2208,6 +2258,9 @@ fn lit(point: &points::Point, cases: u32) {
         };
         let (cpu, g) = fresh();
         let reference = h.run(cpu, g, &|_| false);
+        if point.base == points::LIGHT_RECORD_UPDATE.base && case == 1 {
+            assert_eq!(reference.callouts.iter().filter(|call| call.target == 0x131d60).count(), 2);
+        }
         let (cpu, g) = fresh();
         let fused = h.run(cpu, g, &|_| true);
         check(&format!("{} case {case} fused", point.name), &reference, &fused);
@@ -2257,6 +2310,10 @@ fn the_harness_sees_a_float_difference() {
     cpu.xmm[5] ^= 1;
     let b = h.run(cpu, g, &|_| false);
     assert_ne!(a.callouts[0], b.callouts[0], "an XMM register is compared");
+    let (mut cpu, g) = start(ram, root, 1);
+    cpu.mxcsr ^= 0x20;
+    let precision = h.run(cpu, g, &|_| false);
+    assert_ne!(a.callouts[0], precision.callouts[0], "the sticky precision flag is compared");
     let (mut cpu, g) = start(ram, root, 1);
     cpu.x87.instruction_pointer ^= 0x10;
     let c = h.run(cpu, g, &|_| false);
@@ -2775,12 +2832,11 @@ const SLICE_10_CALLEES: &[(u32, u32)] = &[
     (0xb77d0, 4),
     (0xd7b80, 24),
     (0x113e40, 0),
-    (0xe6830, 4),
     (0xb9ef0, 0),
 ];
 
 /// Slice 10's callouts whose `al` the body branches on.
-const SLICE_10_ANSWERS_AL: &[u32] = &[0xef870, 0xefb60, 0x205510, 0x205be0, 0xcc380, 0x113e40, 0xe6830];
+const SLICE_10_ANSWERS_AL: &[u32] = &[0xef870, 0xefb60, 0x205510, 0x205be0, 0xcc380, 0x113e40];
 
 /// The matg the vehicle update reads (`[4e034c]`, its record at `+144`),
 /// and the definition's marker array (`+2f4`, `4c` bytes each).
@@ -2810,6 +2866,7 @@ fn dress_vehicle(g: &mut Guest, case: u32) {
 
     let slot = object(case) & 0xffff;
     let body = g.u32(DATA + 12 * slot + 8).unwrap();
+    dress_unit_actions(g, body, case);
     // A vehicle, in the header and in the body (the dispatchers read the
     // body's).
     byte(g, DATA + 12 * slot + 3, 1);
@@ -3548,9 +3605,10 @@ fn unit_update_fuses_the_rest() {
 /// Every guest function a slice 7a body calls that no table above lists,
 /// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 7a
 /// bodies"). `1e5af0`, `b58c0` and `b8d30` are slice 11's, `30bf0` slice
-/// 6a's, `113e40` and `e6830` slice 10's, `10f430` slice 6c's; `ba1d0`,
+/// 6a's, `113e40` slice 10's, `10f430` slice 6c's; `ba1d0`,
 /// `cba50`, `bba20` and `111650` are bodies.
 const SLICE_7A_CALLEES: &[(u32, u32)] = &[
+    (ACTION_CALLBACK, 8),
     // The biped update `dd360`.
     (0xe3380, 4),
     (0xe3700, 0),
@@ -3606,6 +3664,26 @@ const BIPED_PARENT: u32 = 9;
 const BIPED_LINK: u32 = 10;
 const BIPED_SEATS: u32 = 0x0064_1c00;
 
+const ACTION_CALLBACK: u32 = 0x0079_b100;
+const ACTION_DESCRIPTORS: u32 = 0x0046_77c8;
+const IDLE_ACTION_DESCRIPTOR: u32 = 0x0068_5010;
+
+/// Two live words, a descriptor without an update slot, an action above
+/// the loop bound and a callback which changes the rest of the first word.
+fn dress_unit_actions(g: &mut Guest, body: u32, case: u32) {
+    const PRESENT: u32 = 0x0068_5000;
+    let offset = -0x3000i16;
+    let record = body.wrapping_add_signed(i32::from(offset));
+    g.set_u16(body + 0x346, offset as u16).unwrap();
+    word(g, record + 4, if case % 3 == 0 { 0 } else { (1 << 31) | 6 });
+    word(g, record + 8, if case % 2 == 0 { 1 << 31 } else { (1 << 31) | 1 });
+    // Action 2 keeps the empty callback installed by pool().
+    for bit in [1, 30, 31, 32] {
+        word(g, ACTION_DESCRIPTORS + bit * 4, PRESENT);
+    }
+    word(g, PRESENT + 4, ACTION_CALLBACK);
+}
+
 /// The fields the slice 7a bodies branch on, varied by `case`, over
 /// [`dress`]: the component, the parent (none, direct, or through a link
 /// flagged bit 26) and its type (vehicle, biped, other), the seat, the
@@ -3616,6 +3694,7 @@ fn dress_biped(g: &mut Guest, case: u32) {
     let c = case as usize;
     let slot = object(case) & 0xffff;
     let body = g.u32(DATA + 12 * slot + 8).unwrap();
+    dress_unit_actions(g, body, case);
     // A biped, in the header and in the body.
     byte(g, DATA + 12 * slot + 3, 0);
     byte(g, body + 0xaa, 0);
@@ -3679,7 +3758,9 @@ fn biped_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
     let biped = object(case);
     let c = case as usize;
     match root {
-        r if r == points::BIPED_UPDATE.base || r == points::BIPED_TIMER_UPDATE.base => word(g, STACK + 4, biped),
+        r if [points::BIPED_UPDATE.base, points::BIPED_TIMER_UPDATE.base, points::UNIT_ACTIONS_UPDATE.base].contains(&r) => {
+            word(g, STACK + 4, biped);
+        }
         r if r == points::BIPED_ACTION.base => {
             word(g, STACK + 4, biped);
             cpu.gpr[1] = 0x1e;
@@ -3754,6 +3835,7 @@ fn biped_update_leaves() {
 
 #[test]
 fn biped_update_segments() {
+    biped_transcripts(&points::UNIT_ACTIONS_UPDATE, 6);
     biped_transcripts(&points::BIPED_TIMER_UPDATE, 12);
     biped_transcripts(&points::BIPED_ACTION, 2);
     biped_transcripts(&points::BIPED_FALL_UPDATE, 12);

@@ -3,6 +3,7 @@
 //! to the session and the world at the tick it names, on every machine.
 use agent::forge::net::{self as agent_net, Replies};
 use forge::look::body::{Bodies, Draw, Pose};
+use forge::look::film::Source;
 use forge::look::session::{CanDraw, Reset, Seats, Table};
 use forge::look::MonitorLook;
 use forge::net::{APPLY_DELAY, HOST_SEAT, Lane, Monitor, Node, Stamped, State, film};
@@ -25,6 +26,19 @@ fn rgb_of(palette: &[[u8; 3]]) -> impl Fn(u8) -> [u8; 3] + '_ {
 /// game tick's (30 a second). Each machine's poses carry its own clock.
 fn clock_of(tick: u32) -> f32 {
     tick as f32 / 30.
+}
+
+/// Film the look a seat now wears, naming the source map its model was
+/// read from in this machine's catalogue (ML8).
+fn film_look(bodies: &Bodies, seat: u8, look: &MonitorLook) {
+    let source = bodies
+        .find(look)
+        .and_then(|id| bodies.models().get(id as usize))
+        .map(|m| Source {
+            map: m.entry.source.clone(),
+            sha256: m.entry.sha256.clone(),
+        });
+    glue::record_look(seat, look, source);
 }
 
 /// What the local machine tells the session it can draw, and the look it
@@ -114,6 +128,10 @@ impl Editor {
             monitors.table = Some(Table::host(name, monitor.look.clone()));
             monitors.seats.look(HOST_SEAT.0, monitor.look.clone());
         }
+        let bodies = Bodies::new(&monitor.catalogue);
+        if hosting {
+            film_look(&bodies, HOST_SEAT.0, &monitor.look);
+        }
         self.net = Some(Net {
             node,
             replies: Replies::default(),
@@ -121,7 +139,7 @@ impl Editor {
             joined: None,
             dead: false,
             monitors,
-            bodies: Bodies::new(&monitor.catalogue),
+            bodies,
             palette: monitor.palette.clone(),
         });
         // A guest tells the host the look it came with, naming the source
@@ -287,6 +305,7 @@ impl Editor {
                 if let Ok(accepted) = table.propose(HOST_SEAT.0, look, base.as_deref()) {
                     let accepted = accepted.clone();
                     net.monitors.seats.look(HOST_SEAT.0, accepted.clone());
+                    film_look(&net.bodies, HOST_SEAT.0, &accepted);
                     net.node.send_look(HOST_SEAT.0, accepted);
                 }
             }
@@ -313,31 +332,18 @@ impl Editor {
             .collect()
     }
 
-    /// The markers of the seats drawn as markers: where a monitor is and
-    /// the colour of its ring, for the compositor. The local seat's own
-    /// marker is never drawn.
-    pub fn monitor_markers(&self, now: f32) -> Vec<(forge::Frame, [u8; 3])> {
+    /// Where the other seats' monitors are: the HUD kit's navpoints over
+    /// them. The local seat's own monitor is never one.
+    pub fn monitor_points(&self, now: f32) -> Vec<[f32; 3]> {
         let Some(net) = &self.net else {
             return Vec::new();
         };
         let local = net.node.seat().unwrap_or(HOST_SEAT);
-        let rgb = rgb_of(&net.palette);
-        net.monitors.seats
+        net.monitors
+            .seats
             .looks()
             .filter(|(seat, _)| *seat != local.0)
-            .filter_map(|(seat, look)| {
-                let (pose, _) = net.monitors.seats.body(seat, now)?;
-                // A look this machine draws no model for is the marker.
-                (look.is_marker() || net.bodies.find(look).is_none()).then(|| {
-                    (
-                        forge::Frame {
-                            position: pose.position,
-                            rotation: [pose.yaw, pose.pitch, 0.],
-                        },
-                        rgb(look.primary),
-                    )
-                })
-            })
+            .filter_map(|(seat, _)| Some(net.monitors.seats.body(seat, now)?.0.position))
             .collect()
     }
 
@@ -364,6 +370,7 @@ impl Editor {
                 None => (Pose::default(), false),
             };
             let seat = net.node.seat().unwrap_or(HOST_SEAT);
+            glue::record_pose(tick, seat.0, pose, monitor);
             match net.monitors.table.is_some() {
                 true => net.node.send_pose(seat, now, pose, monitor, None, None),
                 false => net.node.send_pose_up(now, pose, monitor, None),
@@ -391,6 +398,7 @@ impl Editor {
                             } in table.join_reset(seat.0, &name, &can)
                             {
                                 net.monitors.seats.look(reset, look.clone());
+                                film_look(&net.bodies, reset, &look);
                                 net.node.send_look(reset, look);
                                 net.node.send_notice(seat, notice);
                             }
@@ -407,12 +415,14 @@ impl Editor {
                     match table.propose(seat.0, look, base.as_deref()) {
                         Ok(accepted) => {
                             net.monitors.seats.look(seat.0, accepted.clone());
+                            film_look(&net.bodies, seat.0, &accepted);
                             net.node.send_look(seat.0, accepted);
                         }
                         Err(refusal) => net.node.send_look_refused(seat, refusal),
                     }
                 }
                 Monitor::Accepted { seat, look } => {
+                    film_look(&net.bodies, seat.0, &look);
                     net.monitors.seats.look(seat.0, look);
                 }
                 Monitor::LookRefused { refusal, .. } => {
@@ -426,6 +436,7 @@ impl Editor {
                     ..
                 } => {
                     net.monitors.seats.pose(seat.0, at, pose, monitor);
+                    glue::record_pose(tick, seat.0, pose, monitor);
                     if net.monitors.table.is_some() {
                         net.node.send_pose(seat, at, pose, monitor, None, Some(seat));
                     }

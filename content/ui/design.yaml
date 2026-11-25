@@ -1,0 +1,290 @@
+palette:
+  hint_blue: [0.678431, 0.764706, 0.847059]
+  pale_blue: [0.388235, 0.580392, 0.756863]
+  item_blue: [0.560784, 0.694118, 0.811765]
+  white: [1, 1, 1]
+  alert: [1, 0.62, 0.56]
+fonts:
+  title: 2
+  legend: 2
+  cell: 2
+  body: 1
+  row_controls: 4
+  row_default: 1
+spacing:
+  row_controls: 26
+  row_default: 22
+  body_top: 72
+  cell_top: 6
+  cell_gap: 4
+  cell_half_gap: 12
+  settings_rows: 8
+  settings_game_rows: 3
+alpha:
+  unfocused: 100
+  frame_dim: 110
+legend:
+  glyph_gap: 3
+  prompt_gap: 2
+  words: upper
+components:
+  title:
+    role: "the screen's name in its header layout's first rectangle"
+    font: title
+    colour: hint_blue
+    justify: left
+    variants: [rest]
+    specimen: design.title
+  legend:
+    role: "the prompts in the footer: glyph, space, WORDS, two spaces apart"
+    font: legend
+    colour: hint_blue
+    justify: right
+    variants: [rest]
+    specimen: design.legend
+  legend.panel:
+    role: "the prompts on the panel's edge, under the description, when the header layout has no footer"
+    font: body
+    colour: pale_blue
+    justify: left
+  body:
+    role: "a dialog's paragraph, from y 72 down, wrapped"
+    font: body
+    colour: pale_blue
+    justify: left
+    variants: [rest]
+    specimen: design.body
+  status:
+    role: "a dialog's line under its body or cells: a check running, an error"
+    font: body
+    colour: hint_blue
+    justify: left
+  description:
+    role: "the focused row's description, or the screen's help line, under a Controls list"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-242, -24]
+    size: [362, 40]
+    variants: [first, second, long]
+    specimen: design.description
+  description.pane:
+    role: "the description pane right of a moved list (the level select's)"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [39, -30]
+    size: [221, 103]
+  settings:
+    role: "the shared settings dialog: a static header (icon, name, what the window is for), the rows, the focused row's help under them, the legend"
+    variants: [focus-0, focus-1, focus-2]
+    specimen: layout.dialog.settings
+  settings.name:
+    role: "the header's white line beside the icon: what the window changes, the same in every state"
+    font: body
+    colour: white
+    justify: left
+    at: [-224, 163]
+    size: [224, 20]
+  settings.about:
+    role: "the header's line under the name: what the window is for, one line, the same in every state"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-224, 143]
+    size: [494, 20]
+  settings.help:
+    role: "the focused row's help, under the rows and over the legend, two lines at most"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-244, -133]
+    size: [490, 40]
+  settings.game.about:
+    role: "settings.about on the in-game host, under the large dialog's title"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-243, 72]
+    size: [498, 20]
+  settings.game.help:
+    role: "settings.help on the in-game host"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [-243, -40]
+    size: [498, 40]
+  description.picker:
+    role: "the value picker's description, right of its list"
+    font: body
+    colour: pale_blue
+    justify: left
+    at: [15, 74]
+    size: [235, 154]
+  text.label:
+    role: "a text of no row: a table's label, a checklist's line"
+    font: body
+    colour: pale_blue
+    justify: left
+    variants: [rest]
+    specimen: design.panel-text
+  text.value:
+    role: "a table's value, beside its label"
+    font: body
+    colour: white
+    justify: right
+  text.heading:
+    role: "a heading over a panel's texts"
+    font: title
+    colour: hint_blue
+    justify: left
+  text.emphasis:
+    role: "a name or a figure that stands out in a panel"
+    font: body
+    colour: white
+    justify: left
+  row.action:
+    role: "a row A runs"
+    variants: [focused, unfocused, long]
+    specimen: design.row.action
+  row.value-inline:
+    role: "a value in the label (Label: Value) on a one-text skin; left and right step it"
+    variants: [focused, unfocused, long]
+    specimen: design.row.value-inline
+  row.value-column:
+    role: "a value in the Controls skin's value column; left and right step it"
+    variants: [focused, unfocused, long]
+    specimen: design.row.value-column
+  row.pick-inline:
+    role: "a value in the label (Label: Value) on a one-text skin; A opens the value picker, no left and right (the skulls pages' rows)"
+    variants: [focused, unfocused, disabled]
+    specimen: design.row.pick-inline
+  row.setting:
+    role: "a value alone in a settings dialog's value text; A opens the picker"
+    variants: [focused, unfocused, long]
+    specimen: design.row.setting
+  row.info:
+    role: "a value shown beside its label, never pressed"
+    variants: [focused, unfocused, long]
+    specimen: design.row.info
+  row.text:
+    role: "a row A opens the keyboard on, the text so far as its value"
+    variants: [focused, unfocused, empty]
+    specimen: design.row.text
+  row.disabled:
+    role: "a row that can't be used now: focusable, never pressed, its label alone with no value; its help line says why, its legend B alone"
+    variants: [focused, unfocused]
+    specimen: design.row.disabled
+  picker:
+    role: "the value picker: a setting's values on low_level_settings, its description beside them"
+    variants: [first, scrolled, last]
+    specimen: design.picker
+  cells:
+    role: "code entry cells: a digit in the header font over the passcode dialog's box, the cursor's lit"
+    font: cell
+    colour: white
+    justify: centre
+    variants: [first, middle, last]
+    specimen: design.cells
+  art:
+    role: "a retail bitmap, named, never held: a frame, a picture, an icon"
+    variants: [rest]
+    specimen: design.art
+  focus:
+    role: "the focused row at full alpha and its frame lit; the rest at alpha.unfocused and alpha.frame_dim"
+    variants: [first, middle, last]
+    specimen: design.focus
+  description.kit.example.29:
+    role: "description of kit.example, as the converter found it"
+    font: body
+    colour: hint_blue
+    justify: left
+  description.clanker_player_options.30:
+    role: "description of clanker_player_options, as the converter found it"
+    font: body
+    colour: item_blue
+    justify: left
+  text.mods.detail.31:
+    role: "text of mods.detail, as the converter found it"
+    font: body
+    colour: pale_blue
+    justify: right
+  text.theater.playback.38:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: hint_blue
+    justify: left
+  text.theater.playback.39:
+    role: "text of theater.playback, as the converter found it"
+    font: body
+    colour: hint_blue
+    justify: right
+  tab.selected:
+    role: "the lobby strip's selected mode: white, as a focused row's text"
+    font: body
+    colour: white
+    justify: centre
+  tab.on:
+    role: "a mode of the lobby strip the bumpers can move to: the header's blue"
+    font: body
+    colour: hint_blue
+    justify: centre
+  tab.off:
+    role: "a mode of the lobby strip that can't run in this lobby: the lobby's value blue"
+    font: body
+    colour: pale_blue
+    justify: centre
+  tab.header:
+    role: "the lobby strip's selected mode as the lobby's header, in the header's font and place"
+    font: title
+    colour: hint_blue
+    justify: left
+  tab.prompt:
+    role: "a bumper and the mode it moves to, at the band's right end: glyph, space, WORDS"
+    font: body
+    colour: hint_blue
+    justify: right
+  tab.prompt.off:
+    role: "a bumper and the mode that way that can't run in this lobby"
+    font: body
+    colour: pale_blue
+    justify: right
+  tab.glyph:
+    role: "a bumper's glyph beside the lobby strip, a mode to move to that way"
+    font: body
+    colour: white
+    justify: centre
+  tab.glyph.off:
+    role: "a bumper's glyph with no mode to move to that way"
+    font: body
+    colour: pale_blue
+    justify: centre
+  tab.count:
+    role: "the lobby's player count beside the strip, as the lobby's tag places it"
+    font: body
+    colour: pale_blue
+    justify: right
+  lobby.button:
+    role: "a pregame lobby button with the focus: its words in white on name_field"
+    font: body
+    colour: white
+    justify: left
+    pattern: button
+    ids: ["button.*"]
+  lobby.button.off:
+    role: "a pregame lobby button without the focus: the header's blue"
+    font: body
+    colour: hint_blue
+    justify: left
+    pattern: button
+    ids: ["button.*"]
+  lobby.bumper:
+    role: "a bumper's glyph at an end of the lobby's mode marks, a mode to move to that way"
+    font: body
+    colour: white
+    justify: left
+  lobby.bumper.off:
+    role: "a bumper's glyph with no mode to move to that way"
+    font: body
+    colour: pale_blue
+    justify: left

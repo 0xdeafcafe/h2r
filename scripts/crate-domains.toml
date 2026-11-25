@@ -13,7 +13,7 @@
 about = "Disc, tag and file formats, ours and the game's: plain data, no guest, no host"
 uses = []
 crates = [
-    "asf", "content", "firefight", "font", "forge-doc", "h1-contract", "host-dirs", "host-log", "hs", "map", "pogo",
+    "asf", "content", "firefight", "font", "forge-doc", "game-markers", "h1-contract", "host-dirs", "host-log", "hs", "map", "pogo",
     "mopp", "movies", "pathfind", "rules", "settings", "shaders", "tags", "variants", "xbe", "xiso",
 ]
 
@@ -55,7 +55,7 @@ about = "Rust that replaces a guest subsystem: the native simulation, FrameScene
 uses = ["formats", "recompiler", "runtime", "platform", "hooking"]
 crates = [
     "engine", "frame-scene", "hud-kit-core", "native-render", "render-bridge",
-    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-ext", "sim-objects",
+    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-ext", "sim-objects", "sim-sound",
     "sim-state",
 ]
 # Guest-free: these take typed values and may use only `formats`,
@@ -121,6 +121,11 @@ until = "simd's exact SSE lanes move to a guest-free crate sim-core may use"
 from = "game"
 to = "perf"
 until = "the sampler is a hook boot installs: sampling.rs reaches the profiler behind `perf`, and agent_glue answers profile.sample.* with it"
+
+[[exception]]
+from = "workspace"
+to = "game"
+until = "the screen document parser, layout resolver and tag generator can be shared without constructing a game UI sample (docs/editor/studio-redesign.md, PK5)"
 
 [[exception]]
 from = "host-data"

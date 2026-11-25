@@ -63,7 +63,6 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | `List` | the Controls tag (`KitScreen`) | header layout 0 | settings-style lists over the game shell |
 | `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (the shared settings dialog, "The settings dialog"), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
-| `Hud` | text and art widgets over the running game (`ScreenSpec::hud`) | supplied by the tool | the Forge monitor strip, reticle and controls |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
 
 **Backing.** A `Dialog` or `CodeEntry` is `Over` (drawn over the screen
@@ -71,25 +70,21 @@ beneath, as the game's own dialogs are) or `Own` (it carries the game shell
 backing, `framing_center` from screen 5, under its panel, so the screen
 beneath doesn't matter).
 
-The Forge monitor HUD has no list or focus. The compositor draws its
-widgets on a transparent surface with the preview renderer and disc fonts;
-its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
-(`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
-them.
-
-A `Hud` whose spec is not `transparent` is drawn over the game shell
-instead of a live picture (`preview::From::view`): widgets that sit on
-the shell's header and footer bands. Its doc says `backing: shell`.
+A HUD over the running game is not a screen kind: it is the HUD kit's
+([hud-kit.md](hud-kit.md)), drawn by the game's own HUD pass. The Forge
+monitor's HUD and the Forge screens are the game's
+([forge-firefight-ui.md](forge-firefight-ui.md)).
 
 The Forge screens are the game's: list classes of ours on the large
 dialog (the object menu, Tools, Link and the questions) and on the
 in-game Controller Settings host (Properties, Tool settings, Forge
-options, Controls), opened over the running world
+options, Controls, Map limits), opened over the running world
 (`crates/extensions/game/src/forge_screens.rs`,
 [forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). A value
 row opens `kit.picker.game` over them. Their preview pages are
 `forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`,
-`forge.link`, `forge.question`, `forge.options` and `forge.controls`,
+`forge.link`, `forge.question`, `forge.options`, `forge.controls`,
+`forge.games`, `forge.variants`, `forge.variant` and `forge.map-limits`,
 drawn over the main menu, which stands in for the game.
 
 **Sign-in is a modal.** The sign-in
@@ -247,7 +242,7 @@ state.
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
 | on drawn | a text's glyphs meet another group's drawn row or cell art, picture (`Art::Level`) or text over more than 24 pixels (`Issue::OnDrawn`); the pairs `overlap` already names are left out |
 | panel shared | a panel of the screen's own (not a modal's, and not a backdrop over more than half the title-safe area) holds the list's rows and another group's texts: at least half of each one's drawn pixels inside the panel's drawn box (`Issue::PanelShared`). A screen that draws the lobby's panel as retail's lobby does, the list and its status lines in one pane, is listed in `layout::drawn::SHARED_PANELS` with its retail precedent |
-| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) nor the HUD's `reticle` (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
+| covers under | a modal over a kit screen (`View::underlay`) draws its text over more than 24 drawn pixels of that screen's content (the modal's panel hiding it is what a modal does): its pictures, and texts that are neither the list's (rows, cells, `description`, `name`) nor chrome (`title`, `legend`, `body`, `status`) (`Issue::CoversUnder`). A modal over a retail opener (`Backing::Over`) covers it as retail's do. A screen whose modal text may lie over it is listed in `layout::drawn::COVERS` with its retail precedent |
 | drawn outside | art drew more than `Rules::max_outside` (2) units past its declared rectangle (`Issue::DrawnOutside`): fix the rectangle |
 
 The last four read what the preview really drew. `preview::render_traced`
@@ -439,14 +434,20 @@ dimmed 85%: the lobby's PREGAME LOBBY strip above the frame shows at
 `0x235756` then blurs the screen with the Kawase blur `0x211a0`
 (`engine::glow::blur`): `3.75 * fraction` steps (`[0x0045de14]`), so at
 rest four draws with fractions 1, 1, 1 and 0.75. The first draw's scale
-is 1.0 and each next one's is 1.25 times it; a draw's spread is its
-fraction times its scale (1, 1.25, 1.5625, 1.465). Each draw makes every
-pixel the mean of four bilinear taps, tap `k` moved by the spread times
-0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for `k & 2`, else times
--0.5 (`[0x0045dbc4]`), with the sampler clamped at the edges
-(`native_render::glow::quad`). `Disc::backdrop` draws both at rest
-(fraction 1): the fill from `SharedGlobals::overlay_color`, then
-`preview::backdrop::blur` on the 640 by 480 canvas.
+is 1.0 and, the call's growth being 1, each next one's is the last
+times the spread factor `[0x0045dc0c]`; a draw's spread is its fraction
+times its scale. Each draw blends four bilinear taps, tap `k` moved by
+the spread times 0.5 (`[0x0045dbbc]`) in x for `k & 1` and in y for
+`k & 2`, else times -0.5 (`[0x0045dbc4]`), with the sampler clamped at
+the edges (`native_render::glow::quad`). The call's strength
+(`[0x0045dc20]`) selects the combiner that blends them in pairs leaning
+to the brighter tap; the alpha is their mean
+([native-post-hud.md](../graphics/native-post-hud.md#the-blur-under-a-dialog)).
+`Disc::backdrop` draws both at rest (fraction 1): the fill from
+`SharedGlobals::overlay_color`, then `preview::backdrop::blur` on the
+640 by 480 canvas. The preview's blur grows each scale by 1.25 and
+takes the plain mean of the taps, so it differs from the game's: its
+steps spread less and it does not lean to the brighter tap.
 
 The openers:
 
@@ -730,7 +731,7 @@ Setup dialog's own window and slot, as before, not the dialogs' window):
 ## The settings dialog
 
 Every settings page of ours is one component, `ui_kit::settings`, built
-from its doc (`assets/ui/screens/<name>.yaml`, `layout: settings`) and
+from its doc (`content/ui/screens/<name>.yaml`, `layout: settings`) and
 the doc's `settings:` block. It keeps one rule:
 
 - **Top:** static per screen. The icon, the name and a line about the
@@ -1317,18 +1318,18 @@ The preview draws them the same way (`view::scroll_arrows`, widgets
 
 ## Screens in YAML
 
-A screen's presentation is data in `assets/ui/`; its Rust is behaviour
+A screen's presentation is data in `content/ui/`; its Rust is behaviour
 (`crate::ui_kit::data`):
 
-- `assets/ui/design.yaml` is the design system: the palette (named
+- `content/ui/design.yaml` is the design system: the palette (named
   colours), fonts by role (`title`, `legend`, `body`, `cell`,
   `row_controls`, `row_default`), spacing (row heights, the dialog body's
   top, the code cells' gaps), alphas (an unfocused row's text, a dimmed
   frame), the legend's format, and every component's preset (role, font,
   colour, justification, place, variants and specimen page).
-- `assets/ui/screens/<name>.yaml` is one screen of
+- `content/ui/screens/<name>.yaml` is one screen of
   `ui_kit::screens::NAMES`: `screen`, `kind` (`list`, `dialog`,
-  `code_entry`, `picker`, `hud`), `layout` (a list's `controls`,
+  `code_entry`, `picker`), `layout` (a list's `controls`,
   `level_select` or `moved`; a dialog's `settings` or `large`), `backing`
   (`shell`, `over` an `opener` such as `main-menu`, `screen` over a screen
   of ours, or `none`), `scrolls`, its named `states` (the focus and a
@@ -1350,7 +1351,7 @@ A doc that names what doesn't exist (a component, a glyph, a layout for
 its kind, an opener, a slot that isn't closed, a value row's current value
 past its values, an icon, a setting) or breaks a settings dialog's rules
 is a `DataError` naming the file and the field
-(`assets/ui/screens/t.yaml widgets.title.component: ...`), never a quiet
+(`content/ui/screens/t.yaml widgets.title.component: ...`), never a quiet
 fallback; a screen without a doc is one too (`data::require`). The tests
 load every doc, so a bad one fails them by name.
 
@@ -1368,7 +1369,7 @@ equivalence test (`data::tests::each_state_drawn_from_its_doc_is_the_view_rust_d
 draws each state of each screen from its Rust alone and with its doc laid
 over (`data::present`), and the two views must be equal.
 
-**The converter.** `h2 ui export-yaml [--out assets/ui]`
+**The converter.** `h2 ui export-yaml [--out content/ui]`
 (`data::export::export`) builds every screen in every state, reads its
 presentation off the specs, and writes `screens/<name>.yaml` and
 `design.yaml`, starting from the `design.yaml` already there. A style
@@ -1392,7 +1393,7 @@ change to a screen's Rust, then the tests.
 
 `ui_kit::components` puts a screen together from the components:
 `Screen::list`, `level_select`, `moved`, `large`,
-`message`, `code_entry`, `picker` and `hud`, with `row`, `legend`,
+`message`, `code_entry` and `picker`, with `row`, `legend`,
 `legend_on_panel`, `description`, `help`, `text`, `art`, `status`,
 `scrolls` and `over`; `build()` derives the inputs its rows and legend
 need. `components::row` makes each kind of row (`action`, `open`,
@@ -1427,8 +1428,8 @@ placeholder copy so each reads as a template: `layout.list`,
 `layout.list.description`, `layout.list.panel-edge`,
 `layout.list.level-select`, `layout.list.texts`,
 `layout.dialog.settings`, `layout.dialog.large`, `layout.dialog.message`,
-`layout.dialog.over-screen`, `layout.code-entry`, `layout.picker` and
-`layout.hud` (`ui_kit::components::specimens::PAGES`). A new screen
+`layout.dialog.over-screen`, `layout.code-entry` and `layout.picker`
+(`ui_kit::components::specimens::PAGES`). A new screen
 starts from the one it looks like.
 
 ## Consistency
@@ -1515,7 +1516,7 @@ alone. Where that data lives depends on the screen.
              ┌─────────────────────┴──────────────────────┐
              ▼                                            ▼
   ours: ScreenDoc fields                    retail: tag fields of the open
-  (assets/ui/screens/<name>.yaml)           mainmenu map (App::tags writes)
+  (content/ui/screens/<name>.yaml)           mainmenu map (App::tags writes)
   text, at, size by widget id               rect, top_left, anchor by widget id
              │                                            │
   with_screens(edited docs) ─▶ View          RetailPlaces ─▶ Disc::retail_view,
@@ -1523,7 +1524,7 @@ alone. Where that data lives depends on the screen.
              ▼                                            ▼
         layout and content checks run on the edited view; ui.render shows it
              │                                            │
-  Save: to_yaml into <checkout>/assets/      Save: the map's own save
+  Save: to_yaml into <checkout>/content/      Save: the map's own save
   ui/screens/<name>.yaml (live-reloaded)     (patches with the user's map)
 ```
 
@@ -1533,7 +1534,7 @@ is a rect: the shown rect plus the step. The tool picks the sink from the
 pick:
 
 - **Our screens** (`edit::ours`). Presentation lives in
-  `assets/ui/screens/<name>.yaml`, one `ScreenDoc` per screen
+  `content/ui/screens/<name>.yaml`, one `ScreenDoc` per screen
   (`ui_kit::data`). The sink holds the edited docs, the docs as last loaded
   or saved, and an undo stack of whole-doc snapshots. A rect sets the
   widget's `at` (its top-left, `[left, top]`) and `size` (`[width,
@@ -1579,11 +1580,11 @@ nudges merges into one step, and so does typing in an inspector field
 (`merge`).
 
 **Saving.** Ours write `data::to_yaml(doc)` to
-`<checkout>/assets/ui/screens/<name>.yaml` for every edited screen. The
-checkout is the one the editor was started from: the first folder at or
-above the working directory, then above the executable, that has
-`assets/ui/screens`. With none, Save is refused. The game bakes those
-files when it is built, so a saved edit is in the next build. The editor
+`<checkout>/content/ui/screens/<name>.yaml` for every edited screen. The
+editor finds the first checkout at or above the working directory, then
+above the executable, that has `content/ui/package.toml`. Save requires
+the screen to be listed in that package's `screens` inputs. The game
+bakes the package when it is built. The editor
 polls that folder (once a second) and reloads a file that changed on disk
 when its screen has no unsaved edits. A screen with unsaved edits keeps
 them, and the tool says the file changed. Retail edits save with the map
@@ -1592,8 +1593,8 @@ them, and the tool says the file changed. Retail edits save with the map
 **Shipping a retail edit.** A retail edit saved with the map is the
 user's alone, since the map is disc-derived. `ui.export_edits {path,
 screen?}` writes the open map's retail edits as retail edit files, one
-per edited screen pane, and a file in `assets/ui/retail-edits/` is applied
-to every user's map at boot ([ui-in-maps.md](ui-in-maps.md), "Retail
+per edited screen pane. A `screen-edits` item in `content/ui/package.toml`
+applies the named file to the user's map at boot ([ui-in-maps.md](ui-in-maps.md), "Retail
 edits as data").
 
 **Checks on the edited view.** `UiScreens::draw_native` makes the view

@@ -21,7 +21,8 @@ pub struct Capability {
 }
 
 impl Entry {
-    /// Whether a host can make the call in a script that rides `carrier`.
+    /// Whether a host can make the call in a script whose record is on the
+    /// engine `carrier` (`ir::Header::engine`).
     /// A host refuses a script that calls an entry it cannot, naming the
     /// entry; nothing runs with a call stubbed out.
     pub fn hostable_on(&self, carrier: u8) -> bool {
@@ -29,8 +30,8 @@ impl Entry {
     }
 }
 
-/// The name a script's header gives the carrier `engine` (`carrier slayer`),
-/// or `None` for an index no script rides.
+/// The name of the retail engine `engine` ([`CARRIERS`]), or `None` for an
+/// index no script's record is on.
 pub fn carrier_name(engine: u8) -> Option<&'static str> {
     CARRIERS.iter().find(|&&(_, e)| e == engine).map(|&(n, _)| n)
 }
@@ -53,12 +54,17 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("player.weapons", "gives and takes weapons", false),
     cap("player.disguise", "hides or changes a player's body", false),
     cap("player.camera", "changes the camera", false),
+    cap("player.pick", "asks each player to pick from a short list before the round", false),
     cap("objects.create", "makes objects", false),
     cap("objects.delete", "removes objects", false),
     cap("objects.move", "moves objects", false),
     cap("ai.squads", "places and commands AI", false),
+    cap("vehicles.drive", "flies and loads vehicles", false),
     cap("bots.orders", "gives bots orders", false),
     cap("hud.message", "shows messages", false),
+    cap("audio.play", "plays sounds, dialogue and music", false),
+    cap("hud.widgets", "draws on the HUD", false),
+    cap("hud.waypoints", "marks places and things", false),
     cap(
         "hud.superbounce",
         "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
@@ -136,7 +142,7 @@ pub struct Entry {
     pub since: u16,
     /// The carriers (retail engine indices, [`CARRIERS`]) a host makes the
     /// call on; `None` for every carrier. The engine routine behind such an
-    /// entry is one engine's own (`role_traits` sets Juggernaut's role mask).
+    /// entry is one engine's own (`reset_objective` returns an Oddball).
     pub hosts: Option<&'static [u8]>,
 }
 
@@ -213,10 +219,9 @@ const fn vm(id: u16, name: &'static str, args: &'static [Ty], result: Ty) -> Ent
 use self::Order::{Now, Queued};
 
 /// The carriers of the entries one engine's routine makes.
-const ON_JUGGERNAUT: &[u8] = &[7];
 const ON_ODDBALL: &[u8] = &[3];
 
-use self::Status::{Named, Traced, Untraced};
+use self::Status::{Named, NotBuilt, Traced, Untraced};
 use crate::ty::Ty::{Bool, Class, Fixed, Int, Label, Object, Player, Squad, Tag, Team, Text};
 
 pub mod id {
@@ -296,6 +301,58 @@ pub mod id {
     pub const FF_TEAM_LIVES: u16 = 72;
     pub const FF_PLAYER_SCORE: u16 = 73;
     pub const FF_TEAM_FINISH: u16 = 74;
+    pub const SPAWN_NEAR: u16 = 75;
+    pub const SET_BODY: u16 = 76;
+    pub const SHOW_AREA: u16 = 77;
+    pub const HIDE_AREA: u16 = 78;
+    pub const SAY: u16 = 79;
+    pub const SOUND_AT: u16 = 80;
+    pub const SOUND_TO: u16 = 81;
+    pub const SOUND_TO_TEAM: u16 = 82;
+    pub const SOUND_TO_ALL: u16 = 83;
+    pub const MUSIC: u16 = 84;
+    pub const MUSIC_STOP: u16 = 85;
+    pub const ANNOUNCE: u16 = 86;
+    pub const HUD_VALUE: u16 = 87;
+    pub const HUD_FILL: u16 = 88;
+    pub const HUD_STYLE: u16 = 89;
+    pub const HUD_TEXT: u16 = 90;
+    pub const HUD_SHOW: u16 = 91;
+    pub const MARK: u16 = 92;
+    pub const UNMARK: u16 = 93;
+    pub const SIDE_OF: u16 = 94;
+    pub const SLOT_OF: u16 = 95;
+    pub const OBJECT_POS: u16 = 96;
+    pub const OBJECT_VEL: u16 = 97;
+    pub const VEC_LENGTH: u16 = 98;
+    pub const TELEPORT: u16 = 99;
+    pub const MOVE_TO: u16 = 100;
+    pub const STOP: u16 = 101;
+    pub const FLY: u16 = 102;
+    pub const HOVER: u16 = 103;
+    pub const SEAT: u16 = 104;
+    pub const EJECT: u16 = 105;
+    pub const PLACE_SQUAD_IN: u16 = 106;
+    pub const UNLOAD: u16 = 107;
+    pub const VEHICLE_RIDERS: u16 = 108;
+    pub const VEHICLE_DRIVER: u16 = 109;
+    pub const OBJECT_HEALTH: u16 = 110;
+    pub const OBJECT_SHIELD: u16 = 111;
+    pub const TAG_INT: u16 = 112;
+    pub const TAG_FIXED: u16 = 113;
+    pub const SQUAD_FIGHTING: u16 = 114;
+    pub const SQUAD_STRENGTH: u16 = 115;
+    pub const HUD_VALUE_FOR: u16 = 116;
+    pub const AIRBORNE: u16 = 117;
+    pub const CROUCHING: u16 = 118;
+    pub const PRIMED: u16 = 119;
+    pub const SEES: u16 = 120;
+    pub const SET_OPEN: u16 = 121;
+    pub const MARK_PLAYER: u16 = 122;
+    pub const MARK_TEAM: u16 = 123;
+    pub const OFFER_PICK: u16 = 124;
+    pub const PICK_ROW: u16 = 125;
+    pub const PICKED: u16 = 126;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -342,7 +399,14 @@ pub const ENTRIES: &[Entry] = &[
     act(id::PLACE_SQUAD, "place_squad", &[Squad, Class, Int, Label], Some("ai.squads"), Queued, Named),
     act(id::HUNT, "hunt", &[Squad], Some("ai.squads"), Queued, Named),
     act(id::ERASE_SQUAD, "erase_squad", &[Squad], Some("ai.squads"), Queued, Named),
-    act(id::SPAWN_AREAS, "spawn_areas", &[Team, Label, Int], Some("player.spawn"), Now, Untraced),
+    // Which starting locations a team's spawns may use: those of the
+    // label numbered `n`. Kept in the VM's state (`vm::Spawns`); the host
+    // answers the spawn chooser's free-spot test `SPAWN_LOCATION_FREE`
+    // (`0x23bb70`, called only from `PLAYER_SPAWN_LOCATION` `0x14ef00`)
+    // with "blocked" for every other location, so the chooser's own
+    // weighing picks among the live ones (`game::rules::world::spawns`;
+    // docs/game/notes/2026-11-24-siege-spawns-and-bodies.md).
+    act(id::SPAWN_AREAS, "spawn_areas", &[Team, Label, Int], Some("player.spawn"), Now, Named),
     // `message(to, text)`: the language picks this entry for a player,
     // `message_team` for a team and `message_all` for `all` ([`spelled`]).
     // The host shows it to its local users through the notification insert
@@ -367,8 +431,8 @@ pub const ENTRIES: &[Entry] = &[
     // neutral (8) reads as none.
     read(id::OBJECT_TEAM, "object_team", &[Object], Team, Named),
     // The player's living unit inside a zone object: the host's zone test
-    // (`game::rules::world::zones`), a flag's cylinder or the polygon of a
-    // numbered label's corners.
+    // (`game::rules::world::zones`): the flag's area, else the hull of a
+    // numbered label's corners, else a cylinder.
     read(id::INSIDE, "inside", &[Player, Object], Bool, Named),
     // The player whose unit an object is: the roster's units (the player
     // datum's unit), so no unit field is read.
@@ -385,18 +449,8 @@ pub const ENTRIES: &[Entry] = &[
         hosts: Some(ON_ODDBALL),
         ..act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Named)
     },
-    // Give (or take) the carrier engine's role and its traits from the
-    // variant's type area. A host makes it on Juggernaut, through the
-    // engine's own role setter `JUGGERNAUT_ROLE_SET` `0x192970` (the
-    // player's bit of the role mask `[0x510c9c]+0`), whose trait query
-    // `0x1926c0` then answers the Juggernaut traits. Oddball and CTF give
-    // their carrier traits to whoever holds the objective (`0x2bcc90`), so
-    // a script there has no role to give; Slayer, King and Territories have
-    // no role traits (docs/engine/notes/2026-11-22-script-scoring-and-roles.md).
-    Entry {
-        hosts: Some(ON_JUGGERNAUT),
-        ..act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Named)
-    },
+    // The VM records membership. The host answers the trait query for role holders.
+    act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Named),
     // The tick the host began (`Vm::begin_tick`).
     vm(id::NOW, "now", &[], Int),
     // The VM generator's next draw modulo `n`; 0, with no draw, for n <= 0.
@@ -453,24 +507,186 @@ pub const ENTRIES: &[Entry] = &[
     act(id::FF_TEAM_LIVES, "ff_team_lives", &[Team, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_PLAYER_SCORE, "ff_player_score", &[Player, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_TEAM_FINISH, "ff_team_finish", &[Team], Some("firefight.director"), Queued, Named),
+    // A team's spawns use only the `n` starting locations nearest a zone
+    // (`n` 0 lifts it): `spawn_areas` for a map with no labelled starting
+    // locations, through the same answer of `SPAWN_LOCATION_FREE`.
+    act(id::SPAWN_NEAR, "spawn_near", &[Team, Object, Int], Some("player.spawn"), Now, Named),
+    // A team's players spawn in a body of the list (`crate::bodies`), or
+    // their own (`none`). Kept in the VM's state (`vm::RulesExt::bodies`);
+    // the host writes the body's model byte (player `+0x88`) for the
+    // length of `PLAYER_SPAWN` (`0x14f2e0`), whose representation pick
+    // `0x14f040` and unit handover `0x14cad0` read it
+    // (`game::rules::world::body`).
+    act(id::SET_BODY, "set_body", &[Team, Tag], Some("player.disguise"), Now, Named),
+    // An area's wall drawn in play, in a team's colour (`none`: neutral),
+    // and taken off: at most eight at once, kept in the VM's state
+    // (`vm::RulesExt::shown`) so every machine and a film draw the same
+    // (`game::rules::world::walls`). A display only, so no capability.
+    act(id::SHOW_AREA, "show_area", &[Object, Team], None, Now, Named),
+    act(id::HIDE_AREA, "hide_area", &[Object], None, Now, Named),
+    // Audio (docs/game/rules-world-api.md, "Audio"). A sound is a `sound`
+    // tag of the map; a `sound_to*` plays it at each audience player's own
+    // unit, by the game's own sound start at the unit's head marker (the
+    // path a replicated dialogue line takes), and rides the show channel as
+    // a sound cue to every machine (`game::rules::world::audio`). The
+    // entries the research rows R4 and R5 leave open are listed so a script
+    // naming one is refused by its name: `say` needs a table of a map's
+    // dialogue names (no `line` type yet), `sound_at` the body of
+    // `sound_impulse_start` (R4), and `music`, `music_stop` and `announce`
+    // the start and stop of a looping sound and the raising of a retail game
+    // event with a player (R5). `announce`'s first argument is the retail
+    // event's kind number until R5 names them.
+    act(id::SAY, "say", &[Object, Text], Some("audio.play"), Queued, Status::NotBuilt),
+    act(id::SOUND_AT, "sound_at", &[Tag, Object], Some("audio.play"), Queued, Traced),
+    act(id::SOUND_TO, "sound_to", &[Tag, Player], Some("audio.play"), Queued, Named),
+    act(id::SOUND_TO_TEAM, "sound_to_team", &[Tag, Team], Some("audio.play"), Queued, Named),
+    act(id::SOUND_TO_ALL, "sound_to_all", &[Tag], Some("audio.play"), Queued, Named),
+    act(id::MUSIC, "music", &[Tag], Some("audio.play"), Queued, Untraced),
+    act(id::MUSIC_STOP, "music_stop", &[], Some("audio.play"), Queued, Untraced),
+    act(id::ANNOUNCE, "announce", &[Int, Player], Some("audio.play"), Queued, Traced),
+    // The script's HUD (docs/game/rules-world-api.md, "HUD"): a widget is
+    // a `hud` declaration's number (a name in the language), a waypoint a
+    // `waypoint` declaration's. The VM keeps both in the show state
+    // (`vm::RulesExt::show`), which every machine that runs the VM draws
+    // from (`game::rules::world::hud`) and a film restores.
+    act(id::HUD_VALUE, "hud_value", &[Int, Int], Some("hud.widgets"), Now, Named),
+    act(id::HUD_FILL, "hud_fill", &[Int, Fixed], Some("hud.widgets"), Now, Named),
+    act(id::HUD_STYLE, "hud_style", &[Int, Int], Some("hud.widgets"), Now, Named),
+    act(id::HUD_TEXT, "hud_text", &[Int, Text], Some("hud.widgets"), Now, Named),
+    act(id::HUD_SHOW, "hud_show", &[Int, Bool], Some("hud.widgets"), Now, Named),
+    act(id::MARK, "mark", &[Int, Object], Some("hud.waypoints"), Now, Named),
+    act(id::UNMARK, "unmark", &[Int], Some("hud.waypoints"), Now, Named),
+    // Who a HUD widget's value names (`hud_value`): a player's side, its
+    // team's index in a game with teams and 16 and its roster slot in one
+    // without; and the roster slot alone. A viewer is on the side
+    // (`show::Viewer::on_side`), and a widget naming a slot is worded with
+    // that player's name. None (-1) for no player.
+    read(id::SIDE_OF, "side_of", &[Player], Int, Named),
+    read(id::SLOT_OF, "slot_of", &[Player], Int, Named),
+    // Objects in motion (docs/game/rules-world-api.md, "Objects"). An
+    // object's position and velocity, one axis (0 x, 1 y, 2 z) a read, in
+    // world units as 16.16: `o.position` and `o.velocity` are three of
+    // each (`game::rules::world::objects`). `vec_length` is the VM's own:
+    // the length of three components, whole in 128 bits so no square
+    // overflows (`length`, `distance` and `o.speed` are calls of it).
+    read(id::OBJECT_POS, "object_pos", &[Object, Int], Fixed, Named),
+    read(id::OBJECT_VEL, "object_vel", &[Object, Int], Fixed, Named),
+    vm(id::VEC_LENGTH, "vec_length", &[Fixed, Fixed, Fixed], Fixed),
+    // `teleport(o, at)`: the object's position set, queued to the tick
+    // boundary where the engine's `OBJECT_SET_TRANSFORM` (`0xb7430`)
+    // answers false for a position outside the world, which is a refused
+    // call. `move_to(o, at, t)` starts a mover: a record in the VM's state
+    // (`vm::RulesExt::movers`) the VM steps every tick for `t` ticks, and
+    // `stop(o)` ends it with no `on arrive`.
+    act(id::TELEPORT, "teleport", &[Object, Fixed, Fixed, Fixed], Some("objects.move"), Queued, Named),
+    act(id::MOVE_TO, "move_to", &[Object, Fixed, Fixed, Fixed, Int], Some("objects.move"), Now, Named),
+    act(id::STOP, "stop", &[Object], Some("objects.move"), Now, Named),
+    // Vehicles and drop ships (docs/game/rules-world-api.md, "Vehicles and
+    // drop ships"). The vehicle is an `object` a host checks at the call:
+    // one that is no vehicle is a refused call. The fake models the whole group.
+    //
+    // `fly(v, path, t)`: the vehicle moves along the `path` label's points
+    // in number order in `t` ticks, facing the tangent of its segment
+    // (`crate::vehicles::Flight`). It is the world API's mover on a
+    // vehicle. Havok can advance the body between notified transforms (R7).
+    act(id::FLY, "fly", &[Object, Label, Int], Some("vehicles.drive"), Queued, NotBuilt),
+    // `hover(v, on)`: holds the vehicle where it is. The retail body also refreshes its physics state.
+    act(id::HOVER, "hover", &[Object, Bool], Some("vehicles.drive"), Queued, Named),
+    // `seat(p, v)` and `eject(p)`: the player's unit enters the vehicle's
+    // first free seat (the driver's first) and leaves it. The vehicle
+    // entry routine `0x11ade0` behind `unit_enter_vehicle` (`0x2a3ad0`) and
+    // the biped exit action still need rules host bindings.
+    act(id::SEAT, "seat", &[Player, Object], Some("vehicles.drive"), Queued, Traced),
+    act(id::EJECT, "eject", &[Player], Some("vehicles.drive"), Queued, Traced),
+    // `place_squad_in(s, class, n, v)`: `place_squad` with the squad's
+    // actors put in the vehicle's free seats, at most as many as there are
+    // (loading is the vehicles capability's, not the squads').
+    // AI_SQUAD_PLACE chooses a vehicle by palette and can leave actors on foot.
+    act(id::PLACE_SQUAD_IN, "place_squad_in", &[Squad, Class, Int, Object], Some("vehicles.drive"), Queued, Traced),
+    // `unload(v)`: everyone aboard leaves. The retail unload body accepts -1 for all seats.
+    act(id::UNLOAD, "unload", &[Object], Some("vehicles.drive"), Queued, Named),
+    // What is aboard (the driver and every rider, players and AI) and the
+    // driver's player, or none: the unit's seat list (`UNIT_SEATS_BEGIN`
+    // `0xd0620`, `UNIT_SEATS_NEXT` `0xd0690`). A non-vehicle has none.
+    read(id::VEHICLE_RIDERS, "vehicle_riders", &[Object], Int, Traced),
+    read(id::VEHICLE_DRIVER, "vehicle_driver", &[Object], Player, Traced),
+    // Advanced data (docs/game/rules-world-api.md, "Advanced data"). A
+    // unit's body and shield as a fraction of full, 0 to 1, from the unit
+    // datum (`game::rules::world::data`); an object that is no unit, or is
+    // gone, reads 0.
+    read(id::OBJECT_HEALTH, "object_health", &[Object], Fixed, Named),
+    read(id::OBJECT_SHIELD, "object_shield", &[Object], Fixed, Named),
+    // A field of a tag the map holds: both arguments are written as
+    // constants, and the field path is resolved at load against our typed
+    // tag definitions (`fields`), so a field they lack is a load error
+    // naming it. A float field is rounded once to `fixed`. The host's
+    // read of a tag instance from the loaded map is not built, so a host
+    // refuses a script that calls either by name.
+    read(id::TAG_INT, "tag_int", &[Tag, Text], Int, Named),
+    read(id::TAG_FIXED, "tag_fixed", &[Tag, Text], Fixed, Named),
+    // Actor state beyond what the agent API's `world.ai` snapshot reads is
+    // not traced, so a host refuses a script that reads either by name.
+    read(id::SQUAD_FIGHTING, "squad_fighting", &[Squad], Bool, Untraced),
+    read(id::SQUAD_STRENGTH, "squad_strength", &[Squad], Fixed, Untraced),
+    // A widget's value for one player to read (`hud_value_for(w, p, n)`:
+    // `n` clamped to 0..255), for a count that is each player's own, as
+    // the Territories HUD's held count is. One widget at a time reads per
+    // viewer; the show state keeps the table (`show::PerViewer`).
+    act(id::HUD_VALUE_FOR, "hud_value_for", &[Int, Player, Int], Some("hud.widgets"), Now, Named),
+    // The host answers these reads from the superbounce medal chain's
+    // biped snapshot (docs/game/rules-world-api.md, "Physics").
+    read(id::AIRBORNE, "airborne", &[Player], Bool, Named),
+    read(id::CROUCHING, "crouching", &[Player], Bool, Named),
+    read(id::PRIMED, "primed", &[Player], Bool, Named),
+    // `sees(a, b)`: nothing solid between two objects. A VM read of its
+    // sight table (`vm::RulesExt::sight`): a pair asked for in one tick is
+    // traced by the host at the next tick boundary, and
+    // answers from then on, false until its first trace.
+    Entry { status: Named, ..vm(id::SEES, "sees", &[Object, Object], Bool) },
+    // `set_open(o, open)`: a barrier opened or closed. The VM keeps each
+    // open barrier's closed place (`vm::RulesExt::gates`, at most
+    // `vm::MAX_GATES`) and, when it opens one, steps it to the place
+    // `vm::GATE_DROP` below that, which is the engine's own
+    // `OBJECT_SET_TRANSFORM` put a `teleport` makes; closing steps it back.
+    // A barrier already in the state asked for does nothing. The host adds
+    // no call of its own.
+    act(id::SET_OPEN, "set_open", &[Object, Bool], Some("objects.move"), Now, Named),
+    // `mark(wp, at, p)` and `mark(wp, at, t)`: the waypoint's audience,
+    // the player's slot's bit or the bits of the team's seated players,
+    // resolved in the VM from the roster every machine holds
+    // (docs/game/rules-world-api.md, "HUD"). `mark(wp, at)` is every
+    // viewer; `mark(wp, at, all)` is spelled the same and is `mark`.
+    act(id::MARK_PLAYER, "mark_player", &[Int, Object, Player], Some("hud.waypoints"), Now, Named),
+    act(id::MARK_TEAM, "mark_team", &[Int, Object, Team], Some("hud.waypoints"), Now, Named),
+    // `offer_pick(n, title)`, `pick_row(n, label)`: a picker the host opens
+    // for each player at the round's start, and a row of it. The VM keeps
+    // the offers (`vm::RulesExt::picks`, at most `vm::MAX_PICKS` of at most
+    // `vm::MAX_PICK_ROWS` rows) and each player's pick (`vm::Vm::choose`,
+    // reported by the host); `picked(p, n)` reads the row, or -1. The host
+    // adds no call of its own: it reads the offers after the tick.
+    act(id::OFFER_PICK, "offer_pick", &[Int, Text], Some("player.pick"), Now, Named),
+    act(id::PICK_ROW, "pick_row", &[Int, Text], Some("player.pick"), Now, Named),
+    vm(id::PICKED, "picked", &[Player, Int], Int),
 ];
 
 /// The word `message(to, text)` takes for everyone.
 pub const EVERYONE: &str = "all";
 
 /// The name the language spells an entry with: `message` for each of the
-/// three forms of `message(to, text)`, its own name for the rest.
+/// three forms of `message(to, text)`, `mark` for each of the audience
+/// forms of `mark(wp, at, to)`, its own name for the rest.
 pub fn spelled(e: &Entry) -> &'static str {
     match e.id {
         id::MESSAGE_TEAM | id::MESSAGE_ALL => "message",
+        id::MARK_PLAYER | id::MARK_TEAM => "mark",
         _ => e.name,
     }
 }
 
 /// An entry a script names only through another's spelling: the team and
-/// everyone forms of `message`, and the `fmt_*` entries of its holes.
-/// Completion leaves it out, and calling it by its own name is an unknown
-/// function.
+/// everyone forms of `message`, the audience forms of `mark`, and the
+/// `fmt_*` entries of its holes. Completion leaves it out, and calling it
+/// by its own name is an unknown function.
 pub fn is_form(e: &Entry) -> bool {
     spelled(e) != e.name || Hole::of_entry(e.id).is_some()
 }
@@ -478,6 +694,11 @@ pub fn is_form(e: &Entry) -> bool {
 /// Whether `entry` is one of the three forms of `message(to, text)`.
 pub fn is_message(entry: u16) -> bool {
     matches!(entry, id::MESSAGE | id::MESSAGE_TEAM | id::MESSAGE_ALL)
+}
+
+/// Whether `entry` is one of the three forms of `mark(wp, at, to)`.
+pub fn is_mark(entry: u16) -> bool {
+    matches!(entry, id::MARK | id::MARK_PLAYER | id::MARK_TEAM)
 }
 
 /// The values one message shows at most.
@@ -679,8 +900,6 @@ pub const VARIANT_FIELDS: &[(&str, Ty)] = &[
     ("respawn_time", Ty::Int),
     ("friendly_fire", Ty::Bool),
     ("rounds", Ty::Int),
-    // The engine index, `+0x44` (a CTF and an Assault game share a script).
-    ("engine", Ty::Int),
     // Oddball: setting 43, i16 `+0xf4`, 0..3 (inferred: Ball Count).
     ("oddball_ball_count", Ty::Int),
     // King: setting 40, i16 `+0xf4`, seconds until the hill moves, 0 never
@@ -707,8 +926,10 @@ pub const VARIANT_FIELDS: &[(&str, Ty)] = &[
     ("territories_contest_time", Ty::Int),
 ];
 
-/// The script's carrier engine: retail engine indices
-/// (`variants::record::GameType`).
+/// The retail engines by name and index (`variants::record::GameType`):
+/// the engine a script's record is on (`ir::Header::engine`) and the
+/// engines an entry is made on (`Entry::hosts`). No script names one; see
+/// `docs/game/game-types-without-carriers.md`.
 pub const CARRIERS: &[(&str, u8)] = &[
     ("ctf", 1),
     ("slayer", 2),
@@ -742,12 +963,14 @@ mod tests {
             if let Some(cap) = a.cap {
                 assert!(capability(cap, API_VERSION).is_some(), "{cap}");
             }
-            // A VM built-in is the VM's own, unless its game-side part is
-            // not built.
+            // The VM answers sees from a table populated by the named host
+            // trace. Other VM built-ins are internal or await game support.
             if a.status == Status::VmOnly {
                 assert_eq!(a.kind, Kind::VmOnly, "{}", a.name);
             }
-            if a.kind == Kind::VmOnly {
+            if a.id == id::SEES {
+                assert_eq!((a.kind, a.status), (Kind::VmOnly, Status::Named));
+            } else if a.kind == Kind::VmOnly {
                 assert!(matches!(a.status, Status::VmOnly | Status::NotBuilt), "{}", a.name);
             }
             assert!(a.kind != Kind::Read || a.cap.is_none());
@@ -760,8 +983,8 @@ mod tests {
         }
     }
 
-    /// `hud.superbounce` gates no entry: a host turns its superbounce mode
-    /// on for a script that declares it, and every kind of game takes it.
+    /// A host uses `hud.superbounce` to turn its mode on. The capability
+    /// table allows it in every kind of game.
     #[test]
     fn hud_superbounce_is_a_declared_host_feature() {
         let c = capability("hud.superbounce", API_VERSION).unwrap();
@@ -847,10 +1070,8 @@ mod tests {
     fn an_engine_routines_entry_is_hostable_on_its_carrier_only() {
         let roles = entry(id::ROLE_TRAITS, API_VERSION).unwrap();
         assert!(roles.status.hostable());
-        assert!(roles.hostable_on(7));
-        for other in [1, 2, 3, 4, 8, 9] {
-            assert!(!roles.hostable_on(other), "{other}");
-        }
+        assert!(roles.hostable_on(crate::SCRIPT_INDEX));
+        assert!(CARRIERS.iter().all(|&(_, e)| roles.hostable_on(e)));
         let reset = entry(id::RESET_OBJECTIVE, API_VERSION).unwrap();
         assert!(reset.hostable_on(3));
         assert!(!reset.hostable_on(1) && !reset.hostable_on(2));
@@ -880,6 +1101,71 @@ mod tests {
             crate::policy::eligible(&[c.name.to_string()], API_VERSION),
             ["custom", "hopper", "ranked"]
         );
+    }
+
+    #[test]
+    fn audio_builds_the_sound_to_entries_and_refuses_what_r4_and_r5_leave_open() {
+        for name in ["sound_to", "sound_to_team", "sound_to_all"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!(e.kind, Kind::Action, "{name}");
+            assert_eq!(e.order, Order::Queued, "{name}");
+            assert_eq!(e.cap, Some("audio.play"), "{name}");
+            assert!(e.status.hostable(), "{name}");
+            assert_eq!(e.args[0], Tag, "{name}");
+        }
+        assert_eq!(entry(id::SOUND_TO, API_VERSION).unwrap().args, &[Tag, Player]);
+        assert_eq!(entry(id::SOUND_TO_TEAM, API_VERSION).unwrap().args, &[Tag, Team]);
+        assert_eq!(entry(id::SOUND_TO_ALL, API_VERSION).unwrap().args, &[Tag]);
+        // Each open entry is listed and no host makes it.
+        for name in ["say", "sound_at", "music", "music_stop", "announce"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!(e.cap, Some("audio.play"), "{name}");
+            assert!(!e.hostable_on(0), "{name}");
+        }
+        let c = capability("audio.play", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        assert_eq!(
+            crate::policy::eligible(&[c.name.to_string()], API_VERSION),
+            ["custom", "hopper", "ranked"]
+        );
+    }
+
+    #[test]
+    fn objects_in_motion_are_gated_by_objects_move() {
+        for name in ["teleport", "move_to", "stop", "set_open"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!(e.kind, Kind::Action, "{name}");
+            assert_eq!(e.cap, Some("objects.move"), "{name}");
+            assert!(e.status.hostable(), "{name}");
+        }
+        assert_eq!(entry_named("teleport").unwrap().order, Order::Queued);
+        assert_eq!(entry_named("move_to").unwrap().order, Order::Now);
+        assert_eq!(entry_named("set_open").unwrap().order, Order::Now);
+        assert_eq!(entry(id::SET_OPEN, API_VERSION).unwrap().args, &[Object, Bool]);
+        assert_eq!(entry(id::TELEPORT, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed]);
+        assert_eq!(entry(id::MOVE_TO, API_VERSION).unwrap().args, &[Object, Fixed, Fixed, Fixed, Int]);
+        for name in ["object_pos", "object_vel"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!((e.kind, e.result, e.cap), (Kind::Read, Some(Fixed), None), "{name}");
+            assert_eq!(e.args, &[Object, Int], "{name}");
+        }
+        let len = entry(id::VEC_LENGTH, API_VERSION).unwrap();
+        assert_eq!((len.kind, len.result), (Kind::VmOnly, Some(Fixed)));
+    }
+
+    #[test]
+    fn physics_reads_are_named_and_have_no_entry_capability() {
+        for name in ["airborne", "crouching", "primed"] {
+            let e = entry_named(name).unwrap();
+            assert_eq!((e.kind, e.result, e.cap), (Kind::Read, Some(Bool), None), "{name}");
+            assert_eq!(e.args, &[Player], "{name}");
+            assert_eq!(e.status, Named, "{name}");
+        }
+        let sees = entry(id::SEES, API_VERSION).unwrap();
+        assert_eq!((sees.kind, sees.result, sees.cap), (Kind::VmOnly, Some(Bool), None));
+        assert_eq!(sees.args, &[Object, Object]);
+        assert_eq!(sees.status, Named);
+        assert!(entry_named("push").is_none() && entry_named("launch").is_none(), "R9 is open");
     }
 
     #[test]

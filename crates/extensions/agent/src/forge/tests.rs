@@ -1451,6 +1451,88 @@ mod things {
     }
 
     #[test]
+    fn forge_proposes_and_lists_areas_on_own_and_added_flags() {
+        let h = Harness::new();
+        let mut game = game(1);
+        let block = BlockKind::NetgameFlags;
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(block, 4)].into(),
+            ..Default::default()
+        };
+        let rows = [10, 11, 11, 11]
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let fields = vec![
+                    vec3([index as f32, 0., 0.]),
+                    Value::Float(F32::new(0.).unwrap()),
+                    Value::Int(kind),
+                    Value::Int(8),
+                    Value::Int(0),
+                ];
+                BaseRow {
+                    block,
+                    index: index as u32,
+                    raw: vec![0; map::scenario_layout::block(block).stride as usize],
+                    print: forge_doc::print(block, &fields).unwrap(),
+                    fields,
+                }
+            })
+            .collect();
+        let session = Session::new(draft(), limits, vec![], 0).unwrap().with_base(BaseRows {
+            rows,
+            left_out: vec![],
+        });
+        local::install(&h.agent, Host(Mutex::new(Arc::new(session))));
+
+        let listed = h.ok(&mut game, method::THINGS, json!({"kind": "goal"}));
+        let target = &listed["things"][0]["id"];
+        let hill = &listed["things"][1]["id"];
+        assert_eq!(listed["things"][0].get("area"), Some(&Json::Null));
+        let area = json!({"radius":{"radius":"40000000","below":"3f000000","above":"3fc00000"}});
+        let edit = |id, target: &Json, area: &Json| {
+            json!({"op":{"id":id,"edit":{"entry":{"area":{"target":target,"area":area}}}}})
+        };
+        let crossing = json!({"path":{
+            "points":[["00000000","00000000"],["40800000","40000000"],
+                      ["40800000","00000000"],["00000000","3f800000"]],
+            "below":"3f000000","above":"3fc00000"
+        }});
+        let refused = propose(&h, &mut game, edit(1, target, &crossing));
+        assert_eq!(refused["error"]["data"]["code"], refusal::REFUSED);
+        assert_eq!(
+            refused["error"]["message"],
+            "The path crosses itself: the edge after point 1 meets the edge after point 3."
+        );
+        let refused = propose(&h, &mut game, edit(2, hill, &area));
+        assert_eq!(refused["error"]["data"]["code"], refusal::REFUSED);
+        assert_eq!(refused["error"]["message"], "a hill with corners takes no area");
+        let accepted = propose(&h, &mut game, edit(3, target, &area));
+        assert_eq!(accepted["result"]["entry"]["seq"], 1, "{accepted}");
+        let changed = h.ok(&mut game, method::THINGS, json!({"changed":true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["area"], area);
+
+        let added = propose(&h, &mut game, json!({"op":{"id":4,"edit":{"placement":{"add":{
+            "block":"netgame_flags","fields":[{"field":"type","value":{"int":12}}]
+        }}}}}));
+        assert_eq!(added["result"]["entry"]["seq"], 2, "{added}");
+        let added_id = json!({"added":4});
+        let accepted = propose(&h, &mut game, edit(5, &added_id, &area));
+        assert_eq!(accepted["result"]["entry"]["seq"], 3, "{accepted}");
+        let cleared = propose(&h, &mut game, edit(6, target, &Json::Null));
+        assert_eq!(cleared["result"]["entry"]["seq"], 4, "{cleared}");
+        let changed = h.ok(&mut game, method::THINGS, json!({"kind":"goal","changed":true}));
+        assert_eq!(changed["things"].as_array().unwrap().len(), 1);
+        assert_eq!(changed["things"][0]["id"], added_id);
+        assert_eq!(changed["things"][0]["area"], area);
+    }
+
+    #[test]
     fn each_refusal_sentence_has_its_name() {
         for (sentence, name) in [
             (
@@ -1867,5 +1949,389 @@ mod things {
             assert!(two.try_recv().unwrap().unwrap_err().starts_with("forge_not_joined: "));
             assert!(replies.is_empty());
         }
+    }
+}
+
+// ---- the AI ground over the agent API (docs/game/forge-map-variants.md, "AI ground") ----
+
+mod ground {
+    use std::sync::{Arc, Mutex};
+
+    use ::forge::look::{Refusal, monitors::Who};
+    use ::forge::{
+        BlockKind, Frame, GroundBuilder, GroundLabel, GroundProblem, GroundReceipt, GroundRecipe,
+        GroundReport, PaletteItem, Session,
+    };
+    use agent_proto::forge::method;
+    use forge_doc::{Entry, ForgeDoc, Op, Sha256};
+    use serde_json::{Value as Json, json};
+
+    use super::{Harness, draft, game};
+    use crate::forge::ground::NO_BUILDER;
+    use crate::forge::local::{self, GroundReply, LocalApi, ProposalReply};
+
+    /// A world that is never asked: a marker places nothing.
+    struct Quiet;
+
+    impl ::forge::World for Quiet {
+        fn place(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
+            unreachable!("a marker places nothing")
+        }
+        fn respawn(&mut self, _: &PaletteItem, _: Frame) -> Result<u32, String> {
+            unreachable!("a marker places nothing")
+        }
+        fn move_object(&mut self, _: u32, _: Frame) -> Result<(), String> {
+            unreachable!("a marker places nothing")
+        }
+        fn delete(&mut self, _: u32) -> Result<(), String> {
+            unreachable!("a marker places nothing")
+        }
+    }
+
+    /// A builder that makes an invented report, or refuses.
+    struct Kit {
+        refuse: bool,
+    }
+
+    impl GroundBuilder for Kit {
+        fn recipe(&self) -> GroundRecipe {
+            GroundRecipe {
+                kit_version: 3,
+                home: 1,
+                probe: false,
+            }
+        }
+
+        fn build(&mut self, _: &ForgeDoc) -> Result<GroundReport, String> {
+            if self.refuse {
+                return Err("No room: the sectors take 9 KB too many.".into());
+            }
+            Ok(GroundReport {
+                zones: 2,
+                squads: 16,
+                problems: vec![GroundProblem {
+                    label: "ff_drop".into(),
+                    position: [1., 2., 0.],
+                    reason: "off the walkable area".into(),
+                }],
+                receipt: Some(GroundReceipt {
+                    base: "aa11".into(),
+                    labels: "bb22".into(),
+                    kit_version: 3,
+                }),
+            })
+        }
+    }
+
+    /// A session host that builds with [`Kit`] when `builds`, as the game's
+    /// does with its own builder, and answers at once.
+    struct Host {
+        session: Mutex<Arc<Session>>,
+        builds: Option<bool>,
+    }
+
+    impl LocalApi for Host {
+        fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+            Who {
+                profile: "default".into(),
+                colour: 0,
+            }
+        }
+        fn look(&self, _: &Who, _: Option<u64>) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn look_set(&self, _: &Who, _: Json) -> Result<Json, Refusal> {
+            unreachable!("the look is not this test's")
+        }
+        fn monitors(&self, _: &Who) -> Json {
+            json!({"monitors": []})
+        }
+        fn status(&self) -> Result<Json, String> {
+            Ok(json!({"session": "local"}))
+        }
+        fn session(&self) -> Result<Arc<Session>, String> {
+            Ok(self.session.lock().unwrap().clone())
+        }
+        fn document(&self) -> Result<ForgeDoc, String> {
+            Ok(self.session.lock().unwrap().document().clone())
+        }
+        fn log(&self, _: u32) -> Result<Vec<Entry>, String> {
+            Ok(vec![])
+        }
+        fn input(
+            &self,
+            _: &dyn engine::GuestMemory,
+            _: ::forge::tool::Input,
+        ) -> Result<(), String> {
+            Err("Forge input requires the active local session.".into())
+        }
+        fn propose(&self, _: u32, _: Op, _: Option<Sha256>) -> Result<ProposalReply, String> {
+            Err("not this test's".into())
+        }
+        fn ground(&self) -> Result<Json, String> {
+            Ok(crate::forge::ground::reply(
+                &*self.session()?,
+                crate::forge::ground::Facts {
+                    available: self.builds.is_some(),
+                    ..Default::default()
+                },
+            ))
+        }
+        fn ground_build(&self, if_stale: bool) -> Result<GroundReply, String> {
+            let refuse = self.builds.ok_or(NO_BUILDER)?;
+            let mut held = self.session.lock().unwrap();
+            let mut session = Session::clone(&held);
+            let mut kit = Kit { refuse };
+            let result = if if_stale {
+                session.ensure_ground(&mut kit)
+            } else {
+                session.build_ground(&mut kit).map(|_| true)
+            }
+            .map(|built| {
+                let mut reply = crate::forge::ground::reply(
+                    &session,
+                    crate::forge::ground::Facts {
+                        available: true,
+                        ..Default::default()
+                    },
+                );
+                reply["built"] = json!(built);
+                *held = Arc::new(session);
+                reply
+            });
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(result).unwrap();
+            Ok(rx)
+        }
+    }
+
+    fn host(builds: Option<bool>, markers: usize) -> Host {
+        let limits = forge_doc::Limits {
+            world: Some(forge_doc::WorldBounds {
+                min: [-8.0; 3],
+                max: [8.0; 3],
+            }),
+            base_counts: [(BlockKind::NetgameFlags, 2)].into(),
+            ..Default::default()
+        };
+        let mut session = Session::new(draft(), limits, vec![], 3).unwrap();
+        for i in 0..markers {
+            session
+                .place_marker(
+                    &mut Quiet,
+                    1 + i as u32,
+                    GroundLabel::Drop,
+                    Frame {
+                        position: [1. + i as f32, 2., 0.],
+                        rotation: [0.5, 0., 0.],
+                    },
+                    0,
+                    None,
+                )
+                .unwrap();
+        }
+        Host {
+            session: Mutex::new(Arc::new(session)),
+            builds,
+        }
+    }
+
+    /// Send `params` and read the reply the tick after.
+    fn ask(h: &Harness, game: &mut super::Game, method: &str, params: Json) -> Json {
+        h.send(method, params);
+        h.agent.on_tick(game);
+        game.tick += 1;
+        h.agent.on_tick(game);
+        h.reply()
+    }
+
+    #[test]
+    fn the_ground_before_any_build_has_its_markers_and_no_report() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 2));
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        for name in [method::GROUND, method::GROUND_BUILD] {
+            assert!(methods.as_array().unwrap().contains(&json!(name)), "{name}");
+        }
+
+        let ground = h.ok(&mut game, method::GROUND, Json::Null);
+        assert_eq!(ground["state"], "not_built");
+        assert_eq!(ground["available"], false);
+        assert_eq!(ground["building"], false);
+        assert_eq!(ground["recipe"], Json::Null);
+        assert_eq!(ground["report"], Json::Null);
+        assert_eq!(ground["problems"], json!([]));
+        assert_eq!(ground["counts"]["ff_drop"], 2);
+        assert_eq!(ground["counts"]["siege_site"], 0);
+        let markers = ground["markers"].as_array().unwrap();
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0]["label"], "ff_drop");
+        assert_eq!(markers[0]["position"], json!([1., 2., 0.]));
+        assert_eq!(markers[0]["facing"], 0.5);
+        assert_eq!(markers[0]["team"], 0);
+
+        // The call takes no parameters.
+        let bad = h.call(&mut game, method::GROUND, json!({"extra": 1}));
+        assert!(!bad["error"].is_null(), "{bad}");
+    }
+
+    #[test]
+    fn a_build_answers_with_the_report_its_problems_and_its_receipt() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(Some(false), 1));
+
+        let built = ask(&h, &mut game, method::GROUND_BUILD, Json::Null);
+        assert!(built["error"].is_null(), "{built}");
+        let built = &built["result"];
+        assert_eq!(built["built"], true);
+        assert_eq!(built["state"], "current");
+        assert_eq!(
+            built["recipe"],
+            json!({"kit_version": 3, "home": 1, "probe": false})
+        );
+        assert_eq!(built["report"]["zones"], 2);
+        assert_eq!(built["report"]["squads"], 16);
+        assert_eq!(built["report"]["problems"], 1);
+        assert_eq!(
+            built["report"]["receipt"],
+            json!({"base": "aa11", "labels": "bb22", "kit_version": 3})
+        );
+        assert_eq!(built["problems"][0]["label"], "ff_drop");
+        assert_eq!(built["problems"][0]["reason"], "off the walkable area");
+
+        // The read sees the same, and the session's build is what it reads.
+        let ground = h.ok(&mut game, method::GROUND, Json::Null);
+        assert_eq!(ground["state"], "current");
+        assert_eq!(ground["available"], true);
+        assert_eq!(ground["problems"], built["problems"]);
+
+        // Test waves: current ground is not built again, and a build
+        // that is asked for is.
+        let again = ask(
+            &h,
+            &mut game,
+            method::GROUND_BUILD,
+            json!({"if_stale": true}),
+        );
+        assert_eq!(again["result"]["built"], false);
+        let forced = ask(
+            &h,
+            &mut game,
+            method::GROUND_BUILD,
+            json!({"if_stale": false}),
+        );
+        assert_eq!(forced["result"]["built"], true);
+    }
+
+    #[test]
+    fn a_build_that_fails_or_has_no_builder_is_refused_by_name() {
+        let h = Harness::new();
+        let mut g = game(1);
+        local::install(&h.agent, host(Some(true), 1));
+        let failed = ask(&h, &mut g, method::GROUND_BUILD, Json::Null);
+        assert_eq!(failed["error"]["data"]["code"], "forge_refused");
+        assert!(
+            failed["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("No room"),
+            "{failed}"
+        );
+        let ground = h.ok(&mut g, method::GROUND, Json::Null);
+        assert_eq!(
+            ground["state"], "not_built",
+            "a failed build changes nothing"
+        );
+
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 1));
+        let none = h.call(&mut game, method::GROUND_BUILD, Json::Null);
+        assert_eq!(none["error"]["message"], NO_BUILDER);
+        let bad = h.call(&mut game, method::GROUND_BUILD, json!({"unknown": true}));
+        assert!(!bad["error"].is_null(), "{bad}");
+    }
+
+    #[test]
+    fn nav_before_any_generation_is_not_built_and_generating_needs_a_generator() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 0));
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        assert!(methods.as_array().unwrap().contains(&json!(method::NAV)));
+
+        let nav = h.ok(&mut game, method::NAV, Json::Null);
+        assert_eq!(nav["state"], "not_built");
+        assert_eq!(nav["available"], false);
+        assert_eq!(nav["counts"], Json::Null);
+        assert_eq!(nav["problems"], json!([]));
+        assert_eq!(nav["overlay"], json!([]));
+        let read = h.ok(&mut game, method::NAV, json!({"generate": false}));
+        // `at` carries the tick counters, which move with every call.
+        let (mut read, mut nav) = (read, nav);
+        read.as_object_mut().unwrap().remove("at");
+        nav.as_object_mut().unwrap().remove("at");
+        assert_eq!(read, nav);
+
+        let none = h.call(&mut game, method::NAV, json!({"generate": true}));
+        assert_eq!(none["error"]["message"], crate::forge::nav::NO_GENERATOR);
+        let bad = h.call(&mut game, method::NAV, json!({"unknown": true}));
+        assert!(!bad["error"].is_null(), "{bad}");
+    }
+
+    #[test]
+    fn nav_reply_carries_the_counts_problems_and_overlay_of_the_last_generation() {
+        struct Gen;
+        impl ::forge::NavBuilder for Gen {
+            fn generate(
+                &mut self,
+                _: &ForgeDoc,
+                _: &std::collections::BTreeMap<BlockKind, u32>,
+            ) -> Result<::forge::NavReport, String> {
+                Ok(::forge::NavReport {
+                    sectors: 40,
+                    links: [("jump".to_string(), 3)].into(),
+                    out_of_map: 2,
+                    solids: 1,
+                    problems: vec![::forge::NavProblem {
+                        kind: "start_off_mesh".into(),
+                        what: "start 1".into(),
+                        position: [0., -5., 4.],
+                        reason: "no floor under it".into(),
+                    }],
+                    lines: vec![::forge::NavLine {
+                        kind: "jump".into(),
+                        a: [0., 0., 0.],
+                        b: [1., 0., 1.],
+                    }],
+                })
+            }
+        }
+        let host = host(None, 0);
+        let mut session = Session::clone(&host.session.lock().unwrap());
+        session.generate_nav(&mut Gen).unwrap();
+        let reply = crate::forge::nav::reply(
+            &session,
+            crate::forge::nav::Facts {
+                available: true,
+                generating: false,
+            },
+        );
+        assert_eq!(reply["state"], "current");
+        assert_eq!(
+            reply["counts"],
+            json!({"sectors": 40, "links": {"jump": 3}, "out_of_map": 2, "solids": 1})
+        );
+        assert_eq!(reply["problems"][0]["kind"], "start_off_mesh");
+        assert_eq!(reply["problems"][0]["what"], "start 1");
+        assert_eq!(
+            reply["overlay"][0],
+            json!({"kind": "jump", "a": [0., 0., 0.], "b": [1., 0., 1.]})
+        );
+        let status = crate::forge::nav::status(&session, Default::default());
+        assert_eq!(status["sectors"], 40);
+        assert_eq!(status["problems"], 1);
     }
 }

@@ -1,6 +1,6 @@
 # HaloScript in the retail Xbox cache
 
-Status: Built. Code: `crates/formats/hs`. The VM (`hs::vm`) is not wired into the game. Switch: none.
+Status: Built. Code: `crates/formats/hs`. The game compares supported thread executions and VM operations against the [Rust VM](../engine/hs_vm.md#live-comparison). The format reader is unconditional.
 
 `crates/formats/hs` reads the compiled scenario tables, recovers the executable's type
 and builtin descriptors, and renders Lisp-like source. `h2 hs` prints source to
@@ -335,6 +335,73 @@ recursion; emitted occurrences and unique node counts are reported separately.
 back to a cache. `--builtins` traverses reachability without rendering source.
 All HS output modes treat a closed output pipe as normal termination and
 propagate other write failures.
+
+## Compiling source
+
+`hs::compile(scenario, catalog, source, options)`
+(`crates/formats/hs/src/compiler.rs`) turns `(global ...)` and
+`(script ...)` definitions back into nodes in a copy of the scenario's
+tables. A definition with the name of one in the scenario replaces it at
+its index; any other is appended to its table. Problems come back as
+`hs::Message`s with a 1-based line and column, the byte span and a
+stable code; nothing is returned unless the whole source compiles and the
+new tables pass `Scenario::validate`.
+
+Nodes are written as the decoder reads them: a call node (flags 8, or 10
+for a script call) whose data is its function-name atom (type 2, the
+call's opcode, the name's token), the arguments chained through `next`.
+A literal atom (flags 9) has its source type as opcode and its parent's
+type as value type; a global atom (flags 13) has the global's declared
+type as opcode and its index as data (`0x8000 | i` for a game global, as
+the map's scripts spell it). A string literal's data is its own token
+offset, which the load-time fixup replaces. Numbers have no token
+(`+0xc` is `0xffffffff`); a short is stored zero-extended.
+
+**Types.** A node's type is its parent's: a fixed builtin's parameter, a
+script's return type, a global's declared type. A builtin with custom
+argument evaluation (flags bit 1) has no parameter list. Its arguments
+take the type this map's own calls of it give that position (first,
+middle, last, or only): the call's own type where every call seen agrees
+with it, else one type where every call seen has it, else the argument's
+own type. This is learned from the map, not recovered from the engine's
+compiler (**S**); the disc run below measures it. A value of another type
+than its node's is accepted only where `castable` has the cast.
+
+**Literals.** `true`, `false`, `none`, integers (short where it fits,
+long otherwise, or the type the parent wants), reals and `#real-bits:`
+are read by their form; quoted strings take the decompiler's escapes. A
+symbolic literal (types from `script` on) resolves, in order, as this
+map's scripts already spell it for that type (harvested from the
+existing nodes), a script by its index, then the caller's
+`Options::resolve` (the scenario's blocks, read by the editor). Anything
+else is an error naming the type.
+
+**Slots and strings.** Nodes that only replaced definitions reach are
+freed (salt zero). New nodes take free slots in order, then new slots, up
+to `RETAIL_NODES` or the scenario's own size; past it the compile is
+refused with both counts. Salts count up from the largest in the table,
+with bit 15 set. A token the string data already holds keeps its offset;
+new tokens are appended, and existing offsets never move.
+
+**Writing the result.** `hs::table_writes::writes(header, base, old,
+new)` turns two sets of tables into a save's writes, by the scenario
+header's five `(count, address)` pairs: a table no longer than the map's
+is patched in place, run by run, and one that grew is a whole copy for
+the save to append; it first checks that the new tables write out and read
+back as the same bytes and graph (`Scenario::verify_written`). The Studio
+side is in [rich-editors.md, "Scripts"](../editor/rich-editors.md#scripts).
+
+**Round trip.** `hs::first_difference` compares two expression trees in
+shape, opcode, type, flags and data (string literals by their bytes,
+function names by spelling). On invented tables every construct the
+decompiler prints compiles back to equal nodes and the same source
+(`compiler/tests.rs`). On a disc, the opt-in run compiles every retail
+definition from its decompiled source alone and reports the share that
+round-trips:
+
+```sh
+H2_DISC=disc/halo2.iso cargo test -p hs --release --test compile_disc -- --ignored --nocapture
+```
 
 ## Casts (E)
 

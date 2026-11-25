@@ -94,19 +94,51 @@
       ]
     },
     "header-lines": {
-      "comment": "The header words scoring, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
+      "comment": "The header words type, uses, use, points, about and quick: words only at the start of a line, where the next token is what the parser looks for (a name, a string). In a handler they are names.",
       "patterns": [
         {
-          "comment": "scoring carrier",
-          "match": "^\\s*(scoring)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "comment": "type koth, uses slayer: the game type and the built-in game a script plays.",
+          "match": "^\\s*(type|uses)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
               "name": "keyword.other.declaration.rules"
             },
             "2": {
-              "name": "support.constant.scoring.rules"
+              "name": "support.constant.type.rules"
             }
           }
+        },
+        {
+          "comment": "points \"Laps\"",
+          "begin": "^\\s*(points)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.points.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
+        },
+        {
+          "comment": "use \"waves.rules\": another file's declarations, read in at this line.",
+          "begin": "^\\s*(use)\\b(?=\\s*\")",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.declaration.rules"
+            }
+          },
+          "end": "(?=//)|$",
+          "name": "meta.use.rules",
+          "patterns": [
+            {
+              "include": "#string"
+            }
+          ]
         },
         {
           "comment": "about \"No shields. 50 points to win.\"",
@@ -230,30 +262,6 @@
     },
     "declarations": {
       "patterns": [
-        {
-          "comment": "carrier slayer",
-          "match": "\\b(carrier)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.other.declaration.rules"
-            },
-            "2": {
-              "name": "support.constant.carrier.rules"
-            }
-          }
-        },
-        {
-          "comment": "list research",
-          "match": "\\b(list)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.other.declaration.rules"
-            },
-            "2": {
-              "name": "support.constant.list.rules"
-            }
-          }
-        },
         {
           "comment": "teams 2 (the header line; elsewhere teams is a set)",
           "match": "\\b(teams)\\s+(?=[0-9])",
@@ -470,9 +478,6 @@
           "include": "#capability"
         },
         {
-          "include": "#carrier-access"
-        },
-        {
           "include": "#enum-access"
         },
         {
@@ -580,20 +585,6 @@
       "match": "\\b(?:game\\.traits|player\\.(?:traits|team|spawn|weapons|disguise|camera)|objects\\.(?:create|delete|move)|ai\\.squads|hud\\.(?:message|superbounce)|firefight\\.director|forge\\.(?:move|delete|place|scale))\\b(?!\\s*\\()",
       "name": "support.constant.capability.rules"
     },
-    "carrier-access": {
-      "match": "\\b(carrier)\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
-      "captures": {
-        "1": {
-          "name": "storage.type.rules"
-        },
-        "2": {
-          "name": "punctuation.accessor.rules"
-        },
-        "3": {
-          "name": "variable.other.enummember.rules"
-        }
-      }
-    },
     "enum-access": {
       "comment": "Type.variant: an enum's name starts with a capital letter by convention.",
       "match": "\\b([A-Z][A-Za-z0-9_]*)\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
@@ -643,7 +634,7 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(rules|carrier|teams|list|requires|option|palette|enum|global|var|table|fn|on|label|const|let)\\b",
+          "match": "\\b(rules|teams|requires|option|palette|enum|global|var|table|fn|on|label|const|let)\\b",
           "name": "keyword.other.declaration.rules"
         },
         {
@@ -683,7 +674,7 @@
     "types": {
       "patterns": [
         {
-          "match": "\\b(int|bool|fixed|time|timer|squad|Class|class|tag|weapon|zone|player|team|object|carrier)\\b",
+          "match": "\\b(int|bool|fixed|time|timer|squad|Class|class|tag|weapon|zone|player|team|object)\\b",
           "name": "storage.type.rules"
         },
         {
@@ -694,7 +685,7 @@
     },
     "api-call": {
       "comment": "The game API's entries (caps::ENTRIES) and the language's built-in functions.",
-      "match": "\\b(alive|carrier_of|clamp|count|create|deaths|delete|end_round|erase_squad|ff_finish|ff_lives|ff_player_score|ff_respawn|ff_round|ff_score|ff_skull|ff_target|ff_team_finish|ff_team_lives|ff_wave|first|forge_delete|forge_move|forge_place|forge_scale|give|grant|granted|hunt|inside|is_objective|kills|label_number|len|lives|max|message|min|now|object_team|pick|place_squad|place_squad_at|player_of|player_score|random|register_objective|reset_objective|respawn|revoke|role_traits|round_time_left|score|seconds|set_gravity|set_lives|set_loadout|set_team|spawn_areas|spawn_objective|squad|squad_alive|take|team_of|team_score|ticks|ticks_held|whole_seconds|zone_distance|zone_id|zone_seen|zone_team_distance)\\s*(?=\\()",
+      "match": "\\b(alive|carrier_of|clamp|count|create|deaths|delete|end_round|erase_squad|ff_finish|ff_lives|ff_player_score|ff_respawn|ff_round|ff_score|ff_skull|ff_target|ff_team_finish|ff_team_lives|ff_wave|first|forge_delete|forge_move|forge_place|forge_scale|give|grant|granted|hide_area|hunt|inside|is_objective|kills|label_number|len|lives|max|message|min|now|object_team|pick|place_squad|place_squad_at|player_of|player_score|random|register_objective|reset_objective|respawn|revoke|role_traits|round_time_left|score|seconds|set_body|set_gravity|set_lives|set_loadout|set_team|show_area|spawn_areas|spawn_near|spawn_objective|squad|squad_alive|take|team_of|team_score|ticks|ticks_held|whole_seconds|zone_distance|zone_id|zone_seen|zone_team_distance)\\s*(?=\\()",
       "captures": {
         "1": {
           "name": "support.function.rules"

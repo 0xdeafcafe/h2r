@@ -11,9 +11,9 @@ use scenario_edit::MapSource;
 
 use crate::check::{self, Check};
 use crate::compile::AsHudEdit;
-use crate::huds::pill_block::{self, PillBlock};
-use crate::huds::superbounce::{self, Superbounce};
-use crate::huds::superbounce_segments as segs;
+use crate::views::pill_block::{self, PillBlock};
+use crate::views::superbounce::{self, Superbounce};
+use crate::views::superbounce_segments as segs;
 use crate::model::*;
 use crate::preview;
 use crate::templates;
@@ -207,7 +207,7 @@ fn templates_resolve_on_the_hud_editors_fixture_map() {
 /// of the other, and the readout draws fullscreen only, bottom left.
 #[test]
 fn the_readout_passes_beside_the_superbounce_hud() {
-    use crate::huds::superbounce_readout::{self as readout, Readout};
+    use crate::views::superbounce_readout::{self as readout, Readout};
     let mut src = synthetic();
     let r = check::all(&mut src, &[&Superbounce, &Readout], &Mode::ALL).unwrap();
     assert!(r.findings.is_empty(), "{:#?}", r.findings);
@@ -281,7 +281,7 @@ fn the_readout_passes_beside_the_superbounce_hud() {
 /// split frame draws none of its widgets.
 #[test]
 fn the_combined_preview_draws_no_part_of_the_block_alone() {
-    use crate::huds::superbounce_all::All;
+    use crate::views::superbounce_all::All;
     let mut src = synthetic();
     let r = check::all(&mut src, &[&All], &Mode::ALL).unwrap();
     let modes: Vec<_> = r.of(Check::Modes).collect();
@@ -304,12 +304,31 @@ fn the_combined_preview_draws_no_part_of_the_block_alone() {
     }
 }
 
+/// The combined Forge preview (`h2 hud preview forge-all`) in every screen
+/// mode: no part of the block is drawn without the rest, as for
+/// `superbounce-all`.
+#[test]
+fn the_forge_preview_draws_no_part_of_the_block_alone() {
+    use crate::views::forge_all::All;
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&All], &Mode::ALL).unwrap();
+    let modes: Vec<_> = r.of(Check::Modes).collect();
+    assert!(modes.is_empty(), "{modes:#?}");
+    let hud = All.hud();
+    for s in r.shots.iter().filter(|s| s.mode != Mode::Full) {
+        for d in s.elements.iter().filter(|d| d.drawn) {
+            let e = hud.element(d.id).unwrap();
+            assert!(e.kind.is_channel(), "{} {:?}: {}", s.state, s.mode, d.id);
+        }
+    }
+}
+
 /// Each navpoint of a HUD has a sample of its own, so two shown at once
 /// (the readout's two targets, the ranked seams after a bounce) draw
 /// apart: neither's arrow, marker and number is over the other's.
 #[test]
 fn a_huds_navpoints_draw_at_samples_of_their_own() {
-    use crate::huds::superbounce_readout::{self as readout, Readout};
+    use crate::views::superbounce_readout::{self as readout, Readout};
     for (i, a) in preview::NAVPOINT_SAMPLES.iter().enumerate() {
         for b in &preview::NAVPOINT_SAMPLES[i + 1..] {
             assert!((a[0] - b[0]).abs() >= 0.1, "{a:?} {b:?}");
@@ -502,7 +521,7 @@ fn the_json_rectangles_are_the_compiled_bytes() {
     assert_eq!(compared, states, "the arming bar in every state");
 }
 
-/// The kit's pill block (`huds::pill_block`) on the synthetic map:
+/// The kit's pill block (`views::pill_block`) on the synthetic map:
 /// fullscreen the pill is beside the tracker, cut from the frag pill
 /// (the body its first 20 pixels, the end its last 7 against the body,
 /// the panel's height) with its icon where a pill's count is; in split
@@ -585,7 +604,7 @@ fn the_pill_block_is_beside_the_tracker_and_in_the_grenade_row() {
 /// as the stage says.
 #[test]
 fn the_charge_segments_draw_round_the_tracker() {
-    use crate::huds::superbounce_readout::Readout;
+    use crate::views::superbounce_readout::Readout;
     assert_eq!(
         segs::TRACKER.map(i32::from),
         crate::rects::TRACKER.pixels(),
@@ -921,7 +940,7 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         case(vec![Element::icon("i", nope, bl(10, -150))], &[]),
         Check::Templates,
     );
-    // prompt: a notification over the game's 63 characters.
+    // prompt: a notification over the game's 62 characters.
     fires(
         case(
             vec![Element::channel("m", Kind::Message { longest: "a" })],
@@ -934,6 +953,22 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         case(
             vec![Element::channel("t", Kind::Training { longest: "one" })],
             &[("t", Value::text("one\ntwo\nthree"))],
+        ),
+        Check::Prompt,
+    );
+    // prompt: a banner over the game's 62 characters, and one of two
+    // lines.
+    fires(
+        case(
+            vec![Element::channel("b", Kind::Banner { longest: "A" })],
+            &[("b", Value::text("A".repeat(63)))],
+        ),
+        Check::Prompt,
+    );
+    fires(
+        case(
+            vec![Element::channel("b", Kind::Banner { longest: "A" })],
+            &[("b", Value::text("WAVE 3\nBOSS WAVE"))],
         ),
         Check::Prompt,
     );
@@ -1033,6 +1068,7 @@ fn a_crop_is_its_part_of_the_frag_pill() {
         count: [(0, 0); 3],
         panel: 103.0,
         frag: [53.0, 50.0],
+        step: [(53, 0); 3],
     };
     assert_eq!(row.crop(PillPart::End), [96.0 / 103.0, 1.0, 0.0, 1.0]);
     row.frag = [0.0, 50.0];
@@ -1330,8 +1366,8 @@ fn the_world_check_fires_on_marks_built_to_break_it() {
 /// a caught fall it is inside, the box is in the go green and says so.
 #[test]
 fn the_approach_guide_draws_in_its_moments() {
-    use crate::huds::superbounce_guide as guide;
-    use crate::huds::superbounce_readout::{self as readout, Readout};
+    use crate::views::superbounce_guide as guide;
+    use crate::views::superbounce_readout::{self as readout, Readout};
     let mut src = synthetic();
     let r = check::hud(&mut src, &Readout, &Mode::ALL).unwrap();
     assert!(r.findings.is_empty(), "{:#?}", r.findings);
@@ -1628,4 +1664,198 @@ fn the_preview_draws_a_line_in_a_team_colour() {
     let (red, blue) = (pixel(&shot(0)), pixel(&shot(1)));
     assert_eq!(red, preview::PREVIEW_TEAMS[0].to_vec());
     assert_eq!(blue, preview::PREVIEW_TEAMS[1].to_vec());
+}
+
+/// The banner is drawn where the message routine draws its timed line:
+/// one line centred across the frame, its top 40 pixels above the frame's
+/// bottom, in every screen mode its place has, in the notifications'
+/// colour; a short banner passes the prompt check.
+#[test]
+fn the_banner_is_drawn_centred_above_the_frames_bottom() {
+    let mut banner = Element::channel(
+        "b",
+        Kind::Banner {
+            longest: "ROUND COMPLETE",
+        },
+    );
+    banner.at = Place::GAME.split((0, 0), (0, 0));
+    let c = case(vec![banner], &[("b", Value::text("WAVE 3"))]);
+    let r = check::hud(&mut synthetic(), &c, &Mode::ALL).unwrap();
+    let prompt: Vec<_> = r.of(Check::Prompt).collect();
+    assert!(prompt.is_empty(), "{prompt:#?}");
+    for mode in Mode::ALL {
+        let s = r.shots.iter().find(|s| s.mode == mode).unwrap();
+        let d = s.element("b").unwrap();
+        assert!(d.channel && d.drawn, "{mode:?}");
+        assert_eq!(d.kind, "banner");
+        assert_eq!(d.text.as_deref(), Some("WAVE 3"));
+        let rect = d.rect.unwrap();
+        let f = &s.frame;
+        let centre = (f32::from(f.left) + f32::from(f.right)) / 2.0;
+        assert!(
+            ((rect.x0 + rect.x1) / 2.0 - centre).abs() <= 1.0,
+            "{mode:?}: {rect:?}"
+        );
+        assert_eq!(
+            rect.y0,
+            f32::from(f.bottom) - preview::BANNER_UP,
+            "{mode:?}"
+        );
+        // The longest is reserved wider than the text drawn.
+        let reserved = d.reserved.unwrap();
+        assert!(reserved.x1 - reserved.x0 >= rect.x1 - rect.x0, "{mode:?}");
+    }
+    // Fullscreen only unless its place says otherwise.
+    let full = case(
+        vec![Element::channel("b", Kind::Banner { longest: "WAVE 3" })],
+        &[("b", Value::text("WAVE 3"))],
+    );
+    let r = check::hud(&mut synthetic(), &full, &[Mode::Half]).unwrap();
+    let d = r.shots[0].element("b").unwrap();
+    assert!(!d.drawn && d.reserved.is_none());
+}
+
+/// The Firefight HUD on the synthetic sheet (`h2 hud preview firefight
+/// --state all --mode all --synthetic`): every state and mode passes every
+/// check but the glyphs (no fonts); in a wave's placing the banner, both
+/// pills and their counts draw in every mode, the enemies pill right of
+/// the lives pill, and the banner is the wave's.
+#[test]
+fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
+    use crate::views::firefight::{self as ff, Firefight};
+    let mut src = synthetic();
+    let r = check::all(&mut src, &[&Firefight], &Mode::ALL).unwrap();
+    assert!(r.findings.is_empty(), "{:#?}", r.findings);
+    assert_eq!(r.shots.len(), Firefight.states().len() * 3);
+    for mode in Mode::ALL {
+        let s = r
+            .shots
+            .iter()
+            .find(|s| s.state == "spawning" && s.mode == mode)
+            .unwrap();
+        for id in [
+            ff::BANNER,
+            ff::LIVES_PILL,
+            ff::LIVES_END,
+            ff::LIVES_COUNT,
+            ff::ENEMIES_PILL,
+            ff::ENEMIES_END,
+            ff::ENEMIES_COUNT,
+        ] {
+            assert!(s.element(id).unwrap().drawn, "{mode:?} {id}");
+        }
+        let rect = |id: &str| s.element(id).unwrap().rect.unwrap();
+        assert!(
+            rect(ff::LIVES_END).x1 <= rect(ff::ENEMIES_PILL).x0,
+            "{mode:?}: {:?} {:?}",
+            rect(ff::LIVES_END),
+            rect(ff::ENEMIES_PILL)
+        );
+        assert_eq!(
+            s.element(ff::BANNER).unwrap().text.as_deref(),
+            Some("WAVE 2")
+        );
+        assert!(!s.element(ff::NOTE).unwrap().drawn, "{mode:?}: no note");
+    }
+    // Between waves the enemies pill is gone and the lives pill stays.
+    let between = r
+        .shots
+        .iter()
+        .find(|s| s.state == "wave-complete" && s.mode == Mode::Full)
+        .unwrap();
+    assert!(between.element(ff::LIVES_PILL).unwrap().drawn);
+    assert!(!between.element(ff::ENEMIES_PILL).unwrap().drawn);
+}
+
+/// A gizmo axis is a segment in the axis' colour: the check refuses an
+/// axis off a world mark and a fourth axis, the preview draws the
+/// segment's middle in the axis' colour, and the three differ.
+#[test]
+fn the_preview_draws_a_gizmo_segment_in_its_axis_colour() {
+    use hud_kit_core::world::{AXES, AXIS_COLOURS, Pose, Shape};
+    let seg = |id| {
+        Element::channel(
+            id,
+            Kind::WorldMark {
+                shape: Shape::Segment,
+                longest: "",
+            },
+        )
+    };
+    let run = |element: Element, style: Style, pose: Option<Pose>| {
+        let id = element.id;
+        let c = WorldCase {
+            hud: Hud {
+                name: "world",
+                elements: vec![element],
+            },
+            states: vec![("s", Values(vec![(id, Value::shown().styled(style))]))],
+            poses: pose.map(|p| vec![(id, p)]).unwrap_or_default(),
+        };
+        check::hud(&mut synthetic(), &c, &[Mode::Full]).unwrap()
+    };
+    let pose = Pose::at([-0.2, 0.0, 0.0], [0.0, 0.0]).to([0.2, 0.0, 0.0]);
+    let pixel = |axis: u8| {
+        let r = run(seg("s"), Style::Axis(axis), Some(pose));
+        assert!(r.findings.is_empty(), "{:#?}", r.findings);
+        let s = r.shots.into_iter().next().unwrap();
+        let d = s.element("s").unwrap();
+        assert!(d.drawn);
+        assert_eq!(d.world.as_ref().unwrap().edges, 1);
+        let at = preview::project(&s.frame, [0.0, 0.0, 0.0]);
+        let i = ((at[1].round() as u32 * s.canvas.width + at[0].round() as u32) * 4) as usize;
+        s.canvas.rgba[i..i + 3].to_vec()
+    };
+    let colours: Vec<Vec<u8>> = (0..AXES).map(pixel).collect();
+    for (axis, got) in colours.iter().enumerate() {
+        let want = AXIS_COLOURS[axis].map(|v| (v * 255.0).round() as u8);
+        assert_eq!(got, &want.to_vec(), "axis {axis}");
+    }
+    let texts = |element, style, pose| -> Vec<String> {
+        run(element, style, pose)
+            .of(Check::World)
+            .map(|f| f.text.clone())
+            .collect()
+    };
+    assert_eq!(
+        texts(seg("s"), Style::Axis(AXES), Some(pose)),
+        [format!("s is in axis {AXES}'s colour; a gizmo has {AXES} axes")]
+    );
+    let text = Element::text("t", Font::Hud, Justify::Start, "AB", bl(10, -150));
+    assert!(texts(text, Style::Axis(1), None).iter().any(|t| t == "t is a text in axis 1's colour, a world mark's alone"));
+    assert_eq!(Style::Axis(2).name(), "axis 2");
+}
+
+/// The monitor's HUD (`Describe::monitor`) on the synthetic map: drawn
+/// over the motion tracker alone, the retail check meets nothing else,
+/// and its budget pill is the grenade row's first place (the panel's
+/// left end, where the retail pills would be), not one step past the
+/// frag pill.
+#[test]
+fn the_monitor_hud_is_over_the_tracker_alone_and_its_pill_is_the_rows_first() {
+    use crate::views::forge::{BUDGET_PILL, Forge};
+    assert!(Forge.monitor() && !PillBlock.monitor());
+    let mut src = synthetic();
+    let mut retail = hud_edit::model::read(&mut src.map, src.player).unwrap();
+    assert!(retail.widgets.iter().any(|w| w.name != "motion_sensor"));
+    preview::monitor_retail(&mut retail);
+    assert!(!retail.widgets.is_empty());
+    assert!(retail.widgets.iter().all(|w| w.name == "motion_sensor"));
+    let r = check::hud(&mut src, &Forge, &[Mode::Full]).unwrap();
+    assert_eq!(r.of(Check::Retail).count(), 0, "{:?}", r.findings);
+    let s = r
+        .shots
+        .iter()
+        .find(|s| s.element(BUDGET_PILL).is_some_and(|d| d.drawn))
+        .expect("a state that shows the budget");
+    assert!(s.retail.iter().all(|p| p.name == "motion_sensor"));
+    let f = Frame::for_mode(Mode::Full);
+    let at = s.element(BUDGET_PILL).unwrap().rect.unwrap().pixels();
+    assert_eq!(
+        [at[0], at[1]],
+        [
+            i32::from(f.left + synthetic::PANEL_AT.0),
+            i32::from(f.top + synthetic::PANEL_AT.1)
+        ]
+    );
 }

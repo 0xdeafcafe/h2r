@@ -1,26 +1,31 @@
 //! The Textures tool's windows (docs/editor/modeling.md, "The tools in the
 //! window"): the map's bitmaps on the left, the 2D canvas in the centre
-//! (zoom, face and slice pickers, the tools) and the tool's settings, the
-//! image's format, the adjustments and PNG in and out in the inspector.
-//! State lives in [`crate::app::textures::Textures`] and
-//! [`bitmap_edit::Bitmap`]; everything goes back as [`Action`]s, the same
-//! commands the `bitmap.*` methods run.
+//! (zoom, the scrollbars and a drag with the middle button to pan, face
+//! and slice pickers, the tools) and the tool's settings, the image's
+//! format, the adjustments (invert, levels, hue, channel copy and the
+//! turns) and PNG in and out in the inspector. State lives in
+//! [`crate::app::textures::Textures`] and [`bitmap_edit::Bitmap`];
+//! everything goes back as [`Action`]s, the same commands the `bitmap.*`
+//! methods run.
 //!
 //! The canvas shows the layer's pixels through a texture that is updated
 //! from the bitmap's dirty rectangles (`Bitmap::take_view_dirty`), so a
-//! stroke shows as it is made and an undo shows the tiles it swapped.
+//! stroke shows as it is made and an undo shows the tiles it swapped. Undo
+//! and Redo take the bitmap's document (`Action::UndoDoc`), its paint and
+//! shape steps beside the bitmap's own writes.
 
 use std::path::PathBuf;
 
-use bitmap_edit::{Adjust, BitmapOp, LayerId, Rect};
+use bitmap_edit::{Adjust, BitmapOp, Channel, LayerId, Rect, Turn};
 use dear_imgui_rs::{Key, MouseButton, TextureId, TreeNodeFlags, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 use map::TagId;
 use tags::PixelFormat;
+use tags::bitmap_grow::SpriteView;
 
 use crate::app::image_gen::ImageAction;
 use crate::app::textures::{BitmapAction, PaintTool};
-use crate::app::{Action, App};
+use crate::app::{Action, App, Doc};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
@@ -42,14 +47,35 @@ struct Marquee {
 /// The tool's UI-only state.
 pub struct TexturesUi {
     texture: Option<Texture>,
-    /// A brush or eraser drag is in progress.
+    /// A brush, eraser or clone drag is in progress.
     painting: bool,
     last: [f32; 2],
+    /// The layer `last` is a point of: another one shown, there is no
+    /// last point to draw a line from.
+    last_layer: Option<(TagId, LayerId)>,
+    /// A drag with the middle button, which pans the canvas.
+    panning: bool,
     marquee: Option<Marquee>,
     levels: [f32; 3],
     hsv: [f32; 3],
+    /// The channel **Copy channel** reads.
+    copy_from: Channel,
     /// The Resize fields and the image they were filled from.
     resize: Option<((TagId, usize), [i32; 2], PixelFormat)>,
+    /// The sequence fields being typed (label, first image, count) and the
+    /// sequence they belong to, committed when the field is left.
+    seq_edit: Option<((TagId, usize), String, [i32; 2])>,
+    /// The sprite fields being typed, committed when a field is left.
+    sprite_edit: Option<((TagId, usize, usize), SpriteFields)>,
+}
+
+/// A sprite's fields as typed.
+#[derive(Clone, Copy)]
+struct SpriteFields {
+    image: i32,
+    /// Left, right, top, bottom.
+    bounds: [f32; 4],
+    registration: [f32; 2],
 }
 
 impl Default for TexturesUi {
@@ -58,10 +84,15 @@ impl Default for TexturesUi {
             texture: None,
             painting: false,
             last: [f32::NAN; 2],
+            last_layer: None,
+            panning: false,
             marquee: None,
             levels: [0.0, 1.0, 1.0],
             hsv: [0.0, 1.0, 1.0],
+            copy_from: Channel::R,
             resize: None,
+            seq_edit: None,
+            sprite_edit: None,
         }
     }
 }
@@ -81,6 +112,25 @@ const FORMATS: [PixelFormat; 12] = [
     PixelFormat::Dxt3,
     PixelFormat::Dxt5,
 ];
+
+/// A button each for the turns of the whole layer or the selection.
+const TURNS: [(&str, Turn); 5] = [
+    ("Flip horizontal", Turn::FlipHorizontal),
+    ("Flip vertical", Turn::FlipVertical),
+    ("Turn 90 right", Turn::Quarter),
+    ("Turn 180", Turn::Half),
+    ("Turn 90 left", Turn::ThreeQuarters),
+];
+
+fn channel_label(c: Channel) -> &'static str {
+    match c {
+        Channel::R => "Red",
+        Channel::G => "Green",
+        Channel::B => "Blue",
+        Channel::A => "Alpha",
+        Channel::Luma => "Luma",
+    }
+}
 
 fn heading(ui: &Ui, fonts: &Fonts, t: &str) {
     let f = ui.push_font(fonts.bold);
@@ -242,9 +292,12 @@ pub fn canvas(
             }));
         }
     }
-    // The tools (B, E, G, I), the zoom and the undo.
+    // The tools (B, E, S, G, I), the zoom and the undo.
     for t in PaintTool::ALL {
-        if ui.radio_button_bool(format!("{}##tex-tool-{t:?}", t.label()), app.textures.tool == t) {
+        if ui.radio_button_bool(
+            format!("{}##tex-tool-{t:?}", t.label()),
+            app.textures.tool == t,
+        ) {
             app.textures.tool = t;
         }
         ui.same_line();
@@ -275,12 +328,13 @@ pub fn canvas(
     let inside = px[0] >= 0.0 && px[1] >= 0.0 && px[0] < w as f32 && px[1] < hgt as f32;
     let editable = h.locked.is_none() && h.error.is_none();
 
-    // Keys: B brush, E eraser, G fill, I eyedropper, X swap, [ and ] size.
+    // Keys: B brush, E eraser, S clone, G fill, I eyedropper, X swap, [ and ] size.
     if (hovered || ui.is_window_focused()) && !io.want_text_input() {
         let t = &mut app.textures;
         for (key, tool) in [
             (Key::B, PaintTool::Brush),
             (Key::E, PaintTool::Eraser),
+            (Key::S, PaintTool::Clone),
             (Key::G, PaintTool::Fill),
             (Key::I, PaintTool::Eyedropper),
         ] {
@@ -302,14 +356,75 @@ pub fn canvas(
         let f = if io.mouse_wheel() > 0.0 { 1.25 } else { 0.8 };
         app.textures.zoom = (app.textures.zoom * f).clamp(0.25, 32.0);
     }
+    // A drag with the middle button pans the canvas; the scrollbars follow.
+    if ui.is_window_hovered() && ui.is_mouse_clicked(MouseButton::Middle) {
+        st.panning = true;
+    }
+    if !ui.is_mouse_down(MouseButton::Middle) {
+        st.panning = false;
+    }
+    if st.panning {
+        let d = io.mouse_delta();
+        ui.set_scroll_x(ui.scroll_x() - d[0]);
+        ui.set_scroll_y(ui.scroll_y() - d[1]);
+    }
 
     // The mouse.
     let tool = app.textures.tool;
+    // A line starts where the last stroke on this layer ended.
+    if st.last_layer != Some((tag, layer)) {
+        st.last_layer = Some((tag, layer));
+        st.last = [f32::NAN; 2];
+    }
     if hovered && ui.is_mouse_clicked(MouseButton::Left) && inside {
+        // The click's pixel centre: where a clone source is set.
+        let click = [px[0].floor().max(0.0) + 0.5, px[1].floor().max(0.0) + 0.5];
+        // Shift+click: a straight stroke from the last point to the click.
+        let line = io.key_shift() && st.last[0].is_finite();
         match tool {
+            PaintTool::Clone if io.key_alt() || app.textures.clone_source.is_none() => {
+                app.textures.clone_source = Some((layer, click));
+            }
+            PaintTool::Clone if editable && line => {
+                actions.push(Action::Bitmap(BitmapAction::Line {
+                    tag,
+                    layer,
+                    from: st.last,
+                    to: px,
+                }));
+                st.last = px;
+            }
+            PaintTool::Clone if editable => {
+                if let Some((_, at)) = app.textures.clone_source {
+                    actions.push(Action::Bitmap(BitmapAction::CloneBegin {
+                        tag,
+                        layer,
+                        from: None,
+                        at,
+                    }));
+                    actions.push(Action::Bitmap(BitmapAction::StrokeTo {
+                        x: px[0],
+                        y: px[1],
+                    }));
+                    st.painting = true;
+                    st.last = px;
+                }
+            }
+            PaintTool::Brush | PaintTool::Eraser if editable && line => {
+                actions.push(Action::Bitmap(BitmapAction::Line {
+                    tag,
+                    layer,
+                    from: st.last,
+                    to: px,
+                }));
+                st.last = px;
+            }
             PaintTool::Brush | PaintTool::Eraser if editable => {
                 actions.push(Action::Bitmap(BitmapAction::StrokeBegin { tag, layer }));
-                actions.push(Action::Bitmap(BitmapAction::StrokeTo { x: px[0], y: px[1] }));
+                actions.push(Action::Bitmap(BitmapAction::StrokeTo {
+                    x: px[0],
+                    y: px[1],
+                }));
                 st.painting = true;
                 st.last = px;
             }
@@ -345,7 +460,10 @@ pub fn canvas(
     if st.painting {
         if ui.is_mouse_down(MouseButton::Left) {
             if px != st.last {
-                actions.push(Action::Bitmap(BitmapAction::StrokeTo { x: px[0], y: px[1] }));
+                actions.push(Action::Bitmap(BitmapAction::StrokeTo {
+                    x: px[0],
+                    y: px[1],
+                }));
                 st.last = px;
             }
         } else {
@@ -358,12 +476,15 @@ pub fn canvas(
     let clamp = |p: [f32; 2]| [p[0].clamp(0.0, w as f32), p[1].clamp(0.0, hgt as f32)];
     if let Some(mq) = st.marquee {
         let (a, b) = (clamp(mq.from), clamp(px));
-        dl.add_rect(at(a), at(b), theme::WIDGET_FOCUS).thickness(1.0).build();
+        dl.add_rect(at(a), at(b), theme::WIDGET_FOCUS)
+            .thickness(1.0)
+            .build();
         if !ui.is_mouse_down(MouseButton::Left) {
             st.marquee = None;
             let (x0, y0) = (a[0].min(b[0]).floor() as u32, a[1].min(b[1]).floor() as u32);
             let (x1, y1) = (a[0].max(b[0]).ceil() as u32, a[1].max(b[1]).ceil() as u32);
-            app.textures.selection = (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0));
+            app.textures.selection =
+                (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0));
         }
     } else if let Some(r) = app.textures.selection {
         dl.add_rect(
@@ -374,9 +495,50 @@ pub fn canvas(
         .thickness(1.0)
         .build();
     }
-    if hovered && matches!(tool, PaintTool::Brush | PaintTool::Eraser) {
+    // The clone tool's source: a cross where it was set, on this layer.
+    if let Some((l, s)) = app.textures.clone_source
+        && l == layer
+    {
+        let c = at([s[0] * zoom, s[1] * zoom]);
+        for (a, b) in [
+            ([c[0] - 6.0, c[1]], [c[0] + 6.0, c[1]]),
+            ([c[0], c[1] - 6.0], [c[0], c[1] + 6.0]),
+        ] {
+            dl.add_line(a, b, theme::WIDGET_FOCUS)
+                .thickness(1.5)
+                .build();
+        }
+    }
+    // The sprites cut from this image, outlined over it.
+    if let Some(open) = app.textures.open.get(&tag) {
+        let mut i = 0;
+        while let Some(seq) = open.sequence(i) {
+            for rec in &seq.sprites {
+                let v = SpriteView::read(rec);
+                if i32::from(v.image) == layer.image as i32 {
+                    let (fw, fh) = (w as f32, hgt as f32);
+                    dl.add_rect(
+                        at([v.left * fw, v.top * fh]),
+                        at([v.right * fw, v.bottom * fh]),
+                        theme::SCREEN_WIDGET,
+                    )
+                    .thickness(1.0)
+                    .build();
+                }
+            }
+            i += 1;
+        }
+    }
+    if hovered
+        && matches!(
+            tool,
+            PaintTool::Brush | PaintTool::Eraser | PaintTool::Clone
+        )
+    {
         let r = app.textures.brush.size * 0.5 * zoom;
-        dl.add_circle(m, r.max(1.0), theme::WIDGET_FOCUS).thickness(1.0).build();
+        dl.add_circle(m, r.max(1.0), theme::WIDGET_FOCUS)
+            .thickness(1.0)
+            .build();
     }
     if hovered && inside {
         let c = app
@@ -399,7 +561,11 @@ fn write(gpu: &mut Gpu<'_>, texture: &wgpu::Texture, r: Rect, rgba: &[u8]) {
         wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
-            origin: wgpu::Origin3d { x: r.x, y: r.y, z: 0 },
+            origin: wgpu::Origin3d {
+                x: r.x,
+                y: r.y,
+                z: 0,
+            },
             aspect: wgpu::TextureAspect::All,
         },
         rgba,
@@ -522,6 +688,18 @@ pub fn inspector(
         if !t.channels.any() {
             t.channels.a = true;
         }
+        if t.tool == PaintTool::Clone {
+            match t.clone_source {
+                Some((_, s)) => ui.text(format!(
+                    "Clone source: pixel {}, {}. Drag to copy from there; Alt+click moves the source.",
+                    s[0] as u32,
+                    s[1] as u32
+                )),
+                None => ui.text_disabled(
+                    "Clone: click the canvas to set the source, then drag to copy from it.",
+                ),
+            }
+        }
     }
     if ui.collapsing_header("Selection##tex-sel", TreeNodeFlags::DEFAULT_OPEN) {
         match app.textures.selection {
@@ -537,29 +715,31 @@ pub fn inspector(
     let d = ui.begin_disabled_with_cond(!editable);
     if ui.collapsing_header("Adjust##tex-adjust", TreeNodeFlags::NONE) {
         let (rect, channels) = (app.textures.selection, app.textures.channels);
-        let mut adjust = |a: Adjust| {
-            actions.push(Action::Bitmap(BitmapAction::Apply {
-                tag,
-                op: BitmapOp::Adjust {
-                    layer,
-                    adjust: a,
-                    rect,
-                    channels,
-                },
-            }));
+        let mut apply = |op: BitmapOp| {
+            actions.push(Action::Bitmap(BitmapAction::Apply { tag, op }));
         };
         if ui.button("Invert##tex-invert") {
-            adjust(Adjust::Invert);
+            apply(BitmapOp::Adjust {
+                layer,
+                adjust: Adjust::Invert,
+                rect,
+                channels,
+            });
         }
         ui.separator();
         ui.slider_f32("Black##tex-black", &mut st.levels[0], 0.0, 0.99);
         ui.slider_f32("White##tex-white", &mut st.levels[1], 0.01, 1.0);
         ui.slider_f32("Gamma##tex-gamma", &mut st.levels[2], 0.1, 5.0);
         if ui.button("Apply levels##tex-levels") {
-            adjust(Adjust::Levels {
-                black: st.levels[0],
-                white: st.levels[1],
-                gamma: st.levels[2],
+            apply(BitmapOp::Adjust {
+                layer,
+                adjust: Adjust::Levels {
+                    black: st.levels[0],
+                    white: st.levels[1],
+                    gamma: st.levels[2],
+                },
+                rect,
+                channels,
             });
         }
         ui.separator();
@@ -567,12 +747,51 @@ pub fn inspector(
         ui.slider_f32("Saturation##tex-sat", &mut st.hsv[1], 0.0, 2.0);
         ui.slider_f32("Value##tex-val", &mut st.hsv[2], 0.0, 2.0);
         if ui.button("Apply hue, saturation, value##tex-hsv") {
-            adjust(Adjust::Hsv {
-                hue: st.hsv[0],
-                saturation: st.hsv[1],
-                value: st.hsv[2],
+            apply(BitmapOp::Adjust {
+                layer,
+                adjust: Adjust::Hsv {
+                    hue: st.hsv[0],
+                    saturation: st.hsv[1],
+                    value: st.hsv[2],
+                },
+                rect,
+                channels,
             });
         }
+        ui.separator();
+        ui.set_next_item_width(110.0);
+        if let Some(_c) = ui.begin_combo("##tex-copy-from", channel_label(st.copy_from)) {
+            for ch in Channel::ALL {
+                if ui
+                    .selectable_config(format!("{}##tex-copy-{}", channel_label(ch), ch.name()))
+                    .selected(ch == st.copy_from)
+                    .build()
+                {
+                    st.copy_from = ch;
+                }
+            }
+        }
+        ui.same_line();
+        if ui.button("Copy channel##tex-copy") {
+            apply(BitmapOp::CopyChannel {
+                layer,
+                from: st.copy_from,
+                to: channels,
+                rect,
+            });
+        }
+        ui.set_item_tooltip(
+            "Writes that channel (luma: the Rec. 601 light of the colour) into the channels ticked under Tool, over the selection or the whole layer",
+        );
+        for (i, (label, turn)) in TURNS.into_iter().enumerate() {
+            if ui.button(format!("{label}##tex-turn-{i}")) {
+                apply(BitmapOp::Turn { layer, turn, rect });
+            }
+            if i + 1 < TURNS.len() {
+                ui.same_line();
+            }
+        }
+        ui.text_disabled("A quarter turn needs a square: the image or the selection.");
     }
     d.end();
     if ui.collapsing_header("Image##tex-image-info", TreeNodeFlags::DEFAULT_OPEN) {
@@ -616,13 +835,20 @@ pub fn inspector(
         }
         ui.same_line();
         if ui.button(format!("{} Generate...##tex-generate", icon::ZAP)) {
-            let name = app.textures.open.get(&tag).map(|o| o.name.clone()).unwrap_or_default();
+            let name = app
+                .textures
+                .open
+                .get(&tag)
+                .map(|o| o.name.clone())
+                .unwrap_or_default();
             actions.push(Action::Image(ImageAction::Open {
                 bitmap: name,
                 image: layer.image as usize,
             }));
         }
-        ui.set_item_tooltip("Make a new picture for this image from a prompt and references you pick");
+        ui.set_item_tooltip(
+            "Make a new picture for this image from a prompt and references you pick",
+        );
         d.end();
         ui.same_line();
         if ui.button(format!("{} Export...##tex-export", icon::SAVE)) {
@@ -643,15 +869,19 @@ pub fn inspector(
         }
     }
     ui.separator();
-    let d = ui.begin_disabled_with_cond(!app.textures.can_undo());
+    // The bitmap's document: its paint and shape steps beside the bitmap's
+    // own writes, as Cmd+Z takes them (docs/editor/studio-flow.md, "Shared
+    // patterns").
+    let (can_undo, can_redo) = app.doc_can(Doc::Tag(tag));
+    let d = ui.begin_disabled_with_cond(!can_undo);
     if ui.button(format!("{} Undo##tex-undo", icon::UNDO)) {
-        actions.push(Action::Bitmap(BitmapAction::Undo));
+        actions.push(Action::UndoDoc(Doc::Tag(tag)));
     }
     d.end();
     ui.same_line();
-    let d = ui.begin_disabled_with_cond(!app.textures.can_redo());
+    let d = ui.begin_disabled_with_cond(!can_redo);
     if ui.button(format!("{} Redo##tex-redo", icon::REDO)) {
-        actions.push(Action::Bitmap(BitmapAction::Redo));
+        actions.push(Action::RedoDoc(Doc::Tag(tag)));
     }
     d.end();
     ui.same_line();
@@ -716,6 +946,16 @@ fn image_shape(
         }
     }
     ui.same_line();
+    if ui.button("Auto##tex-resize-auto") {
+        let (w, h) = (size[0].clamp(1, 4096) as u32, size[1].clamp(1, 4096) as u32);
+        if let Ok(f) = app.suggest_bitmap_format(tag, image, Some((w, h))) {
+            *format = f;
+        }
+    }
+    ui.set_item_tooltip(
+        "Pick the format for this picture at this size: the one it has when that holds its alpha, else DXT1 for opaque and cut-out pictures, DXT5 for blended ones, and a linear format when a side is not a power of two",
+    );
+    ui.same_line();
     if ui.button("Resize##tex-resize") {
         let (w, h) = (size[0].clamp(1, 4096) as u32, size[1].clamp(1, 4096) as u32);
         actions.push(Action::Bitmap(BitmapAction::Reshape {
@@ -750,7 +990,10 @@ fn image_shape(
         "Add an image after the last, the size and format of this one, transparent until you paint, import or generate into it",
     );
     ui.same_line();
-    if ui.button(format!("{} New image, generated...##tex-add-generate", icon::ZAP)) {
+    if ui.button(format!(
+        "{} New image, generated...##tex-add-generate",
+        icon::ZAP
+    )) {
         actions.push(Action::Image(ImageAction::NewSlot {
             bitmap: name.clone(),
             like: image,
@@ -769,18 +1012,13 @@ fn image_shape(
             ui.text_disabled("None: the bitmap's images are picked by index.");
         }
         for s in &sequences {
-            let label = if s.label.is_empty() { "(no label)" } else { &s.label };
-            let last = i32::from(s.first) + i32::from(s.count) - 1;
-            ui.text(format!(
-                "{}  {label}: images {} to {last}{}{}",
-                s.index,
-                s.first,
-                if s.sprites > 0 { format!(", {} sprites", s.sprites) } else { String::new() },
-                if s.added { " (added)" } else { "" },
-            ));
+            sequence_rows(ui, app, st, tag, s, images, movable.is_some(), actions);
         }
         let d = ui.begin_disabled_with_cond(movable.is_some() || image >= images);
-        if ui.button(format!("{} Add a sequence for image {image}##tex-add-seq", icon::PLUS)) {
+        if ui.button(format!(
+            "{} Add a sequence for image {image}##tex-add-seq",
+            icon::PLUS
+        )) {
             actions.push(Action::Bitmap(BitmapAction::AddSequence {
                 tag,
                 first: image,
@@ -864,4 +1102,152 @@ pub fn file_menu(ui: &Ui, app: &App, dialogs: bool, actions: &mut Vec<Action>) {
             }));
         }
     }
+}
+
+/// One sequence: its label, first image and count, and its sprites, each
+/// field committed (one undo step) when it is left.
+#[allow(clippy::too_many_arguments)]
+fn sequence_rows(
+    ui: &Ui,
+    app: &App,
+    st: &mut TexturesUi,
+    tag: TagId,
+    s: &crate::app::textures::SequenceInfo,
+    images: usize,
+    locked: bool,
+    actions: &mut Vec<Action>,
+) {
+    let label = if s.label.is_empty() {
+        "(no label)"
+    } else {
+        &s.label
+    };
+    let last = i32::from(s.first) + i32::from(s.count) - 1;
+    let title = format!(
+        "{}  {label}: images {} to {last}, {} sprites{}##tex-seq-{}",
+        s.index,
+        s.first,
+        s.sprites,
+        if s.added { " (added)" } else { "" },
+        s.index,
+    );
+    let Some(_node) = ui.tree_node_config(&title).push() else {
+        return;
+    };
+    let d = ui.begin_disabled_with_cond(locked);
+    let key = (tag, s.index);
+    if st.seq_edit.as_ref().is_none_or(|(k, ..)| *k != key) {
+        st.seq_edit = Some((
+            key,
+            s.label.clone(),
+            [i32::from(s.first), i32::from(s.count)],
+        ));
+    }
+    let (_, text, range) = st.seq_edit.as_mut().expect("just set");
+    let mut done = false;
+    ui.set_next_item_width(160.0);
+    ui.input_text(format!("Label##tex-seq-label-{}", s.index), text)
+        .build();
+    done |= ui.is_item_deactivated_after_edit();
+    ui.set_next_item_width(70.0);
+    ui.input_int(format!("First##tex-seq-first-{}", s.index), &mut range[0]);
+    done |= ui.is_item_deactivated_after_edit();
+    ui.same_line();
+    ui.set_next_item_width(70.0);
+    ui.input_int(format!("Count##tex-seq-count-{}", s.index), &mut range[1]);
+    done |= ui.is_item_deactivated_after_edit();
+    if done {
+        let (_, text, range) = st.seq_edit.take().expect("set above");
+        actions.push(Action::Bitmap(BitmapAction::SetSequence {
+            tag,
+            sequence: s.index,
+            label: Some(text),
+            first: usize::try_from(range[0]).ok(),
+            count: u16::try_from(range[1]).ok(),
+        }));
+    }
+    let open = &app.textures.open[&tag];
+    let mut remove = None;
+    for k in 0..s.sprites {
+        let Some(v) = open.sprite(s.index, k) else {
+            break;
+        };
+        let key = (tag, s.index, k);
+        let mut f = match st.sprite_edit {
+            Some((kk, f)) if kk == key => f,
+            _ => SpriteFields {
+                image: i32::from(v.image),
+                bounds: [v.left, v.right, v.top, v.bottom],
+                registration: v.registration,
+            },
+        };
+        let (mut changed, mut done) = (false, false);
+        ui.text(format!("Sprite {k}"));
+        ui.same_line();
+        ui.set_next_item_width(60.0);
+        changed |= ui.input_int(format!("Image##tex-sp-image-{}-{k}", s.index), &mut f.image);
+        done |= ui.is_item_deactivated_after_edit();
+        for (n, name) in ["Left", "Right", "Top", "Bottom"].into_iter().enumerate() {
+            ui.set_next_item_width(70.0);
+            changed |= ui.input_float(
+                format!("{name}##tex-sp-b{n}-{}-{k}", s.index),
+                &mut f.bounds[n],
+            );
+            done |= ui.is_item_deactivated_after_edit();
+            if n % 2 == 0 {
+                ui.same_line();
+            }
+        }
+        for (n, name) in ["Reg x", "Reg y"].into_iter().enumerate() {
+            ui.set_next_item_width(70.0);
+            changed |= ui.input_float(
+                format!("{name}##tex-sp-r{n}-{}-{k}", s.index),
+                &mut f.registration[n],
+            );
+            done |= ui.is_item_deactivated_after_edit();
+            ui.same_line();
+        }
+        if ui.small_button(format!("{} Remove##tex-sp-rm-{}-{k}", icon::TRASH, s.index)) {
+            remove = Some(k);
+        }
+        if done {
+            st.sprite_edit = None;
+            actions.push(Action::Bitmap(BitmapAction::SetSprite {
+                tag,
+                sequence: s.index,
+                sprite: Some(k),
+                image: usize::try_from(f.image).ok(),
+                bounds: Some(f.bounds),
+                registration: Some(f.registration),
+            }));
+        } else if changed {
+            st.sprite_edit = Some((key, f));
+        }
+    }
+    if let Some(sprite) = remove {
+        st.sprite_edit = None;
+        actions.push(Action::Bitmap(BitmapAction::RemoveSprite {
+            tag,
+            sequence: s.index,
+            sprite,
+        }));
+    }
+    if ui.button(format!(
+        "{} Add a sprite##tex-sp-add-{}",
+        icon::PLUS,
+        s.index
+    )) {
+        actions.push(Action::Bitmap(BitmapAction::SetSprite {
+            tag,
+            sequence: s.index,
+            sprite: None,
+            image: None,
+            bounds: None,
+            registration: None,
+        }));
+    }
+    ui.set_item_tooltip(
+        "A copy of the last sprite, or over all of the first image. Bounds are fractions of the image; the sprite shows outlined on the canvas.",
+    );
+    d.end();
 }

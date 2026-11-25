@@ -61,8 +61,9 @@ pub(crate) struct Case {
     /// Boot's own co-op arming then comes from `register_late`, so
     /// `coop_live` adds nothing.
     pub live: bool,
-    /// The windowed game with player input: the lab takeover consent and
-    /// its dialog (`AgentGlue::configure_takeover`, needs `agent`).
+    /// A window: the lab takeover takes requests (`AgentGlue::configure_takeover`,
+    /// needs `agent`). Its dialog is planned with `xapi` alone
+    /// (`registration::lab_takeover`).
     pub takeover: bool,
     /// The light host: the viewer skips, the native sim, `sim-frame`, no
     /// window (so no drawing, takeover or return to the menu) and no
@@ -241,10 +242,15 @@ fn registry_with_film(
         crate::render_aspect::install(
             &mut features,
             Arc::new(|| (640, 480)),
+            !case.lockstep,
             Arc::new(|| 0),
             Arc::new(NoDevice),
         )
         .unwrap();
+    }
+    // Boot's render stream: every rendering session but lockstep's.
+    if !case.light && !case.lockstep {
+        crate::render_rng::install(&mut features).unwrap();
     }
     let lockstep = lockstep_glue::Config {
         trace: case
@@ -255,13 +261,19 @@ fn registry_with_film(
         replay: None,
     };
     let lockstep_on = lockstep.enabled();
+    #[cfg(feature = "gpu")]
+    let protected = crate::d3d_glue::protected_readbacks(live.is_some(), film.is_some(), lockstep_on);
     let mut late = register_late_for_profile(
         &mut features,
         LateInputs {
             #[cfg(feature = "gpu")]
             view: windowed.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
             #[cfg(feature = "gpu")]
-            fixed_lod: None,
+            reference_lod: protected.then_some(1.0),
+            #[cfg(feature = "gpu")]
+            d3d_display: !protected,
+            #[cfg(feature = "gpu")]
+            viewer_lod: None,
             #[cfg(feature = "gpu")]
             world_line_present: None,
             rt: &rt,
@@ -305,12 +317,20 @@ fn registry_with_film(
         .unwrap();
     }
     if let Some(a) = &mut late.agent {
-        a.configure_takeover(
-            &mut features,
-            case.takeover && !case.light,
-            case.takeover && !case.light,
-        )
-        .unwrap();
+        // Boot's decision, from the same function (lib.rs): pads plan the
+        // dialog, and `takeover` is the window that takes requests.
+        let window = case.takeover && !case.light;
+        let takeover = super::lab_takeover(super::TakeoverInputs {
+            window,
+            d3d: true,
+            xapi: case.xapi,
+            lockstep: case.lockstep,
+            host_light: case.light,
+            sim: false,
+            replaying: case.replaying,
+        });
+        a.configure_takeover(&mut features, window, takeover.plan, takeover.accept)
+            .unwrap();
     }
     if let (Some(theater), Some(a)) = (&theater, &late.agent) {
         theater.connect(&a.agent);
@@ -564,34 +584,106 @@ fn the_rules_runtime_is_planned_unless_turned_off() {
     assert!(!has("-rules"));
 }
 
-/// With the rules runtime on, the carrier engine's scoring and role-making
-/// routines each have the runtime's `before`, which answers them only
-/// while a script runs (`rules::scoring`); off, none of them is hooked.
+/// The rules runtime answers no retail engine's scoring or role-making
+/// routine, on or off: a script game's engine object calls none of them
+/// (`rules::engine_object`), so none is hooked by it.
 #[cfg(feature = "rules")]
 #[test]
-fn the_rules_runtime_answers_the_carriers_scoring_unless_turned_off() {
+fn the_rules_runtime_hooks_no_retail_scoring_site() {
     const SCORING: [&str; 4] = ["JUGGERNAUT_KILL", "JUGGERNAUT_TICK", "SCORE_ADD", "SLAYER_KILL"];
-    let befores = |switches: &str| {
+    for switches in ["rules", ALL_ON, "", "-rules"] {
         let plan = plan(&Case::full(switches)).unwrap();
-        let mut at: Vec<_> = plan
+        let hooked: Vec<_> = plan
             .chains
             .values()
+            .filter(|chain| SCORING.contains(&chain.point.name))
             .flat_map(|chain| {
                 chain
                     .hooks()
                     .filter(|hook| hook.feature == crate::rules::feature::FEATURE)
-                    .filter(move |_| SCORING.contains(&chain.point.name))
+                    .map(move |hook| (chain.point.name, hook.kind().as_str()))
+            })
+            .collect();
+        assert!(hooked.is_empty(), "{switches:?}: {hooked:?}");
+    }
+}
+
+/// With the rules runtime on, the record clean-up, the wire codec, the
+/// protocol map and the content category each have the runtime's
+/// `before` (`rules::record`), and no other feature's; off, none is hooked.
+#[cfg(feature = "rules")]
+#[test]
+fn the_rules_runtime_answers_the_record_paths_unless_turned_off() {
+    const PATHS: [&str; 5] = [
+        "VARIANT_CATEGORY",
+        "VARIANT_CLEAN_UP",
+        "VARIANT_DECODE",
+        "VARIANT_ENCODE",
+        "VARIANT_PROTOCOL",
+    ];
+    let hooks = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut at: Vec<_> = plan
+            .chains
+            .values()
+            .filter(|chain| PATHS.contains(&chain.point.name))
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .map(move |hook| (chain.point.name, hook.feature, hook.kind().as_str()))
+            })
+            .collect();
+        at.sort_unstable();
+        at
+    };
+    let want: Vec<_> = PATHS
+        .iter()
+        .map(|&p| (p, crate::rules::feature::FEATURE, "before"))
+        .collect();
+    assert_eq!(hooks("rules"), want);
+    assert_eq!(hooks(""), want);
+    assert!(hooks("-rules").is_empty());
+}
+
+/// With the rules runtime on, every game start puts the script index's
+/// engine object in and moves a record that would score beside its engine
+/// onto the script index (`GAME_ACTIVATE`, two `before`s in the last class)
+/// and the
+/// spawn gather's jump on the engine index has the runtime's `before`
+/// (`rules::engine_object`); off, neither is hooked by it.
+#[cfg(feature = "rules")]
+#[test]
+fn the_rules_runtime_puts_in_the_script_index_engine_object_unless_turned_off() {
+    const POINTS: [&str; 2] = ["GAME_ACTIVATE", "SPAWN_TYPE_MASK"];
+    let hooks = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut at: Vec<_> = plan
+            .chains
+            .values()
+            .filter(|chain| POINTS.contains(&chain.point.name))
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .filter(|hook| hook.feature == crate::rules::feature::FEATURE)
                     .map(move |hook| (chain.point.name, hook.kind().as_str()))
             })
             .collect();
         at.sort_unstable();
         at
     };
-    let want: Vec<_> = SCORING.iter().map(|&p| (p, "before")).collect();
-    assert_eq!(befores("rules"), want);
-    assert_eq!(befores(ALL_ON), want);
-    assert_eq!(befores(""), want);
-    assert!(befores("-rules").is_empty());
+    let want = vec![
+        ("GAME_ACTIVATE", "before"),
+        ("GAME_ACTIVATE", "before"),
+        ("GAME_ACTIVATE", "observe_after"),
+        ("SPAWN_TYPE_MASK", "before"),
+    ];
+    assert_eq!(hooks("rules"), want);
+    assert_eq!(hooks(""), want);
+    assert!(hooks("-rules").is_empty());
+    // The spawn gather's site and its resume are image entries.
+    let entries: Vec<u32> = crate::image_entries().collect();
+    assert!(entries.contains(&engine::points::game_types::SPAWN_TYPE_MASK.base));
+    assert!(entries.contains(&engine::points::game_types::SPAWN_TYPE_MASK_SLAYER));
 }
 
 /// The features `run_hosted_with_live` adds around `register_core` and
@@ -713,6 +805,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
         "registry_for_profile (a film's session is not covered: it needs a recording)",
     ),
     ("render_aspect::install", "Case::drawing (gpu)"),
+    ("render_rng::install", "every case but Case::light and Case::lockstep"),
     ("register_late_for_profile", "registry_for_profile"),
     (
         "forge_glue::install",
@@ -921,24 +1014,19 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
 
 #[test]
 fn viewer_skips_follow_the_light_profile_and_independent_switches() {
-    use engine::points::{PREDICT_RESOURCES, SOUND_SUBMIX_FX};
-    let points = [&PREDICT_RESOURCES, &SOUND_SUBMIX_FX];
-    for (light, spec, expected) in [
-        (false, "", [false; 2]),
-        (false, "impl.sim=on", [false; 2]),
-        (true, "", [true; 2]),
-        (true, "-impl.sim.observer-resources", [false, true]),
-        (true, "-impl.sim.submix-fx", [true, false]),
-        (true, "-impl.sim", [false; 2]),
+    use engine::points::PREDICT_RESOURCES;
+    for (light, spec, predicted) in [
+        (false, "", false),
+        (false, "impl.sim=on", false),
+        (true, "", true),
+        (true, "-impl.sim.observer-resources", false),
+        (true, "impl.sim.native.seats", false),
+        (true, "-impl.sim", false),
     ] {
         let mut registry = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
         super::register_viewer_skips(&mut registry, light).unwrap();
         let plan = registry.build(&hooks::Base).unwrap();
-        assert_eq!(
-            points.map(|p| plan.chains.contains_key(&p.base)),
-            expected,
-            "{light} {spec}"
-        );
+        assert_eq!(plan.chains.contains_key(&PREDICT_RESOURCES.base), predicted, "{light} {spec}");
     }
 }
 
@@ -1111,6 +1199,80 @@ fn a_default_recordings_replay_installs_the_recordings_hooks() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The film's hook digest (`theater::hook_digest`) of `registry`'s plan,
+/// every address placed as install places it on a full image.
+fn hook_digest(registry: hooks::Registry) -> String {
+    let plan = registry.build(&hooks::Base).unwrap();
+    let placed = plan
+        .chains
+        .values()
+        .flat_map(|c| [Some(c.addr), c.shadow])
+        .flatten()
+        .chain(plan.entries.iter().map(|e| e.addr))
+        .collect();
+    let installed = hooks::Installed { placed, ..Default::default() };
+    crate::theater::hook_digest(&plan, &installed)
+}
+
+/// `h2 play` records in a window that takes lab requests; `h2 theater
+/// play` replays it in Theater's window or with none (`--render-every 0`).
+/// Each replay's digest is the recording's, or the replay refuses the
+/// film ("Installed simulation hooks differ from the film"): the lab
+/// takeover's dialog was planned only in a window that takes requests, so
+/// every replay of a windowed recording refused it.
+#[test]
+fn a_recording_and_its_replays_have_one_hook_digest() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-digest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let profile = super::compiled_render_hooks();
+    let play = Case { coop_live: true, ..Case::full("") };
+    assert!(play.takeover && play.xapi);
+    let window = Case { replaying: true, ..play.clone() };
+    let no_window = Case { takeover: false, ..window.clone() };
+    for (name, auto) in [("auto.h2film", true), ("explicit.h2film", false)] {
+        let film = recording(&dir, name, auto);
+        let digest = |case: &Case| hook_digest(registry_with_film(case, profile, Some(Arc::clone(&film))));
+        let recorded = digest(&play);
+        assert_eq!(digest(&window), recorded, "{name}: Theater's window");
+        assert_eq!(digest(&no_window), recorded, "{name}: no window");
+        assert!(on_features(registry_with_film(&window, profile, Some(Arc::clone(&film)))).contains("lab-takeover"));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Pads plan the lab takeover's dialog; only a player's window that is not
+/// a replay takes a lab's request.
+#[test]
+fn the_lab_takeover_plans_with_pads_and_accepts_in_the_players_window() {
+    use super::{Takeover, TakeoverInputs, lab_takeover};
+    let play = TakeoverInputs {
+        window: true,
+        d3d: true,
+        xapi: true,
+        lockstep: false,
+        host_light: false,
+        sim: false,
+        replaying: false,
+    };
+    assert_eq!(lab_takeover(play), Takeover { plan: true, accept: true });
+    for replay in [
+        TakeoverInputs { replaying: true, ..play },
+        TakeoverInputs { replaying: true, window: false, ..play },
+        TakeoverInputs { window: false, ..play },
+    ] {
+        assert_eq!(lab_takeover(replay), Takeover { plan: true, accept: false }, "{replay:?}");
+    }
+    for off in [
+        TakeoverInputs { xapi: false, ..play },
+        TakeoverInputs { d3d: false, ..play },
+        TakeoverInputs { lockstep: true, ..play },
+        TakeoverInputs { host_light: true, ..play },
+        TakeoverInputs { sim: true, ..play },
+    ] {
+        assert_eq!(lab_takeover(off), Takeover { plan: false, accept: false }, "{off:?}");
+    }
+}
+
 #[test]
 fn the_films_header_not_the_boot_decides_forge_and_the_non_player_features() {
     let dir = std::env::temp_dir().join(format!("h2-registration-decide-{}", std::process::id()));
@@ -1136,4 +1298,54 @@ fn the_films_header_not_the_boot_decides_forge_and_the_non_player_features() {
     let off = hooks::Switches::parse("-forge").unwrap();
     assert!(!super::local_forge(&off, Some(&*auto), false, false, false));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The features with a hook at `point` in `registry`'s plan, switched on.
+fn hooked_at(registry: hooks::Registry, point: &str) -> Vec<&'static str> {
+    let plan = registry.build(&hooks::Base).unwrap();
+    let mut ids: Vec<_> = plan.chains
+        .values()
+        .filter(|chain| chain.point.name == point)
+        .flat_map(|chain| chain.hooks().map(|hook| hook.feature))
+        .filter(|id| plan.features.iter().any(|f| f.id == *id && f.off.is_none()))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// A default play (autorecorded, signed in to Live, in a window) fits the
+/// guest camera to the window and renders on the private random stream:
+/// neither the film nor the Live HLE turns either off. Lockstep keeps the
+/// retail camera and the retail stream (docs/graphics/high-resolution.md,
+/// "Widescreen projection" and "Determinism").
+#[cfg(feature = "gpu")]
+#[test]
+fn a_default_play_fits_the_guest_camera_and_renders_on_its_own_stream() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-lens-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let profile = super::compiled_render_hooks();
+    let play = Case { coop_live: true, ..Case::full("") };
+    assert!(play.live && play.drawing);
+    let auto = recording(&dir, "auto.h2film", true);
+    let registry = || registry_with_film(&play, profile, Some(Arc::clone(&auto)));
+    assert_eq!(hooked_at(registry(), "VIEW_PROJECTION_TERMS"), ["render-aspect"]);
+    assert!(hooked_at(registry(), "RENDER_FRAME").contains(&crate::render_rng::ID));
+
+    let lockstep = Case { lockstep: true, ..play.clone() };
+    assert!(hooked_at(registry_for_profile(&lockstep, profile), "VIEW_PROJECTION_TERMS").is_empty());
+    assert!(!hooked_at(registry_for_profile(&lockstep, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A recording and its replay register the render stream alike, so the
+/// film's simulation hooks match whatever window either had.
+#[test]
+fn a_replay_renders_on_the_stream_its_recording_did() {
+    let profile = super::compiled_render_hooks();
+    let play = Case { coop_live: true, ..Case::full("") };
+    let replay = Case { replaying: true, ..play.clone() };
+    for case in [&play, &replay] {
+        assert!(hooked_at(registry_for_profile(case, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
+    }
 }

@@ -36,8 +36,10 @@
 //! **The medals** (docs/game/superbounce.md, "Medals") are on it too:
 //! every player's chain of bounces ([`crate::superbounce_chain`]), stepped
 //! each tick for every listed player, bots included, published as
-//! [`State::medals`]. Each bounce they file goes to the running rules
-//! script as `on bounce` ([`crate::rules::feature::bounces`]).
+//! [`State::medals`]. What they see of each player's physics goes to the
+//! running rules script as `on touchdown`, `on launch` and `on grounded`,
+//! and each bounce they file as `on bounce`
+//! ([`crate::rules::feature::bounces`]).
 //!
 //! **The Pogo Stick's riders** (docs/game/pogo-stick.md) are stepped from
 //! here too, with the same players and awards ([`crate::pogo_ride`]).
@@ -456,7 +458,7 @@ pub fn options_reply(o: crate::superbounce_options::Options) -> agent_proto::sup
 
 /// `superbounce.state`'s `guide` for `g`.
 pub fn guide_reply(g: &crate::superbounce_guide::Guide) -> agent_proto::superbounce::Guide {
-    use hud_kit_core::huds::superbounce_guide::Call;
+    use hud_kit_core::views::superbounce_guide::Call;
     let v3 = |v: Vec3| v.map(f64::from);
     agent_proto::superbounce::Guide {
         seam: v3(g.seam.point),
@@ -555,7 +557,7 @@ pub fn navpoint(
 /// `superbounce.state`'s `medals` for `m`.
 pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
     use agent_proto::superbounce as wire;
-    let ids = |medals: &[hud_kit_core::huds::superbounce::Medal]| {
+    let ids = |medals: &[hud_kit_core::views::superbounce::Medal]| {
         medals.iter().map(|m| m.id().to_owned()).collect()
     };
     wire::Medals {
@@ -1476,10 +1478,10 @@ fn on_tick(o: &hooks::Obs) {
         .filter_map(|p| Some((p.slot, p.user?)))
         .min_by_key(|(_, user)| *user);
     let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
-    let (awards, medals) = {
+    let (awards, medals, physics, bodies) = {
         let mut m = lock(&MEDALS);
         let awards = m.step(tick, &players, &every);
-        (awards, m.view())
+        (awards, m.view(), m.physics().to_vec(), m.bodies().to_vec())
     };
     keep_awards(&awards);
     // In the flight after a bounce, the seams it can reach, the best
@@ -1590,8 +1592,9 @@ fn on_tick(o: &hooks::Obs) {
             .filter(|n| n.kind == NavKind::Strip)
             .map(|n| n.at);
         crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots, chosen);
-        // A rules script hears each bounce on the tick it is filed.
-        crate::rules::feature::bounces(m, &awards);
+        // A rules script hears the tick's touchdowns, launches and ends
+        // of runs, then each bounce on the tick it is filed.
+        crate::rules::feature::bounces(m, &bodies, &physics, &awards);
         // The Pogo Stick's riders, on the chain's verdicts
         // (docs/game/pogo-stick.md, "Phases and tricks").
         // The local players' pistons are heard (pogo_sound.rs).

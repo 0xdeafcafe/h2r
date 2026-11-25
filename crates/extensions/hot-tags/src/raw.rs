@@ -1,9 +1,15 @@
-//! Live writes to raw data: section vertices and indices, and bitmap
-//! pixels (docs/editor/realtime-edits.md, "Four write primitives").
+//! Live writes to raw data: section vertices and indices, bitmap pixels
+//! and the metadata region of a structure BSP that is not loaded
+//! (docs/editor/realtime-edits.md, "Four write primitives" and "Inactive
+//! BSPs").
 //!
 //! A raw write names its **owner**, the record whose raw pointer locates
 //! the bytes in a map file: a section (`sbsp` cluster or instanced
-//! definition, `mode` section) or one LOD chain of a bitmap image. The
+//! definition, `mode` section), one LOD chain of a bitmap image, or one
+//! sample chunk of a `snd!` permutation (its record in the map's `ugh!`
+//! gestalt; docs/formats/sound.md), or one of the scenario's structure BSP
+//! descriptors, whose file offset and size
+//! locate that BSP's region. The
 //! editor resolves the pointer from the guest's own tag bytes, then at one
 //! boundary adds an overlay entry ([`RawFiles`], the file view both the
 //! guest's page-ins and the native loaders read) and writes the resident
@@ -116,6 +122,25 @@ const IMAGE_STRIDE: u32 = 0x74;
 const IMAGE_LOD_POINTERS: u32 = 0x1c;
 const IMAGE_LOD_SIZES: u32 = 0x34;
 
+/// The sound gestalt's (`ugh!`) blocks: pitch ranges `[4]`,
+/// permutations `[5]` and chunks `[8]`, each an 8-byte `{count, address}`
+/// in the header, and their strides (docs/formats/sound.md, "Tables").
+const GESTALT_RANGES: (u32, u32) = (4 * 8, 12);
+const GESTALT_PERMUTATIONS: (u32, u32) = (5 * 8, 16);
+const GESTALT_CHUNKS: (u32, u32) = (8 * 8, 12);
+/// A `snd!`'s first pitch range (u16) and range count (u8).
+const SOUND_FIRST_RANGE: u32 = 0x8;
+const SOUND_RANGE_COUNT: u32 = 0xa;
+/// A pitch range's first permutation and count (u16 each).
+const RANGE_FIRST_PERMUTATION: u32 = 8;
+/// A permutation's first chunk and count (u16 each).
+const PERMUTATION_FIRST_CHUNK: u32 = 12;
+/// A chunk's raw pointer, size (bit 31 a flag, masked) and runtime word:
+/// `0xffffffff` in the file, the guest sound cache's handle once the
+/// chunk is loaded (**S**: the handle is not read with `h2 disasm` yet).
+const CHUNK_SIZE: u32 = 4;
+const CHUNK_RUNTIME: u32 = 8;
+
 /// Geometry block info fields (docs/formats/structure-bsp.md, "Geometry
 /// block info").
 const INFO_RUNTIME_OFFSET: u32 = 0x1c;
@@ -125,11 +150,34 @@ const INFO_HANDLE: u32 = 0x20;
 /// runtime section pointer names the section struct after it.
 const BLOCK_HEADER: u32 = 8;
 
+/// The scenario's structure BSP block and its descriptors: file offset at
+/// `+0`, size at `+4`, virtual base at `+8` (docs/formats/map-format.md,
+/// "BSP and lightmap metadata").
+const SCENARIO_BSPS: u32 = 0x210;
+const BSP_STRIDE: u32 = 0x44;
+const BSP_FILE_OFFSET: u32 = 0;
+const BSP_SIZE: u32 = 4;
+const BSP_VIRTUAL_BASE: u32 = 8;
+
+/// The loaded structure BSP's index in the scenario's block (`-1` before
+/// one loads; `engine::sim_collision::layout::BSP_INDEX`): the one BSP
+/// whose region is in guest memory. `None` when it can't be read.
+pub fn loaded_bsp(g: &Guest) -> Option<i16> {
+    g.u16(engine::sim_collision::layout::BSP_INDEX).ok().map(|v| v as i16)
+}
+
 /// A raw write's or eviction's owner, by datum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner {
     Section { tag: u32, kind: SectionKind, index: u32 },
     Pixels { tag: u32, image: u32, lod: u32 },
+    /// One chunk of a `snd!` permutation's samples: `range` and
+    /// `permutation` count within the sound, `chunk` within the
+    /// permutation.
+    Sound { tag: u32, range: u32, permutation: u32, chunk: u32 },
+    /// The region of the scenario's structure BSP `index`, from its first
+    /// byte; only while another BSP is loaded.
+    Bsp { index: u32 },
 }
 
 impl Owner {
@@ -139,17 +187,19 @@ impl Owner {
                 "tag": format!("{tag:#010x}"), "kind": kind.text(), "index": index}}),
             Owner::Pixels { tag, image, lod } => json!({"pixels": {
                 "tag": format!("{tag:#010x}"), "image": image, "lod": lod}}),
+            Owner::Sound { tag, range, permutation, chunk } => json!({"sound": {
+                "tag": format!("{tag:#010x}"), "range": range,
+                "permutation": permutation, "chunk": chunk}}),
+            Owner::Bsp { index } => json!({"bsp": {"index": index}}),
         }
     }
 
-    fn tag(&self) -> u32 {
-        match *self {
-            Owner::Section { tag, .. } | Owner::Pixels { tag, .. } => tag,
-        }
-    }
-
-    fn refresh(&self, grown: bool) -> Refresh {
-        match *self {
+    /// What the native renderer re-reads after a write; nothing for sounds,
+    /// whose only host reader (DirectSound) re-reads guest sample memory at
+    /// `Unlock` and `Play`. A BSP that is not loaded needs nothing: the
+    /// switch to it loads the world from the overlaid file.
+    fn refresh(&self, grown: bool) -> Option<Refresh> {
+        Some(match *self {
             Owner::Section { tag, kind: SectionKind::Mode, .. } => Refresh::Model { tag },
             Owner::Section { tag, kind, index } => Refresh::Section {
                 bsp: tag,
@@ -158,7 +208,8 @@ impl Owner {
                 grown,
             },
             Owner::Pixels { tag, image, .. } => Refresh::Image { bitmap: tag, image },
-        }
+            Owner::Sound { .. } | Owner::Bsp { .. } => return None,
+        })
     }
 }
 
@@ -172,6 +223,8 @@ pub(crate) struct Located {
     pub size: u32,
     /// The geometry block info's address (sections).
     pub info: Option<u32>,
+    /// The chunk record's runtime word, the sound cache's handle (sounds).
+    pub handle: Option<u32>,
 }
 
 /// The old bytes a raw write is checked against: the bytes, or their
@@ -307,6 +360,34 @@ fn guest_u32(g: &Guest, at: u32) -> Result<u32> {
     g.u32(at).map_err(fault)
 }
 
+fn guest_u16(g: &Guest, at: u32) -> Result<u32> {
+    g.u16(at).map(u32::from).map_err(fault)
+}
+
+/// The address of element `i` of the run `first..first + count` of the
+/// gestalt's block at header offset `block`, checked against both the run
+/// and the block.
+fn gestalt_element(
+    g: &Guest,
+    gestalt: u32,
+    (block, stride): (u32, u32),
+    (first, count): (u32, u32),
+    i: u32,
+    what: &str,
+) -> Result<u32> {
+    if i >= count {
+        return Err(Error::invalid(format!("owner: {what} {i} past the sound's {count}")));
+    }
+    let len = guest_u32(g, gestalt + block)?;
+    let at = first + i;
+    if at >= len {
+        return Err(Error::invalid(format!(
+            "owner: {what} {i} is the gestalt's element {at}, past its {len}"
+        )));
+    }
+    Ok(guest_u32(g, gestalt + block + 4)? + at * stride)
+}
+
 /// The resident copy's address of block offset 0: the paged-in buffer,
 /// found through the block info's loaded flag and runtime section block.
 fn resident_base(g: &Guest, info: u32) -> Result<Option<u32>> {
@@ -382,12 +463,38 @@ impl Editor {
             }
             return Ok(Owner::Pixels { tag, image: num(p, "image")?, lod });
         }
-        Err(Error::invalid("owner: {section: {tag, kind, index}} or {pixels: {tag, image, lod}}"))
+        if let Some(s) = v.get("sound") {
+            let tag = tag_of(self, s, b"snd!")?;
+            return Ok(Owner::Sound {
+                tag,
+                range: num(s, "range")?,
+                permutation: num(s, "permutation")?,
+                chunk: num(s, "chunk")?,
+            });
+        }
+        if let Some(b) = v.get("bsp") {
+            return Ok(Owner::Bsp { index: num(b, "index")? });
+        }
+        Err(Error::invalid(
+            "owner: {section: {tag, kind, index}}, {pixels: {tag, image, lod}}, \
+             {sound: {tag, range, permutation, chunk}} or {bsp: {index}}",
+        ))
     }
 
     /// Where `owner`'s raw block is, from its tag's bytes now.
     pub(crate) fn locate_owner(&self, g: &Guest, idx: &index::TagIndex, owner: Owner) -> Result<Located> {
-        let e = index::by_datum(g, idx, owner.tag()).map_err(Error::invalid)?;
+        let tag = match owner {
+            Owner::Section { tag, .. } | Owner::Pixels { tag, .. } | Owner::Sound { tag, .. } => tag,
+            Owner::Bsp { index } => {
+                let d = bsp_descriptor(g, idx, index)?;
+                let (base, size) = (guest_u32(g, d + BSP_FILE_OFFSET)?, guest_u32(g, d + BSP_SIZE)?);
+                if base == 0 || size == 0 {
+                    return Err(Error::invalid(format!("owner: BSP {index} has no region in this map")));
+                }
+                return Ok(Located { owner, file: ResourceFile::Local, base, size, info: None, handle: None });
+            }
+        };
+        let e = index::by_datum(g, idx, tag).map_err(Error::invalid)?;
         let element = |block: u32, stride: u32, i: u32, what: &str| -> Result<u32> {
             let count = guest_u32(g, e.address + block)?;
             if i >= count {
@@ -395,24 +502,46 @@ impl Editor {
             }
             Ok(guest_u32(g, e.address + block + 4)? + i * stride)
         };
-        let (pointer_at, size_at, info) = match owner {
+        let (pointer_at, size_at, info, handle) = match owner {
             Owner::Section { kind, index, .. } => {
                 let (_, block, stride, info) = kind.layout();
                 let info = element(block, stride, index, kind.text())? + info;
-                (info, info + 4, Some(info))
+                (info, info + 4, Some(info), None)
             }
             Owner::Pixels { image, lod, .. } => {
                 let el = element(BITMAP_IMAGES, IMAGE_STRIDE, image, "image")?;
-                (el + IMAGE_LOD_POINTERS + 4 * lod, el + IMAGE_LOD_SIZES + 4 * lod, None)
+                (el + IMAGE_LOD_POINTERS + 4 * lod, el + IMAGE_LOD_SIZES + 4 * lod, None, None)
             }
+            Owner::Sound { range, permutation, chunk, .. } => {
+                let gestalt = gestalt(g, idx)?;
+                let first = guest_u16(g, e.address + SOUND_FIRST_RANGE)?;
+                let count = u32::from(g.u8(e.address + SOUND_RANGE_COUNT).map_err(fault)?);
+                let r = gestalt_element(g, gestalt, GESTALT_RANGES, (first, count), range, "range")?;
+                let run = (
+                    guest_u16(g, r + RANGE_FIRST_PERMUTATION)?,
+                    guest_u16(g, r + RANGE_FIRST_PERMUTATION + 2)?,
+                );
+                let p = gestalt_element(g, gestalt, GESTALT_PERMUTATIONS, run, permutation, "permutation")?;
+                let run = (
+                    guest_u16(g, p + PERMUTATION_FIRST_CHUNK)?,
+                    guest_u16(g, p + PERMUTATION_FIRST_CHUNK + 2)?,
+                );
+                let c = gestalt_element(g, gestalt, GESTALT_CHUNKS, run, chunk, "chunk")?;
+                (c, c + CHUNK_SIZE, None, Some(c + CHUNK_RUNTIME))
+            }
+            Owner::Bsp { .. } => unreachable!("located above"),
         };
         let raw = RawPointer::decode(guest_u32(g, pointer_at)?)
             .ok_or_else(|| Error::invalid("owner: it has no raw block"))?;
-        let size = guest_u32(g, size_at)?;
+        let mut size = guest_u32(g, size_at)?;
+        if handle.is_some() {
+            // A chunk's size has a flag in bit 31.
+            size &= 0x7fff_ffff;
+        }
         if size == 0 {
             return Err(Error::invalid("owner: its raw block is empty"));
         }
-        Ok(Located { owner, file: raw.file, base: raw.offset, size, info })
+        Ok(Located { owner, file: raw.file, base: raw.offset, size, info, handle })
     }
 
     /// The raw half of `edit.batch`: everything checked, nothing written.
@@ -431,6 +560,15 @@ impl Editor {
         let mut planned: Vec<Planned> = Vec::new();
         for w in &batch.raw {
             let owner = self.owner(g, idx, &w.owner)?;
+            if let Owner::Bsp { index } = owner
+                && loaded_bsp(g).is_some_and(|l| i64::from(l) == i64::from(index))
+            {
+                // Its region is guest memory now; the overlay alone would
+                // leave the game reading the old bytes until the next switch.
+                return Err(Error::invalid(format!(
+                    "owner: BSP {index} is the loaded one: write its fields with at"
+                )));
+            }
             let loc = self.locate_owner(g, idx, owner)?;
             let len = w.bytes.len() as u32;
             if len == 0 || u64::from(w.offset) + u64::from(len) > u64::from(loc.size) {
@@ -479,12 +617,19 @@ impl Editor {
         let mut evict = Vec::new();
         for v in &batch.evict {
             let owner = self.owner(g, idx, v)?;
-            let Owner::Section { .. } = owner else {
-                return Err(Error::invalid("evict: only a section can be evicted"));
-            };
+            if let Owner::Pixels { .. } = owner {
+                return Err(Error::invalid("evict: only a section or a sound chunk can be evicted"));
+            }
             let loc = self.locate_owner(g, idx, owner)?;
-            let info = loc.info.expect("a section has block info");
-            g.check(info + INFO_LOADED, 6, runtime::guest::Access::Write, 1).map_err(fault)?;
+            match (loc.info, loc.handle) {
+                (Some(info), _) => {
+                    g.check(info + INFO_LOADED, 6, runtime::guest::Access::Write, 1).map_err(fault)?;
+                }
+                (None, Some(handle)) => {
+                    g.check(handle, 4, runtime::guest::Access::Write, 1).map_err(fault)?;
+                }
+                (None, None) => unreachable!("a section has block info and a chunk a handle"),
+            }
             evict.push(loc);
         }
         Ok((planned, evict))
@@ -517,8 +662,10 @@ impl Editor {
             };
             let refresh = p.loc.owner.refresh(grown(&p.loc.owner));
             replies.push(json!({"owner": p.loc.owner.json(), "offset": p.offset,
-                "resident": resident.is_some(), "refresh": refresh_json(refresh)}));
-            if !refreshes.contains(&refresh) {
+                "resident": resident.is_some(), "refresh": refresh.map(refresh_json)}));
+            if let Some(refresh) = refresh
+                && !refreshes.contains(&refresh)
+            {
                 refreshes.push(refresh);
             }
             self.raw_journal.push(RawChange::Write {
@@ -535,10 +682,11 @@ impl Editor {
         }
         let mut evicted = Vec::new();
         for loc in evict {
-            evict_section(g, loc.info.expect("a section"))?;
+            evict_located(g, &loc)?;
             evicted.push(loc.owner.json());
-            let refresh = loc.owner.refresh(true);
-            if !refreshes.contains(&refresh) {
+            if let Some(refresh) = loc.owner.refresh(true)
+                && !refreshes.contains(&refresh)
+            {
                 refreshes.push(refresh);
             }
             self.raw_journal.push(RawChange::Evict { id, scenario, owner: loc.owner });
@@ -626,6 +774,25 @@ impl Editor {
                     self.raw_files()?.restore(g, file, at, len, &held);
                     let mut restored = false;
                     let mut why = None;
+                    if let Owner::Bsp { index } = owner
+                        && loaded_bsp(g).is_some_and(|l| i64::from(l) == i64::from(index))
+                    {
+                        // Switched to since: guest memory holds the region
+                        // as the switch read it, the write included.
+                        let old = self
+                            .raw_files()?
+                            .read(g, file, at, len as usize)
+                            .map_err(Error::unavailable)?;
+                        let addr = bsp_descriptor(g, &idx, index)
+                            .and_then(|d| guest_u32(g, d + BSP_VIRTUAL_BASE))?
+                            + offset;
+                        if read_bytes(g, addr, len as u32)? == new {
+                            g.write_bytes(addr, &old, 1).map_err(fault)?;
+                            restored = true;
+                        } else {
+                            why = Some("the loaded BSP's bytes changed since; the overlay was put back");
+                        }
+                    }
                     if let Some(old) = resident {
                         // Find the resident copy again: a BSP switch can move it.
                         let now = self
@@ -646,19 +813,21 @@ impl Editor {
                             }
                         }
                     }
-                    let r = owner.refresh(false);
-                    if !refreshes.contains(&r) {
+                    if let Some(r) = owner.refresh(false)
+                        && !refreshes.contains(&r)
+                    {
                         refreshes.push(r);
                     }
                     reverted.push(json!({"id": id, "raw": owner.json(), "offset": offset,
                         "resident": restored, "note": why}));
                 }
                 RawChange::Evict { id, owner, .. } => {
-                    if let Ok(Located { info: Some(info), .. }) = self.locate_owner(g, &idx, owner) {
-                        evict_section(g, info)?;
+                    if let Ok(loc) = self.locate_owner(g, &idx, owner) {
+                        evict_located(g, &loc)?;
                     }
-                    let r = owner.refresh(true);
-                    if !refreshes.contains(&r) {
+                    if let Some(r) = owner.refresh(true)
+                        && !refreshes.contains(&r)
+                    {
                         refreshes.push(r);
                     }
                     reverted.push(json!({"id": id, "evict": owner.json()}));
@@ -685,6 +854,17 @@ impl Editor {
     }
 }
 
+/// The address of descriptor `index` in the loaded scenario's structure
+/// BSP block, as guest memory holds the scenario.
+fn bsp_descriptor(g: &Guest, idx: &index::TagIndex, index: u32) -> Result<u32> {
+    let scenario = index::by_datum(g, idx, idx.scenario).map_err(Error::unavailable)?;
+    let count = guest_u32(g, scenario.address + SCENARIO_BSPS)?;
+    if index >= count {
+        return Err(Error::invalid(format!("owner: BSP {index} past the scenario's {count}")));
+    }
+    Ok(guest_u32(g, scenario.address + SCENARIO_BSPS + 4)? + index * BSP_STRIDE)
+}
+
 /// A checked raw write, ready to apply.
 pub(crate) struct Planned {
     loc: Located,
@@ -706,6 +886,34 @@ fn evict_section(g: &mut Guest, info: u32) -> Result<()> {
     g.set_u32(info + INFO_HANDLE, u32::MAX).map_err(fault)?;
     g.write_bytes(block, &[0; 8], 1).map_err(fault)?;
     Ok(())
+}
+
+/// Marks a sound chunk not loaded: its runtime word, the sound cache's
+/// handle, back to the file's `0xffffffff`, so the guest's next play of
+/// the permutation misses and reads the chunk from the file view
+/// (docs/editor/realtime-edits.md, "Sound samples"; **S**: the handle
+/// and the cache's own entry for the old samples, left to its eviction).
+/// A voice already playing keeps its buffer.
+fn evict_sound(g: &mut Guest, handle: u32) -> Result<()> {
+    g.set_u32(handle, u32::MAX).map_err(fault)
+}
+
+fn evict_located(g: &mut Guest, loc: &Located) -> Result<()> {
+    match (loc.info, loc.handle) {
+        (Some(info), _) => evict_section(g, info),
+        (None, Some(handle)) => evict_sound(g, handle),
+        (None, None) => Ok(()),
+    }
+}
+
+/// The map's one sound gestalt (`ugh!`), by address.
+fn gestalt(g: &Guest, idx: &index::TagIndex) -> Result<u32> {
+    index::all(g, idx)
+        .map_err(Error::invalid)?
+        .into_iter()
+        .find(|e| e.group == FourCC(*b"ugh!"))
+        .map(|e| e.address)
+        .ok_or_else(|| Error::invalid("owner: the loaded map has no sound gestalt (ugh!)"))
 }
 
 fn refresh_json(r: Refresh) -> Value {

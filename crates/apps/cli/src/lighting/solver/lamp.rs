@@ -23,13 +23,7 @@ impl PlacedLamp {
             .and_then(|tag| tag.location)
             .context("scenario has no local payload")?;
         let placement = Placement::read(&mut Ctx::new(map), scenario.address, index, bsp)?;
-        let tag = map.tag(placement.definition)?;
-        let name = tag.name.clone().unwrap_or_else(|| tag.id.to_string());
-        let light: Light = effects::read(map, placement.definition)
-            .with_context(|| format!("placed:{index} {name}: reading the light definition"))?;
-        placement
-            .lamp(name, &light)
-            .with_context(|| format!("placed:{index}"))
+        placement.resolve(map).with_context(|| format!("placed:{index}"))
     }
 
     /// Receiver-to-lamp unit vector, exclusive ray distance, and strength at
@@ -51,6 +45,31 @@ impl PlacedLamp {
     }
 }
 
+/// Give the baker the same placement IDs and eligibility decisions as the solver.
+pub(in crate::lighting) fn list<R: Read + Seek>(map: &mut Map<R>, bsp: usize) -> Result<()> {
+    let pairs = tags::lighting::bsp_lightmaps(map)?;
+    ensure!(bsp < pairs.len(), "BSP {bsp} outside {} scenario BSPs", pairs.len());
+    let address = map.scenario().and_then(|s| s.location).context("missing scenario")?.address;
+    let mut ctx = Ctx::new(map);
+    let head = ctx.mem.read(address, 0xf8)?;
+    let rows = ctx.block(Rec(&head).block(0xe8), 0x6c)?;
+    let palette = ctx.block(Rec(&head).block(0xf0), 0x28)?;
+    let mut eligible = 0;
+    for (index, row) in rows.iter().enumerate() {
+        let result = Placement::decode(row, &palette, index, bsp)
+            .and_then(|p| p.resolve(map));
+        match result {
+            Ok(lamp) => {
+                println!("placed:{index}  position {:?}  radius {:.3}  {}", lamp.position, lamp.radius, lamp.name);
+                eligible += 1;
+            }
+            Err(why) => println!("refused placed:{index}  {why:#}"),
+        }
+    }
+    ensure!(eligible > 0, "no eligible placed sphere in BSP {bsp}");
+    Ok(())
+}
+
 struct Placement {
     definition: TagId,
     position: [f32; 3],
@@ -67,17 +86,16 @@ impl Placement {
     fn read(ctx: &mut Ctx<'_>, address: u32, index: usize, bsp: usize) -> Result<Self> {
         let header = ctx.mem.read(address, 0xf8)?;
         let rows = ctx.block(Rec(&header).block(0xe8), 0x6c)?;
-        let row = Rec(rows.get(index).with_context(|| {
-            format!(
-                "placed:{index} outside {} scenario light placements",
-                rows.len()
-            )
-        })?);
-        ensure!(
-            super::placement_in_bsp(row.0, bsp)?,
-            "placed:{index} does not belong to BSP {bsp}"
-        );
         let palette = ctx.block(Rec(&header).block(0xf0), 0x28)?;
+        let row = rows.get(index).with_context(|| {
+            format!("placed:{index} outside {} scenario light placements", rows.len())
+        })?;
+        Self::decode(row, &palette, index, bsp)
+    }
+
+    fn decode(row: &[u8], palette: &[Vec<u8>], index: usize, bsp: usize) -> Result<Self> {
+        ensure!(super::placement_in_bsp(row, bsp)?, "placed:{index} does not belong to BSP {bsp}");
+        let row = Rec(row);
         let slot = row.i16(0);
         let entry = usize::try_from(slot)
             .ok()
@@ -95,6 +113,14 @@ impl Placement {
             custom_geometry: row.u16(0x3e) & 1 != 0,
             lightmap_mode: row.u16(0x40),
         })
+    }
+
+    fn resolve<R: Read + Seek>(&self, map: &mut Map<R>) -> Result<PlacedLamp> {
+        let tag = map.tag(self.definition)?;
+        let name = tag.name.clone().unwrap_or_else(|| tag.id.to_string());
+        let light: Light = effects::read(map, self.definition)
+            .with_context(|| format!("{name}: reading the light definition"))?;
+        self.lamp(name, &light)
     }
 
     fn lamp(&self, name: String, light: &Light) -> Result<PlacedLamp> {

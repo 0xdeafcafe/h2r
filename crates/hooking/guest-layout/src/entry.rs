@@ -60,6 +60,10 @@ pub struct Regs {
 /// keep their value), and the stack arguments, `args[0]` at `[esp+4]` when
 /// the callee starts. The stack is put back after the call whatever the
 /// callee pops, so caller- and callee-cleanup are the same here.
+///
+/// The call is made at the body's entry `ESP` lowered by `reserve` bytes:
+/// a body that keeps a frame below its entry `ESP`, as the function it
+/// replaces did, reserves the frame so its callees' frames go below it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GuestCall {
     pub target: u32,
@@ -73,6 +77,8 @@ pub struct GuestCall {
     pub xmm1: Option<u128>,
     pub xmm2: Option<u128>,
     pub args: Vec<u32>,
+    /// Bytes below the entry `ESP` the call leaves alone.
+    pub reserve: u32,
 }
 
 impl GuestCall {
@@ -122,6 +128,17 @@ impl GuestCall {
     pub fn args(mut self, args: impl IntoIterator<Item = u32>) -> Self {
         self.args = args.into_iter().collect();
         self
+    }
+    /// Make the call with `ESP` lowered by `bytes` first.
+    pub fn reserve(mut self, bytes: u32) -> Self {
+        self.reserve = bytes;
+        self
+    }
+    /// The callee's `ESP` at its first instruction for a body entered with
+    /// `entry_esp`: below the reserve, the arguments and the return
+    /// address.
+    pub fn esp(&self, entry_esp: u32) -> u32 {
+        entry_esp.wrapping_sub(self.reserve).wrapping_sub(4 * self.args.len() as u32).wrapping_sub(4)
     }
 }
 
@@ -345,8 +362,15 @@ pub mod testing {
         pub guest: FakeGuest,
     }
 
+    /// The return address [`run`] writes for a call with a reserve.
+    pub const RETURN: u32 = 0xffff_fff0;
+
     /// Runs `f` entered with `regs` on `guest`, answering each guest call
     /// with `callee` (which may change memory as the real callee would).
+    /// A call with a [`GuestCall::reserve`] has its arguments and
+    /// [`RETURN`] written where the driver pushes them
+    /// ([`GuestCall::esp`]), so that stack must be mapped; a call without
+    /// one touches no stack.
     pub fn run(
         f: &EntryFn,
         guest: FakeGuest,
@@ -363,6 +387,14 @@ pub mod testing {
                 Step::Call(c) => {
                     let out = {
                         let mut g = mem.lock().unwrap();
+                        if c.reserve != 0 {
+                            let esp = c.esp(regs.esp);
+                            for (i, &v) in std::iter::once(&RETURN).chain(&c.args).enumerate() {
+                                let at = esp.wrapping_add(4 * i as u32);
+                                g.set_u32(at, v)
+                                    .unwrap_or_else(|f| panic!("call {:#x}: its stack at {at:#x} is not mapped: {f:?}", c.target));
+                            }
+                        }
                         callee(&c, &mut *g)
                     };
                     calls.push(c);
@@ -463,6 +495,40 @@ mod tests {
         };
         let run = testing::run(&f, g, regs, |_, _| unreachable!());
         assert_eq!(run.result, Ok(Ret::new(2, 8)));
+    }
+
+    #[test]
+    fn a_reserved_call_is_made_below_the_reserved_bytes() {
+        let f = boxed(|cx| {
+            Box::pin(async move {
+                let esp = cx.entry().esp;
+                // The body's frame, below its entry ESP.
+                cx.write(|m| m.set_u32(esp - 8, 0xfeed))?;
+                cx.call(GuestCall::new(0x100).reserve(0x40).args([7, 8])).await?;
+                Ok(Ret::new(cx.read(|m| m.u32(esp - 8))?, 0))
+            })
+        });
+        let mut g = FakeGuest::new();
+        g.map(0x7000, 0x1000);
+        let regs = Regs { esp: 0x7800, ..Default::default() };
+        let run = testing::run(&f, g, regs, |c, m| {
+            let esp = c.esp(0x7800);
+            assert_eq!(esp, 0x7800 - 0x40 - 8 - 4);
+            assert_eq!(m.u32(esp), Ok(testing::RETURN));
+            assert_eq!((m.u32(esp + 4), m.u32(esp + 8)), (Ok(7), Ok(8)));
+            // The callee's own frame goes below its ESP.
+            m.set_u32(esp - 4, 0xdead).unwrap();
+            Regs::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(0xfeed, 0)), "the frame is untouched");
+        assert_eq!(run.calls[0].reserve, 0x40);
+    }
+
+    #[test]
+    fn a_call_without_a_reserve_is_made_at_the_entry_esp() {
+        let call = GuestCall::new(1).args([1]);
+        assert_eq!(call.reserve, 0);
+        assert_eq!(call.esp(0x1000), 0x1000 - 8);
     }
 
     #[test]

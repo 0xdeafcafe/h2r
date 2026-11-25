@@ -40,6 +40,10 @@ pub mod at {
     pub const SPRITES: usize = 0x34;
     /// Sprite: its image index.
     pub const SPRITE_IMAGE: usize = 0;
+    /// Sprite: left, right, top and bottom (fractions of its image), then
+    /// the registration point (two floats).
+    pub const SPRITE_BOUNDS: usize = 0x8;
+    pub const SPRITE_REGISTRATION: usize = 0x18;
     /// Image: registration point, pixel offset, the three texture cache
     /// handles and the low-detail picture.
     pub const REGISTRATION: usize = 0x10;
@@ -68,6 +72,76 @@ impl Sequence {
     pub fn image_count(&self) -> u16 {
         u16::from_le_bytes([self.entry[at::IMAGE_COUNT], self.entry[at::IMAGE_COUNT + 1]])
     }
+}
+
+/// A sprite's fields as the sprite editor shows them: the image it cuts
+/// from, its bounds on that image (fractions, `left <= right`,
+/// `top <= bottom`) and its registration point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpriteView {
+    pub image: i16,
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub registration: [f32; 2],
+}
+
+fn f32_at(r: &[u8], at: usize) -> f32 {
+    f32::from_le_bytes([r[at], r[at + 1], r[at + 2], r[at + 3]])
+}
+
+impl SpriteView {
+    /// The fields of a sprite record (`SPRITE_LEN` bytes).
+    pub fn read(record: &[u8]) -> SpriteView {
+        let b = at::SPRITE_BOUNDS;
+        let g = at::SPRITE_REGISTRATION;
+        SpriteView {
+            image: i16::from_le_bytes([record[at::SPRITE_IMAGE], record[at::SPRITE_IMAGE + 1]]),
+            left: f32_at(record, b),
+            right: f32_at(record, b + 4),
+            top: f32_at(record, b + 8),
+            bottom: f32_at(record, b + 12),
+            registration: [f32_at(record, g), f32_at(record, g + 4)],
+        }
+    }
+
+    /// Why these fields cannot be written, or `Ok`.
+    pub fn check(&self) -> Result<(), String> {
+        let all = [self.left, self.right, self.top, self.bottom]
+            .into_iter()
+            .chain(self.registration);
+        if all.into_iter().any(|v| !v.is_finite()) {
+            return Err("a sprite's numbers must be finite".to_owned());
+        }
+        if self.left > self.right || self.top > self.bottom {
+            return Err("a sprite's left and top must not pass its right and bottom".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Writes the fields into a sprite record, keeping every other byte.
+    pub fn write(&self, record: &mut [u8]) {
+        record[at::SPRITE_IMAGE..at::SPRITE_IMAGE + 2].copy_from_slice(&self.image.to_le_bytes());
+        let vals = [self.left, self.right, self.top, self.bottom];
+        for (k, v) in vals.into_iter().enumerate() {
+            let o = at::SPRITE_BOUNDS + 4 * k;
+            record[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        for (k, v) in self.registration.into_iter().enumerate() {
+            let o = at::SPRITE_REGISTRATION + 4 * k;
+            record[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+/// A sprite record over all of `image`, registered at its origin, every
+/// other byte zero.
+pub fn new_sprite(image: i16) -> Vec<u8> {
+    let mut r = vec![0; SPRITE_LEN];
+    SpriteView { image, left: 0.0, right: 1.0, top: 0.0, bottom: 1.0, registration: [0.0; 2] }
+        .write(&mut r);
+    r
 }
 
 /// A bitmap tag's records.

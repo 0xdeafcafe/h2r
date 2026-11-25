@@ -40,7 +40,7 @@ fn sealed() -> Arc<FrameScene> {
     builder.seal(Stamp::default()).unwrap()
 }
 
-fn replay() -> ReplayFrame {
+pub(super) fn replay() -> ReplayFrame {
     let colour = AuxTarget {
         width: SIZE,
         height: SIZE,
@@ -59,18 +59,18 @@ fn replay() -> ReplayFrame {
     }
 }
 
-fn op(frame: &mut ReplayFrame, slot: Slot, op: ReplayOp) {
+pub(super) fn op(frame: &mut ReplayFrame, slot: Slot, op: ReplayOp) {
     frame.ops.push((SlotAt { slot, view: 0 }, op));
 }
 
-fn bind() -> ReplayOp {
+pub(super) fn bind() -> ReplayOp {
     ReplayOp::Bind {
         colour: MAIN,
         depth: Z,
     }
 }
 
-fn clear() -> ReplayOp {
+pub(super) fn clear() -> ReplayOp {
     ReplayOp::Clear {
         colour: MAIN,
         depth: Z,
@@ -87,6 +87,7 @@ fn guest_triangle(x: f32, colour: [f32; 4], texture: Option<u32>) -> ReplayOp {
         draw: draw.into(),
         textures: [texture.map(ReplayTexture::Sample), None, None, None],
         camera: CameraUse::Unknown,
+        external: None,
     }
 }
 
@@ -217,6 +218,112 @@ fn typed_and_carried_draws_in_adjacent_slots_share_one_pass() {
     );
 }
 
+/// Commit at the sink, then draw the sealed stream through the display
+/// and capture entry points. The light's explicit target is not the
+/// guest's bound target: the guest draw after it must still use the latter.
+#[test]
+fn a_committed_light_stage_replays_once_without_rebinding_the_next_guest_draw() {
+    use d3d::{Backend, SceneSink};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else { return };
+    let mut gpu = GfxBackend::new(ctx);
+    let ReplayOp::Stage(triangle_stage) = typed_triangle(&mut gpu, 2.0, [0., 1., 0., 1.]) else {
+        unreachable!()
+    };
+    let frame = Arc::new(Mutex::new(None));
+    let retained = Arc::clone(&frame);
+    let armed = Arc::new(AtomicBool::new(true));
+    let reference = Arc::clone(&armed);
+    let mut sink = SceneSink::new(gpu, || {
+        Some(SlotAt {
+            slot: Slot::AfterLights,
+            view: 0,
+        })
+    })
+    .with_replay(move |f| *retained.lock().unwrap() = Some(f))
+    .with_guest_reference_request(move || reference.load(Ordering::Relaxed));
+    let color = sink.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let other = sink.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = sink.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    for surface in [color, other] {
+        sink.clear(surface, Some(depth), Clear::all([0., 0., 0., 1.]))
+            .unwrap();
+    }
+    let guest = |rgba| {
+        let mut draw = triangle(2., rgba, 1, false);
+        draw.state.render.depth_func = gfx::state::CompareFunc::Always;
+        draw
+    };
+    sink.draw(other, Some(depth), &guest([1., 0., 0., 1.]), [None; 4])
+        .unwrap();
+    let stage = SceneStage {
+        surfaces: ExternalSurfaces {
+            color,
+            depth,
+            sampled: vec![],
+            slots: vec![],
+            slot_sizes: vec![],
+        },
+        plan: ExternalPlan {
+            stage: timeline::native::Stage::Lights,
+            ..triangle_stage.plan
+        },
+        pass: triangle_stage.pass,
+        request: triangle_stage.request,
+    };
+    assert!(
+        !sink.can_commit_carried(),
+        "an armed reference retains the guest"
+    );
+    assert!(sink.prepare_carried_stage(&stage).unwrap().is_none());
+    armed.store(false, Ordering::Relaxed);
+    // A refused later step or tail drops this first reservation.
+    drop(sink.prepare_carried_stage(&stage).unwrap().unwrap());
+    let recordings = sink.prepare_carried_stage(&stage).unwrap().unwrap();
+    sink.commit_carried_stage(stage, recordings);
+    sink.draw(other, Some(depth), &guest([0., 0., 1., 1.]), [None; 4])
+        .unwrap();
+    sink.present(color, 0).unwrap();
+
+    let frame = frame.lock().unwrap().take().unwrap();
+    assert!(frame.refusals.is_empty());
+    assert!(!frame.guest_reference_complete());
+    let pos = frame
+        .ops
+        .iter()
+        .position(|(_, op)| matches!(op, ReplayOp::Stage(_)))
+        .unwrap();
+    assert_eq!(
+        frame
+            .ops
+            .iter()
+            .filter(|(_, op)| matches!(op, ReplayOp::Stage(_)))
+            .count(),
+        1
+    );
+    assert!(matches!(frame.ops[pos - 1].1, ReplayOp::Draw { .. }));
+    assert!(
+        matches!(frame.ops[pos + 1].1, ReplayOp::Draw { .. }),
+        "the later guest draw inherited its binding"
+    );
+    let scene = sealed();
+    let gpu = sink.inner_mut();
+    let shown = draw_display(gpu, &scene, &frame, 1, Lighting::Retail, 0, None, None).unwrap();
+    assert_eq!(shown.draws, 3);
+    let display = gpu.last_presented().unwrap();
+    let pixels = gpu.read_color(display).unwrap().0;
+    let at = ((4 * SIZE + 4) * 4) as usize;
+    assert_eq!(&pixels[at..at + 4], &[0, 255, 0, 255]);
+    for scale in [1, 4] {
+        let capture = draw_private(gpu, &scene, &frame, scale, Lighting::Retail).unwrap();
+        assert_eq!(capture.report.draws, 3);
+        assert_eq!(rgba(&capture, 4 * scale, 4 * scale), [0, 255, 0, 255]);
+    }
+    assert_eq!(gpu.last_presented(), Some(display));
+    assert_eq!(gpu.read_color(display).unwrap().0, pixels);
+}
+
 #[test]
 fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -249,6 +356,7 @@ fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
             of: aux,
             id: 0,
             how: ReplaySample::InPlace,
+            into: None,
         },
     );
     // The later shader reads the captured red on the copied black field.
@@ -584,7 +692,8 @@ fn e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged() {
     const EPOCH: u64 = 0x5e3_0001;
     let mut backend = GfxBackend::new(ctx);
     let scene = sun_scene(EPOCH, 0xe500_0001);
-    set_models(EPOCH, Some(Arc::new(SunModels(sun_model()))));
+    let casters: native_render::sun_casters::SharedModels = Arc::new(SunModels(sun_model()));
+    set_models(EPOCH, Some(&casters));
     // The mask's draw, magenta at (19, 5), inside shadow 0's marks.
     let build = |marks: bool| {
         let mut frame = replay();
@@ -665,7 +774,8 @@ fn e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world() {
     const EPOCH: u64 = 0x5e3_0002;
     let mut backend = GfxBackend::new(ctx);
     let scene = sun_scene_on(EPOCH, 0xe500_0001, frame_scene::LayerOwner::Cluster(0));
-    set_models(EPOCH, Some(Arc::new(SunModels(sun_model()))));
+    let casters: native_render::sun_casters::SharedModels = Arc::new(SunModels(sun_model()));
+    set_models(EPOCH, Some(&casters));
     // Cluster 0's part 0: the ground under the caster.
     let mut built = WorldBuilder::new();
     let ground = SectionInput {
@@ -713,7 +823,8 @@ fn e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world() {
     );
     assert_eq!(unloaded.report.e3.unwrap().sun_tiles, 0);
 
-    set_world(EPOCH, Some(Arc::new(world)));
+    let receivers: native_render::sun_casters::SharedWorld = Arc::new(world);
+    set_world(EPOCH, Some(&receivers));
     let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
     let report = e3.report.e3.unwrap();
     assert_eq!(report.sun_tiles, 1);
@@ -810,6 +921,9 @@ fn e3_reports_its_choice_of_sixteen_lights_from_twenty() {
         let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
         let report = e3.report.e3.unwrap();
         assert_eq!((report.lights_lit, report.lights_over_cap), (16, 4));
+        // The guest drew none of them; with no chosen-light stage in the
+        // replay, `e3.lights` has no draws.
+        assert_eq!(report.lights_beyond_guest, 16);
         assert_eq!(report.lights.draws, 0);
         assert_eq!(e3.rgba, retail.rgba);
     }
@@ -860,6 +974,7 @@ fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
             draw: Arc::new(add),
             textures: [None, None, None, None],
             camera: CameraUse::Unknown,
+            external: None,
         },
     );
     let targets = HashMap::from([(MAIN, colour), (Z, depth)]);
@@ -961,4 +1076,358 @@ fn private_receivers_restore_the_renderer_and_the_swap_reports_its_own_mode() {
         assert_eq!(*changes.lock().unwrap(), [false, true]);
     }
     assert_eq!(*shown.lock().unwrap(), [Lighting::E3, Lighting::Retail]);
+}
+
+/// The camera looks straight down at a flat white floor. A raised triangle
+/// above the eye is absent from both the visible walk and the mask list.
+#[test]
+fn a_caster_behind_the_camera_shadows_the_ground_in_view() {
+    use frame_scene::{NodeMatrix, RenderCamera, ViewKey, ViewKind};
+    use native_render::sun_casters::{SunWorld, set_models, set_world};
+    use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+    use scene_extract::{
+        layout::{nearby_casters, object_nodes::TAG_INSTANCES},
+        testing::{self, BODIES, Mem},
+    };
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else { return };
+    const EPOCH: u64 = 0x5e3_0008;
+    let camera = RenderCamera {
+        position: [0., 0., 1.],
+        forward: [0., 0., -1.],
+        up: [0., 1., 0.],
+        fov: std::f32::consts::FRAC_PI_2,
+        projection_xy: None,
+        viewport: [0, 0, SIZE as i16, SIZE as i16],
+        near: 0.1,
+        far: 100.,
+    };
+    let mut mem = Mem::default();
+    testing::object(&mut mem, 0, 0, 1);
+    mem.w(BODIES + 4, 1 << 24);
+    mem.w(BODIES + 0x14, u32::MAX);
+    mem.w(BODIES + 0xa8, 0);
+    mem.w(TAG_INSTANCES, 0x2000);
+    mem.w(0x2008, 0x3000);
+    mem.w(0x3018, 2);
+    mem.w(nearby_casters::DEFAULT_LIGHTING, 0x4000);
+    for (i, v) in [0., 0., 1.].into_iter().enumerate() {
+        mem.f(0x4028 + i as u32 * 4, v);
+    }
+    mem.f(0x4038, 0.75);
+    for (i, v) in [0., 0., 2., 0.8].into_iter().enumerate() {
+        mem.f(BODIES + 0x30 + i as u32 * 4, v);
+    }
+    let node = NodeMatrix {
+        position: [0., 0., 2.],
+        ..NodeMatrix::IDENTITY
+    };
+    for (i, &v) in bytemuck::cast_ref::<_, [f32; 13]>(&node).iter().enumerate() {
+        mem.f(BODIES + 0x200 + i as u32 * 4, v);
+    }
+    let mut b = SceneBuilder::new(FreeList::new());
+    b.begin(SceneId {
+        map_epoch: EPOCH,
+        tick: 1,
+        frame: 1,
+    });
+    b.open_view(
+        ViewKey {
+            kind: ViewKind::Game,
+            player: 0,
+            view: 0,
+        },
+        camera,
+    )
+    .unwrap();
+    b.set_clusters([0]).unwrap();
+    let casters = nearby_casters::extract(&mem, &camera);
+    assert_eq!(casters.len(), 1);
+    b.add_nearby_casters(casters).unwrap();
+    let scene = b.seal(Stamp::default()).unwrap();
+    let mut model = sun_model();
+    for (v, p) in model
+        .vertices
+        .iter_mut()
+        .zip([[-0.5, -0.5, 0.], [0.5, -0.5, 0.], [0., 0.5, 0.]])
+    {
+        v.position = p;
+    }
+    let casters: native_render::sun_casters::SharedModels = Arc::new(SunModels(model));
+    set_models(EPOCH, Some(&casters));
+    let mut world = WorldBuilder::new();
+    let floor = SectionInput {
+        positions: vec![[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [-1., 1., 0.]],
+        normals: vec![[0., 0., 1.]; 4],
+        uvs: vec![[0.; 2]; 4],
+        parts: vec![PartInput {
+            material: 0,
+            transparent: false,
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        }],
+        ..Default::default()
+    };
+    world.add_section(Owner::Cluster(0), &floor, &Placement::IDENTITY, None);
+    let receivers: native_render::sun_casters::SharedWorld = Arc::new(SunWorld::new(&world.finish()));
+    set_world(EPOCH, Some(&receivers));
+    let mut backend = GfxBackend::new(ctx);
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, bind());
+    op(
+        &mut frame,
+        Slot::Opaque,
+        ReplayOp::Clear {
+            colour: MAIN,
+            depth: Z,
+            clear: Clear {
+                depth: Some(1.0 / camera.far),
+                ..Clear::all([1.; 4])
+            },
+        },
+    );
+    let retail = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    assert_eq!(rgba(&retail, SIZE / 2, SIZE / 2), [255; 4]);
+    assert!(rgba(&e3, SIZE / 2, SIZE / 2)[0] < 100);
+    assert_eq!(rgba(&e3, 2, 2), [255; 4]);
+    let work = e3.report.e3.unwrap();
+    assert_eq!(work.sun_tiles_offscreen, 1);
+    assert_eq!(
+        (work.sun_tiles, work.sun_tiles_redrawn, work.sun.draws),
+        (1, 1, 1)
+    );
+    set_models(EPOCH, None);
+    set_world(EPOCH, None);
+}
+
+/// A chosen light's stage as the frame step queues one the renderer
+/// shadows: E3 alone, naming its cone, drawing nothing of its own here.
+struct ShadowedChosen(u32);
+
+impl d3d::ExternalPass for ShadowedChosen {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn lighting_only(&self) -> Option<Lighting> {
+        Some(Lighting::E3)
+    }
+
+    fn cone_shadow(&self) -> Option<u32> {
+        Some(self.0)
+    }
+
+    fn record_encoded(
+        &mut self,
+        _target: &d3d::backend::ExternalAttachments,
+        _request: ExternalPassRequest,
+    ) -> Option<Result<gfx::external::ExternalEncoded, &'static str>> {
+        Some(Ok(gfx::external::ExternalEncoded {
+            ranges: 1,
+            draws: 0,
+            passes: 0,
+            commands: Box::new(|_| {}),
+        }))
+    }
+}
+
+fn shadowed_chosen(handle: u32) -> ReplayOp {
+    ReplayOp::Stage(SceneStage {
+        surfaces: ExternalSurfaces {
+            color: MAIN,
+            depth: Z,
+            sampled: vec![],
+            slots: vec![],
+            slot_sizes: vec![],
+        },
+        request: ExternalPassRequest {
+            rect: (0, 0, SIZE, SIZE),
+            surface_size: (SIZE, SIZE),
+            display_projection_factor: 1.0,
+            z_scale: 16_777_215.0,
+        },
+        plan: ExternalPlan {
+            stage: timeline::native::Stage::Lights,
+            view: 0,
+            ranges: 1,
+            slots: vec![],
+        },
+        pass: Arc::new(Mutex::new(Box::new(ShadowedChosen(handle)))),
+    })
+}
+
+/// The design's game check on an invented scene (L7 joined to L6b): a
+/// lamp the content flagged no-shadow hangs at (0.5, 0, 0.9) over a floor,
+/// with a board under it at z = 0.45. The camera looks down from z = 1, so
+/// the floor's shadow (x in 0.3..0.7) shows beside the board. The lamp's
+/// chosen stage names its cone: under E3 the cone stage before it writes
+/// the shadow term into the scene's alpha, about zero on the shadowed
+/// floor and whole on the lit floor across the axis, and the light's own
+/// stage then draws. Retail applies neither. A stage naming a light the
+/// renderer did not shadow is kept: not applied, alpha untouched.
+#[test]
+fn a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail() {
+    use frame_scene::{Light, LightCandidate, LightVolume, RenderCamera, ViewKey, ViewKind};
+    use native_render::cone_shadows::{FRUSTUM, NO_SHADOW};
+    use native_render::sun_casters::{SunWorld, set_world};
+    use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else { return };
+    const EPOCH: u64 = 0x5e3_0107;
+    const LAMP: u32 = 0xe100_0007;
+    let camera = RenderCamera {
+        position: [0., 0., 1.],
+        forward: [0., 0., -1.],
+        up: [0., 1., 0.],
+        fov: std::f32::consts::FRAC_PI_2,
+        projection_xy: None,
+        viewport: [0, 0, SIZE as i16, SIZE as i16],
+        near: 0.1,
+        far: 100.,
+    };
+    let mut b = SceneBuilder::new(FreeList::new());
+    b.begin(SceneId {
+        map_epoch: EPOCH,
+        tick: 1,
+        frame: 1,
+    });
+    b.open_view(
+        ViewKey {
+            kind: ViewKind::Game,
+            player: 0,
+            view: 0,
+        },
+        camera,
+    )
+    .unwrap();
+    b.set_clusters([0]).unwrap();
+    let lamp = Light {
+        handle: LAMP,
+        definition_flags: NO_SHADOW,
+        candidate: Some(LightCandidate {
+            position: [0.5, 0., 0.9],
+            forward: [0., 0., -1.],
+            up: [1., 0., 0.],
+            colour_a: [1.; 3],
+            colour_b: [1.; 3],
+            intensity: 1.,
+            bounds: ([0.5, 0., 0.4], 1.5),
+            owner: None,
+            definition_kind: FRUSTUM,
+            volume: Some(LightVolume::Projected {
+                kind: FRUSTUM,
+                origin: [0.5, 0., 0.9],
+                axis: [0., 0., -1.],
+                near: 0.1,
+                far: 1.0,
+                far_extent: [2.0, 2.0],
+            }),
+            view_eligible: Some(true),
+            priority: Some(1.),
+            weight: 1.,
+            gel_bitmap: None,
+            gel_shader: None,
+            constants: None,
+        }),
+        ..Default::default()
+    };
+    b.add_light_candidates(vec![lamp]).unwrap();
+    let scene = b.seal(Stamp::default()).unwrap();
+    let mut world = WorldBuilder::new();
+    let (f, h) = (1.5, 0.1);
+    // The floor in cells of a quarter unit: the cone term's gate is a
+    // vertex value, so one quad would carry its corners' gate everywhere.
+    let cells = 12usize;
+    let mut positions = Vec::new();
+    for j in 0..=cells {
+        for i in 0..=cells {
+            let at = |k: usize| -f + 2.0 * f * k as f32 / cells as f32;
+            positions.push([at(i), at(j), 0.]);
+        }
+    }
+    let mut floor = Vec::new();
+    for j in 0..cells {
+        for i in 0..cells {
+            let a = (j * (cells + 1) + i) as u16;
+            let c = a + cells as u16 + 1;
+            floor.extend([[a, a + 1, c + 1], [a, c + 1, c]]);
+        }
+    }
+    let board = positions.len() as u16;
+    positions.extend([
+        [0.5 - h, -h, 0.45],
+        [0.5 + h, -h, 0.45],
+        [0.5 + h, h, 0.45],
+        [0.5 - h, h, 0.45],
+    ]);
+    let floor_and_board = SectionInput {
+        normals: vec![[0., 0., 1.]; positions.len()],
+        uvs: vec![[0.; 2]; positions.len()],
+        positions,
+        parts: vec![
+            PartInput {
+                material: 0,
+                transparent: false,
+                triangles: floor,
+            },
+            PartInput {
+                material: 0,
+                transparent: false,
+                triangles: vec![
+                    [board, board + 1, board + 2],
+                    [board, board + 2, board + 3],
+                ],
+            },
+        ],
+        ..Default::default()
+    };
+    world.add_section(Owner::Cluster(0), &floor_and_board, &Placement::IDENTITY, None);
+    let receivers: native_render::sun_casters::SharedWorld = Arc::new(SunWorld::new(&world.finish()));
+    set_world(EPOCH, Some(&receivers));
+    let frame_naming = |handle: u32| {
+        let mut frame = replay();
+        op(&mut frame, Slot::Opaque, bind());
+        op(
+            &mut frame,
+            Slot::Opaque,
+            ReplayOp::Clear {
+                colour: MAIN,
+                depth: Z,
+                clear: Clear {
+                    depth: Some(1.0 / camera.far),
+                    ..Clear::all([1.; 4])
+                },
+            },
+        );
+        op(&mut frame, Slot::AfterLights, shadowed_chosen(handle));
+        frame
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let frame = frame_naming(LAMP);
+    let retail = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
+    let e3 = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
+    // The floor at x = 0.5 and x = -0.5, at a quarter of the frame from
+    // each side on the middle row.
+    let (near_x, far_x) = (3 * SIZE / 4, SIZE / 4);
+    for x in [near_x, far_x] {
+        assert_eq!(rgba(&retail, x, SIZE / 2), [255; 4]);
+    }
+    let alphas = [near_x, far_x].map(|x| rgba(&e3, x, SIZE / 2)[3]);
+    assert!(
+        alphas.iter().min().unwrap() < &40 && alphas.iter().max().unwrap() == &255,
+        "one floor pixel in the shadow, the other lit: {alphas:?}"
+    );
+    assert_eq!(rgba(&e3, near_x, SIZE / 2)[..3], [255; 3], "RGB is kept");
+    let work = e3.report.e3.unwrap();
+    assert_eq!((work.cones_drawn, work.cones_kept), (1, 0));
+    assert_eq!(work.lights.draws, 1, "the light's stage drew after it");
+    assert!(work.tiles.draws >= 1 && work.marks.draws >= 1);
+
+    let other = frame_naming(0xe100_0001);
+    let kept = draw_private(&mut backend, &scene, &other, 1, Lighting::E3).unwrap();
+    let work = kept.report.e3.unwrap();
+    assert_eq!((work.cones_drawn, work.cones_kept), (0, 1));
+    assert_eq!(work.lights.draws, 0, "the kept light's stage is not applied");
+    assert_eq!(kept.rgba, retail.rgba);
+    set_world(EPOCH, None);
 }

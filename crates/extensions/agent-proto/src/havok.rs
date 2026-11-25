@@ -13,11 +13,14 @@ pub mod method {
 
     /// Per-pair cached collision state ([`super::AgentsParams`] → [`super::Agents`]).
     pub const AGENTS: &str = "havok.agents";
+    /// The ordered heap walk (`{}` → [`super::Digest`]): the whole Havok
+    /// world's persistent state as one hash, for parity checks.
+    pub const DIGEST: &str = "havok.digest";
     /// Overwrite one collision pair's word ([`super::PairSetParams`] →
     /// [`super::PairSet`]). Needs the claim and a session that allows host writes.
     pub const PAIR_SET: &str = "havok.pair.set";
 
-    pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS, PAIR_SET];
+    pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS, DIGEST, PAIR_SET];
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -190,6 +193,21 @@ pub struct PairSet {
 pub struct Agents {
     pub object: String,
     pub agents: Vec<CollisionAgent>,
+}
+
+/// `havok.digest`: the canonical walk over the live Havok heap
+/// (docs/engine/sim-rewrite-havok.md §9.2). The arena hash does not cover
+/// the Havok heap, so this digest is what proves a physics rewrite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Digest {
+    /// The walk's FNV-1a hash over every live byte and address, 16 hex
+    /// digits.
+    pub digest: String,
+    pub bodies: u32,
+    pub constraints: u32,
+    pub pairs: u32,
+    /// Bytes in occupied pool slots.
+    pub heap_used: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

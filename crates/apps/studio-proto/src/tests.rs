@@ -56,6 +56,7 @@ fn short_forms_name_their_methods_and_params() {
     assert_eq!(c("huds ascension"), (m::HUD_LIST.into(), json!({"map":"ascension"})));
     assert_eq!(c("hud"), (m::HUD_READ.into(), json!(null)));
     assert_eq!(c("render-hud /tmp/h.png"), (m::HUD_RENDER.into(), json!({"out":"/tmp/h.png"})));
+    assert_eq!(c("workspace"), (m::WORKSPACE_STATUS.into(), json!(null)));
     assert_eq!(
         c("tags vehi warthog"),
         (m::TAG_LIST.into(), json!({"group":"vehi","name":"warthog"}))
@@ -87,6 +88,16 @@ fn a_method_by_name_takes_json_params() {
         )
     );
     assert_eq!(c("doc.list"), (m::DOC_LIST.into(), json!(null)));
+}
+
+#[test]
+fn the_tab_short_forms_name_a_tab() {
+    assert_eq!(c("tabs"), (m::SHELL_TABS.into(), json!(null)));
+    assert_eq!(c("focus map"), (m::SHELL_FOCUS.into(), json!({"doc": "map"})));
+    assert_eq!(
+        c("close itmc:kit"),
+        (m::SHELL_CLOSE.into(), json!({"doc": "itmc:kit"}))
+    );
 }
 
 #[test]

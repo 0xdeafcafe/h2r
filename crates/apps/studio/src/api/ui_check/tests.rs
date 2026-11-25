@@ -127,7 +127,7 @@ fn aspects_say_which_fit_each_is() {
     assert!(aspects("21:9", false).is_err());
 }
 
-fn app(t: &Temp) -> App {
+fn test_app(t: &Temp) -> App {
     let mut app = App::new();
     app.set_data_root(t.0.join("data"));
     app
@@ -136,7 +136,7 @@ fn app(t: &Temp) -> App {
 #[test]
 fn ui_check_checks_each_state_of_a_screen() {
     let t = Temp::new("screen");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     let mut api = Api::new();
     let r: Value = api
         .call(&mut app, m::UI_CHECK, json!({"screen": EXAMPLE}))
@@ -187,7 +187,7 @@ fn ui_check_checks_each_state_of_a_screen() {
 #[test]
 fn the_hud_check_names_the_stray_bitmap() {
     let t = Temp::new("hud");
-    let mut app = app(&t);
+    let mut app = test_app(&t);
     // No map in the HUD tool: the check cannot run, and says why.
     assert!(hud_check(&mut app, None).unwrap_err().contains("HUD tool"));
     let map = t.0.join("hudtest.map");

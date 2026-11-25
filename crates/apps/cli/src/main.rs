@@ -151,6 +151,10 @@ mod mappack_cmd;
 #[cfg(feature = "desktop")]
 mod maps;
 #[cfg(feature = "desktop")]
+mod package_prepare;
+#[cfg(feature = "desktop")]
+mod store_prepare;
+#[cfg(feature = "desktop")]
 mod server_map;
 #[cfg(feature = "desktop")]
 mod movies_cmd;
@@ -186,6 +190,8 @@ const USAGE: &str = "usage: h2 <command>
   theater play FILM --render-every 0
                           replay a host film headlessly
   film stat FILE          report keyframes, capture points and tape usage
+  film stat --fields FILE...
+                          report each action field's change rate and stored bytes
   theater prepare FILM    verify a film headlessly and build its seek cache
   mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   sim <run|batch|compare> run or compare bot matches
@@ -222,6 +228,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
   film stat FILE          report keyframes, capture points and tape usage
+  film stat --fields FILE...
+                          report each action field's change rate and stored bytes
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
                           that differ (docs/live/live-coop.md section 9)
   coop test [--auto]      co-op over Live on this Mac: a Live server, two
@@ -231,8 +239,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           --live-server URL, or --live-local for a service in
                           the process; offline without one; docs/live/live.md)
   rules, variants, maps, tags, tag, firefight, map testbuild, testmap,
-  forge build|check, collision, superbounce, hud, object, strings, effect,
-  lights, shader, hs, extract-shaders
+  forge build|check, package check|build, collision, superbounce, hud, object,
+  strings, effect, lights, shader, hs, extract-shaders
                           the offline map, tag and script tools: h2 runs
                           h2-tools beside it with the same words (`h2-tools
                           --help` lists them; docs/runtime/cli-tools.md)
@@ -242,7 +250,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   ls                      files on the disc
   pogo kit MAP [--out FILE]  add the pogo stick to a disc multiplayer map and
                           say what it took; pogo models [--out DIR] writes
-                          the three looks as OBJ files (art/pogo/README.md)
+                          the three looks as OBJ files (content/pogo/README.md)
   forge looks [--disc <iso>] [--json]  the models a Forge monitor can look like
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
@@ -275,6 +283,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
+  package prepare [--disc ISO] [--data DIR] [--force] [--no-halo1] [--no-mappack]
+                          run the packages' convert items (the Halo 1 and Map Pack
+                          discs beside the game disc), as h2 play, run and serve do
+                          before they boot (docs/editor/studio-redesign.md)
   movies <iso> [--out DIR] [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
@@ -437,6 +449,10 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "import-mappack" {
         return mappack_cmd::run(args.collect());
+    }
+    // The other `package` commands run in h2-tools (tools::forwards).
+    if cmd == "package" {
+        return package_prepare::run(args.skip(1).collect());
     }
     if cmd == "bots" {
         let args: Vec<String> = args.collect();

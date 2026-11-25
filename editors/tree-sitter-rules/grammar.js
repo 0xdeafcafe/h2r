@@ -24,7 +24,7 @@
  * them ("expected the end of the line"). Enum variants may be separated
  * by spaces as well as commas and newlines.
  *
- * `settings`, `quick`, `scoring` and `about` are keywords only at the
+ * `settings`, `quick`, `type`, `uses`, `use`, `points` and `about` are keywords only at the
  * start of a top-level line, where the grammar can take them; in a
  * handler they are names, as in parse.rs.
  *
@@ -99,10 +99,11 @@ module.exports = grammar({
     header: $ => seq('rules', field('name', $.string), field('version', $.integer)),
 
     _item: $ => choice(
-      $.carrier_declaration,
+      $.type_declaration,
       $.teams_declaration,
-      $.list_declaration,
-      $.scoring_declaration,
+      $.uses_declaration,
+      $.use_declaration,
+      $.points_declaration,
       $.about_declaration,
       $.quick_declaration,
       $.settings_declaration,
@@ -118,15 +119,19 @@ module.exports = grammar({
       $.handler_declaration,
     ),
 
-    carrier_declaration: $ => seq('carrier', field('name', $.identifier)),
+    // `type koth`: the game type, which files the script's variants.
+    type_declaration: $ => seq('type', field('name', $.identifier)),
 
     teams_declaration: $ => seq('teams', field('count', $.integer)),
 
-    // `list research`.
-    list_declaration: $ => seq('list', field('name', $.identifier)),
+    // `uses slayer`: the built-in game whose rules the script plays.
+    uses_declaration: $ => seq('uses', field('name', $.identifier)),
 
-    // `scoring carrier`.
-    scoring_declaration: $ => seq('scoring', field('name', $.identifier)),
+    // `points "Laps"`: what a point is called.
+    points_declaration: $ => seq('points', field('text', $.string)),
+
+    // `use "waves.rules"`: another file's declarations, read in at this line.
+    use_declaration: $ => seq('use', field('path', $.string)),
 
     // `about "No shields. 50 points to win."`.
     about_declaration: $ => seq('about', field('text', $.string)),

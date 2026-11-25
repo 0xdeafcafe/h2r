@@ -46,7 +46,7 @@ containing the current directory). Once the files have been quiet for
 merge, rebase or cherry-pick), it looks at what changed:
   rules scripts      reloaded into the running game (rules.reload)
   web/               the live web app rebuilt (with --live-local)
-  crates/, assets/   h2 rebuilt in the checkout (cargo build --release -p cli),
+  crates/, assets/, content/   h2 rebuilt in the checkout (cargo build --release -p cli),
                      and the game code generated again when the new h2 says so
   docs, tests        nothing
 A rebuild shows \"Update ready\" in the game window: F5 restarts into it,
@@ -88,7 +88,13 @@ pub enum Kind {
     Image,
 }
 
-const BUILTIN_RULES: &str = "crates/formats/rules/src/builtin/";
+/// The folders whose `.rules` files are the built-in scripts: the `core` and
+/// `modes` packages'.
+const BUILTIN_RULES: &[&str] = &["content/core/rules/", "content/modes/rules/"];
+
+fn builtin_rules(rel: &str) -> bool {
+    BUILTIN_RULES.iter().any(|p| rel.starts_with(p))
+}
 
 /// Path components that are never sources.
 const IGNORED_DIRS: &[&str] = &[
@@ -129,7 +135,7 @@ const IMAGE_PREFIXES: &[&str] = &[
 ];
 
 /// What `cargo build -p cli` reads beyond the generator.
-const HOST_PREFIXES: &[&str] = &["crates/", "assets/", ".cargo/"];
+const HOST_PREFIXES: &[&str] = &["crates/", "assets/", "content/", ".cargo/"];
 const HOST_FILES: &[&str] = &["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"];
 
 /// The web app's tests, benchmarks and fixtures.
@@ -180,7 +186,7 @@ pub fn classify(rel: &str) -> Kind {
         return Kind::Ignored;
     }
     if name.ends_with(".rules") {
-        return if rel.starts_with(BUILTIN_RULES) {
+        return if builtin_rules(rel) {
             Kind::BuiltinRules
         } else {
             Kind::Rules
@@ -1097,7 +1103,7 @@ fn reload_rules(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{rel}: {e}")),
     };
-    let sources = if rel.starts_with(BUILTIN_RULES) {
+    let sources = if builtin_rules(rel) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
         rules::builtin::sources_of(name.as_deref().unwrap_or(""), &text)
     } else {

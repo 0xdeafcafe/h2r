@@ -20,7 +20,7 @@
 //! fields are marked ([`Field::named`] false) so names can grow.
 //!
 //! Field names, descriptions and their evidence come from the checked-in definitions.
-pub use crate::defs::{Title, Unit};
+pub use crate::defs::{FieldView, Title, Unit};
 use crate::defs::{self, Defs, Kind as DefKind, StructDef};
 use crate::schema::{self, Schema};
 use map::FourCC;
@@ -85,6 +85,8 @@ pub struct Field {
     pub unit: Option<Unit>,
     /// The definition's `axes=`: one component letter per array element.
     pub axes: Vec<String>,
+    /// The definition's `view=`: how a rich editor shows the field.
+    pub view: Option<FieldView>,
 }
 
 /// A field's type, as an editor shows it.
@@ -587,6 +589,7 @@ fn merge(
                 label: f.label.clone(),
                 unit: f.unit,
                 axes: f.axes.clone(),
+                view: f.view,
             });
         }
     }
@@ -630,6 +633,7 @@ fn merge(
                 label: None,
                 unit: None,
                 axes: Vec::new(),
+                view: None,
             },
         );
     }
@@ -706,6 +710,7 @@ fn fill(out: &mut Vec<Field>, mut lo: u32, hi: u32) {
             label: None,
             unit: None,
             axes: Vec::new(),
+            view: None,
         });
         lo += len;
     }

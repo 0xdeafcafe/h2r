@@ -14,8 +14,11 @@ pub mod method {
     /// shape is the same, else by restarting the game on the same map and
     /// variant ([`super::ReloadParams`], [`super::ReloadResult`]).
     pub const RELOAD: &str = "rules.reload";
+    /// The zones the host built for the running script: where each came
+    /// from and its area ([`super::Zones`]; no params).
+    pub const ZONES: &str = "rules.zones";
 
-    pub const ALL: &[&str] = &[STATE, RELOAD];
+    pub const ALL: &[&str] = &[STATE, RELOAD, ZONES];
 }
 
 // ---- rules.state ----
@@ -43,14 +46,13 @@ pub struct State {
     /// Where the blob came from: `builtin` or `live`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// The retail engine index the game rides.
+    /// The physical engine index in the active variant record, including the script index.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier: Option<u8>,
     /// Who scores the game the script runs in: `script` when its VM
-    /// runs, `carrier` for a `scoring carrier` script, which runs no VM
-    /// and leaves the carrier engine's own scoring to answer as retail
-    /// (docs/game/rules-variants.md, "A script that keeps its carrier's
-    /// rules").
+    /// runs. A `uses` script's game runs the built-in it uses, which is a
+    /// script too (docs/game/rules-variants.md, "A script that keeps its
+    /// carrier's rules").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scoring: Option<Scoring>,
     /// The packed option bits from the record.
@@ -94,7 +96,7 @@ pub struct State {
 pub enum Scoring {
     /// The script's VM is the game's one scorer.
     Script,
-    /// `scoring carrier`: the carrier engine scores; no VM runs.
+    /// The record's engine scores; no VM runs.
     Carrier,
 }
 
@@ -115,6 +117,41 @@ pub struct Labelled {
     pub id: u32,
     /// The script declares a label of this text.
     pub declared: bool,
+}
+
+// ---- rules.zones ----
+
+/// One zone the host built (docs/game/gametype-markers.md, "In a
+/// script"): a netgame flag's, with the shape a script's `inside` tests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Zone {
+    /// The placement id `zone.id` reads.
+    pub id: u32,
+    /// The label's text.
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<i32>,
+    /// Which step of the order made the shape: `area` (the flag's own),
+    /// `corners` (a hill's corner flags) or `default` (the cylinder).
+    pub shape: String,
+    /// The area, in plain numbers: `{"radius": r, "below": b, "above": a}`
+    /// or `{"path": [[x, y], ...], "below": b, "above": a}`, the path in
+    /// offsets from `at`.
+    pub area: serde_json::Value,
+    /// The area's centre marker in world units: the flag, or a hill's
+    /// corners' middle.
+    pub at: [f32; 3],
+    /// This zone reports its players' enters and leaves; the other
+    /// corners of a hill name the same zone and report none.
+    pub reports: bool,
+}
+
+/// `rules.zones`' answer: the running script's zones, in id order; empty
+/// when no script runs or the map has no flags.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Zones {
+    #[serde(default)]
+    pub zones: Vec<Zone>,
 }
 
 // ---- rules.reload ----
@@ -277,6 +314,25 @@ mod tests {
             json!({"label": "territory", "class": "flag", "team": 1, "id": 524291, "declared": true})
         );
         assert_eq!(from_value::<State>(v).unwrap(), s);
+    }
+
+    #[test]
+    fn zones_name_their_shape_and_area_in_plain_numbers() {
+        let z = Zone {
+            id: 0x8_0001,
+            label: "hill_corner".into(),
+            number: Some(0),
+            shape: "area".into(),
+            area: json!({"path": [[-4.0, -4.0], [4.0, -4.0], [0.0, 4.0]], "below": 0.5, "above": 1.5}),
+            at: [10.0, 0.0, 0.0],
+            reports: true,
+        };
+        let v = to_value(Zones { zones: vec![z.clone()] }).unwrap();
+        assert_eq!(v["zones"][0]["shape"], json!("area"));
+        assert_eq!(v["zones"][0]["area"]["path"][2], json!([0.0, 4.0]));
+        assert_eq!(from_value::<Zones>(v).unwrap().zones, vec![z]);
+        assert_eq!(from_value::<Zones>(json!({})).unwrap(), Zones::default());
+        assert!(method::ALL.contains(&method::ZONES));
     }
 
     #[test]

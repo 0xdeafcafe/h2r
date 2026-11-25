@@ -3,8 +3,12 @@
 //! session access.
 #![forbid(unsafe_code)]
 
+mod budget;
 pub mod camera;
-mod files;
+pub mod files;
+#[cfg(test)]
+mod file_tests;
+pub mod kit;
 mod links;
 pub mod look;
 pub mod net;
@@ -14,10 +18,16 @@ mod session;
 mod things;
 pub mod tool;
 
-pub use files::{load_saved, saved_names};
+pub use budget::{Binds, Budget, noun};
+pub use files::load_prefabs;
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
+pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
 pub use links::{Linkable, Teleporter};
-pub use session::{Outgoing, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit};
+pub use session::{
+    Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, GroupInfo,
+    NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker, SHARED_PROPOSE,
+    SHARED_REDO, Session, SessionAdmit, flag_label,
+};
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 
 /// Position in world units, and yaw, pitch and roll in radians, in scenario order.
@@ -99,9 +109,29 @@ pub trait World {
         let _ = (block, index, row);
         Err(NO_BASE.into())
     }
+    /// Add an entry of a kit block ([`kit::BLOCKS`]) as its row `index`,
+    /// the first spare row: write the row, a zeroed one with `fields`, and
+    /// raise the block's count to `index + 1`. A map without the kit has no
+    /// spare row, and the call is refused by name.
+    fn kit_add(
+        &mut self,
+        block: BlockKind,
+        index: u32,
+        fields: &[(&'static str, Value)],
+    ) -> Result<(), String> {
+        let _ = (block, index, fields);
+        Err(NO_KIT.into())
+    }
+    /// Take the last entry of a kit block, row `index`, away: write the
+    /// spare form back and lower the block's count to `index`.
+    fn kit_drop(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
+        let _ = (block, index);
+        Err(NO_KIT.into())
+    }
 }
 
 const NO_BASE: &str = "This game cannot edit the map's own entries.";
+const NO_KIT: &str = "This map has no kit, so this game cannot add entries to it.";
 
 #[cfg(test)]
 mod tests;
@@ -110,4 +140,16 @@ mod tests;
 mod base_tests;
 
 #[cfg(test)]
+mod ground_tests;
+
+#[cfg(test)]
+mod nav_tests;
+
+#[cfg(test)]
+mod budget_tests;
+
+#[cfg(test)]
 mod props_tests;
+
+#[cfg(test)]
+mod kit_tests;

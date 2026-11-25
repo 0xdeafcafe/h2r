@@ -8,12 +8,18 @@ pub struct Script {
     pub name: String,
     pub version: i64,
     pub pos: Pos,
-    pub carrier: Option<(String, Pos)>,
+    /// `type slayer`: the game type's word.
+    pub game_type: Option<(String, Pos)>,
     pub teams: Option<(i64, Pos)>,
-    /// `list research`: the list's name.
-    pub list: Option<(String, Pos)>,
-    /// `scoring carrier`: the word after `scoring`.
-    pub scoring: Option<(String, Pos)>,
+    /// `points "Captures"`: what a point is.
+    pub points: Option<(String, Pos)>,
+    /// `uses slayer`: the built-in game whose rules the script plays.
+    pub uses: Option<(String, Pos)>,
+    /// Header lines the language no longer has (`carrier slayer`, `list
+    /// party`, `scoring carrier`): the word, the word after it and the
+    /// line's position. The checker refuses each, naming the line to write
+    /// instead.
+    pub retired: Vec<(String, String, Pos)>,
     /// `about "..."`: the description.
     pub about: Option<(String, Pos)>,
     /// `quick a, b, c`: the names, and the line's position.
@@ -21,7 +27,39 @@ pub struct Script {
     /// `settings { name = value ... }`.
     pub settings: Option<SettingsBlock>,
     pub requires: Vec<(String, Pos)>,
+    /// `use "waves.rules"`: the module files the script names. The
+    /// compile reads them first ([`super::modules`]), so a script that
+    /// reaches the checker with one has no file to read it from.
+    pub modules: Vec<(String, Pos)>,
+    /// `hud name: kind at slot`, in order: a widget's number is its index.
+    /// Each also leaves a `const` of the same name in `items`, so a call
+    /// names a widget by it.
+    pub huds: Vec<HudDecl>,
+    /// `waypoint name [at slot]`, in order, as `huds` are.
+    pub waypoints: Vec<WaypointDecl>,
+    /// `section "Waves"`: where the script is split, for the outline and
+    /// folding. It compiles to nothing.
+    pub sections: Vec<(String, Pos)>,
     pub items: Vec<Item>,
+}
+
+/// `hud <name>: <kind> at <slot>`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HudDecl {
+    pub name: String,
+    /// `text`, `banner` or `meter`; the checker refuses another.
+    pub kind: String,
+    /// The kit element the widget draws as (`koth.hill`).
+    pub slot: String,
+    pub pos: Pos,
+}
+
+/// `waypoint <name> [at <slot>]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaypointDecl {
+    pub name: String,
+    pub slot: Option<String>,
+    pub pos: Pos,
 }
 
 /// The `settings` block: one `name = value` a line.

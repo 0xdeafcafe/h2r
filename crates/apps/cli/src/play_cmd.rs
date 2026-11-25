@@ -29,6 +29,7 @@ const USAGE: &str = "usage:
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
+          [--editor [--window] [--game-variant FILE]]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
   h2 play --watch [--repo PATH] [--quiet MS] [--fresh-data] [--cache DIR] <the arguments above>
@@ -80,11 +81,14 @@ accepts native or WIDTHxHEIGHT; H2_RENDER_SCALE accepts a legacy multiplier.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row
 (`h2 settings list` shows them; docs/game/settings-menu.md).
---level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
+--editor starts the game for a tool to hold (Studio's own game): it needs
+--level, has no window unless --window is given, and is a local game with no
+Live, film or --input-timeline (docs/editor/game-view.md). --level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
 default player: no title, profile or menus. MAP is a map file name from the
 disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
 normal by default), or a multiplayer map (ascension) as a local Slayer game
-with the default variant. A name the disc lacks lists them (docs/runtime/level-boot.md).
+with the default variant. --game-variant FILE supplies a portable .h2variant
+for an --editor multiplayer level. A name the disc lacks lists them (docs/runtime/level-boot.md).
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`). --watch watches your
 checkout instead: once a burst of edits or a git pull settles it reloads rules
@@ -344,10 +348,10 @@ fn hosted(
             None => gfx,
         }
     };
-    let native_size: boot::run_opts::NativeSize = Arc::new(host.native_size());
+    let native_target: boot::run_opts::NativeTarget = Arc::new(host.native_target());
     let (gfx, view) = boot::d3d_glue::window_targets(
         &store,
-        native_size, host.display_size(),
+        native_target, host.display_size(),
         || configure(d3d::GfxBackend::new(host.gfx_context())),
         || {
             let present = host
@@ -521,6 +525,7 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod editor;
 mod forge;
 pub(crate) mod theater;
 
@@ -562,15 +567,19 @@ pub(crate) fn run_with_theater(
     let mut live = crate::play_live::LiveOpts::default();
     let mut film_out = None;
     let mut level_flag: Option<String> = None;
+    let mut game_variant = None;
     let mut difficulty_flag: Option<String> = None;
     let mut tier: Option<boot::tier::Choice> = None;
+    let mut editor_flag = false;
+    let mut window_flag = false;
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
         // consumes the unused `GuestHost::mixer`).
         audio: false,
         title: "Halo 2".into(),
-        aspect: app::DisplayAspect::Source,
+        aspect: app::DisplayAspect::Drawable,
+        window_matches_monitor_aspect: true,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.
         shutdown_timeout: Duration::from_secs(10),
@@ -644,7 +653,10 @@ pub(crate) fn run_with_theater(
             }
             "--set" => flags.push(crate::settings_cmd::set_flag(&val()?)?),
             "--film" => film_out = Some(PathBuf::from(val()?)),
+            "--editor" => editor_flag = true,
+            "--window" => window_flag = true,
             "--level" => level_flag = Some(val()?),
+            "--game-variant" => game_variant = Some(PathBuf::from(val()?)),
             "--difficulty" => difficulty_flag = Some(val()?),
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
             "--input-timeline" => {
@@ -688,9 +700,26 @@ pub(crate) fn run_with_theater(
         std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
     );
     live.check()?;
-    let film_auto = film_auto_request(
-        std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
-    );
+    let env_set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    let editor = editor::check(editor::Asked {
+        editor: editor_flag,
+        window: window_flag,
+        level: level_flag.as_deref().is_some_and(|l| !l.trim().is_empty()) || env_set("H2_LEVEL"),
+        live: live.enabled || live.local || live.join.is_some(),
+        film: film_out.is_some() || env_set("H2_FILM_OUT"),
+        timeline: config.scripted_input.is_some(),
+    })?;
+    if let Some(mode) = editor {
+        // A tool holds this game: no window of its own unless asked, and
+        // a focus change never pauses it.
+        config.hidden = !mode.window;
+        config.pause_on_focus_loss = false;
+    }
+    let film_auto = if editor.is_some() {
+        boot::theater::autorecord::Request::Skip("editor mode records no film")
+    } else {
+        film_auto_request(std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()))
+    };
     if live.join.is_some()
         && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
     {
@@ -739,14 +768,16 @@ pub(crate) fn run_with_theater(
         },
         gamepads: config.gamepads,
     };
-    // Before the level is resolved, so `--level a30` finds a level this
-    // converts.
-    if crate::h1_import::auto_enabled(no_halo1) {
-        crate::h1_import::auto_import(&disc, &data);
+    if game_variant.is_some() && editor.is_none() {
+        bail!("--game-variant needs --editor");
     }
+    // The packages' convert items (the Map Pack and Halo 1 discs beside
+    // the game disc), before the level is resolved so `--level a30` finds
+    // a level this converts.
+    crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
     // Before the build and the window, so a bad name stops here with the
     // disc's list.
-    let level = match level_choice(
+    let mut level = match level_choice(
         level_flag,
         difficulty_flag,
         std::env::var("H2_LEVEL").ok(),
@@ -755,6 +786,12 @@ pub(crate) fn run_with_theater(
         Some((name, difficulty)) => Some(boot::level_boot::resolve_in(&disc, Some(&data), &name, difficulty)?),
         None => None,
     };
+    if let Some(path) = game_variant {
+        let req = level.as_mut().context("--game-variant needs --level")?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        req.set_variant(&text)?;
+    }
     if let Some(l) = &level {
         eprintln!("play: starting {} {} ({})", l.name, l.game(), l.scenario);
     }
@@ -778,9 +815,6 @@ pub(crate) fn run_with_theater(
         full_speed_module: boot::tier::clang_dylib(&out),
         restart: restart_in_place(),
     });
-    if crate::mappack_cmd::auto_enabled(no_mappack) {
-        crate::mappack_cmd::auto_install(&disc, &data);
-    }
     let opts = boot::RunOpts {
         disc,
         data_root: data,
@@ -861,7 +895,7 @@ pub(crate) fn run_with_theater(
     let editor_link = EditorLink::default();
     config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
     if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
-        config.forge = Some(forge::overlay(&opts.disc).context("loading Forge UI assets")?);
+        config.forge = Some(forge::overlay());
     }
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
@@ -898,6 +932,11 @@ pub(crate) fn run_with_theater(
             if let Some(menu) = &debug_menu {
                 input.set_gate(Box::new(menu.gate()));
             }
+            // Editor mode: Start goes to the tool, so the in-game pause menu
+            // never opens (docs/editor/game-view.md).
+            if editor.is_some() {
+                input.add_gate(Box::new(self::editor::NoStart));
+            }
         }
         host.theater = theater;
         host.debug_menu = debug_menu;
@@ -910,6 +949,7 @@ pub(crate) fn run_with_theater(
         host.game_code = Some(game_code);
         host.editor_link = Some(editor_link);
         boot::debug_views::register(&mut host);
+        boot::forge_glue::markers_world::register(&mut host);
         boot::superbounce_mode::register(&mut host);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
@@ -1237,7 +1277,7 @@ fn mark_frame() -> app::overlay::marks::FrameMarks {
 }
 
 /// Each view's mark camera, moved by its shift where a made frame drew it
-/// with another camera than the image's own (`d3d::interp::marks`).
+/// with another camera than the image's own (`d3d::present_camera`).
 fn mark_cameras(
     views: &[Option<d3d::present_camera::View>; 4],
     reference: bool,
@@ -1627,6 +1667,26 @@ mod tests {
                 "hard",
             ]);
             assert!(e.contains("unknown difficulty"), "{e}");
+        }
+    }
+
+    #[test]
+    fn play_parses_the_editor_flags() {
+        let run_err = |a: &[&str]| {
+            run(a.iter().map(|s| s.to_string()).collect())
+                .unwrap_err()
+                .to_string()
+        };
+        // Each stops before the disc is read.
+        if std::env::var_os("H2_LEVEL").is_none() && std::env::var_os("H2_FILM_OUT").is_none() {
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor"]);
+            assert!(e.contains("--editor needs --level"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--window", "--level", "a10"]);
+            assert!(e.contains("--window is for --editor"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor", "--level", "a10", "--live-local"]);
+            assert!(e.contains("local game"), "{e}");
+            let e = run_err(&["/nonexistent/halo2.iso", "--editor", "--level", "a10", "--film", "x.h2film"]);
+            assert!(e.contains("no film"), "{e}");
         }
     }
 

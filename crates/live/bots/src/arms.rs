@@ -398,18 +398,17 @@ impl Role {
             Role::Blast => (5.0, 25.0),
         }
     }
-    /// Shoots at targets from `.0` to `.1` away, no further (wasted
-    /// rounds) and, with splash, no closer.
+    /// Shoots at targets from `.0` to `.1` away: to
+    /// [`crate::weapons::FIRE_PAST_BAND`] times its band's far end, the
+    /// rule every gun fires by (wasted rounds past it) and, with splash,
+    /// no closer than its own blast. A blade does not shoot.
     pub fn fire_range(self) -> (f32, f32) {
-        match self {
-            Role::Unknown => (0.0, 25.0),
-            Role::Blade => (0.0, 0.0),
-            Role::Scatter => (0.0, 8.0),
-            Role::Spray => (0.0, 18.0),
-            Role::Precise => (0.0, 40.0),
-            Role::Sniper => (0.0, 80.0),
-            Role::Blast => (2.5, 35.0),
-        }
+        let near = match self {
+            Role::Blade => return (0.0, 0.0),
+            Role::Blast => 2.5,
+            _ => 0.0,
+        };
+        (near, self.band().1 * crate::weapons::FIRE_PAST_BAND)
     }
     /// How much it is worth going for (power weapons 4 and up).
     pub fn rating(self) -> u8 {

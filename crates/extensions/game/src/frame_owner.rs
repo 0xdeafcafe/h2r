@@ -463,6 +463,8 @@ impl PrivateCaptureScene for Selection {
         let lighting = match lighting {
             CaptureLighting::Retail => d3d::Lighting::Retail,
             CaptureLighting::E3 => d3d::Lighting::E3,
+            CaptureLighting::RelightOn => d3d::Lighting::RelightOn,
+            CaptureLighting::RelightOff => d3d::Lighting::RelightOff,
         };
         owner.enqueue(
             self.generation,
@@ -644,6 +646,7 @@ impl Service {
         *active = Arc::downgrade(&shared);
         drop(active);
         scene_step::set_seal_observer(Some(SealObserver { sealed, reset }));
+        scene_step::set_host_lights(Some(crate::forge_glue::monitor_lights));
         set_private_capture_source(Some(capture));
         crate::frame_parity::install();
         Ok(Self {
@@ -766,6 +769,7 @@ impl Drop for Service {
         drop(self.shared.callbacks.write().unwrap_or_else(|e| e.into_inner()));
         crate::render_probe::owner_stopped();
         scene_step::set_seal_observer(None);
+        scene_step::set_host_lights(None);
         set_private_capture_source(None);
         crate::frame_parity::uninstall();
         if let Some(join) = self.join.take() {

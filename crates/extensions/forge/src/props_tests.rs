@@ -1,6 +1,6 @@
 //! `forge::props` and the session's field edits, removals and resets over
 //! the fake world and invented map of `base_tests`.
-use forge_doc::{Edit, Endpoint, EntryOp, FieldWrite, Forge, TagKey, Value};
+use forge_doc::{Edit, Endpoint, EntryOp, FieldWrite, Forge, Placement, TagKey, Value};
 
 use crate::base_tests::{Call, Fake, entry_ops, float, frame, open, rows, vec3, weapon};
 use crate::{BlockKind, Frame, Linkable, Teleporter, ThingKind, props};
@@ -364,4 +364,185 @@ fn reset_puts_an_own_entry_back_as_the_map_has_it() {
         w.calls.last(),
         Some(&Call::BaseInert(BlockKind::Weapons, 0))
     );
+}
+
+#[test]
+fn game_types_are_the_slots_read_and_a_set_change_is_one_op_a_changed_slot() {
+    use forge_doc::games::GameSet;
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let thing = s.thing(spawner).unwrap();
+    // The map's spawner has the group value in every slot: every engine.
+    assert_eq!(props::games(&thing), Some(GameSet::ALL));
+    assert_eq!(props::games(&s.thing(weapon(0)).unwrap()), None);
+
+    // Slayer and Oddball: [2, 3, 2, 2] changes all four slots.
+    let set = GameSet::of(&[2, 3]);
+    s.set_games(&mut w, 1, spawner, set).unwrap();
+    let slot = |n: usize, v: i64| EntryOp::Set {
+        target: spawner_target(),
+        write: FieldWrite {
+            field: props::GAME_SLOTS[n].into(),
+            value: Value::Int(v),
+        },
+    };
+    assert_eq!(
+        entry_ops(&s),
+        [slot(0, 2), slot(1, 3), slot(2, 2), slot(3, 2)]
+    );
+    assert_eq!(props::games(&s.thing(spawner).unwrap()), Some(set));
+    // One undo step puts all four back.
+    s.undo(&mut w, 2).unwrap();
+    assert_eq!(props::games(&s.thing(spawner).unwrap()), Some(GameSet::ALL));
+
+    // The same set writes nothing; a set that differs in one slot writes one.
+    s.set_games(&mut w, 3, spawner, GameSet::ALL).unwrap();
+    s.set_games(&mut w, 4, spawner, GameSet::of(&[2])).unwrap();
+    let before = s.document().ops.len();
+    s.set_games(&mut w, 5, spawner, GameSet::of(&[2])).unwrap();
+    assert_eq!(s.document().ops.len(), before);
+    s.set_games(&mut w, 6, spawner, GameSet::of(&[2, 3]))
+        .unwrap();
+    assert_eq!(
+        s.document().ops.len(),
+        before + 1,
+        "only the second slot changes"
+    );
+}
+
+fn spawner_target() -> Endpoint {
+    Endpoint::Base {
+        block: BlockKind::NetgameEquipment,
+        index: 0,
+        print: Some(rows().into_iter().last().unwrap().print),
+    }
+}
+
+#[test]
+fn a_set_the_slots_cannot_name_is_refused_with_its_sentence_and_nothing_is_written() {
+    use forge_doc::games::GameSet;
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let too_many = GameSet::of(&[4, 2, 3, 7, 1, 9]);
+    assert_eq!(
+        s.set_games(&mut w, 1, spawner, too_many).unwrap_err(),
+        "An item can name four game types at most."
+    );
+    assert_eq!(
+        s.set_games(&mut w, 1, spawner, GameSet::of(&[1]))
+            .unwrap_err(),
+        "Capture the Flag and Assault go together."
+    );
+    assert_eq!(
+        s.set_games(&mut w, 1, weapon(0), GameSet::ALL).unwrap_err(),
+        "This object has no game types to edit."
+    );
+    assert!(s.document().ops.is_empty());
+    assert!(w.calls.is_empty());
+}
+
+#[test]
+fn a_spawners_team_is_a_property_op_that_touches_nothing_in_the_world() {
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    assert_eq!(s.team(spawner), None);
+    s.set_team(&mut w, 1, spawner, Some(3)).unwrap();
+    assert_eq!(s.team(spawner), Some(3));
+    assert_eq!(
+        entry_ops(&s),
+        [EntryOp::Property {
+            target: spawner_target(),
+            property: forge_doc::Property::Team(Some(3)),
+        }]
+    );
+    assert!(w.calls.is_empty(), "no scenario bytes: {:?}", w.calls);
+    // The same team writes nothing; a clear is one op; undo takes it back.
+    s.set_team(&mut w, 2, spawner, Some(3)).unwrap();
+    assert_eq!(s.document().ops.len(), 1);
+    s.set_team(&mut w, 3, spawner, None).unwrap();
+    assert_eq!((s.document().ops.len(), s.team(spawner)), (2, None));
+    s.undo(&mut w, 4).unwrap();
+    assert_eq!(s.team(spawner), Some(3));
+    // Another kind has none, and a team past 7 is refused.
+    assert_eq!(
+        s.set_team(&mut w, 5, weapon(0), Some(1)).unwrap_err(),
+        "This object has no team."
+    );
+    assert!(s.set_team(&mut w, 5, spawner, Some(8)).is_err());
+    assert_eq!(s.document().ops.len(), 1);
+}
+
+#[test]
+fn duplicate_is_one_add_with_the_sources_tag_at_the_new_frame() {
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let at = frame(9., 1.5);
+    let copy = s.duplicate(&mut w, 1, weapon(0), at).unwrap();
+    let [op] = &s.document().ops[..] else {
+        panic!("one op")
+    };
+    let Edit::Placement(Placement::Add {
+        block,
+        like,
+        fields,
+    }) = &op.edit
+    else {
+        panic!("expected an add")
+    };
+    assert_eq!((*block, *like), (BlockKind::Weapons, None));
+    assert_eq!(
+        fields
+            .iter()
+            .map(|f| (f.field.as_str(), f.value.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "palette index",
+                Value::Tag(Some(crate::base_tests::rifle()))
+            ),
+            ("position", vec3(at.position)),
+            ("rotation", vec3(at.rotation)),
+        ]
+    );
+    // The world makes the copy once, where the frame puts it.
+    assert_eq!(w.calls, [Call::Place(1, at)]);
+    assert_eq!(s.thing(Endpoint::Added(copy)).unwrap().frame, at);
+    // Undo takes the copy back, and the world deletes it.
+    s.undo(&mut w, 2).unwrap();
+    assert!(s.thing(Endpoint::Added(copy)).is_none());
+    assert_eq!(w.calls.last(), Some(&Call::Delete(1)));
+}
+
+#[test]
+fn duplicate_refuses_a_kind_the_session_cannot_add_and_a_full_budget() {
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    assert_eq!(
+        s.duplicate(&mut w, 1, spawner, frame(1., 0.)).unwrap_err(),
+        "Duplicating an item spawner needs a kit session."
+    );
+    let goal = Endpoint::base(BlockKind::NetgameFlags, 1);
+    assert_eq!(
+        s.duplicate(&mut w, 2, goal, frame(1., 0.)).unwrap_err(),
+        "Duplicating a goal needs a kit session."
+    );
+    assert!(
+        w.calls.is_empty(),
+        "a refusal writes nothing: {:?}",
+        w.calls
+    );
+    // The session's object budget binds the adds: four objects fill it.
+    for tick in 3..7 {
+        s.place(&mut w, tick, 0, frame(tick as f32, 0.)).unwrap();
+    }
+    assert_eq!(
+        s.duplicate(&mut w, 7, weapon(0), frame(1., 0.))
+            .unwrap_err(),
+        "Objects are full (4)."
+    );
+    assert_eq!(w.calls.len(), 4);
 }

@@ -56,6 +56,8 @@ pub mod code {
     pub const FAILED: i64 = 14;
     /// Nothing renders here (no wgpu adapter).
     pub const NO_GPU: i64 = 15;
+    /// The call writes to the edit target and none is set (`package.target`).
+    pub const NO_TARGET: i64 = 16;
 }
 
 /// Method names, by namespace. `session.methods` lists them with their
@@ -77,10 +79,52 @@ pub mod method {
     pub const DOC_REDO: &str = "doc.redo";
     pub const DOC_CLOSE: &str = "doc.close";
 
+    // The document tabs (docs/editor/studio-redesign.md, "The shell").
+    pub const SHELL_TABS: &str = "shell.tabs";
+    pub const SHELL_OPEN: &str = "shell.open";
+    pub const SHELL_FOCUS: &str = "shell.focus";
+    pub const SHELL_CLOSE: &str = "shell.close";
+    // The browser (docs/editor/studio-redesign.md, "The browser";
+    // api/assets.rs).
+    pub const ASSET_LIST: &str = "asset.list";
+    pub const ASSET_THUMB: &str = "asset.thumb";
+    pub const ASSET_COPY: &str = "asset.copy";
+    pub const ASSET_LINKS: &str = "asset.links";
+    pub const ASSET_FORK: &str = "asset.fork";
+    pub const ASSET_REVERT: &str = "asset.revert";
+    // The package document (api/packages.rs).
+    pub const PACKAGE_LIST: &str = "package.list";
+    pub const PACKAGE_READ: &str = "package.read";
+    pub const PACKAGE_NEW: &str = "package.new";
+    pub const PACKAGE_SET: &str = "package.set";
+    pub const PACKAGE_ITEM_ADD: &str = "package.item.add";
+    pub const PACKAGE_ITEM_SET: &str = "package.item.set";
+    pub const PACKAGE_ITEM_REMOVE: &str = "package.item.remove";
+    pub const PACKAGE_TARGET: &str = "package.target";
+    pub const PACKAGE_ENABLE: &str = "package.enable";
+    pub const PACKAGE_ORDER: &str = "package.order";
+    pub const PACKAGE_CHECK: &str = "package.check";
+    pub const PACKAGE_BUILD: &str = "package.build";
+    pub const PACKAGE_EXPORT: &str = "package.export";
+    pub const PACKAGE_PLAY: &str = "package.play";
+    pub const PACKAGE_DIFF: &str = "package.diff";
+    // The Problems panel (docs/editor/studio-redesign.md; api/problems.rs).
+    pub const PROBLEMS_LIST: &str = "problems.list";
+    // The preview switch (docs/editor/studio-redesign.md; api/preview.rs).
+    pub const PREVIEW_TARGET: &str = "preview.target";
+    // The tag workspace (docs/editor/tag-workspace.md, "Interfaces";
+    // api/workspace.rs).
+    pub const WORKSPACE_STATUS: &str = "workspace.status";
+    pub const WORKSPACE_EXTRACT: &str = "workspace.extract";
+    pub const WORKSPACE_IMPORT: &str = "workspace.import";
+    pub const WORKSPACE_PRUNE: &str = "workspace.prune";
+
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";
     pub const TAG_VIEW: &str = "tag.view";
+    pub const TAG_FIND: &str = "tag.find";
     pub const TAG_CHOICES: &str = "tag.choices";
+    pub const TAG_NAMES: &str = "tag.names";
     pub const TAG_BYTES: &str = "tag.bytes";
     pub const TAG_RESET: &str = "tag.reset";
     pub const TAG_ELEMENTS: &str = "tag.elements";
@@ -88,7 +132,11 @@ pub mod method {
     pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
     pub const TAG_KINDS: &str = "tag.kinds";
+    pub const TAG_OPEN: &str = "tag.open";
+    pub const TAG_SUBJECT: &str = "tag.subject";
+    pub const STRINGS_LIST: &str = "strings.list";
     pub const TAG_CHAIN: &str = "tag.chain";
+    pub const TAG_USES: &str = "tag.uses";
     pub const TAG_FOLLOW: &str = "tag.follow";
     pub const TAG_SET: &str = "tag.set";
     pub const TAG_BLOCK_ADD: &str = "tag.block.add";
@@ -99,10 +147,44 @@ pub mod method {
     pub const TAG_EXPORT: &str = "tag.export";
     pub const TAG_IMPORT: &str = "tag.import";
 
+    // Curve functions of a function field (api/curves.rs).
+    pub const FUNCTION_READ: &str = "function.read";
+    pub const FUNCTION_SET: &str = "function.set";
+    pub const FUNCTION_SAMPLE: &str = "function.sample";
+
+    // Colour fields of a tag (api/colours.rs).
+    pub const TAG_COLOURS: &str = "tag.colours";
+
+    // The Shader tab (api/shader.rs; slice S1 of
+    // docs/editor/rich-editors.md): a shad's slots read and written, and
+    // the material drawn alone.
+    pub const SHADER_READ: &str = "shader.read";
+    pub const SHADER_SET: &str = "shader.set";
+    pub const SHADER_PREVIEW: &str = "shader.preview";
+    // The Code section (slice S4): a pass's programs as text.
+    pub const SHADER_CODE: &str = "shader.code";
+    // WGSL overrides from the editor (slice S5): a pass's program edited,
+    // pushed to the paired game as an override file, and reverted.
+    pub const SHADER_OVERRIDE: &str = "shader.override";
+    pub const SHADER_PUSH: &str = "shader.push";
+    pub const SHADER_REVERT: &str = "shader.revert";
+
     pub const SOUND_READ: &str = "sound.read";
     pub const SOUND_PLAY: &str = "sound.play";
     pub const SOUND_STOP: &str = "sound.stop";
+    pub const SOUND_MOUTH: &str = "sound.mouth";
     pub const SOUND_MEASURE: &str = "sound.measure";
+    // The face preview: a model's talk overlay by a mouth curve (api/anim.rs).
+    pub const SOUND_FACE: &str = "sound.face";
+    // Waveform edits and permutations of a package sound (api/sound_edit.rs).
+    pub const SOUND_EDIT: &str = "sound.edit";
+    pub const SOUND_RENDER: &str = "sound.render";
+    pub const SOUND_PERMUTATION: &str = "sound.permutation";
+    // A WAV imported into a package as a `sound` item (api/import.rs).
+    pub const IMPORT_SOUND: &str = "import.sound";
+    pub const IMPORT_MODEL: &str = "import.model";
+    // A PNG imported into a package as a `bitmap` item (api/import.rs).
+    pub const IMPORT_BITMAP: &str = "import.bitmap";
 
     // The Announcer: lines said by a voice (api/voice.rs).
     pub const VOICE_SAY: &str = "voice.say";
@@ -114,6 +196,11 @@ pub mod method {
     pub const VOICE_DATASET_STATUS: &str = "voice.dataset.status";
     pub const VOICE_CLONE_TRAIN: &str = "voice.clone.train";
     pub const VOICE_CLONE_SAY: &str = "voice.clone.say";
+    // The Voices batch: many lines at once (api/voice_clone.rs).
+    pub const VOICE_SAY_BATCH: &str = "voice.say_batch";
+    pub const VOICE_BATCH_STATUS: &str = "voice.batch.status";
+    pub const VOICE_BATCH_RUN: &str = "voice.batch.run";
+    pub const VOICE_BATCH_SAVE: &str = "voice.batch.save";
 
     // Every content check in one list (api/checks.rs).
     pub const CHECK_RUN: &str = "check.run";
@@ -143,7 +230,14 @@ pub mod method {
     pub const NAV_PATHFINDING: &str = "nav.pathfinding";
     pub const NAV_BOTS: &str = "nav.bots";
     pub const NAV_PICK: &str = "nav.pick";
+    pub const GROUND_STATUS: &str = "ground.status";
+    pub const GROUND_BUILD: &str = "ground.build";
     pub const PLAYTEST_STATIC: &str = "playtest.static";
+    pub const PLAYTEST_RUN: &str = "playtest.run";
+    pub const PLAYTEST_STATUS: &str = "playtest.status";
+    pub const PLAYTEST_RESULT: &str = "playtest.result";
+    pub const PLAYTEST_CANCEL: &str = "playtest.cancel";
+    pub const PLAYTEST_COMPARE: &str = "playtest.compare";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";
@@ -153,6 +247,7 @@ pub mod method {
     pub const VARIANT_RENAME: &str = "variant.rename";
     pub const VARIANT_COPY: &str = "variant.copy";
     pub const VARIANT_EXPORT: &str = "variant.export";
+    pub const VARIANT_MAPS: &str = "variant.maps";
     pub const VARIANT_IMPORT: &str = "variant.import";
     pub const VARIANT_DELETE: &str = "variant.delete";
 
@@ -204,6 +299,12 @@ pub mod method {
     pub const PAIR_AUDIO: &str = "pair.audio";
     pub const PAIR_RESULT: &str = "pair.result";
 
+    pub const GAME_STATUS: &str = "game.status";
+    pub const GAME_SNAPSHOT: &str = "game.snapshot";
+    pub const GAME_START: &str = "game.start";
+    pub const GAME_STOP: &str = "game.stop";
+    pub const GAME_MODE: &str = "game.mode";
+
     pub const MIRROR_STATUS: &str = "mirror.status";
     pub const MIRROR_PENDING: &str = "mirror.pending";
     pub const MIRROR_APPLY: &str = "mirror.apply";
@@ -219,11 +320,17 @@ pub mod method {
     pub const VIEW_LIGHTING: &str = "view.lighting";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
+    // Game type markers (docs/game/gametype-markers.md, "Agent API").
+    pub const MARKERS_LIST: &str = "markers.list";
+    pub const MARKERS_RENDER: &str = "markers.render";
+    pub const MARKERS_AREA_SET: &str = "markers.area.set";
+    pub const MARKERS_AREA_CONVERT: &str = "markers.area.convert";
     pub const GEOMETRY_LIST: &str = "geometry.list";
     pub const GEOMETRY_OPEN: &str = "geometry.open";
     pub const GEOMETRY_CLOSE: &str = "geometry.close";
     pub const GEOMETRY_READ: &str = "geometry.read";
     pub const GEOMETRY_CHECK: &str = "geometry.check";
+    pub const GEOMETRY_LOWER_LODS: &str = "geometry.lower_lods";
     pub const GEOMETRY_COLLISION_ADD_BOX: &str = "geometry.collision.add_box";
     pub const GEOMETRY_COLLISION_CLEAR: &str = "geometry.collision.clear";
     pub const MESH_MODE: &str = "mesh.mode";
@@ -246,6 +353,13 @@ pub mod method {
     pub const BITMAP_IMAGE_ADD: &str = "bitmap.image.add";
     pub const BITMAP_IMAGE_RESIZE: &str = "bitmap.image.resize";
     pub const BITMAP_SEQUENCE_ADD: &str = "bitmap.sequence.add";
+    pub const BITMAP_SEQUENCE_SET: &str = "bitmap.sequence.set";
+    pub const BITMAP_SPRITES: &str = "bitmap.sprites";
+    pub const BITMAP_SPRITE_ADD: &str = "bitmap.sprite.add";
+    pub const BITMAP_SPRITE_SET: &str = "bitmap.sprite.set";
+    pub const BITMAP_SPRITE_REMOVE: &str = "bitmap.sprite.remove";
+    pub const BITMAP_CHANNEL_COPY: &str = "bitmap.channel_copy";
+    pub const BITMAP_TURN: &str = "bitmap.turn";
 
     // Image generation (docs/editor/agent-api.md, "Generating images").
     pub const IMAGE_GENERATE: &str = "image.generate";
@@ -255,6 +369,15 @@ pub mod method {
     pub const IMAGE_DISCARD: &str = "image.discard";
 
     // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
+    // The Recordings tool (docs/editor/rich-editors.md, "Recordings").
+    pub const RECORDING_LIST: &str = "recording.list";
+    pub const RECORDING_READ: &str = "recording.read";
+    pub const RECORDING_PLAY: &str = "recording.play";
+    pub const RECORDING_PATH: &str = "recording.path";
+    pub const RECORDING_WRITE: &str = "recording.write";
+    pub const RECORDING_REMOVE: &str = "recording.remove";
+    pub const RECORDING_UNDO: &str = "recording.undo";
+
     pub const SCRIPT_LIST: &str = "script.list";
     pub const SCRIPT_SOURCE: &str = "script.source";
     pub const SCRIPT_FOLLOW: &str = "script.follow";
@@ -263,6 +386,9 @@ pub mod method {
     pub const SCRIPT_DOC: &str = "script.doc";
     pub const SCRIPT_EXTERNAL: &str = "script.external";
     pub const SCRIPT_WORKING: &str = "script.working";
+    pub const SCRIPT_COMPILE: &str = "script.compile";
+    pub const SCRIPT_UNDO: &str = "script.undo";
+    pub const SCRIPT_EVAL: &str = "script.eval";
 
     // The game type script editor (docs/editor/editor-guide.md, "Game
     // type scripts").
@@ -275,6 +401,23 @@ pub mod method {
     pub const RULES_EXTERNAL: &str = "rules.external";
     pub const RULES_RUN: &str = "rules.run";
 
+    // Model poses (docs/editor/agent-api.md, "Model poses"; the M1 slice
+    // of docs/editor/rich-editors.md): a `jmad` tag's animations listed
+    // and one posed on the model that uses it.
+    pub const ANIM_LIST: &str = "anim.list";
+    pub const ANIM_POSE: &str = "anim.pose";
+    // The animation editor, read (AN1 of docs/editor/studio-redesign.md):
+    // one animation's channels as keys, and the events it declares.
+    pub const ANIM_READ: &str = "anim.read";
+    // In-memory animation documents (AN3).
+    pub const ANIM_NEW: &str = "anim.new";
+    pub const ANIM_DUPLICATE: &str = "anim.duplicate";
+    pub const ANIM_KEY: &str = "anim.key";
+    pub const ANIM_CHECK: &str = "anim.check";
+    pub const ANIM_SAVE: &str = "anim.save";
+    pub const ANIM_RETARGET: &str = "anim.retarget";
+    pub const ANIM_IMPORT: &str = "anim.import";
+
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.
     pub const HUD_LIST: &str = "hud.list";
@@ -286,6 +429,9 @@ pub mod method {
     pub const HUD_SAVE_AS: &str = "hud.save_as";
     pub const MODEL_LIST: &str = "model.list";
     pub const MODEL_READ: &str = "model.read";
+    pub const MODEL_PHYSICS_SHAPES: &str = "model.physics.shapes";
+    pub const MODEL_PHYSICS_SET: &str = "model.physics.set";
+    pub const MODEL_COLLISION_FROM_RENDER: &str = "model.collision_from_render";
     pub const MODEL_RENDER: &str = "model.render";
     pub const MODEL_CHECK: &str = "model.check";
     pub const MODEL_COLORS: &str = "model.colors";

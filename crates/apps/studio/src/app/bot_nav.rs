@@ -124,7 +124,10 @@ impl App {
     /// Each frame: start a load while a bot layer shows, and pick up a
     /// finished one.
     pub fn poll_bot_nav(&mut self) {
-        if self.layers.visible(LayerId::BotNav) || self.layers.visible(LayerId::BotSpots) {
+        if self.layers.visible(LayerId::BotNav)
+            || self.layers.visible(LayerId::BotSpots)
+            || LayerId::PLAYTEST.iter().any(|&id| self.layers.visible(id))
+        {
             self.want_bot_nav();
         }
         let Some(rx) = self.bot_nav.rx.as_ref() else {

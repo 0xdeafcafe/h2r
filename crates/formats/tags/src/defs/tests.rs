@@ -542,3 +542,183 @@ fn raw_bytes_fill_typed_fields_and_read_back() {
     let mut bare = Record::new(vec![("x".into(), Val::Int(0))]);
     assert!(bare.set("x", Val::Bytes(vec![0; 4])).is_err());
 }
+
+/// An invented group with one `view=` word of each kind.
+const VIEWS: &str = "group test 0x3c\n  \
+  0x0 f32[3] tint view=rgb\n  \
+  0xc f32[4] glow view=argb\n  \
+  0x1c u32 edge view=rgb8\n  \
+  0x20 u32 paint view=argb8\n  \
+  0x24 u32 fill view=xrgb8\n  \
+  0x28 f32[3] light view=hdr_rgb\n  \
+  0x34 data curve align 4 view=function\n";
+
+#[test]
+fn every_view_word_parses_prints_back_and_reaches_the_field() {
+    let mut d = Defs::default();
+    d.parse_into("views", VIEWS).unwrap();
+    let g = d.group(FourCC(*b"test")).unwrap();
+    let views: Vec<_> = g.fields.iter().map(|f| f.view).collect();
+    assert_eq!(
+        views,
+        FieldView::ALL.map(Some).to_vec(),
+        "one word of each kind, in the list's order"
+    );
+    for v in FieldView::ALL {
+        assert_eq!(FieldView::from_word(v.word()), Some(v));
+    }
+    assert_eq!(FieldView::from_word("rgba"), None);
+    assert!(FieldView::Rgb.is_colour() && !FieldView::Function.is_colour());
+    let text = text_of(&d, FourCC(*b"test"));
+    assert!(text.contains("view=hdr_rgb") && text.contains("view=function"));
+    let mut again = Defs::default();
+    again.parse_into("again", &text).unwrap();
+    assert_eq!(again, d);
+    assert_eq!(text_of(&again, FourCC(*b"test")), text);
+}
+
+#[test]
+fn an_unknown_view_word_or_a_wrong_type_fails_with_the_line() {
+    let cases: &[(&str, u32, &str)] = &[
+        ("0x0 f32[3] a view=purple", 0xc, "unknown view=purple"),
+        ("0x0 f32[3] a view=", 0xc, "unknown view="),
+        ("0x0 f32[3] a view=argb", 0xc, "f32[4]"),
+        ("0x0 f32[4] a view=rgb", 0x10, "f32[3]"),
+        ("0x0 f32 a view=rgb", 4, "f32[3]"),
+        ("0x0 u16 a view=rgb8", 2, "4-byte integer"),
+        ("0x0 u32 a view=function", 4, "data reference"),
+        ("0x0 data a align 4 view=rgb", 8, "does not fit"),
+        ("0x0 enum8 a values=x|y view=rgb8", 1, "does not fit"),
+    ];
+    for (line, size, why) in cases {
+        let text = format!("group test {size:#x}\n  {line}\n");
+        let error = Defs::default()
+            .parse_into("invented", &text)
+            .expect_err(line);
+        assert!(error.why.contains(why), "{line}: {error}");
+        assert_eq!(error.line, 2, "{line}");
+    }
+}
+
+/// Every `applies=` in the checked-in definitions carries the engine or
+/// disc evidence it rests on: an `E` or a `V` word in the meaning.
+#[test]
+fn builtin_applies_lines_carry_evidence() {
+    fn walk(path: &str, def: &StructDef, found: &mut u32, bad: &mut Vec<String>) {
+        for field in &def.fields {
+            let here = format!("{path}.{}", field.name);
+            if field.applies.is_some() {
+                *found += 1;
+                let evidenced = field
+                    .meaning
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|w| w == "E" || w == "V");
+                if !evidenced {
+                    bad.push(here.clone());
+                }
+            }
+            if let Kind::Block(child) | Kind::Struct(child) = &field.kind {
+                walk(&here, child, found, bad);
+            }
+        }
+    }
+    let defs = Defs::builtin();
+    let (mut found, mut bad) = (0, Vec::new());
+    for (g, def) in &defs.groups {
+        walk(&fourcc_text(*g), def, &mut found, &mut bad);
+    }
+    assert!(bad.is_empty(), "applies without evidence: {bad:?}");
+    assert!(found > 100, "the realtime coverage definitions are present");
+}
+
+/// The groups R13 covers hold their timings: HUD widgets and particle
+/// draw fields per frame, emitter and effect-part fields when used, and
+/// object creation fields at creation.
+#[test]
+fn builtin_applies_timings_for_the_covered_groups() {
+    let defs = Defs::builtin();
+    let at = |g: &[u8; 4], path: &str| {
+        let mut def = defs.group(FourCC(*g)).unwrap();
+        let mut parts = path.split('.').peekable();
+        while let Some(name) = parts.next() {
+            let field = def.field(name).unwrap_or_else(|| panic!("{path}"));
+            if parts.peek().is_none() {
+                return field.applies;
+            }
+            def = match &field.kind {
+                Kind::Block(c) | Kind::Struct(c) => c.as_ref(),
+                _ => panic!("{path}"),
+            };
+        }
+        None
+    };
+    assert_eq!(at(b"nhdt", "bitmap_widgets.offset_full"), Some("frame"));
+    assert_eq!(at(b"nhdt", "text_widgets.font_full"), Some("frame"));
+    assert_eq!(at(b"nhdt", "bitmap_widgets.name"), None);
+    assert_eq!(at(b"prt3", "color"), Some("frame"));
+    assert_eq!(at(b"prt3", "postprocess.colors.color"), Some("frame"));
+    assert_eq!(at(b"prt3", "death_effect"), Some("use"));
+    assert_eq!(at(b"effe", "events.parts.reference"), Some("use"));
+    assert_eq!(at(b"effe", "events.parts.location"), Some("use"));
+    assert_eq!(at(b"effe", "events.accelerations.acceleration"), None);
+    assert_eq!(at(b"ligh", "diffuse_colour_lower"), Some("frame"));
+    assert_eq!(at(b"proj", "inverse_velocity_change_distance"), Some("frame"));
+    assert_eq!(at(b"matg", "player_control.slowdown"), Some("frame"));
+    assert_eq!(at(b"matg", "player_representations.unit"), Some("creation"));
+}
+
+/// Every `view=` in the checked-in definitions cites its source: an `E`
+/// or `V` word in the meaning, or the retail reference
+/// (`docs/editor/rich-editors.md`, "Colours"). The colour forms of slice
+/// C2 are on their fields.
+#[test]
+fn builtin_view_lines_cite_their_source() {
+    fn walk(
+        path: &str,
+        def: &StructDef,
+        found: &mut Vec<(String, FieldView)>,
+        bad: &mut Vec<String>,
+    ) {
+        for field in &def.fields {
+            let here = format!("{path}.{}", field.name);
+            if let Some(v) = field.view {
+                found.push((here.clone(), v));
+                let cited = field
+                    .meaning
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|w| w == "E" || w == "V")
+                    || field.meaning.contains("retail reference");
+                if !cited {
+                    bad.push(here.clone());
+                }
+            }
+            if let Kind::Block(child) | Kind::Struct(child) = &field.kind {
+                walk(&here, child, found, bad);
+            }
+        }
+    }
+    let defs = Defs::builtin();
+    let (mut found, mut bad) = (Vec::new(), Vec::new());
+    for (g, def) in &defs.groups {
+        walk(&fourcc_text(*g), def, &mut found, &mut bad);
+    }
+    for (name, def) in &defs.structs {
+        walk(name, def, &mut found, &mut bad);
+    }
+    assert!(bad.is_empty(), "view= without a source: {bad:?}");
+    for want in [
+        "deca.colour_lower",
+        "deca.colour_upper",
+        "lens.reflections.tint_colour",
+        "fog_a.color",
+        "obje.change_colors.initial_permutations.color_lower_bound",
+        "obje.change_colors.initial_permutations.color_upper_bound",
+        "obje.change_colors.functions.color_lower_bound",
+        "obje.change_colors.functions.color_upper_bound",
+    ] {
+        assert!(
+            found.iter().any(|(p, v)| p.ends_with(want) && *v == FieldView::Rgb),
+            "{want} has view=rgb; found {found:?}"
+        );
+    }
+}

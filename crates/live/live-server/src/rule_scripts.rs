@@ -376,6 +376,26 @@ enum WireEvent {
         assist: Option<u8>,
         class: String,
     },
+    Damage {
+        object: u32,
+        #[serde(default)]
+        by: Option<u8>,
+        amount: i32,
+    },
+    Touchdown {
+        player: u8,
+        down: i32,
+        up: i32,
+    },
+    Launch {
+        player: u8,
+        #[serde(default)]
+        spot: Option<u32>,
+        speed: i32,
+    },
+    Grounded {
+        player: u8,
+    },
 }
 
 impl From<WireEvent> for Input {
@@ -412,6 +432,10 @@ impl From<WireEvent> for Input {
             WireEvent::ActorAssist { killer, assist, class } => {
                 Input::ActorAssist { killer, assist, class }
             }
+            WireEvent::Damage { object, by, amount } => Input::Damage { object, by, amount },
+            WireEvent::Touchdown { player, down, up } => Input::Touchdown { player, down, up },
+            WireEvent::Launch { player, spot, speed } => Input::Launch { player, spot, speed },
+            WireEvent::Grounded { player } => Input::Grounded(player),
         }
     }
 }
@@ -448,6 +472,10 @@ impl From<&Input> for WireEvent {
                 assist,
                 class,
             },
+            Input::Damage { object, by, amount } => WireEvent::Damage { object, by, amount },
+            Input::Touchdown { player, down, up } => WireEvent::Touchdown { player, down, up },
+            Input::Launch { player, spot, speed } => WireEvent::Launch { player, spot, speed },
+            Input::Grounded(player) => WireEvent::Grounded { player },
         }
     }
 }
@@ -1140,7 +1168,7 @@ async fn get_builtin(State(live): Shared, headers: HeaderMap) -> ApiResult<Respo
         items.push(json!({
             "name": ir.as_ref().map_or(*key, |ir| ir.header.name.as_str()),
             "key": key,
-            "engine": ir.as_ref().map(|ir| ir.header.carrier),
+            "engine": ir.as_ref().map(|ir| ir.header.engine()),
             "source": source,
             "hash": ir.as_ref().map(|ir| ir.id().to_string()),
             "example": true,

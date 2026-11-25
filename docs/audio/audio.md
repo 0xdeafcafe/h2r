@@ -12,9 +12,9 @@ write on a Rust struct, and a software mixer renders the result.
 
 | Module | Role |
 |---|---|
-| `adpcm` | Xbox ADPCM decoder, pure functions. |
+| `adpcm` | Xbox ADPCM decoder and encoder (`encode`, for Studio's `import.sound`), pure functions. |
 | `format` | `WaveFormat`/`Codec`; decodes PCM8, PCM16, Xbox ADPCM to interleaved `f32`. |
-| `resample` | Linear resampling (whole clip, streaming). |
+| `resample` | Linear resampling (whole clip, streaming) and `resample_sinc`, a band-limited whole-clip path for clips converted once. |
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `MixIn` (an FX-send bus), `Listener`/`Source3d`/`Spatial`. |
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
@@ -400,6 +400,13 @@ have announcer lines of their own, AI-generated placeholders:
 clip is queued; one line per HUD line, so a chain of three bounces says
 Superbounce, Double bounce and Triple bounce in that order, and a Monster
 says Monster bounce. Bounced has no clip and is silent.
+
+Firefight and Siege use the same queue for their round-start lines.
+The build renders two synthetic voice clips from
+`art/announcer/start_lines.rs`. A published Studio take at
+`art/announcer/firefight.wav` or `art/announcer/siege.wav` replaces its
+corresponding generated clip. Studio's Sound tool can measure the
+embedded clips as `announcer/firefight` and `announcer/siege`.
 
 - **Taking turns with the game.** Our clips have no sound tag, so they
   cannot be lines in the game's queue. A clip of ours starts only when the

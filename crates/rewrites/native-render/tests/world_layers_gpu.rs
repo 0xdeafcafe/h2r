@@ -366,6 +366,52 @@ fn scene(backend: &mut GfxBackend, mixed: bool) -> Vec<u8> {
 }
 
 #[test]
+fn resolved_light_window_samples_its_pinned_gel_on_the_indexed_draw() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let mut backend = GfxBackend::new(ctx);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let gel = backend.create_texture_target(FORMAT, SIZE, SIZE).unwrap();
+    backend.clear(gel, None, Clear {
+        color: Some([1.0, 0.0, 0.0, 1.0]),
+        ..Clear::default()
+    }).unwrap();
+    let texture = backend.surface_texture(gel).unwrap().unwrap();
+    let sampled = [Some(&texture), None, None, None];
+    let mut draw = triangle(2.0, [1.0; 4], 0, true);
+    draw.state.render.depth_func = CompareFunc::Always;
+    draw.state.render.stencil.enable = false;
+    // The handler emitted only the triangle in the second half of the stream.
+    let mut vertices = triangle(18.0, [1.0; 4], 0, true).streams[0].data.to_vec();
+    vertices.extend_from_slice(&draw.streams[0].data);
+    draw.streams[0].data = vertices.into();
+    draw.vertex_count = 6;
+    draw.indices = Some(vec![3, 4, 5].into());
+    let clear = Clear::all([0.0, 0.0, 0.0, 1.0]);
+    backend.clear(color, Some(depth), clear).unwrap();
+    assert_eq!(backend.draw(color, Some(depth), &draw, sampled), Ok(DrawOutcome::Drawn));
+    let expected = backend.read_color(color).unwrap().0;
+    let pixel = |x, y| 4 * (y * SIZE + x) as usize;
+    assert_ne!(expected[pixel(4, 4)..][..4], expected[pixel(20, 4)..][..4]);
+    backend.clear(color, Some(depth), clear).unwrap();
+    let cache = Arc::new(Cache::default());
+    let mut surfaces = ExternalSurfaces {
+        color, depth, sampled: vec![gel], slots: vec![Some(gel)], slot_sizes: vec![Some((SIZE, SIZE))],
+    };
+    let make_pass = || {
+        let mut pass = IndexedPass::new(&draw, Arc::clone(&cache), 1, None).unwrap();
+        pass.pin_sampled_surface(ACCUM.texture, (SIZE, SIZE));
+        Box::new(pass)
+    };
+    let stage = timeline::native::Stage::Lights;
+    assert!(after_compile(|| record_pass(&mut backend, surfaces.clone(), sampled, stage, make_pass())));
+    assert_eq!(backend.read_color(color).unwrap().0, expected);
+    surfaces.slots[0] = Some(backend.create_texture_target(FORMAT, SIZE, SIZE).unwrap());
+    assert!(!record_pass(&mut backend, surfaces, sampled, stage, make_pass()));
+}
+
+#[test]
 fn world_layers_gpu_mixed_w_depth_stencil_and_texaccum_match_d3d() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(ctx) = GfxContext::headless() else {
@@ -669,3 +715,94 @@ mod frame_graph;
 
 #[path = "world_layers_gpu/sun_tiles.rs"]
 mod sun_tiles;
+
+#[path = "world_layers_gpu/flares.rs"]
+mod flares;
+
+#[path = "world_layers_gpu/cone_shadows.rs"]
+mod cone_shadows;
+
+#[test]
+fn sorted_pool_translates_the_resolved_ripple_and_scene_stages() {
+    let mut draw = triangle(2.0, [1.0; 4], 0, true);
+    let def = PixelShaderDef {
+        texture_modes: texture_modes([TEX_PROJECT2D, TEX_BUMPENVMAP, TEX_BUMPENVMAP, TEX_BUMPENVMAP]),
+        final_inputs_abcd: inputs(REG_T3, REG_T1, REG_T2, 0),
+        final_inputs_efg: final_efg(0, 0, REG_T0 | CHAN_ALPHA, 0),
+        ..Default::default()
+    };
+    let bytes = def.to_bytes();
+    let words: [u32; 60] = std::array::from_fn(|i| u32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap()));
+    draw.shader.pixel_shader = Some(Arc::new(words));
+    draw.shader.combiner_state = Arc::new(words[..57].try_into().unwrap());
+    let raw = Arc::make_mut(&mut draw.raw);
+    raw.render[..57].copy_from_slice(&words[..57]);
+    raw.render[136] = words[54];
+    draw.texture_info = [draw.texture_info[0]; 4];
+    draw.textures = [draw.textures[0]; 4];
+    draw.extras[2].bump_env_mat = [0.25, -0.1, 0.5, 0.2];
+    let pass = IndexedPass::for_pool(&draw, Arc::new(Cache::default()), 1).unwrap();
+    assert!(pass.replays_scene());
+    assert_eq!(pass.resolved_fallback().unwrap().as_ref(), &draw);
+    let program = d3d::nv2a::NativeDrawMaterial::resolve(&draw, [true; 4],
+        gfx::translate::Capabilities::ALL, gfx::repack::FetchMode::Cpu).unwrap();
+    assert_eq!(program.key.translate().unwrap().dims, [Some(wgpu::TextureViewDimension::D2); 4]);
+    assert_eq!(program.uniforms(&draw, 1u32).1.bump_mat[2], draw.extras[2].bump_env_mat);
+}
+
+#[test]
+fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
+    use native_render::object_state::{structure_stencil, STENCIL_MARK_REFERENCE};
+    use native_render::program::MODEL_ROWS;
+    use scene_extract::layout::sky::SkyItem;
+
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let mut backend = GfxBackend::new(ctx);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let surfaces = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+    let cache = Arc::new(Cache::default());
+    let mut draw = triangle(2.0, [0.0; 4], STENCIL_MARK_REFERENCE, false);
+    draw.primitive = PrimitiveType::TriangleStrip;
+    draw.state.render.stencil = structure_stencil(STENCIL_MARK_REFERENCE);
+    draw.state.render.depth_func = CompareFunc::Always;
+    let words = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xf),
+        Inst::mac(MacOp::Mov, Some(Operand::c(MODEL_ROWS as u8)), None, None)
+            .to_out(false, OutReg::D0, 0xf).last(),
+    ]);
+    draw.shader.vertex = VertexProcessing::Program {
+        start: 0, microcode: Program::parse(&words).unwrap().instructions.iter()
+            .flat_map(|i| i.words).collect::<Vec<_>>().into(),
+    };
+    let pixel = 4 * (4 * SIZE as usize + 4);
+    for value in [[0.0, 1.0, 0.0, 1.0], [1.0; 4]] {
+        let rows = vec![value; 3];
+        Arc::make_mut(&mut draw.shader.constants)[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(&rows);
+        let item = SkyItem {
+            model: 3, section: 1, part: 0, shader: 5, pass: 0,
+            rows, decompression: [[0.0; 4]; 3],
+        };
+        let mut unmarked = draw.clone();
+        unmarked.state.render.stencil.enable = false;
+        assert_eq!(IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone()).err(), Some("stencil"));
+        backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
+        assert!(after_compile(|| {
+            let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone()).unwrap();
+            assert!(pass.replays_scene());
+            record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(pass))
+        }));
+        let pixels = backend.read_color(color).unwrap().0;
+        let expected = value.map(|c| (c * 255.0) as u8);
+        assert_eq!(&pixels[pixel..pixel + 4], &expected);
+        // A guest draw after the sky only reaches the pixels marked by it.
+        let mut probe = triangle(2.0, [0.0, 0.0, 0.0, 1.0], STENCIL_MARK_REFERENCE, false);
+        probe.state.render.depth_func = CompareFunc::Always;
+        probe.state.render.stencil.func = CompareFunc::Equal;
+        probe.state.render.stencil.pass = StencilOp::Keep;
+        assert_eq!(backend.draw(color, Some(depth), &probe, [None; 4]), Ok(DrawOutcome::Drawn));
+        let pixels = backend.read_color(color).unwrap().0;
+        assert_eq!(&pixels[pixel..pixel + 4], &[0, 0, 0, 255]);
+    }
+}

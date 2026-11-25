@@ -42,7 +42,7 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   up (who wins, how games end, the worst tick, warnings). -o writes the
   match as a scenario file for run.
   settings prints the record of the script's own variant: every setting
-  of its carrier a script may name, with its value and whether the script
+  of its record's game a script may name, with its value and whether the script
   or the stock record set it, then the record's settings no script names.
   It exits 1 for a script check refuses or a record the game would not
   keep.
@@ -478,7 +478,7 @@ pub fn sim_text(label: &str, src: &str, args: &SimArgs) -> Result<SimOut, String
 /// lines, one for every error the compile finds ([`rules::diagnose`]),
 /// then its warnings.
 fn compile(label: &str, src: &str) -> Result<(Ir, Report), String> {
-    let compiled = rules::diagnose(src);
+    let compiled = rules::diagnose_files(&root_name(label), src, &module_reader(label));
     let Some(ir) = compiled.ir else {
         let mut s = String::new();
         for d in &compiled.diagnostics {
@@ -490,11 +490,39 @@ fn compile(label: &str, src: &str) -> Result<(Ir, Report), String> {
     Ok((ir, report))
 }
 
+/// The files a `use "name.rules"` reads: the ones beside the script
+/// `label` names. A file over the source cap is read to one byte past it,
+/// so the compile reports the size.
+pub(crate) fn module_reader(label: &str) -> impl Fn(&str) -> Option<String> + '_ {
+    use std::io::Read as _;
+    move |name| {
+        let mut text = String::new();
+        std::fs::File::open(module_path(label, name))
+            .ok()?
+            .take(rules::lang::MAX_SOURCE_BYTES as u64 + 1)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    }
+}
+
+/// The script's own file name, which a `use` of it is a cycle with.
+fn root_name(label: &str) -> String {
+    Path::new(label).file_name().map_or_else(|| label.to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// The path of module `name` of the script at `label`.
+fn module_path(label: &str, name: &str) -> PathBuf {
+    Path::new(label).with_file_name(name)
+}
+
 /// One diagnostic as `label:line:col: message`, a warning's message
 /// starting `warning:`, its code at the end in brackets.
 fn diagnostic_line(label: &str, d: &rules::Diagnostic) -> String {
     let kind = if d.is_error() { "" } else { "warning: " };
-    format!("{label}:{}:{}: {kind}{} [{}]", d.pos.line, d.pos.col, d.message, d.code)
+    // A finding in a module is in that file.
+    let file = d.file.as_deref().map_or_else(|| label.to_string(), |f| module_path(label, f).display().to_string());
+    format!("{file}:{}:{}: {kind}{} [{}]", d.pos.line, d.pos.col, d.message, d.code)
 }
 
 /// The report `h2 rules check` prints for source that builds.
@@ -505,10 +533,12 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
     let h = &ir.header;
     let _ = writeln!(
         s,
-        "{label}: \"{}\" version {}, carrier engine {}, {}",
+        "{label}: \"{}\" version {}, type {}{}, points {:?}, {}",
         h.name,
         h.version,
-        h.carrier,
+        h.game_type.name(),
+        h.uses.map_or_else(String::new, |u| format!(" using {}", u.name())),
+        h.points,
         match h.teams {
             0 => "any number of teams".to_string(),
             n => format!("{n} teams"),
@@ -582,7 +612,7 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
             let _ = writeln!(s, "  {} ({})", caps::spelled(e), unhostable_words(e));
         }
     }
-    for d in rules::diagnose(src).warnings() {
+    for d in rules::diagnose_files(&root_name(label), src, &module_reader(label)).warnings() {
         let _ = writeln!(s, "{}", diagnostic_line(label, d));
     }
     // Over the budget or the IR cap: the report, then the refusal.
@@ -591,33 +621,38 @@ pub fn check_text(label: &str, src: &str) -> Result<String, String> {
         return Err(s);
     }
     // Settings that make a record the game would not keep.
-    if let Err(e) = variants::portable::settings_record(&ir) {
-        let _ = writeln!(s, "{label}: refused: {e}");
-        return Err(s);
+    match variants::portable::settings_record(&ir) {
+        Ok(record) => {
+            let ty = record.game_type();
+            let _ = writeln!(s, "record engine: {} ({})", ty.engine(), ty.label());
+        }
+        Err(e) => {
+            let _ = writeln!(s, "{label}: refused: {e}");
+            return Err(s);
+        }
     }
     Ok(s)
 }
 
 /// What `h2 rules settings` prints: the record of the script's own
 /// variant (`variants::portable::record_for`, the script's option
-/// defaults). Every row of `rules::settings::TABLE` that applies to the
-/// carrier, in table order, with its value and `script` or `stock`; then
-/// the record's settings of the carrier that no row names, which have the
-/// stock value.
+/// defaults). Each row of `rules::settings::TABLE` that applies to the
+/// generated record appears in table order with its value and `script`
+/// or `stock`. The remaining record settings have their stock values.
 pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
     use rules::settings::{TABLE, carrier_label, value_label};
     use variants::record;
     let (ir, _) = compile(label, src)?;
     let v = variants::portable::record_for(&ir, &[]).map_err(|e| format!("{label}: refused: {e}\n"))?;
-    let carrier = ir.header.carrier;
+    let engine = v.game_type().engine() as u8;
     let set: Vec<u16> = ir.settings.iter().map(|x| x.index).collect();
     let mut rows = Vec::new();
     for (i, row) in TABLE.iter().enumerate() {
-        if !row.applies(carrier) {
+        if !row.applies(engine) {
             continue;
         }
         let at = i as u16;
-        let value = variants::portable::setting_value(&v, row, carrier)
+        let value = variants::portable::setting_value(&v, row, engine)
             .ok_or_else(|| format!("{label}: {} has no place in the record\n", row.name))?;
         let from = if set.contains(&at) { "script" } else { "stock" };
         rows.push((row, value_label(at, value), from));
@@ -627,7 +662,7 @@ pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
         s,
         "{label}: \"{}\" on {}, {} settings, {} set by the script",
         ir.header.name,
-        carrier_label(carrier),
+        carrier_label(engine),
         rows.len(),
         set.len()
     );
@@ -649,7 +684,7 @@ pub fn settings_text(label: &str, src: &str) -> Result<String, String> {
     for (row, text, from) in &rows {
         let _ = writeln!(s, "  {:name_w$}  {text:text_w$}  {from}", row.name);
     }
-    let named: Vec<u32> = TABLE.iter().filter_map(|r| r.setting(carrier)).collect();
+    let named: Vec<u32> = TABLE.iter().filter_map(|r| r.setting(engine)).collect();
     let others: Vec<_> = v
         .known_settings()
         .into_iter()
@@ -679,7 +714,7 @@ fn unhostable(ir: &Ir) -> Vec<&'static caps::Entry> {
         for op in &hd.code {
             if let rules::ir::Op::Call { entry, .. } = op
                 && let Some(e) = caps::entry(*entry, ir.header.api_version)
-                && !e.hostable_on(ir.header.carrier)
+                && !e.hostable_on(ir.header.engine())
                 && !out.iter().any(|o| o.id == e.id)
             {
                 out.push(e);
@@ -834,7 +869,7 @@ mod tests {
 
     const GOOD: &str = r#"
 rules "Count" 1
-carrier slayer
+type slayer
 
 on kill(victim, killer) {
     if killer == none or killer == victim { score(victim, -1) } else { score(killer, 1) }
@@ -848,7 +883,7 @@ on kill(victim, killer) {
 
     #[test]
     fn a_compile_error_prints_as_file_line_col_message() {
-        let err = check_text("x.rules", "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\n")
+        let err = check_text("x.rules", "rules \"A\" 1\ntype slayer\non kill(a, b) { nope(a) }\n")
             .unwrap_err();
         let first = err.lines().next().unwrap();
         let mut parts = first.splitn(4, ':');
@@ -862,7 +897,7 @@ on kill(victim, killer) {
     fn check_prints_every_error_not_only_the_first() {
         let err = check_text(
             "x.rules",
-            "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\non death(v) { gone(v) }\n",
+            "rules \"A\" 1\ntype slayer\non kill(a, b) { nope(a) }\non death(v) { gone(v) }\n",
         )
         .unwrap_err();
         let lines: Vec<&str> = err.lines().filter(|l| l.starts_with("x.rules:")).collect();
@@ -982,7 +1017,7 @@ on kill(victim, killer) {
         assert!(parse_sim(&words("--players 4")).is_err());
         assert!(parse_sim(&words("m.rules --fast")).is_err());
 
-        let err = sim_text("x.rules", "rules \"A\" 1\ncarrier slayer\non kill(a, b) { nope(a) }\n", &SimArgs::default())
+        let err = sim_text("x.rules", "rules \"A\" 1\ntype slayer\non kill(a, b) { nope(a) }\n", &SimArgs::default())
             .unwrap_err();
         assert!(err.starts_with("x.rules:3:"), "{err}");
         let many = SimArgs { setup: sim::Setup { players: 17, ..sim::Setup::default() }, ..SimArgs::default() };
@@ -1021,7 +1056,7 @@ on kill(victim, killer) {
     }
 
     /// 16 players times 16 times 16, once per kill: over the budget.
-    const HEAVY: &str = "rules \"Heavy\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+    const HEAVY: &str = "rules \"Heavy\" 1\ntype slayer\nglobal var n: int = 0\n\
                          on kill(v, k) { for each players a { for each players b { for each players c { n = n + 1 } } } }\n";
 
     #[test]
@@ -1034,8 +1069,8 @@ on kill(victim, killer) {
     }
 
     const SWAT: &str = "rules \"SWAT\" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 quick score_limit, starting_weapon
 settings {
     score_limit = 50
@@ -1058,7 +1093,8 @@ settings {
     fn settings_prints_the_whole_record_and_who_set_each() {
         let text = settings_text("swat.rules", SWAT).unwrap();
         let first = text.lines().next().unwrap();
-        assert!(first.starts_with("swat.rules: \"SWAT\" on Slayer, "), "{text}");
+        assert!(first.starts_with("swat.rules: \"SWAT\" on Script, "), "{text}");
+        assert!(check_text("swat.rules", SWAT).unwrap().contains("record engine: 6 (Script)"));
         assert!(first.ends_with(", 4 set by the script"), "{text}");
         assert!(text.contains("quick options: score_limit, starting_weapon\n"), "{text}");
         assert_eq!(row_words(&text, "score_limit"), ["score_limit", "50", "script"]);
@@ -1070,7 +1106,7 @@ settings {
         assert_eq!(row_words(&text, "secondary_weapon"), ["secondary_weapon", "Map", "Default", "stock"]);
         assert_eq!(row_words(&text, "damage"), ["damage", "100%", "stock"]);
         assert_eq!(row_words(&text, "friendly_fire"), ["friendly_fire", "On", "stock"]);
-        // Only the carrier's settings.
+        // Only the record's game's settings.
         assert!(!text.contains("juggernaut_movement"), "{text}");
         assert!(!text.contains("ctf_flag_type"), "{text}");
         // The record's other settings, which no script names.
@@ -1082,7 +1118,7 @@ settings {
         assert_eq!(settings_text("swat.rules", SWAT).unwrap(), text);
 
         // A Juggernaut script lists the Juggernaut rows and its own score.
-        let jugg = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { juggernaut_movement = slow }\n";
+        let jugg = "rules \"J\" 1\ntype juggernaut\nuses juggernaut\nsettings { juggernaut_movement = slow }\n";
         let text = settings_text("j.rules", jugg).unwrap();
         assert_eq!(row_words(&text, "juggernaut_movement"), ["juggernaut_movement", "Slow", "script"]);
         assert_eq!(row_words(&text, "score_limit"), ["score_limit", "15", "stock"]);
@@ -1091,7 +1127,7 @@ settings {
 
     #[test]
     fn settings_and_check_refuse_a_record_the_game_would_not_keep() {
-        let src = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { team_play = true }\n";
+        let src = "rules \"J\" 1\ntype juggernaut\nuses juggernaut\nsettings { team_play = true }\n";
         let err = settings_text("j.rules", src).unwrap_err();
         assert_eq!(
             err,
@@ -1103,8 +1139,33 @@ settings {
             "{err}"
         );
         // A compile error prints as check prints it.
-        let err = settings_text("x.rules", "rules \"A\" 1\ncarrier slayer\nscoring carrier\nsettings { nope = 1 }\n")
+        let err = settings_text("x.rules", "rules \"A\" 1\ntype slayer\nuses slayer\nsettings { nope = 1 }\n")
             .unwrap_err();
         assert!(err.starts_with("x.rules:4:"), "{err}");
+    }
+
+    #[test]
+    fn a_script_reads_the_files_beside_it() {
+        let main = "rules \"Split\" 1\ntype slayer\nuse \"waves.rules\"\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
+        let one = "rules \"Split\" 1\ntype slayer\nconst base = 2\nfn bonus() -> int = base + 1\non kill(v, k) { if k != none { score(k, bonus()) } }\n";
+        let dir = std::env::temp_dir().join(format!("h2-rules-use-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let label = dir.join("main.rules").display().to_string();
+        let waves = dir.join("waves.rules");
+        std::fs::write(&waves, "const base = 2\nfn bonus() -> int = base + 1\n").unwrap();
+        let (_, hash) = build_blob(&label, main).unwrap();
+        assert_eq!(hash, build_blob("one.rules", one).unwrap().1);
+        assert!(check_text(&label, main).unwrap().contains(&format!("id: {hash}")));
+        // An error in the module is in its file, at its line.
+        std::fs::write(&waves, "const base = 2\nfn bonus() -> int = nope + 1\n").unwrap();
+        let err = check_text(&label, main).unwrap_err();
+        assert!(err.starts_with(&format!("{}:2:", waves.display())), "{err}");
+        // A file that is not there, and a cycle.
+        std::fs::remove_file(&waves).unwrap();
+        assert!(check_text(&label, main).unwrap_err().contains("no file named `waves.rules`"));
+        std::fs::write(&waves, "use \"main.rules\"\n").unwrap();
+        let err = check_text(&label, main).unwrap_err();
+        assert!(err.contains("a cycle: main.rules uses waves.rules uses main.rules"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

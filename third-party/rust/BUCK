@@ -4614,6 +4614,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "curve25519-dalek",
+    actual = ":curve25519-dalek-4",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "curve25519-dalek-4.1.3.crate",
     sha256 = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be",
@@ -4645,6 +4651,7 @@ cargo.rust_library(
     },
     features = [
         "alloc",
+        "default",
         "digest",
         "precomputed-tables",
         "zeroize",
@@ -4700,6 +4707,7 @@ cargo.rust_binary(
     },
     features = [
         "alloc",
+        "default",
         "digest",
         "precomputed-tables",
         "zeroize",
@@ -4723,6 +4731,7 @@ buildscript_run(
     },
     features = [
         "alloc",
+        "default",
         "digest",
         "precomputed-tables",
         "zeroize",

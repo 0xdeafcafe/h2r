@@ -1,36 +1,14 @@
 # h2-editor
 
-Status: Built. Code: `crates/apps/studio/src`. Tests: in-source unit tests.
+Status: Built.
+Code: `crates/apps/studio/src/ui.rs`, `crates/apps/studio/src/app.rs`.
 Switch: none.
 
-To *use* the editor (open a map, move a weapon, make a game variant, edit
-a playlist), read the user guide, [editor-guide.md](editor-guide.md).
-This page is for developers.
-
-`h2-editor` (`crates/apps/studio`) is a native editor suite for the files
-h2recomp's game reads, in the spirit of the original tools' Sapien, with
-a game-tool look (Unreal, RenderDoc, Tracy). It is a Rust app on Dear
-ImGui's docking branch: `dear-imgui-rs` for the UI, `dear-imgui-wgpu` on
-the workspace's wgpu 30, `dear-imgui-winit` for the window,
-`dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
-web views, no scripting. It runs unbundled, so it sets its own Dock icon
-(`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts five tools:
-
-- **Map** combines the scenario editor (`crates/tools/scenario-edit`,
-  [scenario-editor.md](scenario-editor.md)) and the tag editor. It edits
-  placements in a 3D viewport and tag fields in the inspector. Both save
-  to a map package or a whole `.map`.
-- **Game variants**: the game variant editor (`crates/formats/variants`,
-  [variants.md](variants.md)).
-- **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
-  the game downloads from Live (`crates/tools/hopper-edit`, below).
-- **UI Screens**: our native game screens drawn, stepped and checked
-  offline (`boot::ui_kit`, [ui-builder.md](../game/ui-builder.md);
-  below).
-- **HUD**: a map's HUDs (`nhdt`) drawn as the engine places them, checked
-  for overlaps and spills, edited and saved as a patched `.map`
-  (`crates/tools/hud-edit`, [hud-editor.md](hud-editor.md)).
+Studio is the native Rust editor for maps, tags, voices, scripts, game
+variants, playlists, screens and HUDs. Dear ImGui supplies the docked
+windows. The front document determines which editor the window draws.
+Follow the [editor guide](editor-guide.md) for the weapon, voice and
+game type walkthroughs.
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
@@ -60,8 +38,8 @@ or the repository's `disc/halo1.iso` (`editor_core::halo1::default_source`).
 whose XBE is Halo: Combat Evolved's, a Halo 1 `.map`, or a folder holding
 any), then Halo 2.
 
-The Halo 2 Map Pack opens beside the disc, as its own **Map Pack** group
-in the Maps list (`editor_core::mappack`): `--mappack`, else
+The Halo 2 Map Pack opens beside the disc, as its own source
+(`editor_core::mappack`): `--mappack`, else
 `$H2_MAPPACK_ISO` (`$H2_MAPPACK` is `h2 play`'s on/off switch, and `0`,
 `false`, `no` or `off` turns the lookups below off too), else
 `mappack.iso` beside the Halo 2 disc that was opened (any case, else the
@@ -90,39 +68,43 @@ Dear ImGui's own, keeps the field panel's **Show unnamed fields** and
 
 ## The window
 
-![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 tool bar, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 document tabs and game link, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
 
-*The headless renderer's `--callout` labels the menu bar, tool bar,
+*The headless renderer's `--callout` labels the menu bar, document bar,
 Scene, viewport, inspector, Log and status bar.*
 
 - **Main menu**: File (open a disc or map, open a folder of maps, **Save**,
-  **Save as...**, save as or open a package, the other tools' file
+  **Export map...**, open a package, the front editor's file
   commands, quit), Edit (**Go to anything...**, undo, redo, duplicate,
   delete, allow growing full blocks), View (frame the map, frame the
-  selection, gizmo mode (move, rotate, scale) and local or world axes,
-  grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
+  selection, **Editors** (start the map, variant, playlist, UI screen,
+  HUD or Textures editor), gizmo mode (move, rotate, scale) and local or
+  world axes, grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
   Unpair, Pause, Step, Resume and Edit).
-- **Save** (Cmd/Ctrl+S, `App::save_target`) writes the open package or
-  the standalone file the editor last saved for this map. A base map
-  opens **Save as package...** with its name filled in. **Save as...**
-  (Shift+Cmd/Ctrl+S) asks for a standalone `.map` path.
-- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the Maps list,
-  the open map's tags and placements, and available menu actions. Each
-  word must match. Use Up or Down to move, Enter to open or run the
-  selection, and Esc to close. The result list is as tall as its rows, up
-  to seven.
-- **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
-  the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
-  document name; a `*` marks unsaved edits. Right: the game link. Its
-  pill shows the pairing and whether tag and placement edits can reach
+- **The bar** (`ui/bar.rs`) has no tool tabs. The window draws the
+  front document's editor: `App::surface` (`app/shell.rs`, `Surface`) is
+  read from the tool the front tab brings forward, `Action::Show` asks
+  for one, and `ui.rs` draws by `Surface`. `ToolKind` stays in `app` and
+  the API as the holder of each document's state. The script editor is
+  the `.rules` document (`Doc::Rules`): a tab from the first open of a
+  script, drawn beside the variant's settings, closed without dropping
+  its text.
+- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the tree's
+  tags and the set's packages and items, as well as voices, maps,
+  placements and commands (`app::commands::palette`). Use Up or Down
+  to move, Enter to open or run the selection, and Esc to close.
+- **Document tabs** (`ui/doc_tabs.rs`, `app/shell.rs`) identify open
+  documents. Each tab has a close button. A `*` marks an unsaved
+  document, and tabs that do not fit are under **More**.
+- **The game link** sits to the right of the tabs. Its pill shows the pairing and whether tag and placement edits can reach
   the game.
   The controls beside it provide Play or Stop, Pause or Resume, Step and
   the Edit switch as they become available. The link's width is measured
-  first, and the document name is clipped to what the tabs and the link
-  leave.
-- **Left dock**: Map has a full-height column with **Scene**, **Tags**
-  and **Maps** tabs above the bottom dock. Other tools have their own
-  windows in the left, centre and right regions (`ui/layout.rs`). The Map
+  first, and the document tabs take what the link leaves.
+- **Left dock**: the map's editor has a full-height column with the
+  **Browser**, **Scene** and **Tags** tabs above the bottom dock. The
+  other editors have their own windows in the left, centre and right
+  regions (`ui/layout.rs`). The Map
   windows keep the `outliner`, `viewport` and `inspector` IDs used by saved layouts.
 - **Scene** (`ui/outliner.rs`): the placement blocks as
   a tree, a filter (every word must match the block, the tag name or
@@ -186,9 +168,11 @@ Scene, viewport, inspector, Log and status bar.*
   the Tags tool's panel (`fields::panel`). Named links lead to the object
   model and other dependencies, with other links under **All references**.
   The **Show in** button opens a tag whose metadata lives in a shared cache
-  in the Tags tool, read-only. An edit affects every use of the tag. Use
-  **Undo tag edit** and **Redo tag edit** for the tag history. The map
-  save includes the tag edits alongside the placement edits.
+  in the Tags tool, read-only. An edit affects every use of the tag. **Undo
+  tag edit** and **Redo tag edit** step through the tag's history, its
+  fields and its editor's steps alike ([studio-flow.md](studio-flow.md),
+  "Shared patterns"). The map save includes the tag edits alongside the
+  placement edits.
   A reference field's **Show this tag** button focuses the target in the
   inspector and keeps the placement selected. Breadcrumbs lead back to
   any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
@@ -203,13 +187,13 @@ Scene, viewport, inspector, Log and status bar.*
   asks first, naming the tool: another source or map (scenario), another,
   new or imported variant, or an entry's variant opened from a playlist
   (variants), another or new playlist file (playlists). Save (Save as...
-  for a base map or an untitled playlist file), Discard or Cancel.
+  for an untitled playlist file), Discard or Cancel.
   Quitting asks about each tool with unsaved edits in turn.
 
 Shortcuts include Cmd/Ctrl+O to open, Cmd/Ctrl+S to save, Shift+Cmd/Ctrl+S
-to save a map or playlist to a chosen path, Cmd/Ctrl+P to open Go to
+to export a map or save a playlist to a chosen path, Cmd/Ctrl+P to open Go to
 anything, Cmd/Ctrl+Z to undo and Shift+Cmd/Ctrl+Z or
-Cmd/Ctrl+Y redo (in the active tool), F5 Play, Shift+F5 stop the
+Cmd/Ctrl+Y redo (in the front document), F5 Play, Shift+F5 stop the
 game the editor started, and Cmd/Ctrl+Q quit. In the scenario tool,
 Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
 selection), F frame the selection, Home frame all, W/E/R gizmo mode, X
@@ -218,21 +202,68 @@ to the cursor.
 Dropping a disc image, map or folder on the window
 opens it.
 
+## Document header and links
+
+**Code** in `crates/apps/studio/src/ui/doc_header.rs` draws the shared
+header for the front document. `App::doc_asset` resolves its tag,
+package item, package or voice id when one is available. The trail
+buttons and **In Browser** locate the row, and the kind button also
+filters the Browser by kind. For tags, the badge describes the source
+or package overlay. The **into:** line reports the edit target and
+document dirty state separately. **<** and **>** walk the document
+trail (`app/navigation.rs`, `app/shell.rs`).
+
+`app/links.rs` reads forward and reverse tag references, the enabled
+package manifests, variant and script item relationships, and the
+voice rules that match sound paths. **Links** shows **Uses** and
+**Used by**, up to 20 rows per role, with the source of the link on
+hover. **Show all in the Browser** passes the full section's asset ids
+to the Browser. Tag rows dispatch `Action::OpenAsset`. Other rows
+locate the asset in the Browser. **Open with** offers the editor
+entries from the link table and disables entries with a refusal or
+without a wired action. [`asset.links`](agent-api.md#the-browser) exposes
+the links, editor choices and read problems over the socket.
+
+### Shared patterns
+
+| Pattern | Window and API behavior | Code under `crates/apps/studio/src/` |
+|---|---|---|
+| **Preview** | The header and **Preview** menu share the target picker and **In game**. `preview.target` reads or changes the front tab's target. `pair.preview {doc?}` runs the document's route. Supported tags use the paired game, variants launch Studio's game with the current record, and scripts compile and reload into Studio's game. | `ui/preview_switch.rs`, `app/preview_switch.rs`, `api/preview.rs` |
+| **Check** | The header counts the front asset's findings. Clicking **Check** refreshes Problems. `check.run {asset}` returns the requested asset's rows from a refresh, and `problems.list {asset}` filters the list. Script findings can open the affected line. | `ui/doc_header.rs`, `app/problems.rs`, `api/checks.rs` |
+| **Apply** | Edits act on the working document. The header and Cmd/Ctrl+S share `App::doc_save_action`. Scripts, variants, playlist files, selected animation clips and generated voice lines save through the edit target. Without a target, a package save opens the picker. Map saves follow `App::save_target`, and export controls write standalone files. | `app/doc_save.rs`, `app/edit_target.rs`, `app.rs` |
+| **Undo** | The header runs `Action::UndoDoc` and `Action::RedoDoc` for the front document. The tag document's step counter orders field edits with specialized steps such as mouth curves, bitmap edits and animation edits. The map routes its history to the active modeling or map script context when applicable. | `app/shell.rs`, `app/tag_doc.rs` |
+
+The header's **Revert** is disabled. The variant Inspector offers its
+own revert action. **Copy into package...** writes a tag recipe and
+leaves the source tab in front. Opening the copy requires a map that
+contains it. The **Packages** root lists packages and their items.
+Package check, build and play are socket methods. See
+[Packages](agent-api.md#packages).
+
+### Not verified
+
+- The copied weapon and the replacement sound in a game running a map
+  built with their package items.
+- The full variant launch and script reload in Studio's game.
+
 ## Scenario
 
-Picking a map in **Maps** opens it, unless the open map has unsaved edits
-(the guard asks). **File > Save as...** asks for the path of a whole
-`.map` export. The base map stays untouched. **Save as
-package...** and **Open package...** save and open map packages in
+Opening a map's scenario in the **Browser** (or picking a map on the grid
+shown while no map is open) opens it, unless the open map has unsaved edits
+(the guard asks). **File > Export map...** asks for the path of a whole
+`.map` export. The base map stays untouched. **Save** writes the edit
+target's package and **Open package...** opens a map package in
 `<data>/maps` (scenario-editor.md §5, [maps.md](../game/maps.md) §8).
 
 ### Packages and Halo 1 in the Maps list
 
-**Maps** starts with the Halo 2 source's **Multiplayer maps** and
-**Campaign levels**. The library sections below them hold the Map Pack,
-user packages, converted Halo 1 variants and the read-only Halo 1
-source's playable maps. **Shared and menu** is the final section for
-both sources. Source rows show each map's card when available.
+The Browser has no list of maps: a map is its scenario tag, and a tag
+opens on the map that holds it ([studio-redesign.md](studio-redesign.md),
+"The browser"). The map grid shown while no map is open still groups the
+source's maps and shows each map's card when available. The sections
+below describe what each kind of map is; the Browser's Packages root
+lists `<data>/packages/`, and the `<data>/maps` packages and the Map
+Pack have no list of their own until the package slices land.
 
 - **Map Pack**: the nine multiplayer maps, sorted by display name and
   pictured as in the game's Select Map ("The Map Pack", below). They
@@ -357,7 +388,7 @@ overlay when there is none.
 
 ### The Maps list's cards
 
-Every row of the Maps list is drawn the same way (`ui::map_list::Row`):
+Every card of the map grid is drawn the same way (`ui::map_list::Row`):
 a map with a card shows a thumbnail of its picture (18 pt tall) beside
 the game's name for it, and on hover the whole picture (shrunk to 260 pt
 wide when larger), the name, the description wrapped at 260 pt, and a
@@ -366,9 +397,8 @@ dim line with the file and where it comes from
 file name and icon, and its tooltip says what it is: `mainmenu`,
 `shared` and `single_player_shared` are not levels
 (`map_cards::halo2_note`, `halo1_note`). The pictures go to the GPU once
-each, in one cache for every group keyed by the row
-(`MapListUi::texture`: `map-<name>`, `pack-<map>`, `pkg-<key>`,
-`h1-<name>`), and are replaced when a card's picture changes.
+each, in one cache keyed by the row
+(`MapListUi::texture`: `map-<name>`, `h1-<name>`), and are replaced when a card's picture changes.
 
 `editor_core::map_groups::MapGroup` classifies source maps using the
 cache type and reserved file names. `MapSource::map_groups` and
@@ -483,9 +513,9 @@ in a shared map: shared.map (3)` when any is outside this map.
 
 Saving never writes the installed files:
 
-- **Save as package** writes a package over the pack map (its base, by
-  hash), as for a disc map. Its **Packages** tooltip names the pack map.
-- **Save as...** writes the patched `.map` (`save::save_as`) anywhere
+- **Save** writes the edit target's package over the pack map (its base,
+  by hash), as for a disc map. Its **Packages** tooltip names the pack map.
+- **Export map...** writes the patched `.map` (`save::save_as`) anywhere
   but the installed content: `App::save_refusal` refuses a path inside
   `T:\$c` on the host, or any installed pack map file (whatever the data
   root).
@@ -705,9 +735,11 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   dynamic light). A material draws only when nothing it reads is left
   out: a pass that reads a view constant the camera does not give
   (`program::CAMERA_GIVEN`), an input the game-free run state does not
-  give, a palettized stage bitmap (no stage palettes), an animated
-  constant or its own fog is refused, and `view.stats` counts it by
-  cause. The other modes draw the base look alone.
+  give, a palettized stage bitmap (no stage palettes), a missing
+  animation input or its own fog is refused, and `view.stats` counts it by
+  cause. The BSP and its layer 3 (`layers_load::plan_layer3`) sample
+  animated pixel and vertex constants at time zero. The Shader tab takes
+  its sample at the preview clock. The other modes draw the base look alone.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
@@ -763,6 +795,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
     (`nav.pathfinding`). The 2D BSP nodes are counted, not drawn. Read
     with the map (`LevelPathfinding::read`). Retail multiplayer maps
     carry none: the layer is empty and `nav.pathfinding` gives a note.
+    Once **Build AI ground** has built ground for the map, the layer
+    draws the built ground's sectors in its place
+    (`Session::set_ground_pathfinding`, [game-types-without-carriers.md](../game/game-types-without-carriers.md), "In Studio").
   - **Bot nav mesh** draws the bots' own mesh
     ([bots.md](../game/bots.md), §3.2): each polygon as translucent
     floor, blue in the map and a dim grey-blue out of it
@@ -788,7 +823,7 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   builds the mesh in memory with the bots' own builder
   (`bots::autonav::build_map`, what `h2 bots nav` runs), does not write
   it, and says why in `nav.bots`'s notes. The spots come from
-  `<map>.spots` when current (else a scan now), the hand-measured ones,
+  `<map>.spots` when current (otherwise a scan), the hand-measured ones,
   and `<map>.verified`, `<map>.learned` and `<map>.ghosts` beside them.
   `<data>` is the data root (`--data`, else the one `h2 play` uses).
 
@@ -889,12 +924,17 @@ a foreign game. F5 leaves the Edit switch as set. A foreign game asks before rec
 maps. The other choice in the map prompt opens the game's map here.
 `play::playtest::decide` supplies the bar, Game menu and socket API.
 
+`game.start` ([agent-api.md](agent-api.md)) and a launching F5 are the same
+start (`Play::start_own`): the game runs with `--editor`, no window of its
+own, and is shown in the Game panel ([game-view.md](game-view.md), "Own
+mode").
+
 **Stop** (Shift+F5) closes the game the editor started. With no game,
-Play launches the copy in its own window:
+Play launches the copy in editor mode, with no window of its own:
 
 ```
 H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-play-<pid>/maps \
-  h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)'
+  h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)' --editor
 ```
 
 - `h2` is the path in Game > Advanced, else `$H2_BIN`, else the `h2` beside the
@@ -907,7 +947,8 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   Before stopping its running game, the editor resolves the launch level
   with the same `level_boot::resolve_in` as `h2 play`. For a Map Pack map
   this is still the Halo 2 disc: `h2 play` installs the map pack itself from
-  `mappack.iso` beside that disc (`mappack_cmd::auto_install`) and the
+  `mappack.iso` beside that disc (the `map-pack` package's `convert` item,
+  `package_prepare::before_boot`) and the
   editor's copy plays through the override. When the open pack is
   elsewhere, the editor logs that `h2 play` will not install it (it does
   not run `h2 import-mappack` itself).
@@ -1038,17 +1079,16 @@ The variant editor of [variants.md](variants.md), in the same windows:
   a bounded number; a setting changed from the type's default is bold,
   and its help and default are on hover. Built-ins are read-only, as in
   the game: Copy makes a named, editable copy.
-- **Inspector**: Save (to the game's save storage under the data root),
-  Revert, Delete, Export... (a portable `.h2variant` file), Import... (a
+- **Inspector**: Revert, Delete for an imported game save, Export... (a portable `.h2variant` file), Import... (a
   file, or pasted text), whether the game would accept it, and the
   changes from the type's defaults.
 
 The schema comes from the disc's `mainmenu` map (the built-in model
 without a disc); save names come from the XBE (`H2_XBE`, else
 `default.xbe` beside the disc image) (`editor_core::variant_sources`).
-Saves go to the runtime's save storage (`U:` under `<data>`), so there is
-no Save As; use Export to share. Every edit undoes; typing a name is one
-step.
+The document header's **Save** writes a `variant` item in the edit
+target. Use **Export...** to share a portable variant file. Typing a
+name is one undo step.
 
 ## Playlists
 
@@ -1058,11 +1098,13 @@ server's copy:
 
 - **Playlists** (the outliner's place): New (an all-zero image, every
   playlist empty), Default lineup (the playlists a Live server serves
-  before any file is published), Open..., Save, Save as..., then the 16
+  before any file is published), Open..., then the 16
   playlists (a mark on those that would not save). Open reads either form
   of `multiplayer_hopper.dat`: the raw 0x162cc0-byte image the console
   caches, or the download envelope (header, size, zlib) the server
-  publishes. Save writes the same form back. An envelope larger than the
+  publishes. The document header's **Save** writes that form as a
+  `playlist` item in the edit target. **File > Export playlist file...**
+  writes a copy. An envelope larger than the
   game's 128 KiB download buffer is refused (the game would keep its
   built-in playlists).
 - **Entries** (centre): the playlist's title (15 bytes) and description
@@ -1137,7 +1179,7 @@ publish by itself.
 
 Every field of any tag of the open map (a disc map, a package, a
 converted Halo 1 map), labelled, with a widget per type. Edits save with
-the map. **Save**, **Save as...** and **Save as package...** write them
+the map. **Save** and **Export map...** write them
 through the same lossless `MapEditor` path as the scenario's. Any other map of
 the source (the shared caches among them) can be browsed read-only, and
 tags go out to and come back from tag bundles (below).
@@ -1555,7 +1597,7 @@ UI; `ui/ui_screens.rs` draws it.
   drag, resize, nudge and retype widgets on the picture
   (`ui/ui_screens/edit.rs`), with a **Selected** section and a widget
   list in the inspector. Our screens' edits change their
-  `assets/ui/screens/<name>.yaml` docs (`edit::ours`, saved into the
+  `content/ui/screens/<name>.yaml` docs (`edit::ours`, saved into the
   checkout and reloaded when the files change on disk); a retail
   screen's are tag writes on the open `mainmenu` map (`edit::retail`,
   `App::tags`), saved with the map. A retail pick is drawn with its
@@ -1719,7 +1761,7 @@ last. The flags that set the scene up:
 | `--copy-variant <name>` | copy it to an editable variant named `<name>` |
 | `--hopper <file>\|default --playlist <1..16>` | open a playlist file (or the default lineup) at a playlist |
 | `--preset <n>` | pick historical preset `n` for that playlist |
-| `--dialog package\|unsaved` | open the Save as package window, or nudge the selection and ask to quit (the unsaved-changes window) |
+| `--dialog edit-target\|unsaved` | open the first-edit picker (the edit target), or nudge the selection and ask to quit (the unsaved-changes window) |
 | `--nudge <x>,<y>,<z>` | move the selection by that much, as an edit |
 | `--page <title>` | in the variant tool, open only the settings pages whose title contains it |
 | `--no-disc` | open no disc and no Halo 1 source (the first run) |

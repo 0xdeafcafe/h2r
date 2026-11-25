@@ -636,8 +636,13 @@ struct FakeTags;
 
 const WEAP_TAG: u32 = 0xe100_0010;
 const VEHI_TAG: u32 = 0xe200_0020;
+const SND_TAG: u32 = 0xe400_0040;
 
 impl super::calls::Tags for FakeTags {
+    fn string_id(&mut self, name: &str) -> Option<u32> {
+        (name == "idle").then_some(0x4d01)
+    }
+
     /// As a map names them: a weapon's name is also its model's (`hlmt`),
     /// a vehicle's its render model's (`mode`).
     fn find(&mut self, tag: &str, among: &[&str]) -> Result<super::calls::TagRef, String> {
@@ -649,6 +654,7 @@ impl super::calls::Tags for FakeTags {
             (VEHI_TAG, "vehi", HOG),
             (0xe200_0021, "mode", HOG),
             (0xe300_0030, "shad", "shaders\\metal"),
+            (SND_TAG, "snd!", "sound\\pogo\\spring"),
         ];
         let (group, name) = match tag.split_once(':') {
             Some((g, n)) => (Some(g), n),
@@ -1921,6 +1927,51 @@ fn host_quit_needs_a_window_and_asks_it_to_close() {
 }
 
 #[test]
+fn host_window_resize_needs_a_window_and_answers_its_new_shape() {
+    use agent_proto::host_window::{self, Hub, WindowState};
+    let hub: &'static Hub = Box::leak(Box::new(Hub::new()));
+    let (h, mut game) = (Harness::new(), game());
+    super::window::install(&h.agent, hub);
+    // Answered on the connection's thread: no tick needed.
+    h.send(host_window::method::RESIZE, json!({"fullscreen": true}));
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+    for bad in [json!({}), Value::Null, json!({"width": 800}), json!({"size": 1})] {
+        h.send(host_window::method::RESIZE, bad.clone());
+        assert_eq!(h.reply()["error"]["code"], code::INVALID_PARAMS, "{bad}");
+    }
+    // A window shell on its own thread takes the request and resizes.
+    let (ready, attached) = std::sync::mpsc::channel();
+    let shell = std::thread::spawn(move || {
+        hub.attach(Box::new(|| {}));
+        ready.send(()).unwrap();
+        loop {
+            if let Some(r) = hub.take_request() {
+                let (width, height) = r.size.unwrap();
+                hub.observe(WindowState { width, height, fullscreen: r.fullscreen, scale: 2.0 });
+                return;
+            }
+            std::thread::yield_now();
+        }
+    });
+    attached.recv().unwrap();
+    h.send(host_window::method::RESIZE, json!({"width": 1920, "height": 816}));
+    let mut r = h.reply();
+    shell.join().unwrap();
+    // Every result carries the session stamp; the shape is the rest.
+    r["result"].as_object_mut().unwrap().remove("at");
+    assert_eq!(
+        r["result"],
+        json!({"width": 1920, "height": 816, "fullscreen": false, "scale": 2.0}),
+        "{r}"
+    );
+    let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
+    for name in host_window::method::ALL {
+        assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
+    }
+}
+
+#[test]
 fn host_screenshot_needs_a_window_and_answers_what_it_wrote() {
     use agent_proto::host_shot::{self, Hub, Shot};
     let hub: &'static Hub = Box::leak(Box::new(Hub::new()));
@@ -1952,5 +2003,142 @@ fn host_screenshot_needs_a_window_and_answers_what_it_wrote() {
     let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
     for name in host_shot::method::ALL {
         assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
+    }
+}
+
+#[test]
+fn audio_play_queues_the_sound_start_at_the_players_unit_and_refuses_what_is_no_sound() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    h.deferred(
+        &mut game,
+        method::AUDIO_PLAY,
+        json!({"sound": "sound\\pogo\\spring"}),
+    );
+    let unit_h = engine::view::players::array(&game.g)
+        .unwrap()
+        .unwrap()
+        .get_absolute(&game.g, 0)
+        .unwrap()
+        .unwrap()
+        .unit(&game.g)
+        .unwrap()
+        .unwrap()
+        .raw();
+    let calls = the_game_makes(&q, |c| {
+        assert_eq!(
+            *c,
+            super::calls::Call::Sound {
+                unit: unit_h,
+                sound: SND_TAG
+            }
+        );
+        Ok(json!({"instance": "00cc0001"}))
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["result"]["sound"]["group"], "snd!");
+    assert_eq!(r["result"]["instance"], "00cc0001");
+    assert_eq!(r["result"]["player"], "player.0");
+    // A weapon is not a sound; an unknown name is not a tag.
+    for (p, want) in [
+        (json!({"sound": "0xe1000010"}), code::INVALID_PARAMS),
+        (json!({"sound": "nothing"}), code::INVALID_PARAMS),
+        (json!({"sound": "0xe4000040", "player": "player.1"}), code::GONE),
+    ] {
+        let e = h.err(&mut game, method::AUDIO_PLAY, p.clone());
+        assert_eq!(e["code"], want, "{p}: {e}");
+    }
+}
+
+#[test]
+fn object_animate_queues_the_named_animation_on_the_object_and_refuses_what_it_cannot_name() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    h.deferred(
+        &mut game,
+        method::OBJECT_ANIMATE,
+        json!({"id": "scenery.12340000", "animation": "idle"}),
+    );
+    let calls = the_game_makes(&q, |c| {
+        assert!(matches!(c, super::calls::Call::Animate { name: 0x4d01, .. }), "{c:?}");
+        Ok(json!({"index": 3, "frames": 31, "frame": 0.0}))
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["result"]["object"], "scenery.12340000");
+    assert_eq!(r["result"]["index"], 3);
+    // A name the map has no string ID for, a bad id, a player's id, and a
+    // co-op session (the object's pose is simulation state) are refused.
+    for (p, want) in [
+        (json!({"id": "scenery.12340000", "animation": "nothing"}), code::INVALID_PARAMS),
+        (json!({"id": "bad", "animation": "idle"}), code::INVALID_PARAMS),
+        (json!({"id": "player.0", "animation": "idle"}), code::INVALID_PARAMS),
+    ] {
+        let e = h.err(&mut game, method::OBJECT_ANIMATE, p.clone());
+        assert_eq!(e["code"], want, "{p}: {e}");
+    }
+    *h.kind.lock().unwrap() = SessionKind::CoopHost;
+    let e = h.err(
+        &mut game,
+        method::OBJECT_ANIMATE,
+        json!({"id": "scenery.12340000", "animation": "idle"}),
+    );
+    assert_eq!(e["code"], code::INVALID_REQUEST, "{e}");
+}
+
+#[test]
+fn recording_play_finds_the_recording_by_name_and_queues_the_players_call() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    game.g.put_u32(0x8110_0000 + 0x110, 2);
+    game.g.put_u32(0x8110_0000 + 0x114, 0x8111_0000);
+    game.g.put(0x8111_0000, b"arrive\0");
+    game.g.put(0x8111_0000 + 0x34, b"leave\0");
+    h.deferred(
+        &mut game,
+        method::RECORDING_PLAY,
+        json!({"recording": "LEAVE", "mode": "hover"}),
+    );
+    let unit_h = engine::view::players::array(&game.g)
+        .unwrap()
+        .unwrap()
+        .get_absolute(&game.g, 0)
+        .unwrap()
+        .unwrap()
+        .unit(&game.g)
+        .unwrap()
+        .unwrap()
+        .raw();
+    let calls = the_game_makes(&q, |c| {
+        assert_eq!(
+            *c,
+            super::calls::Call::Recording {
+                unit: unit_h,
+                index: 1,
+                flags: 0x10
+            }
+        );
+        Ok(json!({"unit": "00010001", "index": 1}))
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["result"]["recording"], "leave");
+    assert_eq!(r["result"]["index"], 1);
+    assert_eq!(r["result"]["player"], "player.0");
+    // A name the scenario lacks and a mode that is none are refused.
+    for (p, want) in [
+        (json!({"recording": "depart"}), code::INVALID_PARAMS),
+        (json!({"recording": "arrive", "mode": "kill"}), code::INVALID_PARAMS),
+        (json!({"recording": "arrive", "player": "player.1"}), code::GONE),
+    ] {
+        let e = h.err(&mut game, method::RECORDING_PLAY, p.clone());
+        assert_eq!(e["code"], want, "{p}: {e}");
     }
 }

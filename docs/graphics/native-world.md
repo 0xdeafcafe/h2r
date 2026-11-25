@@ -42,6 +42,19 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   marked *fallback* and keeps its D3D draws.
 - **Pipelines** are made once per supported template.
 
+### Reconstructed display lightmaps
+
+With an owner-baked lamp arm selected at launch, `load_ready` checks both
+replacement atlases for the active BSP. A failed geometry or page decode,
+or a page-lit opaque part outside the native stage, keeps that BSP on retail
+lighting. On a match, `ProgramSet::install_relight` builds both texture
+groups for each material and page/palette pair that samples a lightmap.
+The scene reserves the native `WorldPass` for these draws. Each target copy
+selects its group when recording: the display takes the requested arm and
+the guest reference takes retail. A live section, shader or image refresh
+discards the replacement groups. The offline fit and the room comparison
+are described in [dynamic lighting](dynamic-lighting.md).
+
 ### Live edits
 
 A paired editor's live edit changes the map file as the raw overlay
@@ -59,7 +72,8 @@ world is resident and no refresh is running, and a worker applies it
   (`GpuWorld::replace_section`, `World::replace_section`). The draw
   bounds the cull and the guest's admission read (`Ready::part_bounds`)
   and the world's bounds are recomputed. A placement keeps its lightmap
-  bucket's coordinates and lighting vectors.
+  bucket's coordinates, lighting vectors and baked colours. Colours
+  supplied by the definition refresh with the section.
 - **A section that grew, or that the world cannot take in place** (another
   vertex count, other triangles in a drawn part): the world reloads
   (`native_map_work::reload_bsp`), as on a BSP switch. Until the reload
@@ -333,13 +347,12 @@ D3D path's depth per part:
 
 ### Match the look
 
-The world's layer-3 passes are lightmap passes: the material's base colour
-(base map and detail maps, by template) times the lightmap irradiance, with
-fog applied later by layer 16. The native pass draws every native material
-with its own translated pass: the pass's vertex program (`vrtx`) and pixel
-shader definition (`spas`) are what `shaders` translates for the D3D path,
-compiled once per material with the view constants the device holds at
-issue. A material whose pass does not translate stays on the D3D path;
+The render record selects the layer-3 lighting implementation for each
+cluster or placement. A shader can sample a lightmap page, combine its
+base and detail maps with baked vertex colour, or use dynamic lighting.
+Layer 16 applies fog later. The native pass compiles the selected vertex
+program (`vrtx`) and pixel shader definition (`spas`) with the same
+translator the D3D path uses. It takes the device's view constants at issue. A material whose pass does not translate stays on the D3D path;
 there is no hand-written look in between.
 
 ### How correctness is checked
@@ -478,10 +491,14 @@ On native surfaces only (the D3D ones are the game's own):
 A world material's layer-3 pass, as `tags::material` resolves it: on 03a
 the opaque world templates are `tex_bump` and its variants (`_env`,
 `_detail_blend`, `_three_detail_blend`, `_two_detail`, ...). A `tex_bump`
-layer 3 is one pass (`lightmap_tex_detail`) with three implementations:
-per-pixel lightmap (stage 3 the lightmap), per-vertex, and dynamic. The
-engine picks the implementation per draw; the BSP's lightmapped sections
-take the per-pixel one (S, from the lightmap bind at `0x0004d40f`).
+layer 3 is one pass (`lightmap_tex_detail`) with implementations for
+per-pixel lightmaps (stage 3), per-vertex colour and dynamic lighting. The
+record builder picks the implementation per draw. With a matching first
+lightmap group, it selects 0 for clusters and for placements whose lighting
+mode at `+0x56` is zero, and 1 for other placements. With no matching
+group it selects 3 for both. The native loader follows the same rule as
+`world_walk::Plan::lighting`. Two parts that share a BSP material but
+select different implementations get separate layer-3 program slots.
 
 The pass's vertex program comes from its `vrtx` tag's geometry
 classification. Classification 0 is world space (S: its program reads
@@ -548,6 +565,13 @@ placement, so bits 18..28 are `0x7ff`. The structure draw's layer-3 part
   engine reaches it only for object records here), the offset at entry
   bits 9..17. Not the world's concern.
 
+In the per-vertex implementation, the classification can declare baked
+colour (semantic 14) at `v6`. The colour descriptor supplies packed ARGB
+(`2e`) or three RGB bytes (`2f`, alpha 1). Its bucket offset is in
+vertices. The rigid pipeline fetches normalized RGBA at that location.
+A placement whose shader uses the special BSP parameter setup stays with
+the sorted handler, which runs that setup and skips the bucket bind.
+
 A cluster reads its section's own `lightmap_texcoords`. A definition has no `1f` of its own, so a placement reads its run of the bucket (`load::instance_run`, `load::bucket_slice`); the lighting vectors (`30`) the same way (S: the bucket's `30` stream is indexed like its `1f`).
 
 The per-view constants (`c[0..17]`) are the same for every draw of a
@@ -583,18 +607,14 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
   reads anything else (another scalar, any vector, another integer, by
   mask, binding or fragment selector); only those stay on the fallback.
   Of the pass's other implementations the per-vertex one has the same
-  masks; the dynamic one reads engine vectors (lighting), but the world
-  pass uses the per-pixel one.
+  masks. Dynamic implementations can also read engine lighting vectors.
 
 ### Material translation
 
-The device hands the external pass its vertex constants at issue (a
-read-only snapshot). `native-render::load` resolves, per material, the resolved layer-3 pass and
-implementation 0: the classification-0 program, the final pixel shader
-definition, stage textures (instance bitmaps with their image, the
-lightmap), sampler states and instance constants. Materials without
-one (no layer 3, more than one pass, an engine texture source other
-than the lightmap, per-draw engine inputs) stay on the D3D path.
+The device hands the external pass its vertex constants at issue.
+`native_world_glue::material_programs` resolves the record-selected
+implementation of the single layer-3 pass, including its vertex and
+pixel shaders, stage textures, sampler states and instance constants.
 Base maps upload their decoded mip chain (`gpu::Image::from_levels`).
 `native_render::program` links each material's programs and fills its
 uniforms and bind groups. During the BSP upload, `WorldPipelines` opens
@@ -605,7 +625,7 @@ admission, `GpuWorld::prewarm_world` checks every selected cluster and
 placement. D3D draws that selection until all its bindings are present
 and its pipeline completions have crossed a frame boundary.
 
-- `look::layer3_pass` takes the pass's implementation as above and
+- `look::selected_bsp_pass_sampled` takes the record's implementation and
   its own render states (`pass_state`, as transparents do): depth test
   and write, colour writes, alpha test and cull. The 03a world passes
   set `COLORWRITEENABLE` (all four channels), `ALPHABLENDENABLE` 0 and
@@ -635,7 +655,15 @@ and its pipeline completions have crossed a frame boundary.
   - a vertex constant outside the view's `c[0..18]`, the instance's,
     `c[50..52]` and `c[172]` (the structure draw uploads `c[21]`,
     `c[24]`, `c[31]`, `c[174]` and others per draw), or one addressed
-    relative to `a0.x`. 03a's world programs (`lightmap_perpixel_*`,
+    relative to `a0.x`. A read of an unbound constant counts only when
+    its value reaches an output the pass uses (`program::live_unset_read`):
+    the shared world programs compute `oT2` from `c[20]` for every
+    material, and a material with no stage-2 transform leaves `c[20]` unset
+    when its pixel shader ignores `oT2`. This includes a disabled stage
+    and a `PASSTHRU` stage whose value feeds neither a combiner nor a
+    dependent texture operation. The check preserves implicit texture
+    inputs and cross-stage reflection coordinates. A missing value that
+    reaches position, an address or a consumed coordinate still refuses. 03a's world programs (`lightmap_perpixel_*`,
     classification 0) read `c[0..3]`, `c[5..11]` (view), `c[18..20]`
     (instance) and `c[172]` only;
   - fog: a combiner that reads the fog register, or a definition
@@ -649,8 +677,9 @@ and its pipeline completions have crossed a frame boundary.
   - border addressing on a sampled stage.
 - `program::part_fit` checks each cluster against its world-space
   vertex program and each placement against its rigid program.
-  Every input the program reads must be present in the section.
-  A sampled lightmap needs a decoded page and palette. Other parts
+  The section must supply the streams its classification requires.
+  A sampled lightmap needs a decoded page and palette. A placement using
+  baked colour needs its declared colour stream. Other parts
   sharing the material can still draw with their own inputs.
 - On a BSP without a matching first lightmap group, the record
   builder selects implementation 3. The worker resolves that
@@ -700,18 +729,13 @@ and its pipeline completions have crossed a frame boundary.
 - Left (S): the inherited `ZFUNC`; the decoded chain of a bitmap whose top level is
   not resident starts lower (a smaller image, the same coordinates).
 
-Of 03a's scenario shaders with a layer 3, about a third sample the
-texaccum (engine texture 3, the `_combined` templates). The program set
-here has no engine-texture stage, so `look::layer3_pass` refuses them
-(`layer 3: EngineTexture(3)` in the load line's rejections); the sorted
-opaque layers (below) take them, with the stage bound to target 1
-(`native_world_materials::Source::Texaccum`, for sources 2 and 3, and
-the accumulation targets of `prepare_opaque`). Most of the rest are
-`tex_bump` and its variants, one pass with the per-pixel lightmap
-implementation, and translate. Binding engine texture 3 in the program
-set itself would need its sampled level, texel-addressed coordinates and
-the size-reading engine vertex constants, as the objects' pass has
-(native-objects.md, "The texture accumulation target").
+Combined shaders sample the layer-1 accumulation texture in layer 3
+(engine texture 3, target 1). The batched pass pins the attachment and
+resolves the texture header on each target copy. It checks texture identity,
+dimensions and linear addressing before clearing the guest draw masks. The
+shader uses the guest dimensions for coordinate normalization and for the
+components its size bindings write. The sorted handler resolves the same
+target through `native_world_materials::Source::Texaccum`.
 
 ### Native opaque layers
 
@@ -720,6 +744,12 @@ layers 1, 3, 5, 7 and 8. The default front end takes these entries at the
 standard geometry handler (`0x0004d0b0`). Native objects and entries left
 with the guest can still use the native world layers' indexed admission. Both paths preserve the original subpart
 ranges, topology, live colour/depth attachments and per-record stencil state.
+
+A layer-1 stencil shader can move an immediate `v10` (mask `0x0400`)
+to diffuse colour. For ordinary projected 2D fetches, the translator
+accepts an absent immediate when its only output is diffuse and neither
+the general nor the final combiner reads it. Position and consumed colour
+still require a supplied value.
 
 Layer 1 replaces a draw only while target 1's attachment header is
 bound. Texture inputs must resolve to views the program can sample.
@@ -745,13 +775,19 @@ contents in submission order. The menu's unlightmapped implementation
 uses its own declaration and program. A part can draw without a lighting
 vector when its selected implementation has its required inputs.
 
+The ordered indexed cache in `world_layers_gpu.rs` holds up to 4,096
+resident section windows and charges their CPU geometry and GPU buffers
+against a 128 MiB budget. A periodic frame sweep releases inactive
+windows, and a BSP change clears the section cache. A draw that exceeds
+the residency budget uses the transient upload path.
+
 ### Native BSP scene walk
 
 The walk goes off with the rest of the native renderer.
 
 | Guest boundary | Work done in Rust | State handed to the next stage |
 |---|---|---|
-| `WORLD_CLUSTER_RECORDS` and `WORLD_PLACEMENT_RECORDS`, from the main camera gather | Walk the current visibility lists in their original order. Read projection depth, pixel scale, cluster bounds and placement spheres. Compute the screen-size byte, placement fade and fog flags. | Publish the same record indices, lightmap implementation, placement matrix pointer, subpart bitmap allocations and resident resource stamps. A cold resource can enqueue I/O. A mixed walk falls back before publication and retries each resident row at `WORLD_VISIBILITY_FLAGS`. The guest handles each cold row in place. The following object gather sees both record counters. |
+| `WORLD_CLUSTER_RECORDS` and `WORLD_PLACEMENT_RECORDS`, from the main camera gather, and a light's in the light frame body ([native-light-gather.md](native-light-gather.md), L3) | Walk the current visibility lists in their original order. In a light's kind only the record cursor advances; the main view's count is left. Read projection depth, pixel scale, cluster bounds and placement spheres. Compute the screen-size byte, placement fade and fog flags. | Publish the same record indices, lightmap implementation, placement matrix pointer, subpart bitmap allocations and resident resource stamps. A cold resource can enqueue I/O. A mixed walk falls back before publication and retries each resident row at `WORLD_VISIBILITY_FLAGS`. The guest handles each cold row in place. The following object gather sees both record counters. |
 | `WORLD_PART_MATERIAL`, first part at the main scene loop in `0x44ac0` | Examine **every visible part in one BSP record**. Compute its material visibility, subpart visibility, shader LOD and layer mask. An eligible record appends its items in guest order, bypassing the remaining material queries, `GEOMETRY_SUBMIT`, its LOD queries and item appends. | The ordinary shader, argument, callbacks, selector, LOD, mask and aggregate list mask remain available to every later layer. The per-part centre and clipping plane live in caller scratch. Only the transparent producer exports them. A visible transparent producer, shader override or unknown material keeps the complete section on the guest path. |
 | `LAYER_BUILD` and `WORLD_GEOMETRY_BUILD` | Emit the standard BSP sort slots for opaque, water and fog entries. An unsupported callback runs with the original caller frame and can mutate the list. | Rejected slots retain their writes, including undefined words inherited by later candidates. The original sort still orders ties and layer-5 entries. Objects and custom handlers keep their place. |
 | `LAYER_ENTRIES`, after layer setup | When the world, water or fog renderer has committed its reservation and every active item has its layer bit clear, return the empty dispatch result immediately. | The GPU reservation already covers the claimed ranges. One remaining bit keeps the dispatcher. Layer setup and end still establish the shared device state. No handler, shader, stencil switch or indexed draw would run in the empty dispatcher. |

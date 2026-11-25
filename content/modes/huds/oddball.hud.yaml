@@ -1,0 +1,25 @@
+# The Oddball HUD (docs/game/game-types-without-carriers.md, "The display"):
+# rows of text from the frame's bottom left, as the superbounce readout's,
+# a navpoint over the objective and the timed banner. Elements in draw order.
+name: oddball
+elements:
+  - id: odd.holder
+    kind: text
+    font: hud
+    justify: start
+    longest: "Ball: Carried by AAAAAAAAAAAAAAA"
+    at: {anchor: bottom-left, full: [101, -47]}
+  - id: odd.time
+    kind: text
+    font: hud
+    justify: start
+    longest: "Held 99:59"
+    at: {anchor: bottom-left, full: [101, -26]}
+  - id: odd.mark
+    kind: navpoint
+    longest: "999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: odd.banner
+    kind: banner
+    longest: "YOU HAVE THE BALL"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}

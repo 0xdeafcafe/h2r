@@ -11,6 +11,16 @@ floor:
   label_every: 5    # distance labels and heavy lines
   texels: 1024      # the grid texture's side: 16 texels a unit
 
+# The lights of the three bays (stage_kit::light). Levels are in units of
+# full light. The sun is the day bay's, and the sky's disc is drawn where
+# it is: azimuth in degrees counter-clockwise from +x seen from above,
+# elevation over the horizon. The sky fill is what a face looking up takes.
+lights:
+  sun: { azimuth: 215, elevation: 45, color: [1.0, 0.95, 0.85], power: 1.0 }
+  fill: [0.26, 0.30, 0.38]
+  flat: 1.0
+  dark: 0.03
+
 bays:
   - name: flat
     origin: [0, 0, 0]

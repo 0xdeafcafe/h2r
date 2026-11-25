@@ -334,6 +334,21 @@ group test 0x4c title="Test thing" applies=frame
   0x48 u32 plain
 "#;
 
+/// An invented group with a view on a colour and a function.
+const VIEW_ATTRS: &str = "group test 0x14\n  \
+  0x0 f32[3] tint view=hdr_rgb\n  \
+  0xc data curve align 4 view=function\n";
+
+#[test]
+fn a_definitions_view_reaches_its_registry_field() {
+    let mut defs = Defs::default();
+    defs.parse_into("views", VIEW_ATTRS).unwrap();
+    let r = Registry::build(&Schema::default(), &defs);
+    let l = r.group(FourCC(*b"test")).unwrap();
+    assert_eq!(l.field_at(0).unwrap().view, Some(FieldView::HdrRgb));
+    assert_eq!(l.field_at(0xc).unwrap().view, Some(FieldView::Function));
+}
+
 fn attr_layout() -> Arc<Layout> {
     let mut defs = Defs::default();
     defs.parse_into("attrs", ATTRS).unwrap();
@@ -429,4 +444,24 @@ fn a_unit_decides_whether_a_float_shows_as_an_angle() {
     assert_eq!(hint(0x20), Hint::Angle);
     // A unit does not take a bounds name away.
     assert_eq!(hint(0x24), Hint::Bounds);
+}
+
+#[test]
+fn a_shader_bitmap_slot_applies_on_the_next_frame() {
+    // Every field of a postprocess bitmap entry is read at each draw
+    // (docs/graphics/hot-iteration.md, "What shows when"); the colour and
+    // vector entries carry their own word.
+    let r = Registry::builtin();
+    let l = r.group(FourCC(*b"shad")).unwrap();
+    let Kind::Block(post) = &l.field_at(0x20).unwrap().kind else {
+        panic!("postprocess is a block")
+    };
+    let Kind::Block(bitmaps) = &post.field_at(0x4).unwrap().kind else {
+        panic!("bitmaps is a block")
+    };
+    for at in [0x0, 0x4, 0x8] {
+        assert_eq!(bitmaps.field_at(at).unwrap().applies, Some("frame"), "{at:#x}");
+    }
+    // The parameter block is never read by the draw path: no timing.
+    assert_eq!(l.field_at(0xc).unwrap().applies, None);
 }

@@ -13,12 +13,11 @@ use pages::SheetPage;
 use sheet::{Act, Group, Prop, Tool};
 
 /// Each screen's presses from a named state: the effects, then the
-/// focused row (the compositor's tables, `ui_kit/forge/tests.rs`, on the
-/// game's screens).
+/// focused row.
 #[test]
 fn page_tables() {
     use Input::{A, B, Down, Left, Right, Up};
-    use ListEffect::{Action, Close, Focus, None as Nothing, Open};
+    use ListEffect::{Action, Close, Focus, None as Nothing, Open, Stepped};
     struct Case {
         kind: Kind,
         from: &'static str,
@@ -99,6 +98,50 @@ fn page_tables() {
             ],
             after: "FORGE OPTIONS | focus 1 Controls",
         },
+        Case {
+            kind: Kind::Options,
+            from: "open",
+            inputs: &[Down, Down, Down, A],
+            effects: vec![Focus(1), Focus(2), Focus(3), Open(Kind::MapLimits.screen())],
+            after: "FORGE OPTIONS | focus 3 Map limits",
+        },
+        Case {
+            kind: Kind::MapLimits,
+            from: "open",
+            inputs: &[A, Down, A, B],
+            effects: vec![Nothing, Focus(1), Nothing, Close],
+            after: "MAP LIMITS | focus 1 Scenery = 4 / 16",
+        },
+        // A variant's row opens its dialog.
+        Case {
+            kind: Kind::Variants,
+            from: "open",
+            inputs: &[A],
+            effects: vec![Open(Kind::Variant.screen())],
+            after: "MAP VARIANTS | focus 0 Arena = Saved",
+        },
+        // Rename types a name; Delete is the last row of a variant that
+        // fails a check.
+        Case {
+            kind: Kind::Variant,
+            from: "unusable",
+            inputs: &[A, Down, A],
+            effects: vec![Action, Focus(1), Action],
+            after: "MAP VARIANT | focus 1 Delete",
+        },
+        // A tick row acts and a Down moves on; Done is the last row.
+        Case {
+            kind: Kind::Games,
+            from: "open",
+            inputs: &[A, Down, A, Up],
+            effects: vec![
+                Stepped("All game types: On".into()),
+                Focus(1),
+                Stepped("King of the Hill: On".into()),
+                Focus(0),
+            ],
+            after: "GAME TYPES | focus 0 All game types = Off",
+        },
         // The Controls page only lists: A does nothing.
         Case {
             kind: Kind::Controls,
@@ -123,7 +166,7 @@ fn page_tables() {
 
 #[test]
 fn no_is_focused_on_every_question() {
-    for ask in [Ask::DeleteLinked, Ask::Overwrite, Ask::Leave] {
+    for ask in [Ask::DeleteLinked, Ask::Overwrite, Ask::Leave, Ask::Load] {
         let s = sheet::question(ask, "Courtyard");
         assert_eq!(s.rows[s.focus].label, "No", "{ask:?}");
         assert_eq!(
@@ -222,28 +265,7 @@ fn the_object_menu_lists_groups_by_the_table_and_leaves_empty_ones_out() {
 }
 
 #[test]
-fn properties_come_from_the_table_by_kind() {
-    let labels = |group, kind| {
-        sheet::properties(group, kind)
-            .map(|d| d.label)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        labels(Group::Scenery, forge::ThingKind::Object),
-        ["Coordinates...", "Heading"]
-    );
-    assert_eq!(
-        labels(Group::Spawns, forge::ThingKind::StartingPoint),
-        ["Coordinates...", "Heading", "Team"]
-    );
-    assert_eq!(
-        labels(Group::Goals, forge::ThingKind::Goal),
-        ["Coordinates...", "Heading", "Team", "Role", "Order"]
-    );
-    assert_eq!(
-        labels(Group::Equipment, forge::ThingKind::ItemSpawner),
-        ["Coordinates...", "Heading", "Respawn time"]
-    );
+fn properties_sheet_is_the_docs_rows_titled_by_the_object() {
     let thing = pages::sample_thing(forge::BlockKind::NetgameFlags, forge::ThingKind::Goal);
     let s = sheet::properties_sheet("Beacon", &thing, 90.).unwrap();
     assert_eq!(s.title, "BEACON");
@@ -302,6 +324,9 @@ fn coordinates_nudge_and_type_numbers() {
     assert_eq!(ask_keyboard(spec.clone()), Chosen::Act);
     let mut guest = FakeGuest::new();
     guest.map(0x5000, 0x100);
+    // The keyboard channel, empty: no keyboard is open, so the typed
+    // text is read.
+    guest.map(crate::keyboard_glue::CHANNEL, 0x10);
     assert!(matches!(step(&guest), Some(Step::Keyboard(_))));
     let buffer = 0x5000;
     hub().keyboard.store(buffer, Ordering::SeqCst);
@@ -503,7 +528,9 @@ fn every_forge_option_has_its_help() {
     let [top, left, bottom, right] = SETTINGS_HELP_TEXT.rect;
     let (width, height) = (i32::from(right - left), i32::from(top - bottom));
     let page = sheet::options();
-    assert_eq!(page.rows.len(), sheet::OPTIONS.len());
+    // The options, then Placed objects, Build AI ground, Test waves and
+    // Generate nav.
+    assert_eq!(page.rows.len(), sheet::OPTIONS.len() + 4);
     for r in &page.rows {
         let help = r.description.as_deref().unwrap_or_default();
         assert!(!help.trim().is_empty(), "{}: no help", r.label);
@@ -518,4 +545,375 @@ fn every_forge_option_has_its_help() {
             assert!(!lower.contains(bad), "{}: {help}", r.label);
         }
     }
+}
+
+fn ai_items(placed: usize) -> Vec<sheet::AiItem> {
+    forge::GroundLabel::ALL
+        .into_iter()
+        .map(|label| sheet::AiItem { label, placed })
+        .collect()
+}
+
+#[test]
+fn the_ai_and_objectives_page_follows_the_groups_and_places_markers() {
+    let items = pages::sample_items();
+    let ai = ai_items(0);
+    let s = sheet::objects_with_ai(&items, 1, &ai).unwrap();
+    let labels: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["Scenery", "Crates", "Machines", sheet::AI_PAGE],
+        "after the map's groups"
+    );
+    assert_eq!(s.focus, 0, "the last chosen object keeps the focus");
+    let Act::Pick(p) = &s.rows[3].act else {
+        panic!("the page opens the picker")
+    };
+    assert!(p.closes, "choosing a label closes both");
+    assert_eq!(p.values.len(), forge::GroundLabel::ALL.len());
+    assert_eq!(p.values[0], "Wave drop");
+    assert_eq!(p.details[0], "ff_drop. None placed");
+    assert_eq!(p.choices[0], Choice::Marker(forge::GroundLabel::Drop));
+    assert_eq!(p.choices[5], Choice::Marker(forge::GroundLabel::Line));
+    // The page is the same one with the counts the session has.
+    let s = sheet::objects_with_ai(&items, 1, &ai_items(3)).unwrap();
+    let Act::Pick(p) = &s.rows[3].act else {
+        panic!("the page opens the picker")
+    };
+    assert_eq!(p.details[1], "ff_base. 3 placed");
+}
+
+#[test]
+fn the_page_is_alone_on_a_map_with_nothing_to_place_and_absent_with_no_labels() {
+    let s = sheet::objects_with_ai(&[], 0, &ai_items(0)).unwrap();
+    assert_eq!(s.rows.len(), 1);
+    assert_eq!(s.rows[0].label, sheet::AI_PAGE);
+    assert!(sheet::objects_with_ai(&[], 0, &[]).is_none());
+    let items = pages::sample_items();
+    assert_eq!(
+        sheet::objects_with_ai(&items, 1, &[]).unwrap().rows.len(),
+        sheet::objects(&items, 1).unwrap().rows.len()
+    );
+    // It fits the object menu's screen.
+    let screen = ForgeScreen::new(Kind::Objects);
+    assert!(
+        screen
+            .show(sheet::objects_with_ai(&items, 1, &ai_items(0)).unwrap())
+            .is_ok()
+    );
+}
+
+#[test]
+fn the_forge_options_build_the_ground_and_test_waves() {
+    let s = sheet::options();
+    let rows: Vec<(&str, &Act)> = s.rows.iter().map(|r| (r.label.as_str(), &r.act)).collect();
+    assert!(rows.contains(&("Build AI ground", &Act::Choose(Choice::BuildGround))));
+    assert!(rows.contains(&("Test waves", &Act::Choose(Choice::TestWaves))));
+    assert!(rows.contains(&("Generate nav", &Act::Choose(Choice::GenerateNav))));
+    assert!(ForgeScreen::new(Kind::Options).show(s).is_ok());
+}
+
+/// The Overlays page has a row for each overlay of the table, showing On
+/// or Off, and its picker sends the overlay with the value's index.
+#[test]
+fn the_overlays_page_has_a_row_for_each_overlay() {
+    use forge::tool::{Overlay, Overlays};
+    let mut on = Overlays::default();
+    on.set(Overlay::Monitors, false);
+    let page = sheet::overlays(on);
+    assert_eq!(page.title, "OVERLAYS");
+    assert_eq!(page.rows.len(), sheet::OVERLAYS.len());
+    assert_eq!(sheet::OVERLAYS.len(), Overlay::ALL.len());
+    let values: Vec<_> = page.rows.iter().map(|r| r.value.as_deref()).collect();
+    assert_eq!(values, [Some("On"), Some("Off"), Some("On"), Some("On")]);
+    let Act::Pick(p) = &page.rows[1].act else {
+        panic!("a value row opens a picker");
+    };
+    assert_eq!(p.values, ["On", "Off"]);
+    assert_eq!(p.current, 1);
+    assert_eq!(
+        p.choices,
+        [
+            Choice::Set(Prop::Overlay(Overlay::Monitors), 0),
+            Choice::Set(Prop::Overlay(Overlay::Monitors), 1)
+        ]
+    );
+}
+
+fn placed_sample() -> Vec<sheet::Placed> {
+    use forge_doc::OpId;
+    sheet::placed_rows(&[
+        (
+            OpId(7),
+            sheet::Group::Scenery,
+            "Beacon".into(),
+            [1., 2., 3.],
+        ),
+        (
+            OpId(2),
+            sheet::Group::Crates,
+            "Barrel".into(),
+            [0., 0., 0.5],
+        ),
+        (
+            OpId(5),
+            sheet::Group::Scenery,
+            "Beacon".into(),
+            [-4.25, 0., 0.],
+        ),
+        (OpId(9), sheet::Group::Scenery, "Arch".into(), [0., 0., 0.]),
+    ])
+}
+
+/// The browser lists groups in the object menu's order, then names, and
+/// numbers an object the map holds more than once in the order placed.
+#[test]
+fn the_placed_objects_are_grouped_named_and_numbered() {
+    let rows = placed_sample();
+    let names: Vec<&str> = rows.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Arch", "Beacon 1", "Beacon 2", "Barrel"]);
+    let ids: Vec<u32> = rows.iter().map(|p| p.id.0).collect();
+    assert_eq!(ids, [9, 7, 5, 2], "numbered in the order placed");
+    assert_eq!(rows[2].line, "Scenery. At -4.25, 0, 0.");
+    assert_eq!(rows[3].line, "Crate. At 0, 0, 0.5.");
+}
+
+/// The Placed objects row opens a picker whose rows fly to their object;
+/// with nothing placed it is a fact, and the page still fits its screen.
+#[test]
+fn the_placed_objects_row_picks_an_object_to_fly_to() {
+    let rows = placed_sample();
+    let page = sheet::options_with(&rows);
+    let row = page
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    assert_eq!(row.value.as_deref(), Some("4"));
+    let Act::Pick(p) = &row.act else {
+        panic!("a browser picks");
+    };
+    assert_eq!(p.values, ["Arch", "Beacon 1", "Beacon 2", "Barrel"]);
+    assert_eq!(p.details.len(), 4);
+    assert_eq!(p.choices[1], Choice::FlyTo(forge_doc::OpId(7)));
+    assert!(ForgeScreen::new(Kind::Options).show(page).is_ok());
+    let none = sheet::options();
+    let row = none
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    assert_eq!(row.act, Act::Info);
+    assert_eq!(row.value.as_deref(), Some("None"));
+}
+
+fn group_info(id: u32, name: &str, members: u32, locked: bool) -> forge::GroupInfo {
+    forge::GroupInfo {
+        id: forge_doc::OpId(id),
+        name: name.into(),
+        locked,
+        pivot_first: false,
+        members: (0..members)
+            .map(|i| forge::Endpoint::Added(forge_doc::OpId(100 + i)))
+            .collect(),
+    }
+}
+
+/// The browser lists the groups before the objects, each flying to its
+/// centre, and the page still fits its screen.
+#[test]
+fn the_browser_lists_groups_first() {
+    let folders = sheet::folder_rows(&[
+        group_info(3, "Roof", 3, false),
+        group_info(8, "Wall", 2, true),
+    ]);
+    assert_eq!(folders[0].line, "Group. 3 objects.");
+    assert_eq!(folders[1].line, "Group. 2 objects, locked.");
+    let rows = placed_sample();
+    let page = sheet::options_with_groups(&folders, &rows);
+    let row = page
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    assert_eq!(row.value.as_deref(), Some("6"));
+    let Act::Pick(p) = &row.act else {
+        panic!("a browser picks");
+    };
+    assert_eq!(&p.values[..3], ["Roof", "Wall", "Arch"]);
+    assert_eq!(p.choices[0], Choice::FlyToGroup(forge_doc::OpId(3)));
+    assert_eq!(p.choices[2], Choice::FlyTo(forge_doc::OpId(9)));
+    assert_eq!(p.details.len(), p.values.len());
+    assert!(ForgeScreen::new(Kind::Options).show(page).is_ok());
+    // Groups alone are enough to make the row a browser.
+    let only = sheet::options_with_groups(&folders, &[]);
+    let row = only
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    assert!(matches!(row.act, Act::Pick(_)));
+}
+
+/// The Properties page offers Select to a free thing, Group selection
+/// with two selected, and the group's rows to a member.
+#[test]
+fn the_properties_page_has_selection_and_group_rows() {
+    let thing = forge::Endpoint::Added(forge_doc::OpId(4));
+    let facts = |selected, selection, group| sheet::GroupFacts {
+        thing,
+        selected,
+        selection,
+        group,
+        pivot_editable: true,
+    };
+    let labels = |f: &sheet::GroupFacts| -> Vec<String> {
+        sheet::group_rows(f).into_iter().map(|r| r.label).collect()
+    };
+    assert_eq!(labels(&facts(false, 0, None)), ["Select"]);
+    assert_eq!(labels(&facts(true, 1, None)), ["Deselect"]);
+    assert_eq!(
+        labels(&facts(true, 2, None)),
+        ["Deselect", "Group selection"]
+    );
+    let rows = sheet::group_rows(&facts(
+        false,
+        0,
+        Some(group_info(2, "Roof", 2, false)),
+    ));
+    assert_eq!(
+        rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+        ["Group", "Lock group", "Pivot", "Ungroup"]
+    );
+    assert_eq!(rows[0].value.as_deref(), Some("Roof"));
+    assert_eq!(
+        rows[1].act,
+        Act::Choose(Choice::LockGroup(forge_doc::OpId(2), true))
+    );
+    assert_eq!(
+        rows[3].act,
+        Act::Choose(Choice::Ungroup(forge_doc::OpId(2)))
+    );
+    let locked = sheet::group_rows(&facts(
+        false,
+        0,
+        Some(group_info(2, "Roof", 2, true)),
+    ));
+    assert_eq!(locked[1].label, "Unlock group");
+    assert_eq!(
+        locked[1].act,
+        Act::Choose(Choice::LockGroup(forge_doc::OpId(2), false))
+    );
+    for r in rows.iter().chain(&locked) {
+        assert!(
+            r.description
+                .as_deref()
+                .is_some_and(|d| !d.trim().is_empty())
+        );
+    }
+}
+
+#[test]
+fn the_pivot_picker_opens_on_the_current_value_and_names_the_group() {
+    let mut group = group_info(2, "Roof", 2, false);
+    for (first, value) in [(false, "Centre"), (true, "First member")] {
+        group.pivot_first = first;
+        let mut facts = sheet::GroupFacts {
+            thing: group.members[0],
+            selected: false,
+            selection: 0,
+            group: Some(group.clone()),
+            pivot_editable: true,
+        };
+        let rows = sheet::group_rows(&facts);
+        let row = rows.iter().find(|r| r.label == "Pivot").unwrap();
+        assert_eq!(row.value.as_deref(), Some(value));
+        let Act::Pick(pick) = &row.act else {
+            panic!("the pivot opens a picker");
+        };
+        assert_eq!(pick.values, ["Centre", "First member"]);
+        assert_eq!(pick.values[pick.current], value);
+        assert_eq!(
+            pick.choices,
+            [
+                Choice::SetGroupPivot(group.id, false),
+                Choice::SetGroupPivot(group.id, true)
+            ]
+        );
+        assert!(pick.closes);
+        facts.pivot_editable = false;
+        assert!(sheet::group_rows(&facts).iter().all(|r| r.label != "Pivot"));
+    }
+}
+
+#[test]
+fn a_kit_session_adds_spawns_teleporters_and_item_spawners_to_the_object_menu() {
+    let items = [sheet::Item {
+        group: Group::Weapons,
+        name: "Rifle".into(),
+        placed: 0,
+        left: 5,
+    }];
+    let kit = sheet::KitMenu {
+        items: vec![
+            sheet::KitItem {
+                index: 0,
+                group: Group::Weapons,
+                name: "Rifles".into(),
+            },
+            sheet::KitItem {
+                index: 1,
+                group: Group::Vehicles,
+                name: "Hogs".into(),
+            },
+        ],
+        items_left: 1,
+        spawns_left: 2,
+        flags_left: 0,
+    };
+    let s = sheet::with_kit(sheet::objects(&items, 0), &kit);
+    let labels: Vec<&str> = s.rows.iter().map(|r| &*r.label).collect();
+    // The groups are in the table's order, the map's own among them.
+    assert_eq!(labels, ["Weapons", "Vehicles", "Teleporters", "Spawns"]);
+    let pick = |label: &str| {
+        let row = s.rows.iter().find(|r| &*r.label == label).unwrap();
+        let Act::Pick(p) = &row.act else {
+            panic!("a group opens the picker")
+        };
+        p.clone()
+    };
+    let weapons = pick("Weapons");
+    assert_eq!(weapons.values, ["Rifle", "Rifles spawner"]);
+    assert_eq!(weapons.choices, [Choice::Select(0), Choice::Item(0)]);
+    assert_eq!(weapons.details[1], "Item spawner. 1 more fits.");
+    assert_eq!(pick("Vehicles").choices, [Choice::Item(1)]);
+    let spawns = pick("Spawns");
+    assert_eq!(spawns.values[0], "Red start");
+    assert_eq!(spawns.choices[1], Choice::Spawn(1));
+    assert_eq!(spawns.details[0], "Starting point. 2 more fit.");
+    let teleporters = pick("Teleporters");
+    assert_eq!(teleporters.values, ["Sender", "Receiver"]);
+    assert_eq!(
+        teleporters.choices,
+        [Choice::Teleporter(true), Choice::Teleporter(false)]
+    );
+    assert_eq!(teleporters.details[0], "Teleporter. no more fit.");
+    assert!(spawns.closes && teleporters.closes);
+}
+
+#[test]
+fn the_goals_group_lists_the_goals_a_game_type_reads() {
+    let all = sheet::with_goals(None);
+    let Act::Pick(p) = &all.rows[0].act else {
+        panic!("Goals opens its picker")
+    };
+    assert_eq!(p.values, ["Hill", "Territory", "Siege site"]);
+    let some = sheet::with_goals_for(None, &[forge::Goal::Hill, forge::Goal::Site]);
+    let Act::Pick(p) = &some.rows[0].act else {
+        panic!("Goals opens its picker")
+    };
+    assert_eq!(p.values, ["Hill", "Siege site"]);
+    assert_eq!(p.choices[0], Choice::Goal(forge::Goal::Hill));
+    // A game type that reads none has no Goals group.
+    assert!(sheet::with_goals_for(None, &[]).rows.is_empty());
 }

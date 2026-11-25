@@ -33,6 +33,10 @@ fn vec3_at(b: &[u8], off: usize) -> [f32; 3] {
 
 pub mod light_volume;
 
+/// The light gather's typed model and its leaf ports
+/// (docs/graphics/native-light-gather.md).
+pub mod light_gather;
+
 /// Per-caster inputs to the object-shadow projection.
 pub mod object_shadow;
 

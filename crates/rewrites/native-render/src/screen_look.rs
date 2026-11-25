@@ -209,7 +209,7 @@ pub enum ScreenStage {
 pub enum EngineTexture {
     /// A bitmap reference in the rasterizer data, at this offset (1:
     /// `+0xc`, the normalization cube; 9: `+4`, the attenuation volume;
-    /// 14 and 15: `+0x14`).
+    /// 14 and 15: `+0x14`, image 0 and image 1).
     Rasterizer(u32),
     /// Render target `n` (2 and 3: 1; 6: 3; 8: 10; 13: 9; 17: `0x13`; 19:
     /// `0x15`; 20: `0x16`; 21: 13; 22: `0x11`; 23: `0x17`).
@@ -443,11 +443,33 @@ pub struct ScreenProgram {
     pub signed: [[bool; 4]; 4],
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
+    pub combiner_inputs: CombinerInputs,
+    /// Translation inputs for alpha-test and stipple pipeline variants.
+    pub raster_shader: Option<std::sync::Arc<ScreenRasterShader>>,
     /// `v<n>` the program reads (within [`STRIP_INPUTS`]).
     pub inputs: u16,
     /// What the call puts in ([`ScreenConstants::apply`]).
     pub constants: ScreenConstants,
     pub state: PassState,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScreenRasterShader {
+    vertex: shaders::vsh::wgsl::VertexShader,
+    def: shaders::PixelShaderDef,
+    options: shaders::psh::PixelOptions,
+}
+
+impl ScreenRasterShader {
+    pub(crate) fn translate(
+        &self,
+        alpha_test: Option<shaders::psh::AlphaFunc>,
+        stipple: bool,
+    ) -> Result<String, String> {
+        let options = shaders::psh::PixelOptions { alpha_test, stipple, ..self.options };
+        let pixel = shaders::psh::translate(&self.def, &options);
+        shaders::link(&self.vertex, &pixel).map_err(|error| error.to_string())
+    }
 }
 
 /// Every bound stage is 2D: the shader's bitmaps and the render targets.
@@ -458,23 +480,40 @@ pub fn stage_dim(stage: ScreenStage) -> Option<TextureDim> {
     }
 }
 
-/// Whether the pixel side reads the vertex colours or fog (a general or
-/// final combiner input `v0`, `v1`, fog or the final `v1 + r0`), or
-/// leaves its final combiner to D3D (built from the fog and specular
-/// states the pass inherits).
+/// Inputs that can make inherited fog or vertex-colour raster state observable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CombinerInputs {
+    pub colours: bool,
+    pub fog: bool,
+}
+
+impl CombinerInputs {
+    pub fn read(def: &shaders::PixelShaderDef) -> Self {
+        use shaders::psh::Reg;
+        let c = def.decode();
+        let Some(f) = c.final_combiner else {
+            // D3D synthesizes the final combiner from live fog and specular state.
+            return Self { colours: true, fog: true };
+        };
+        let mut result = Self::default();
+        for input in c.stages
+            .iter()
+            .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
+            .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
+        {
+            result.colours |= matches!(input.reg, Reg::V0 | Reg::V1 | Reg::V1R0Sum);
+            result.fog |= input.reg == Reg::Fog;
+        }
+        result
+    }
+}
+
+/// Whether omitted vertex attributes can affect the pixel shader.
 pub fn reads_vertex_colours(pixel_shader: &[u8; PSDEF_SIZE]) -> Result<bool, String> {
-    use shaders::psh::Reg;
     let def = shaders::PixelShaderDef::from_bytes(pixel_shader)
         .map_err(|e| format!("pixel shader: {e:?}"))?;
-    let c = def.decode();
-    let Some(f) = c.final_combiner else {
-        return Ok(true);
-    };
-    Ok(c.stages
-        .iter()
-        .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
-        .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
-        .any(|i| matches!(i.reg, Reg::V0 | Reg::V1 | Reg::Fog | Reg::V1R0Sum)))
+    let inputs = CombinerInputs::read(&def);
+    Ok(inputs.colours || inputs.fog)
 }
 
 /// Translates `look` with its vertex program `microcode` over the strips'
@@ -519,6 +558,12 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         signed: t.signed,
         vertex: t.vertex,
         pixel: t.pixel,
+        combiner_inputs: CombinerInputs::read(&t.def),
+        raster_shader: Some(std::sync::Arc::new(ScreenRasterShader {
+            vertex: t.vertex_shader,
+            def: t.def,
+            options: t.pixel_options,
+        })),
         inputs: t.inputs,
         constants: look.constants.clone(),
         state: look.state,
@@ -975,6 +1020,19 @@ mod tests {
             [0.5, 0.5, 0.0, 0.0],
             "instance constants"
         );
+    }
+
+    #[test]
+    fn live_fragment_raster_links_with_the_screen_vertex_program() {
+        use shaders::psh::AlphaFunc;
+
+        let program = compile_screen(&look(false), &strip_program(2)).unwrap();
+        let source = program.raster_shader.unwrap()
+            .translate(Some(AlphaFunc::GreaterEqual), true).unwrap();
+        shaders::validate(&source).expect("valid WGSL");
+        assert!(source.contains("xps.alpha_ref.x"));
+        assert!(source.contains("let cell ="));
+        assert!(!program.wgsl.contains("let cell ="));
     }
 
     /// `screen_xform_4` moves `v5`..`v7` into the colours and fog, which

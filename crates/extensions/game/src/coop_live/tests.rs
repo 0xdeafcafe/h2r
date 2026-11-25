@@ -777,7 +777,6 @@ fn the_live_menu_puts_co_op_above_custom_games_and_mods_last() {
         (Row::Coop, Pane::Show(COOP_PANE)),
         (Row::CustomGames, Pane::Show(CUSTOM_GAMES_PANE)),
         (Row::Forge, Pane::Show(FORGE_PANE)),
-        (Row::Firefight, Pane::Show(FIREFIGHT_PANE)),
         (Row::Browser, Pane::Show(BROWSER_PANE)),
         (Row::Mods, Pane::Show(3)),
     ];
@@ -788,8 +787,8 @@ fn the_live_menu_puts_co_op_above_custom_games_and_mods_last() {
         .collect();
 
     for (coop, count, expected) in [
-        (true, 9, with_coop.as_slice()),
-        (false, 8, without_coop.as_slice()),
+        (true, 8, with_coop.as_slice()),
+        (false, 7, without_coop.as_slice()),
     ] {
         let menu = Menu { coop, ..Menu::ALL };
         assert_eq!(menu.rows(), count);

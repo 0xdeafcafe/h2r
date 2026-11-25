@@ -5,6 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "../../../art/announcer/start_lines.rs"]
+mod start_lines;
+
 fn walk(dir: &Path, exts: &[&str], files: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -48,15 +51,32 @@ fn main() {
     );
     println!("cargo:rustc-env=CAMPAIGN_CARDS_SOURCE_HASH={cards:016x}");
     ui_docs();
+    start_clips();
 }
 
-/// `$OUT_DIR/ui_baked.rs`: `assets/ui/design.yaml`, every
-/// `assets/ui/screens/*.yaml`, every `assets/ui/retail-edits/*.yaml` and
-/// every `assets/ui/retail-samples/*.yaml`, each `include_str!`d, so the
-/// game carries our screens' presentation, the retail screens' edits and
-/// their preview samples with no file read (ui_kit::data::baked).
+/// Package the two type lines with the same mixer format as the medals.
+fn start_clips() {
+    let root = Path::new("../../../art/announcer");
+    println!("cargo:rerun-if-changed={}", root.display());
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    for id in ["firefight", "siege"] {
+        let name = format!("{id}.wav");
+        let path = root.join(&name);
+        let authored = match std::fs::read(&path) {
+            Ok(bytes) if !bytes.starts_with(b"version https://git-lfs") => Some(bytes),
+            Ok(_) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => panic!("{}: {e}", path.display()),
+        };
+        let bytes = authored.unwrap_or_else(|| start_lines::wav(id).expect("known start line"));
+        std::fs::write(out.join(name), bytes).expect("write start clip");
+    }
+}
+
+/// Bake the screen docs for live presentation and the sample states for
+/// previews. The map builders read their inputs from the package manifest.
 fn ui_docs() {
-    let root = Path::new("../../../assets/ui");
+    let root = Path::new("../../../content/ui");
     let screens = root.join("screens");
     println!("cargo:rerun-if-changed={}", root.display());
     println!("cargo:rerun-if-changed={}", screens.display());
@@ -85,28 +105,19 @@ fn ui_docs() {
         out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
     }
     out.push_str("];\n");
-    // Retail screen tag edits (ui_kit::retail_edits) and the retail
-    // screens' sample states (ui_kit::preview::retail_sample), by stem.
-    for (folder, name) in [("retail-edits", "RETAIL_EDITS"), ("retail-samples", "RETAIL_SAMPLES")] {
-        let dir = root.join(folder);
-        println!("cargo:rerun-if-changed={}", dir.display());
-        let mut stems: Vec<String> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(String::from))
-            .collect();
-        stems.sort();
-        out.push_str(&format!("pub const {name}: &[(&str, &str)] = &[\n"));
-        for n in &stems {
-            let p = abs(&dir.join(format!("{n}.yaml")));
-            println!("cargo:rerun-if-changed={p}");
-            out.push_str(&format!("    ({n:?}, include_str!({p:?})),\n"));
-        }
-        out.push_str("];\n");
+    let samples = Path::new("../../../assets/ui/retail-samples");
+    println!("cargo:rerun-if-changed={}", samples.display());
+    out.push_str("pub const RETAIL_SAMPLES: &[(&str, &str)] = &[\n");
+    let mut paths = Vec::new();
+    walk(samples, &["yaml"], &mut paths);
+    paths.sort();
+    for path in paths {
+        let name = path.file_stem().and_then(|s| s.to_str()).expect("sample name");
+        let p = abs(&path);
+        println!("cargo:rerun-if-changed={p}");
+        out.push_str(&format!("    ({name:?}, include_str!({p:?})),\n"));
     }
+    out.push_str("];\n");
     let dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(dir.join("ui_baked.rs"), out).expect("ui_baked.rs");
 }

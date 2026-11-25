@@ -80,7 +80,7 @@ on kill(victim, killer) {
 
 function slayer(): string {
   try {
-    return readFileSync(new URL("../../crates/formats/rules/src/builtin/slayer.rules", import.meta.url), "utf8");
+    return readFileSync(new URL("../../content/core/rules/slayer.rules", import.meta.url), "utf8");
   } catch {
     return SLAYER_FALLBACK;
   }

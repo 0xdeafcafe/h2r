@@ -23,5 +23,5 @@ pub use def::{Apply, Choice, Def, Kind, Menu, ParseFn, Scope, Tier, Unit, Value}
 pub use file::{
     PROFILES, SETTINGS_FILE, path_in, write_profile_text, write_profile_value, write_value,
 };
-pub use resolution::{LegacyScale, Resolution};
+pub use resolution::{LegacyScale, NativeTarget, Resolution};
 pub use store::{Flag, Outcome, Problem, SetError, Setting, SettingType, Source, State, Store};

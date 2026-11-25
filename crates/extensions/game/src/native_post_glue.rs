@@ -10,7 +10,7 @@
 //! formats. The checks run on every call, including after a map reload.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::colour_pass;
 use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
@@ -23,9 +23,9 @@ use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
     self, ConvolutionDraw, ConvolutionGrid, Dest, QuadFrame, ScreenConvolution, ScreenDraw,
-    ScreenKey, ScreenSet, ScreenTarget, StripRaster, StripVertex,
+    ScreenKey, ScreenTarget, PostRaster, StripVertex,
 };
-use native_render::screen_look::ScreenStage;
+use native_render::screen_look::{CombinerInputs, ScreenStage};
 use render_bridge::native_post::{
     self as post_feature, CallSite, Fp, Host, PostCall, ScreenEffect,
 };
@@ -110,11 +110,10 @@ pub enum Missing {
     /// or that binds an engine texture the native pass does not supply
     /// ([`pass_drawable`]).
     TemplatePass,
-    /// A pass into target 1 (at the window's size, a half or a quarter)
-    /// that is the call's last, or has no size, or a convolution drawn
-    /// after the last pass: the native pass is issued into the target
-    /// bound at the last draw, which must be the call's.
+    /// A pass into target 1 without a usable guest size.
     PassTarget,
+    /// A pass needs the view, but no strip pins it.
+    ViewTarget,
     /// A blur convolution (`0x000211a0`) without its quads' frame
     /// ([`quad_frame`]).
     Blur,
@@ -135,9 +134,10 @@ pub enum Missing {
 }
 
 impl Missing {
-    pub const ALL: [Missing; 6] = [
+    pub const ALL: [Missing; 7] = [
         Missing::TemplatePass,
         Missing::PassTarget,
+        Missing::ViewTarget,
         Missing::Blur,
         Missing::Wide,
         Missing::StandIns,
@@ -365,7 +365,7 @@ pub fn wide_source(
 /// Whether `effect`'s passes and convolutions read only what the call
 /// drew before (`screen_gpu::check_order`: target 1, the stand-ins and
 /// the results), each with its program loaded.
-pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effect) -> bool {
+pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effect) -> Result<(), Missing> {
     let mut passes = Vec::new();
     for p in &effect.passes {
         let program = usize::try_from(p.selector)
@@ -373,10 +373,13 @@ pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effec
             .and_then(|i| effects?.program(egor, p.implementation as usize, i));
         match (program, dest(p), screen_convolutions(p, &unmade_grid)) {
             (Some(program), Some(d), Some(c)) => passes.push((program, d, c)),
-            _ => return false,
+            _ => return Err(Missing::TemplatePass),
         }
     }
-    screen_gpu::check_order(passes.iter().map(|(p, d, c)| (*p, *d, &c[..]))).is_ok()
+    screen_gpu::check_order(passes.iter().map(|(p, d, c)| (*p, *d, &c[..]))).map_err(|reason| match reason {
+        screen_gpu::ScreenRefused::Attachment(0) => Missing::ViewTarget,
+        _ => Missing::TemplatePass,
+    })
 }
 
 /// The frame of a call's convolution quads (`screen_gpu::QuadFrame`):
@@ -405,20 +408,12 @@ pub fn missing(
     blurs: bool,
 ) -> Vec<Missing> {
     let mut m = Vec::new();
-    let last = effect.passes.len().saturating_sub(1);
-    for (i, p) in effect.passes.iter().enumerate() {
+    for p in &effect.passes {
         if !drawable(p) {
             m.push(Missing::TemplatePass);
         }
         let sized = matches!(dest(p), Some(Dest::Target1 { guest: (w, h) }) if w > 0 && h > 0);
-        if p.kind != 0 && (i == last || !sized) {
-            m.push(Missing::PassTarget);
-        }
-        // The native pass is issued at the call's last draw, into the
-        // target bound then: a convolution drawn after the last pass's
-        // strips would leave a stand-in bound.
-        let drawn = |c: &Convolution| !matches!(c, Convolution::Kept { .. });
-        if i == last && p.convolutions.iter().any(drawn) {
+        if p.kind != 0 && !sized {
             m.push(Missing::PassTarget);
         }
         for c in &p.convolutions {
@@ -447,7 +442,7 @@ pub fn missing(
 }
 
 /// The most corners a call's plan reads.
-pub const MAX_CORNERS: u32 = 64;
+pub use native_render::post::MAX_CORNERS;
 
 /// The plan of the call `c` and its values: its values and corners read,
 /// then `engine::screen_effect::plan`.
@@ -456,21 +451,9 @@ pub fn plan_effect(
     c: ScreenEffect,
     fp: Fp,
 ) -> Result<Option<(Effect, [u32; 4])>, String> {
-    let n = c
-        .columns
-        .checked_mul(c.rows)
-        .filter(|&n| n <= MAX_CORNERS)
-        .ok_or("too many corners")?;
-    let word = |a: u32| mem.u32(a).map_err(err("a value or corner"));
-    let mut values = [0u32; 4];
-    for (i, v) in values.iter_mut().enumerate() {
-        *v = word(c.values.wrapping_add(4 * i as u32))?;
-    }
-    let mut corners = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let at = c.corners.wrapping_add(16 * i);
-        corners.push([word(at)?, word(at + 4)?, word(at + 8)?, word(at + 12)?]);
-    }
+    let (values, corners) = native_render::post::screen_inputs(
+        &Ro(mem), c.values, c.corners, c.columns, c.rows,
+    )?;
     let effect = screen_effect::plan(
         mem,
         c.datum,
@@ -490,6 +473,22 @@ static EFFECT_REFUSED: [AtomicU64; Missing::ALL.len()] =
 static EFFECT_LOGGED: [AtomicBool; Missing::ALL.len()] =
     [const { AtomicBool::new(false) }; Missing::ALL.len()];
 static EFFECT_PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Screen-effect preflight refusals for the frame scene's counter map.
+pub(crate) fn refusal_counters() -> impl Iterator<Item = (String, u64)> {
+    Missing::ALL.into_iter().zip(&EFFECT_REFUSED).map(|(cause, count)| {
+        let name = match cause {
+            Missing::TemplatePass => "template_pass",
+            Missing::PassTarget => "pass_target",
+            Missing::ViewTarget => "view_target",
+            Missing::Blur => "blur",
+            Missing::Wide => "wide",
+            Missing::StandIns => "stand_ins",
+            Missing::TemplateSkipped => "template_skipped",
+        };
+        (format!("post_effect_refused_{name}"), count.load(Ordering::Relaxed))
+    })
+}
 
 /// A call refused for `m`: counted, and logged once per reason.
 fn refused(m: Missing) {
@@ -549,7 +548,7 @@ pub fn screen_call(
                 .collect();
             Some((
                 key,
-                dest(p).unwrap_or(Dest::Bound),
+                dest(p)?,
                 strips,
                 screen_convolutions(p, grid)?,
             ))
@@ -700,13 +699,15 @@ fn swallow_call(site: CallSite) -> d3d::SwallowCall {
     }
 }
 
-type ScreenCache = Arc<Mutex<(Weak<ScreenEffects>, ScreenSet)>>;
-
 struct ScreenPass {
     effects: Arc<ScreenEffects>,
     call: ScreenCall,
-    screens: ScreenCache,
-    raster: OnceLock<Vec<StripRaster>>,
+    raster: OnceLock<Vec<ScreenRaster>>,
+}
+
+struct ScreenRaster {
+    strip: PostRaster,
+    convolutions: Vec<PostRaster>,
 }
 
 impl ScreenPass {
@@ -720,17 +721,13 @@ impl ScreenPass {
         &self,
         t: PostCopy<'_>,
     ) -> Result<screen_gpu::ScreenCommands, screen_gpu::ScreenRefused> {
-        let mut screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
-        if !screens.0.ptr_eq(&Arc::downgrade(&self.effects)) {
-            screens.1.clear();
-            screens.0 = Arc::downgrade(&self.effects);
-        }
+        let mut screens = self.effects.screens.lock().unwrap_or_else(|e| e.into_inner());
         let mut draws = Vec::new();
         let raster = self
             .raster
             .get()
             .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
-        for ((key, dest, strips, convolutions), &raster) in self.call.passes.iter().zip(raster) {
+        for ((key, dest, strips, convolutions), raster) in self.call.passes.iter().zip(raster) {
             let program = self
                 .effect(*key)
                 .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
@@ -738,10 +735,11 @@ impl ScreenPass {
                 key: *key,
                 program,
                 strips,
-                raster,
+                raster: raster.strip,
                 dest: *dest,
                 values: self.call.values,
                 convolutions,
+                convolution_rasters: &raster.convolutions,
             });
         }
         let images = &self.effects.images;
@@ -749,8 +747,7 @@ impl ScreenPass {
             ScreenStage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
             _ => None,
         };
-        let bound =
-            slot(t.slots, SLOT_BOUND as usize).ok_or(screen_gpu::ScreenRefused::Attachment(0))?;
+        let bound = slot(t.slots, SLOT_BOUND as usize).map(glow::PostSurface::from);
         let target1 = slot(t.slots, SLOT_TARGET1 as usize).map(glow::PostSurface::from);
         let convolutions = std::array::from_fn(|i| {
             slot(t.slots, usize::from(SLOT_STAND_INS) + i).map(glow::PostSurface::from)
@@ -759,13 +756,12 @@ impl ScreenPass {
             device: t.device,
             queue: t.queue,
             uploads: t.uploads,
-            color: bound.into(),
+            color: bound,
             target1,
             convolutions,
             z_scale: t.z_scale,
         };
         screens
-            .1
             .prepare(target, &draws, self.call.frame.as_ref(), &mut stage_image)
     }
 
@@ -844,39 +840,34 @@ impl d3d::SwallowPass for ScreenPass {
                         "the resolved screen strip differs from the planned vertices".into(),
                     );
                 }
-                let mut live = strip_raster(original.draw, program.state.alpha_test)
-                    .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
-                let mut view_opaque = None;
+                let mut live = post_raster(original.draw, Some(program.combiner_inputs))
+                .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
                 for (stage, source) in reads.iter().enumerate() {
                     if let Some(index) = source {
                         let is_view = *index == 0;
                         check_bound_source(original, stage, screen_slot(*index), slots, is_view)?;
                         if is_view {
-                            let opaque = original.draw.texture_info[stage]
+                            live.opaque_view[stage] = original.draw.texture_info[stage]
                                 .is_some_and(|info| info.format == gfx::D3DFormat::LinX8R8G8B8);
-                            if view_opaque
-                                .replace(opaque)
-                                .is_some_and(|first| first != opaque)
-                            {
-                                return Err("screen stages use different alpha interpretations of the framebuffer".into());
-                            }
                         }
                     }
                 }
-                live.opaque_view = view_opaque.unwrap_or(false);
                 if pass_raster.replace(live).is_some_and(|first| first != live) {
                     return Err("screen strip raster state changed within the pass".into());
                 }
             }
-            raster.push(pass_raster.ok_or("the screen pass has no strips")?);
+            let strip = pass_raster.ok_or("the screen pass has no strips")?;
+            let mut convolution_rasters = Vec::new();
             for q in convolutions.iter().flat_map(|c| &c.draws) {
+                let frame = self.call.frame.as_ref().ok_or("missing convolution frame")?;
+                let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&frame.combiner));
+                let mut grid_raster = None;
                 for _ in 0..q.grid.as_ref().map_or(1, |g| g.strips.len()) {
                     let original = originals.next().ok_or("missing convolution draw")?;
-                    if !matches_colour_state(original.draw, None, wgpu::ColorWrites::ALL, None) {
-                        return Err(format!(
-                            "screen effect {:#010x}: live convolution colour state differs",
-                            self.call.egor.0
-                        ));
+                    let live = post_raster(original.draw, Some(inputs))
+                        .map_err(|why| format!("screen convolution into {}: {why}", q.dest))?;
+                    if grid_raster.replace(live).is_some_and(|first| first != live) {
+                        return Err("screen convolution raster state changed within the grid".into());
                     }
                     for stage in 0..4 {
                         if original.sampled[stage] {
@@ -884,7 +875,9 @@ impl d3d::SwallowPass for ScreenPass {
                         }
                     }
                 }
+                convolution_rasters.push(grid_raster.ok_or("the convolution has no strips")?);
             }
+            raster.push(ScreenRaster { strip, convolutions: convolution_rasters });
             drawn
                 .pass(program, *dest, convolutions)
                 .map_err(|e| format!("{e:?}"))?;
@@ -990,34 +983,117 @@ fn matches_strip(draw: &d3d::ResolvedDraw, strip: &[StripVertex]) -> bool {
         })
 }
 
+// A colour-only recording can omit a bound depth attachment if all fragments
+// pass and neither depth nor stencil can be changed.
+fn post_needs_depth(state: &gfx::RenderState, format: Option<wgpu::TextureFormat>) -> bool {
+    use gfx::state::{CompareFunc, DepthBufferMode, StencilOp};
+
+    let Some(format) = format else { return false };
+    let depth_active = state.depth_mode != DepthBufferMode::Disabled
+        && (state.depth_write || state.depth_func != CompareFunc::Always);
+    let stencil = &state.stencil;
+    let stencil_active = format.has_stencil_aspect()
+        && stencil.enable
+        && (stencil.func != CompareFunc::Always
+            || (stencil.write_mask != 0 && stencil.pass != StencilOp::Keep));
+    depth_active || stencil_active
+}
+
+// The ordinary programmable path consumes these same decoded defaults when
+// a render word fails to decode. Only sampled-stage sampler defaults can
+// differ from the native template's static state.
+fn post_sampler_default_is_uncertain(draw: &d3d::ResolvedDraw) -> bool {
+    use d3d::state::BadState;
+    use gfx::state::TextureStageStateType as S;
+    let sampled = draw.sampled_texture_stages();
+    draw.state.bad.iter().any(|bad| match *bad {
+        BadState::Render { .. } => false,
+        BadState::Stage { stage, state, .. } => {
+            sampled.get(stage as usize).copied().unwrap_or(false)
+                && matches!(S::from_index(state),
+                    S::AddressU | S::AddressV | S::AddressW | S::MagFilter
+                    | S::MinFilter | S::MipFilter | S::MipMapLodBias
+                    | S::MaxMipLevel | S::MaxAnisotropy | S::BorderColor)
+        }
+    })
+}
+
+fn check_combiner_raster(
+    state: &gfx::RenderState,
+    two_sided: bool,
+    inputs: CombinerInputs,
+) -> Result<(), &'static str> {
+    if state.fog_enable && inputs.fog {
+        return Err("the post combiner reads live fog");
+    }
+    if inputs.colours {
+        if state.shade_mode == gfx::state::ShadeMode::Flat {
+            return Err("the post combiner reads flat-shaded vertex colours");
+        }
+        if two_sided {
+            return Err("the post combiner reads two-sided vertex colours");
+        }
+    }
+    Ok(())
+}
+
+fn live_combiner_inputs(draw: &d3d::ResolvedDraw) -> CombinerInputs {
+    let Some(def) = draw.shader.pixel_shader.as_deref() else {
+        return CombinerInputs { colours: true, fog: true };
+    };
+    CombinerInputs::read(&d3d::nv2a::guest_def(
+        def,
+        &draw.shader.combiner_state,
+        draw.raw.render[d3d::state::slot::PS_TEXTURE_MODES as usize],
+        draw.shader.final_combiner_latch,
+    ))
+}
+
 /// The template supplies shader code. Colour state can be inherited from
 /// the previous draw or applied by the template wrapper outside that code.
-fn strip_raster(
+fn post_raster(
     draw: &d3d::ResolvedDraw,
-    alpha: Option<(wgpu::CompareFunction, u8)>,
-) -> Result<StripRaster, &'static str> {
-    use gfx::state::{CompareFunc, DepthBufferMode, FillMode, ShadeMode};
+    planned_inputs: Option<CombinerInputs>,
+) -> Result<PostRaster, &'static str> {
+    use gfx::state::{CompareFunc, FillMode, ShadeMode};
     let state = &draw.state.render;
-    let live_alpha =
-        (state.alpha_test_enable && state.alpha_func != CompareFunc::Always).then(|| {
-            (
-                gfx::translate::compare_function(state.alpha_func),
-                state.alpha_ref,
-            )
-        });
-    if live_alpha != alpha {
-        return Err("the live alpha test differs from the compiled screen program");
+    let alpha_test = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
+        .then(|| (d3d::nv2a::alpha_func(state.alpha_func), state.alpha_ref));
+    if post_needs_depth(state, draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)) {
+        return Err("the post draw requires its live depth/stencil attachment");
     }
-    if state.depth_mode != DepthBufferMode::Disabled
-        || state.stencil.enable
-        || state.fog_enable
-        || state.fill_mode != FillMode::Solid
-        || state.back_fill_mode != FillMode::Solid
-        || state.shade_mode == ShadeMode::Flat
-        || draw.raw.render[141] != 0
-        || !draw.state.bad.is_empty()
+    // Build 5849's STIPPLEENABLE and TWOSIDEDLIGHTING slots.
+    const STIPPLE_ENABLE: usize = 83;
+    const TWO_SIDED_LIGHTING: usize = 141;
+    let stipple = state.fill_mode == FillMode::Solid
+        && draw.hw.stipple_control.unwrap_or(draw.raw.render[STIPPLE_ENABLE]) != 0;
+    if planned_inputs.is_none() && stipple {
+        return Err("the colour quad requires the polygon stipple mask");
+    }
+    let two_sided = draw.raw.render[TWO_SIDED_LIGHTING] != 0;
+    if let Some(planned) = planned_inputs {
+        check_combiner_raster(state, two_sided, planned)?;
+        if state.fog_enable || two_sided || state.shade_mode == gfx::state::ShadeMode::Flat {
+            check_combiner_raster(state, two_sided, live_combiner_inputs(draw))?;
+        }
+        if post_sampler_default_is_uncertain(draw) {
+            return Err("the post draw has an invalid sampled-stage sampler state");
+        }
+    } else {
+        check_combiner_raster(state, two_sided, CombinerInputs { colours: true, fog: true })?;
+        if !draw.state.bad.is_empty() {
+            return Err("the colour quad requires a rejected guest state");
+        }
+    }
+    // The post pipelines use the host translator's front fill. The other
+    // colour-quad clients build fixed solid pipelines.
+    if planned_inputs.is_none()
+        && (state.fill_mode != FillMode::Solid || state.back_fill_mode != FillMode::Solid)
     {
-        return Err("the live screen raster state requires the D3D pipeline");
+        return Err("the colour quad requires solid front and back fill");
+    }
+    if draw.ui_fit.is_some() || draw.retail_constants.is_some() {
+        return Err("the post draw requires copy-specific projection");
     }
     let clip = draw
         .clip
@@ -1028,14 +1104,20 @@ fn strip_raster(
         wgpu::PrimitiveTopology::TriangleStrip,
         gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
     );
-    Ok(StripRaster {
+    let z_scale = gfx::format::d3dz_max(draw.target.depth_format);
+    Ok(PostRaster {
+        alpha_test,
+        stipple: stipple.then_some(draw.hw.stipple_pattern),
+        z_scale: Some(z_scale),
+        w_clip: d3d::hw::w_buffered(draw).then(|| d3d::hw::w_clip_range(&draw.hw, z_scale)),
         blend: gfx::translate::blend_state(state),
         blend_constant: gfx::translate::blend_constant(state),
         writes: gfx::translate::color_writes(state.color_write),
         front_face: primitive.front_face,
         cull: primitive.cull_mode,
-        depth_clamp: state.depth_clamp,
-        opaque_view: false,
+        depth_clamp: d3d::hw::draw_clamps_depth(draw),
+        fill: state.fill_mode,
+        opaque_view: [false; 4],
         clip: (!clip.is_whole(draw.target.width, draw.target.height)).then_some([
             clip.x,
             clip.y,
@@ -1051,7 +1133,10 @@ pub(crate) fn matches_colour_state(
     writes: wgpu::ColorWrites,
     alpha: Option<(wgpu::CompareFunction, u8)>,
 ) -> bool {
-    strip_raster(draw, alpha).is_ok_and(|r| {
+    let state = &draw.state.render;
+    let live_alpha = (state.alpha_test_enable && state.alpha_func != gfx::state::CompareFunc::Always)
+        .then(|| (gfx::translate::compare_function(state.alpha_func), state.alpha_ref));
+    live_alpha == alpha && post_raster(draw, None).is_ok_and(|r| {
         r.blend == blend && r.writes == writes && r.cull.is_none() && r.clip.is_none()
     })
 }
@@ -1092,6 +1177,7 @@ pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
 
 /// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
+    raster: OnceLock<Vec<PostRaster>>,
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
 }
@@ -1140,7 +1226,7 @@ impl GlowPass {
     fn prepare(&self, t: PostCopy<'_>) -> Option<glow::GlowCommands> {
         let view = slot(t.slots, 0)?;
         let intermediates = [1, 2].map(|i| slot(t.slots, i).map(glow::PostSurface::from));
-        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare(
+        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_raster(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
@@ -1150,6 +1236,7 @@ impl GlowPass {
                 intermediates,
             },
             &self.plan,
+            Some(self.raster.get()?),
         );
         result
             .map_err(|error| log_rejection(|| format!("glow on live target: {error:?}")))
@@ -1167,14 +1254,14 @@ impl d3d::SwallowPass for GlowPass {
         originals: &[d3d::SwallowOriginal<'_>],
         slots: &[Option<d3d::SwallowTarget>],
     ) -> Result<(), String> {
+        if originals.len() != self.plan.draws.len() {
+            return Err("glow quad count differs from plan".into());
+        }
+        let mut rasters = Vec::with_capacity(originals.len());
         for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
-            let blend = want.blend.map(Blend::state);
-            if !matches_colour_state(original.draw, blend, wgpu::ColorWrites::ALL, None) {
-                return Err(format!(
-                    "glow into {:?}: live quad colour state differs",
-                    want.dest
-                ));
-            }
+            let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&want.combiner));
+            let raster = post_raster(original.draw, Some(inputs))?;
+            rasters.push(raster);
             for stage in 0..4 {
                 if original.sampled[stage] {
                     let source = want.stages[stage];
@@ -1188,7 +1275,7 @@ impl d3d::SwallowPass for GlowPass {
                 }
             }
         }
-        Ok(())
+        self.raster.set(rasters).map_err(|_| "glow raster already captured".to_owned())
     }
 }
 
@@ -1198,7 +1285,6 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     /// The current map's screen effects, loaded here whatever the native
     /// world does ([`EffectsSlot`]).
     effects: Arc<Mutex<EffectsSlot>>,
-    screens: ScreenCache,
 }
 
 /// Read the live pass and both rows after the template sets its state.
@@ -1244,6 +1330,14 @@ fn live_strip(mem: &dyn GuestMemory, esp: u32, mxcsr: u32) -> Option<Vec<[[f32; 
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn retire_map(&self) {
+        let retired = self.effects.lock().unwrap_or_else(|e| e.into_inner())
+            .take_stale(render_bridge::native_map_work::generation());
+        if let Some(retired) = retired {
+            crate::native_map::retire_owned(timeline::setup::Stage::World, retired);
+        }
+    }
+
     fn draw_strip(
         &self,
         mem: &mut dyn GuestMemory,
@@ -1303,6 +1397,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let targets = targets(&plan);
         let pass: Box<dyn d3d::SwallowPass> = Box::new(GlowPass {
+            raster: OnceLock::new(),
             plan,
             gpu: Arc::clone(&self.gpu),
         });
@@ -1392,9 +1487,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let frame = quad_frame(&*mem, fp);
         let mut m = missing(
             &effect,
-            &|p| ordered && pass_drawable(effects.as_deref(), egor, p),
+            &|p| pass_drawable(effects.as_deref(), egor, p),
             frame.is_some(),
         );
+        if let Err(reason) = ordered && !m.contains(&reason) {
+            m.push(reason);
+        }
         if skipped.is_none() {
             m.push(Missing::TemplateSkipped);
         }
@@ -1435,7 +1533,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let pass = Box::new(ScreenPass {
             effects,
             call,
-            screens: Arc::clone(&self.screens),
             raster: OnceLock::new(),
         });
         self.arm(
@@ -1490,6 +1587,14 @@ pub struct EffectsSlot {
 }
 
 impl EffectsSlot {
+    fn take_stale(&mut self, generation: u64) -> Option<Arc<ScreenEffects>> {
+        if self.map.as_ref().is_some_and(|(_, old)| *old != generation) {
+            self.map = None;
+            return self.effects.take();
+        }
+        None
+    }
+
     /// Map `name`'s effects at load `generation` once loaded, and whether
     /// a load of them must start now: at the first ask on a map load,
     /// which forgets the last one's.
@@ -1546,11 +1651,17 @@ pub fn map_effects(
 /// Loads map `name`'s screen effects on a thread of their own into
 /// `slot`; a map that does not load keeps every effect on D3D.
 fn spawn_load(name: String, generation: u64, slot: Arc<Mutex<EffectsSlot>>) {
-    let spawned = std::thread::Builder::new().name("native-post load".into()).spawn(move || match load_effects(&name) {
-        Ok(e) => {
-            slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, generation, e);
+    let spawned = background::spawn("native-post load", move || {
+        let current = || generation == render_bridge::native_map_work::generation();
+        let Some(_load) = native_map::begin_load(timeline::setup::Stage::World, current) else { return };
+        let _scope = mem_watch::scope("native.post.load");
+        match load_effects(&name) {
+            Ok(e) if current() => {
+                slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, generation, e);
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); every screen effect keeps its D3D draws"),
         }
-        Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); every screen effect keeps its D3D draws"),
     });
     if let Err(e) = spawned {
         eprintln!(
@@ -1573,7 +1684,6 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
         effects: Arc::new(Mutex::new(EffectsSlot::default())),
-        screens: Arc::new(Mutex::new((Weak::new(), ScreenSet::new()))),
     }));
 }
 
@@ -1665,7 +1775,8 @@ mod tests {
             window: [0.0; 4],
             signs: [0.0; 2],
             view: (32, 32),
-            small: (16, 16),
+            down: (16, 16),
+            other: (16, 16),
             draws: [
                 Surface::Down,
                 Surface::Other,
@@ -1702,13 +1813,16 @@ mod tests {
                 mem.set_u32(config.layout.simple_encode + 4 * slot, header)
                     .unwrap();
             }
-            for (descriptor, data) in [(down, 0x0010_0000), (other, 0x0011_0000)] {
+            for (descriptor, data, (width, height)) in [
+                (down, 0x0010_0000, plan.down),
+                (other, 0x0011_0000, plan.other),
+            ] {
                 mem.set_u32(descriptor + 0x88, data).unwrap();
                 mem.set_u32(descriptor + 0x78, 1).unwrap();
                 let surface = descriptor + 0x18;
                 let resource = (ResourceType::Surface.raw() << common::TYPE_SHIFT) | 1;
                 let format = (2 << 4) | (gfx::D3DFormat::LinA8R8G8B8.raw() << 8) | (1 << 16);
-                let size = (plan.small.0 - 1) | ((plan.small.1 - 1) << 12);
+                let size = (width - 1) | ((height - 1) << 12);
                 for (i, word) in [resource, data, 0, format, size, 0].into_iter().enumerate() {
                     mem.set_u32(surface + 4 * i as u32, word).unwrap();
                 }
@@ -1921,8 +2035,7 @@ mod tests {
             vec![],
             "a kept one draws nothing"
         );
-        // Target 1, then back into the bound target: the native pass is
-        // issued at the last strip, into the call's target.
+        // Both destinations are pinned independently of their order.
         let into_1 = screen_effect::Pass {
             size: Some((320, 240)),
             ..pass(2, vec![])
@@ -1933,8 +2046,13 @@ mod tests {
         );
         assert_eq!(
             missing(&effect(vec![pass(0, vec![]), into_1.clone()]), yes, false),
-            vec![Missing::PassTarget],
+            vec![],
             "target 1 last"
+        );
+        assert_eq!(
+            missing(&effect(vec![into_1.clone()]), yes, false),
+            vec![],
+            "the program determines whether the view is needed"
         );
         let unsized_1 = screen_effect::Pass {
             size: Some((0, 240)),
@@ -2017,8 +2135,7 @@ mod tests {
             vec![],
             "drawn into the stand-ins"
         );
-        // A convolution drawn after the last pass would leave a stand-in
-        // bound for the native pass.
+        // A terminal convolution writes its own slot after the view strip.
         let first = || screen_effect::Pass {
             size: Some((320, 240)),
             ..pass(2, vec![])
@@ -2030,11 +2147,15 @@ mod tests {
                 vec![Convolution::Blur {
                     size: (320, 240),
                     args,
-                    blur: blur.clone(),
+                    blur: game_glow::Blur {
+                        draws: vec![game_glow::BlurDraw { source: 0, dest: 0x19, spread: 0 }],
+                        result: 0x19,
+                        copy: None,
+                    },
                 }],
             ),
         ]);
-        assert_eq!(missing(&last, yes, true), vec![Missing::PassTarget]);
+        assert_eq!(missing(&last, yes, true), vec![]);
         let kept_last = effect(vec![
             first(),
             pass(0, vec![Convolution::Kept { result: 0 }]),
@@ -2425,6 +2546,23 @@ mod tests {
     }
 
     #[test]
+    fn activation_forgets_screen_effects_without_waiting_for_another_screen_draw() {
+        let mut slot = EffectsSlot::default();
+        slot.ask("synthetic", 1);
+        assert!(slot.loaded("synthetic", 1, ScreenEffects::default()));
+        let in_flight = slot.ask("synthetic", 1).0.unwrap();
+        let old = Arc::downgrade(&in_flight);
+
+        assert!(slot.take_stale(1).is_none());
+        drop(slot.take_stale(2).unwrap());
+        assert!(!slot.loaded("synthetic", 1, ScreenEffects::default()));
+        assert!(slot.ask("synthetic", 2).1);
+        assert!(old.upgrade().is_some());
+        drop(in_flight);
+        assert!(old.upgrade().is_none());
+    }
+
+    #[test]
     fn a_pass_draws_where_its_kind_says() {
         assert_eq!(dest(&pass(0, vec![])), Some(Dest::Bound));
         let half = screen_effect::Pass {
@@ -2478,17 +2616,18 @@ mod tests {
             Some(&e),
             EGOR,
             &call(vec![into_1.clone(), back.clone()])
-        ));
+        ).is_ok());
+        assert_eq!(call_ordered(Some(&e), EGOR, &call(vec![into_1.clone()])), Err(Missing::ViewTarget));
         assert!(
-            !call_ordered(Some(&e), EGOR, &call(vec![back.clone()])),
+            call_ordered(Some(&e), EGOR, &call(vec![back.clone()])).is_err(),
             "target 1 as D3D left it"
         );
         assert!(
-            !call_ordered(Some(&e), EGOR, &call(vec![back, into_1])),
+            call_ordered(Some(&e), EGOR, &call(vec![back, into_1])).is_err(),
             "read before drawn"
         );
         assert!(
-            !call_ordered(None, EGOR, &call(vec![drawn_pass(1, 4)])),
+            call_ordered(None, EGOR, &call(vec![drawn_pass(1, 4)])).is_err(),
             "no world"
         );
     }
@@ -2505,6 +2644,8 @@ mod tests {
             signed: [[false; 4]; 4],
             vertex: Default::default(),
             pixel: Default::default(),
+            combiner_inputs: Default::default(),
+            raster_shader: None,
             inputs: 0x1f,
             constants: Default::default(),
             state: native_render::pass_state::PassState {
@@ -2827,8 +2968,53 @@ mod tests {
         assert!(
             plan_effect(&m, unreadable, fp)
                 .unwrap_err()
-                .starts_with("a value or corner")
+                .starts_with("unreadable screen values")
         );
+    }
+
+    #[test]
+    fn colour_only_quads_keep_effective_depth_and_stencil_operations() {
+        use gfx::state::{CompareFunc, StencilOp};
+        let mut state = gfx::RenderState::default();
+        let depth = Some(wgpu::TextureFormat::Depth24PlusStencil8);
+        assert!(!post_needs_depth(&state, None));
+        assert!(post_needs_depth(&state, depth));
+        state.depth_write = false;
+        assert!(post_needs_depth(&state, depth));
+        state.depth_func = CompareFunc::Always;
+        state.stencil.enable = true;
+        assert!(!post_needs_depth(&state, depth));
+        state.stencil.pass = StencilOp::Replace;
+        assert!(post_needs_depth(&state, depth));
+        state.stencil.write_mask = 0;
+        assert!(!post_needs_depth(&state, depth));
+        state.stencil.func = CompareFunc::Equal;
+        assert!(post_needs_depth(&state, depth));
+        assert!(!post_needs_depth(&state, Some(wgpu::TextureFormat::Depth16Unorm)));
+    }
+
+    #[test]
+    fn inherited_shader_raster_state_only_matters_for_inputs_the_combiner_reads() {
+        use gfx::state::ShadeMode;
+        use shaders::PixelShaderDef;
+        use shaders::psh::bits::{REG_FOG, REG_T0, REG_V1R0_SUM, final_efg, inputs};
+
+        let state = gfx::RenderState {
+            fog_enable: true,
+            shade_mode: ShadeMode::Flat,
+            ..Default::default()
+        };
+        let combiner = |source| CombinerInputs::read(&PixelShaderDef {
+            final_inputs_abcd: inputs(0, 0, 0, source),
+            final_inputs_efg: final_efg(0, 0, REG_T0, 0),
+            ..Default::default()
+        });
+        assert_eq!(check_combiner_raster(&state, true, combiner(REG_T0)), Ok(()));
+        assert_eq!(check_combiner_raster(&state, true, combiner(REG_FOG)), Err("the post combiner reads live fog"));
+        assert_eq!(check_combiner_raster(&state, true, combiner(REG_V1R0_SUM)), Err("the post combiner reads flat-shaded vertex colours"));
+        let smooth = gfx::RenderState { shade_mode: ShadeMode::Gouraud, ..state };
+        assert_eq!(check_combiner_raster(&smooth, true, combiner(REG_V1R0_SUM)), Err("the post combiner reads two-sided vertex colours"));
+        assert_eq!(check_combiner_raster(&state, true, CombinerInputs::read(&PixelShaderDef::default())), Err("the post combiner reads live fog"));
     }
 
     #[test]
@@ -2838,10 +3024,12 @@ mod tests {
             window: [0.0; 4],
             signs: [0.0; 2],
             view: (640, 480),
-            small: (160, 120),
+            down: (160, 120),
+            other: (160, 120),
             draws: vec![],
         };
         let glow = GlowPass {
+            raster: OnceLock::new(),
             plan: plan.clone(),
             gpu: Arc::new(Mutex::new(GpuGlow::new())),
         };
@@ -2854,12 +3042,10 @@ mod tests {
             values: [0; 4],
             frame: None,
         };
-        let screens = Arc::new(Mutex::new((Weak::new(), ScreenSet::new())));
         assert!(
             ScreenPass {
                 effects,
                 call: call(),
-                screens,
                 raster: OnceLock::new()
             }
             .colour_only(),

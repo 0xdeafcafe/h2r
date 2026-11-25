@@ -1,9 +1,16 @@
+mod area;
+mod variants;
+
 use super::*;
 use agent::forge::local::OBJECT_GONE;
 use forge::{BlockKind, Frame, TagKey};
 use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, WorldBounds};
 
 fn editor() -> Editor {
+    editor_in(Path::new("."))
+}
+
+fn editor_in(data: &Path) -> Editor {
     let item = PaletteItem {
         block: BlockKind::Crates,
         tag: TagKey {
@@ -46,7 +53,7 @@ fn editor() -> Editor {
         walls: vec![],
         names: Default::default(),
     };
-    Editor::new(opened, Path::new("."), 1, calls::shared())
+    Editor::new(opened, data, 1, calls::shared())
 }
 
 #[test]
@@ -58,8 +65,9 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(1, Command::Palette).unwrap();
     assert_eq!(screens::take_request(), Some(Kind::Objects));
     let objects = screens::screen(Kind::Objects).sheet();
-    assert_eq!(objects.rows.len(), 1, "one group, Crates");
+    assert_eq!(objects.rows.len(), 2, "one group, Crates, and the AI page");
     assert_eq!(objects.rows[0].label, "Crates");
+    assert_eq!(objects.rows[1].label, "AI and objectives");
     // The picker's choice: the shelf.
     e.choose(2, Choice::Select(0)).unwrap();
     assert_eq!(e.tool.placing, Some(0));
@@ -84,7 +92,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     assert_eq!(work.len(), 1);
     let (ticket, call) = work.into_iter().next().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -104,7 +112,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(10, Command::Delete { id }).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Delete { target: live },
         ])
     );
@@ -131,7 +139,7 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.command(14, Command::Undo).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(
-        matches!(call, calls::Call::Forge { steps, .. } if steps == [
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
             calls::ForgeStep::Make { tag: 42, frame },
         ])
     );
@@ -139,6 +147,267 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.poll(15);
     assert_eq!(e.session.objects()[0].id, id);
     assert_eq!(e.session.objects()[0].handle, 32);
+}
+
+/// The placed objects browser lists what is placed, and choosing a row
+/// flies the monitor to that object and faces it.
+#[test]
+fn the_placed_objects_browser_flies_the_monitor_to_the_chosen_object() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    assert!(e.placed().is_empty());
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    e.command(1, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(2);
+    let placed = e.placed();
+    assert_eq!(placed.len(), 1);
+    assert_eq!(placed[0].name, "shelf");
+    assert_eq!(placed[0].id, e.session.objects()[0].id);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [13., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.choose(3, Choice::FlyTo(placed[0].id)).unwrap();
+    let eye = e.tool.camera.unwrap();
+    assert!((eye.position[0] - 8.).abs() < 1e-4, "{:?}", eye.position);
+    let at = eye.point(FLY_DISTANCE);
+    assert!((at[0] - 3.).abs() < 1e-3 && at[1].abs() < 1e-3 && at[2].abs() < 1e-3);
+    // A gone object is refused by name, and the view stays.
+    let gone = forge_doc::OpId(999);
+    assert_eq!(
+        e.choose(4, Choice::FlyTo(gone)),
+        Err("That object is gone.".into())
+    );
+    assert_eq!(e.tool.camera, Some(eye));
+    // With no monitor view there is nothing to fly.
+    e.tool.camera = None;
+    assert!(e.choose(5, Choice::FlyTo(placed[0].id)).is_err());
+}
+
+/// Two placed objects are selected from their Properties pages, grouped
+/// by name, listed first by the browser, locked and ungrouped.
+#[test]
+fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    for (n, x) in [3., 5.].into_iter().enumerate() {
+        let frame = Frame {
+            position: [x, 0., 0.],
+            rotation: [0.; 3],
+        };
+        e.command(1 + n as u32, Command::Place { item: 0, frame })
+            .unwrap();
+        let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+        calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31 + n]})));
+        e.poll(10 + n as u32);
+    }
+    let [a, b] = [0, 1].map(|i| Endpoint::Added(e.session.objects()[i].id));
+    let labels = || -> Vec<String> {
+        screens::screen(Kind::Properties)
+            .sheet()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    // An ungrouped thing's page offers Select; Group selection comes with
+    // two selected.
+    e.tool.aimed_thing = Some(a);
+    e.command(20, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert!(labels().contains(&"Select".to_string()), "{:?}", labels());
+    assert!(!labels().contains(&"Group selection".to_string()));
+    e.choose(21, Choice::ToggleSelected(a)).unwrap();
+    assert!(
+        e.command(
+            22,
+            Command::Group {
+                name: "x".into(),
+                members: e.tool.selection().to_vec()
+            }
+        )
+        .is_err()
+    );
+    e.choose(23, Choice::ToggleSelected(b)).unwrap();
+    e.tool.aimed_thing = Some(b);
+    e.command(24, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert!(
+        labels().contains(&"Group selection".to_string()),
+        "{:?}",
+        labels()
+    );
+    assert!(labels().contains(&"Deselect".to_string()));
+    // Group selection: one op, the selection lets go.
+    e.choose(25, Choice::GroupSelection).unwrap();
+    e.poll(26);
+    let groups = e.session.groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "Group 1");
+    assert!(e.tool.selection().is_empty());
+    // A grouped thing's page shows the group.
+    e.tool.aimed_thing = Some(a);
+    e.command(27, Command::Properties).unwrap();
+    let rows = labels();
+    for want in ["Group", "Lock group", "Pivot", "Ungroup"] {
+        assert!(rows.contains(&want.to_string()), "{rows:?}");
+    }
+    e.choose(28, Choice::SetGroupPivot(groups[0].id, true)).unwrap();
+    e.poll(28);
+    let groups = e.session.groups();
+    assert!(groups[0].pivot_first);
+    // The browser lists the group first, and choosing it flies to its centre.
+    let folders = sheet::folder_rows(&e.session.groups());
+    assert_eq!(folders[0].name, "Group 1");
+    assert_eq!(folders[0].line, "Group. 2 objects.");
+    let page = sheet::options_with_groups(&folders, &e.placed());
+    let row = page
+        .rows
+        .iter()
+        .find(|r| r.label == "Placed objects")
+        .unwrap();
+    let sheet::Act::Pick(pick) = &row.act else {
+        panic!("a browser picks");
+    };
+    assert_eq!(pick.values[0], "Group 1");
+    assert_eq!(pick.choices[0], Choice::FlyToGroup(groups[0].id));
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [20., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.choose(28, Choice::FlyToGroup(groups[0].id)).unwrap();
+    let at = e.tool.camera.unwrap().point(FLY_DISTANCE + 1.);
+    assert!((at[0] - 4.).abs() < 1e-3 && at[1].abs() < 1e-3, "{at:?}");
+    // Lock, then end it.
+    e.choose(29, Choice::LockGroup(groups[0].id, true)).unwrap();
+    e.poll(30);
+    assert!(e.session.groups()[0].locked);
+    e.choose(31, Choice::Ungroup(groups[0].id)).unwrap();
+    e.poll(32);
+    assert!(e.session.groups().is_empty());
+    assert_eq!(
+        e.choose(33, Choice::FlyToGroup(groups[0].id)),
+        Err("That group is gone.".into())
+    );
+}
+
+/// A label is typed from the Properties page, set in one op and cleared;
+/// a prefab of the placed objects is listed by the object menu when the map
+/// holds its tags, and placing it is one edit.
+#[test]
+fn labels_are_typed_and_the_object_menu_places_a_saved_prefab() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    e.command(1, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(2);
+    let a = Endpoint::Added(e.session.objects()[0].id);
+    let rows = |e: &Editor| -> Vec<String> {
+        let _ = e;
+        screens::screen(Kind::Properties)
+            .sheet()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    e.tool.aimed_thing = Some(a);
+    e.command(3, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let before = rows(&e);
+    assert!(before.contains(&"Label".to_string()), "{before:?}");
+    assert!(before.contains(&"Save as prefab".to_string()), "{before:?}");
+    assert!(!before.contains(&"Clear label".to_string()));
+    // Typed text is lowercased, a number is typed on its own, and the
+    // page then offers to clear it.
+    e.choose(
+        4,
+        Choice::Number(sheet::NumberField::Label, "Checkpoint".into()),
+    )
+    .unwrap();
+    e.poll(5);
+    assert_eq!(e.session.label_of(a).unwrap().text, "checkpoint");
+    e.choose(
+        6,
+        Choice::Number(sheet::NumberField::LabelNumber, "3".into()),
+    )
+    .unwrap();
+    e.poll(7);
+    assert_eq!(e.session.label_of(a).unwrap().number, Some(3));
+    assert!(
+        e.choose(
+            8,
+            Choice::Number(sheet::NumberField::LabelNumber, "x".into())
+        )
+        .is_err()
+    );
+    assert!(
+        e.choose(
+            9,
+            Choice::Number(sheet::NumberField::Label, "Has Space".into())
+        )
+        .is_err()
+    );
+    e.command(10, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let after = rows(&e);
+    for want in ["Label number", "Clear label"] {
+        assert!(after.contains(&want.to_string()), "{after:?}");
+    }
+    let status = e.status();
+    assert_eq!(status["labels"][0]["text"], "checkpoint");
+    e.choose(11, Choice::ClearLabel(a)).unwrap();
+    e.poll(12);
+    assert_eq!(e.session.label_of(a), None);
+    // A prefab of the object is on the object menu, and placing it adds one.
+    let prefab = e.session.capture_prefab("post", &[a]).unwrap();
+    e.prefabs.push(prefab);
+    let menu = sheet::with_prefabs(None, &e.prefab_items()).unwrap();
+    let row = menu.rows.iter().find(|r| r.label == "Prefabs").unwrap();
+    let sheet::Act::Pick(pick) = &row.act else {
+        panic!("the prefabs are picked");
+    };
+    assert_eq!(pick.values, ["post"]);
+    assert_eq!(pick.details, ["Prefab. 1 object."]);
+    assert_eq!(pick.choices, [Choice::PlacePrefab(0)]);
+    assert!(pick.closes);
+    assert_eq!(e.status()["prefabs"][0]["fits"], true);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0., 0., 0.],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.choose(13, Choice::PlacePrefab(0)).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[32]})));
+    e.poll(14);
+    assert_eq!(e.session.objects().len(), 2);
+    // A prefab naming a tag the map lacks is not listed, is refused by
+    // name when asked for, and says so in the status.
+    let mut other = e.prefabs[0].clone();
+    other.pieces[0].tag.path = r"elsewhere\crate".into();
+    other.name = "far".into();
+    e.prefabs.push(other);
+    assert_eq!(e.prefab_items().len(), 1);
+    let error = e.choose(15, Choice::PlacePrefab(1)).unwrap_err();
+    assert!(error.contains(r"elsewhere\crate"), "{error}");
+    assert_eq!(e.status()["prefabs"][1]["fits"], false);
+    assert_eq!(e.session.objects().len(), 2);
 }
 
 /// The tools and their settings are screens of their own; a choice on
@@ -286,7 +555,7 @@ fn an_own_thing_aimed_at_is_named_opened_and_removed() {
     update(&mut e, None);
     let rifle = Endpoint::base(BlockKind::Weapons, 0);
     assert_eq!(e.tool.aimed_thing.map(Endpoint::identity), Some(rifle));
-    assert_eq!(e.hud().target, "battle rifle");
+    assert_eq!(e.monitor_hud(0.0).view.target, "battle rifle");
     assert_eq!(e.status()["aimed"], Value::Null, "not an added object");
     assert_eq!(e.status()["aimed_thing"]["base"]["block"], "weapons");
     let cmd = update(&mut e, Some(forge::tool::Action::Properties)).unwrap();
@@ -303,7 +572,7 @@ fn an_own_thing_aimed_at_is_named_opened_and_removed() {
         pitch: 0.,
     });
     update(&mut e, None);
-    assert_eq!(e.hud().target, "Starting point");
+    assert_eq!(e.monitor_hud(0.0).view.target, "Starting point");
     // Delete on the rifle is its removal: one inert row at the next tick.
     e.tool.camera = Some(forge::camera::Camera {
         position: [-5., 0., 0.],
@@ -539,4 +808,500 @@ fn spawn_goal_and_item_properties_write_their_fields() {
         field(&e.session.thing(spawner).unwrap(), "respawn time"),
         forge_doc::Value::Int(45)
     );
+    e.tool.aimed_thing = Some(spawner);
+    e.choose(
+        9,
+        Choice::Number(sheet::NumberField::ReturnTime, "90".into()),
+    )
+    .unwrap();
+    finish(&mut e, 10);
+    let thing = e.session.thing(spawner).unwrap();
+    assert_eq!(field(&thing, "abandon limit"), forge_doc::Value::Int(90));
+    assert_eq!(field(&thing, "respawn time"), forge_doc::Value::Int(45));
+}
+
+// ---- AI ground: the build runs on a worker (docs/game/forge-map-variants.md, "AI ground") ----
+
+mod ground {
+    use super::*;
+    use crate::forge_glue::ground::{self as installed, NO_BUILDER, TEST_GUARD};
+    use forge::{GroundBuilder, GroundProblem, GroundRecipe, GroundReport, GroundState};
+
+    /// A builder with an invented report, or a refusal.
+    struct Kit {
+        refuse: bool,
+    }
+
+    impl GroundBuilder for Kit {
+        fn recipe(&self) -> GroundRecipe {
+            GroundRecipe {
+                kit_version: 3,
+                home: 0,
+                probe: false,
+            }
+        }
+
+        fn build(&mut self, _: &ForgeDoc) -> Result<GroundReport, String> {
+            if self.refuse {
+                return Err("No room: the sectors take 9 KB too many.".into());
+            }
+            Ok(GroundReport {
+                zones: 2,
+                squads: 16,
+                problems: vec![GroundProblem {
+                    label: "ff_drop".into(),
+                    position: [1., 1., 0.],
+                    reason: "off the walkable area".into(),
+                }],
+                receipt: None,
+            })
+        }
+    }
+
+    /// An editor over a map with three netgame flags of its own, so a marker
+    /// is a flag after them.
+    fn ground_editor() -> Editor {
+        let mut e = editor();
+        let base = e.session.document().clone();
+        let limits = Limits {
+            world: Some(WorldBounds {
+                min: [-10.; 3],
+                max: [10.; 3],
+            }),
+            base_counts: [(BlockKind::Crates, 2), (BlockKind::NetgameFlags, 3)]
+                .into_iter()
+                .collect(),
+            ..Limits::default()
+        };
+        e.session = Arc::new(Session::new(base, limits, vec![], 8).unwrap());
+        e.tool.monitor = true;
+        e
+    }
+
+    /// Poll the editor's file job until its worker is done.
+    fn finish(e: &mut Editor, tick: u32) {
+        for _ in 0..500 {
+            e.poll_file(tick);
+            if !e.busy() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the ground build never finished");
+    }
+
+    fn drop_at(x: f32) -> Command {
+        Command::Marker {
+            label: forge::GroundLabel::Drop,
+            frame: Frame {
+                position: [x, 1., 0.],
+                rotation: [0.; 3],
+            },
+        }
+    }
+
+    #[test]
+    fn build_ai_ground_runs_on_a_worker_and_the_editor_takes_the_copy_back() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::loads_map(false);
+        installed::install(Box::new(Kit { refuse: false }));
+        let mut e = ground_editor();
+        e.command(1, drop_at(1.)).unwrap();
+        e.poll(2);
+        assert_eq!(e.session.ground_state(), GroundState::NotBuilt);
+        assert_eq!(e.status()["ground"]["state"], "not_built");
+        assert_eq!(e.status()["ground"]["available"], true);
+        assert_eq!(e.status()["ground"]["markers"], 1);
+
+        e.command(3, Command::BuildGround).unwrap();
+        assert!(e.busy() && e.ground_building);
+        assert_eq!(e.status()["ground"]["building"], true);
+        assert_eq!(e.notice.as_ref().unwrap().0, "Building AI ground...");
+        // While it runs nothing else is asked of the session.
+        let asked = e.command(4, Command::TestWaves).unwrap_err();
+        assert_eq!(asked, "A Forge edit is waiting for the game.");
+
+        finish(&mut e, 5);
+        assert!(!e.ground_building);
+        assert_eq!(e.session.ground_state(), GroundState::Current);
+        assert_eq!(
+            e.notice,
+            Some((
+                "AI ground built: 2 zones, 16 squad slots, 1 problem. The running map is not changed."
+                    .into(),
+                5
+            ))
+        );
+        let status = e.status();
+        assert_eq!(status["ground"]["state"], "current");
+        assert_eq!(status["ground"]["zones"], 2);
+        assert_eq!(status["ground"]["problems"], 1);
+        assert_eq!(status["ground"]["loaded"], false);
+
+        // Test waves with the ground current builds nothing.
+        e.command(6, Command::TestWaves).unwrap();
+        finish(&mut e, 7);
+        assert_eq!(e.notice.as_ref().unwrap().0, "AI ground is current.");
+        // Another marker makes it stale, and Test waves builds again.
+        e.command(8, drop_at(2.)).unwrap();
+        e.poll(9);
+        assert_eq!(e.session.ground_state(), GroundState::Stale);
+        e.command(10, Command::TestWaves).unwrap();
+        finish(&mut e, 11);
+        assert_eq!(e.session.ground_state(), GroundState::Current);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn an_agent_asking_for_a_build_is_answered_when_it_ends() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Kit { refuse: false }));
+        let mut e = ground_editor();
+        let answer = e.ground_build(true).unwrap();
+        assert!(answer.try_recv().is_err(), "not before the worker is done");
+        finish(&mut e, 3);
+        let reply = answer.try_recv().unwrap().unwrap();
+        assert_eq!(reply["built"], true);
+        assert_eq!(reply["state"], "current");
+        assert_eq!(reply["report"]["zones"], 2);
+        assert_eq!(reply["problems"][0]["reason"], "off the walkable area");
+        assert_eq!(reply["building"], false);
+
+        // Already current: answered, and not built.
+        let answer = e.ground_build(true).unwrap();
+        finish(&mut e, 4);
+        assert_eq!(answer.try_recv().unwrap().unwrap()["built"], false);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn a_build_that_fails_says_why_changes_nothing_and_answers_the_agent() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Kit { refuse: true }));
+        let mut e = ground_editor();
+        let answer = e.ground_build(false).unwrap();
+        finish(&mut e, 3);
+        let reason = "No room: the sectors take 9 KB too many.";
+        assert_eq!(answer.try_recv().unwrap(), Err(reason.to_string()));
+        assert_eq!(e.notice, Some((reason.into(), 3)));
+        assert!(!e.ground_building);
+        assert_eq!(e.session.ground_state(), GroundState::NotBuilt);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn with_no_builder_the_rows_and_the_agent_refuse_and_change_nothing() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::uninstall();
+        let mut e = ground_editor();
+        assert_eq!(e.command(1, Command::BuildGround), Err(NO_BUILDER.into()));
+        assert_eq!(e.command(1, Command::TestWaves), Err(NO_BUILDER.into()));
+        assert_eq!(e.ground_build(false).unwrap_err(), NO_BUILDER);
+        assert!(!e.busy());
+        assert_eq!(e.status()["ground"]["available"], false);
+        assert_eq!(e.ground_json()["state"], "not_built");
+    }
+
+    #[test]
+    fn the_markers_are_the_ground_labels_and_the_problems_the_last_build_made() {
+        use crate::forge_glue::markers_world::Tone;
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Kit { refuse: false }));
+        let mut e = ground_editor();
+        let drops = |e: &Editor| {
+            e.marker_entries()
+                .into_iter()
+                .filter(|m| m.marker.kind.name() == "ff_drop")
+                .collect::<Vec<_>>()
+        };
+        assert!(drops(&e).is_empty());
+        e.command(1, drop_at(1.)).unwrap();
+        e.poll(2);
+        let placed = drops(&e);
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].place.at, [1., 1., 0.]);
+        assert_eq!(placed[0].tone, Tone::Normal);
+
+        e.command(3, Command::BuildGround).unwrap();
+        finish(&mut e, 4);
+        // The problem is at the label's place and draws in its stead.
+        let built = drops(&e);
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].tone, Tone::Problem);
+        // The monitor off draws none.
+        e.tool.monitor = false;
+        assert!(e.marker_entries().is_empty());
+        installed::uninstall();
+    }
+}
+
+/// The Overlays page opens, a choice on it turns an overlay off, and the
+/// markers and the status follow; the overlay is tool state, never an op.
+#[test]
+fn the_overlays_page_turns_overlays_off() {
+    use forge::tool::Overlay;
+    let mut e = editor();
+    e.tool.monitor = true;
+    let head = e.session.head();
+    e.command(1, Command::Overlays).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Settings));
+    assert!(e.overlay(Overlay::Markers));
+    assert_eq!(e.status()["overlays"]["markers"], true);
+    e.choose(2, Choice::Set(Prop::Overlay(Overlay::Markers), 1))
+        .unwrap();
+    assert!(!e.overlay(Overlay::Markers));
+    assert!(e.marker_entries().is_empty());
+    assert_eq!(e.status()["overlays"]["markers"], false);
+    assert_eq!(e.status()["overlays"]["gizmo"], true);
+    assert!(
+        e.choose(3, Choice::Set(Prop::Overlay(Overlay::Gizmo), 2))
+            .is_err()
+    );
+    e.choose(4, Choice::Set(Prop::Overlay(Overlay::Markers), 0))
+        .unwrap();
+    assert!(e.overlay(Overlay::Markers));
+    assert_eq!(e.session.head(), head, "no op was made");
+}
+
+// ---- Generate nav: the generation runs on a worker (docs/game/forge-nav.md) ----
+
+mod nav {
+    use super::*;
+    use crate::forge_glue::nav::{self as installed, NO_GENERATOR, TEST_GUARD};
+    use forge::tool::Overlay;
+    use forge::{NavBuilder, NavProblem, NavReport, NavState};
+
+    /// A generator with an invented report, or a refusal.
+    struct Gen {
+        refuse: bool,
+    }
+
+    impl NavBuilder for Gen {
+        fn generate(
+            &mut self,
+            _: &ForgeDoc,
+            _: &std::collections::BTreeMap<BlockKind, u32>,
+        ) -> Result<NavReport, String> {
+            if self.refuse {
+                return Err("The map does not build.".into());
+            }
+            Ok(NavReport {
+                sectors: 40,
+                out_of_map: 2,
+                problems: vec![NavProblem {
+                    kind: "start_off_mesh".into(),
+                    what: "start 1".into(),
+                    position: [1., 1., 3.],
+                    reason: "no floor under it".into(),
+                }],
+                ..Default::default()
+            })
+        }
+    }
+
+    fn nav_editor() -> Editor {
+        let mut e = editor();
+        let base = e.session.document().clone();
+        let limits = Limits {
+            world: Some(WorldBounds {
+                min: [-10.; 3],
+                max: [10.; 3],
+            }),
+            base_counts: [(BlockKind::Crates, 2), (BlockKind::NetgameFlags, 3)]
+                .into_iter()
+                .collect(),
+            ..Limits::default()
+        };
+        e.session = Arc::new(Session::new(base, limits, vec![], 8).unwrap());
+        e.tool.monitor = true;
+        e
+    }
+
+    fn finish(e: &mut Editor, tick: u32) {
+        for _ in 0..500 {
+            e.poll_file(tick);
+            if !e.busy() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the nav generation never finished");
+    }
+
+    #[test]
+    fn generate_nav_runs_on_a_worker_and_its_problems_are_marked() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Gen { refuse: false }));
+        let mut e = nav_editor();
+        assert_eq!(e.status()["nav"]["state"], "not_built");
+        assert_eq!(e.status()["nav"]["available"], true);
+
+        e.choose(1, Choice::GenerateNav).unwrap();
+        assert!(e.busy() && e.nav_generating);
+        assert_eq!(e.status()["nav"]["generating"], true);
+        assert_eq!(e.notice.as_ref().unwrap().0, "Generating nav...");
+        finish(&mut e, 2);
+        assert!(!e.nav_generating);
+        assert_eq!(e.session.nav_state(), NavState::Current);
+        assert_eq!(
+            e.notice,
+            Some((
+                "Nav generated: 40 sectors, 2 out of the map, 1 problem.".into(),
+                2
+            ))
+        );
+        assert_eq!(e.status()["nav"]["sectors"], 40);
+
+        // The problem is marked while the Nav overlay is on, even with the
+        // game type markers off.
+        let marked = |e: &Editor| {
+            e.marker_entries()
+                .into_iter()
+                .filter(|m| m.name == "nav:start 1")
+                .count()
+        };
+        assert_eq!(marked(&e), 1);
+        e.tool.overlays.set(Overlay::Markers, false);
+        assert_eq!(marked(&e), 1);
+        e.tool.overlays.set(Overlay::Nav, false);
+        assert_eq!(marked(&e), 0);
+        installed::uninstall();
+    }
+
+    #[test]
+    fn an_agent_asking_for_nav_is_answered_and_a_failure_changes_nothing() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        installed::install(Box::new(Gen { refuse: false }));
+        let mut e = nav_editor();
+        let answer = e.nav_generate().unwrap();
+        finish(&mut e, 3);
+        let reply = answer.try_recv().unwrap().unwrap();
+        assert_eq!(reply["state"], "current");
+        assert_eq!(reply["counts"]["sectors"], 40);
+        assert_eq!(reply["problems"][0]["what"], "start 1");
+
+        installed::install(Box::new(Gen { refuse: true }));
+        let mut e = nav_editor();
+        let answer = e.nav_generate().unwrap();
+        finish(&mut e, 4);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            Err("The map does not build.".to_string())
+        );
+        assert!(!e.nav_generating);
+        assert_eq!(e.session.nav_state(), NavState::NotBuilt);
+
+        installed::uninstall();
+        assert_eq!(e.choose(5, Choice::GenerateNav), Err(NO_GENERATOR.into()));
+        assert!(!e.busy());
+    }
+}
+
+/// **Reset orientation** and **Duplicate** on the Properties page of a
+/// placed shelf: one uprighting move, then one add in front of the
+/// monitor whose copy the monitor holds at once.
+#[test]
+fn reset_orientation_and_duplicate_on_the_properties_page() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    e.choose(1, Choice::Select(0)).unwrap();
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.7, 0.3, 0.2],
+    };
+    e.tool.ghost = Some(frame);
+    e.command(2, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(3);
+    let id = e.session.objects()[0].id;
+    let added = Endpoint::Added(id);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0.; 3],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.tool.aimed_thing = Some(added);
+    e.tool.aimed = Some(id);
+    e.command(4, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let labels = || -> Vec<String> {
+        screens::screen(Kind::Properties)
+            .sheet()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    assert!(
+        labels().contains(&"Reset orientation".to_string()),
+        "{:?}",
+        labels()
+    );
+    assert!(
+        labels().contains(&"Duplicate".to_string()),
+        "{:?}",
+        labels()
+    );
+    // Reset orientation: one move upright at the 45 degree snap, where it
+    // stands.
+    e.choose(5, Choice::ResetOrientation).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    let upright = Frame {
+        position: [3., 0., 0.],
+        rotation: [45f32.to_radians(), 0., 0.],
+    };
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::Move {
+                target: calls::ForgeTarget::Live(agent_proto::ObjectId {
+                    kind: agent_proto::Kind::Crate,
+                    key: 31,
+                }),
+                frame: upright,
+            },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(6);
+    assert_eq!(e.session.log().len(), 2);
+    // Duplicate: one add in front of the monitor, and the copy is held at
+    // once.
+    e.choose(7, Choice::Duplicate(added)).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    let copy = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::Make { tag: 42, frame: copy },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[32]})));
+    e.poll(8);
+    assert_eq!(e.session.log().len(), 3);
+    assert_eq!(e.session.objects()[1].frame, copy);
+    assert_eq!(
+        e.tool.held_thing,
+        Some(Endpoint::Added(e.session.objects()[1].id))
+    );
+    assert_eq!(e.tool.held, Some(e.session.objects()[1].id));
+    assert_eq!(e.tool.ghost, Some(copy));
+}
+
+#[test]
+fn live_forge_row_starts_in_the_monitor_with_the_hud() {
+    use crate::{custom_games, lobby_start, lobby_tabs};
+    let tab = custom_games::Menu::ALL.row_kind(custom_games::FORGE_ROW).mode().unwrap();
+    let plan = lobby_tabs::switch::plan(lobby_tabs::Tab::CustomGames, tab);
+    lobby_start::set_mode(plan.mode);
+    let e = editor();
+    assert!(e.monitor());
+    assert!(e.monitor_hud(0.0).view.monitor);
+    lobby_start::clear();
+    assert!(!editor().monitor());
 }

@@ -103,6 +103,10 @@ protocol 0; a session with **no variant gets protocol 1, synchronous**;
 otherwise `0x00161c90` maps the variant's game engine to a protocol. That
 map gives distributed for every engine that shipped and synchronous for
 the two deprecated ones (Race, Headhunter) and for anything out of range.
+With the `rules` feature, `variants::record::protocol` answers the map
+natively: the same table, but Headhunter's index, the script index,
+plays distributed
+([game-types-without-carriers.md](../game/game-types-without-carriers.md#no-retail-engine-object)).
 A new session also starts at protocol 1 (`0x00059d58`). The protocol and
 the difficulty are replicated session parameters: setters at `0x0005b8e0`
 and `0x0005bc10` (host only), applied from a parameters update near

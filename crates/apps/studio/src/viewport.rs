@@ -6,8 +6,11 @@
 //! game-editor camera of [`crate::camera`], an ImGuizmo move, rotate or
 //! scale gizmo on the selection with grid and angle snapping, and placing
 //! a new entry where the cursor meets the level.
+pub(crate) mod area;
 pub(crate) mod mirror;
 pub(crate) mod nav;
+pub(crate) mod playtest;
+mod paint;
 
 use std::collections::BTreeSet;
 use dear_imgui_rs::{Key, MouseButton, TextureId, Ui};
@@ -15,12 +18,20 @@ use dear_imgui_wgpu::{ExternalTextureId, WgpuRenderer};
 use dear_imguizmo::{GuizmoExt, Mode, Operation};
 use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::render::{self, Viewport};
-use scenario_edit::volumes::{Frame, VolumeKind};
+use scenario_edit::marker_view;
+use scenario_edit::volumes::Frame;
 use scenario_edit::{BlockKind, Session, geometry};
 
 use crate::app::{Action, App};
 use crate::camera;
 use crate::play::select;
+
+/// Draws the Textures tool's painted bitmaps in `vp`'s native level, as the
+/// live viewport does (`view.snapshot` builds its own): how many textures
+/// were written (docs/editor/realtime-edits.md, R15).
+pub(crate) fn follow_paint(vp: &mut Viewport, queue: &wgpu::Queue, app: &App) -> usize {
+    paint::Painted::default().sync(vp, queue, app).written
+}
 
 /// The gizmo's operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,14 +138,21 @@ pub struct ViewportView {
     vp: Option<Viewport>,
     texture: Option<ExternalTextureId>,
     world_rev: Option<u64>,
+    /// The tag document's revision the sun and fog last read.
+    sky_rev: Option<u64>,
     markers_rev: Option<u64>,
     /// The session's native models last uploaded: a placement of a tag
     /// first placed after the map opened gives the session new ones.
     /// The geometry session revision the native world last redrew.
     modeling_rev: Option<u64>,
+    /// The painted bitmaps the native level has drawn (R15).
+    painted: paint::Painted,
     native_models: Option<std::sync::Arc<scenario_edit::native_view::NativeModels>>,
     linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
+    /// The playtest result and whether the bots' mesh was there when the
+    /// playtest layers last uploaded.
+    playtest_rev: Option<(u64, bool)>,
     layers: Option<Layers>,
     labels: Vec<mirror::Label>,
     live_scene: mirror::SceneCache,
@@ -154,7 +172,12 @@ pub struct ViewportView {
     /// The next left click in the viewport places a new entry of this
     /// block there (a copy of the entry, when given).
     pub placing: Option<(BlockKind, Option<usize>)>,
+    /// The next left click places this ground label there, facing the way
+    /// the camera looks (the AI and objectives group).
+    pub placing_label: Option<scenario_edit::LabelKind>,
     hovered: bool,
+    /// The handles on the selected flag's area.
+    area: area::AreaHandles,
     /// Where the last frame showed the image: origin and size in points.
     shown: Option<[f32; 4]>,
 }
@@ -171,11 +194,14 @@ impl ViewportView {
             vp: None,
             texture: None,
             world_rev: None,
+            sky_rev: None,
             markers_rev: None,
             modeling_rev: None,
+            painted: Default::default(),
             native_models: None,
             linked: BTreeSet::new(),
             overlay_rev: None,
+            playtest_rev: None,
             layers: None,
             labels: Vec::new(),
             live_scene: Default::default(),
@@ -188,7 +214,9 @@ impl ViewportView {
             orbiting: false,
             panning: false,
             placing: None,
+            placing_label: None,
             hovered: false,
+            area: Default::default(),
             shown: None,
         }
     }
@@ -238,6 +266,14 @@ impl ViewportView {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_native(gpu.device, gpu.queue, native);
             self.world_rev = Some(session.world_rev());
+            self.painted.reset();
+        }
+        // The sky tag's sun and fog, as the document has them: a sun
+        // direction written in the field panel moves the viewport's sun
+        // on this frame (docs/editor/live-editors.md, "Sky and fog").
+        if world_changed || self.sky_rev != Some(app.tags.rev()) {
+            crate::ui::sky::apply(vp, session.scene().map(|s| &s.atmosphere), &app.tags);
+            self.sky_rev = Some(app.tags.rev());
         }
         // The Modeling tool's in-place edits, redrawn over the sections
         // they came from (docs/editor/modeling.md, "Interfaces").
@@ -256,6 +292,13 @@ impl ViewportView {
         if vp.lighting() != app.lighting {
             let native = session.native_world().map_or(&[][..], |n| n.as_slice());
             vp.set_lighting(gpu.device, gpu.queue, native, app.lighting);
+            self.painted.reset();
+        }
+        // The Textures tool's painted pixels, drawn over the base maps the
+        // upload made (docs/editor/realtime-edits.md, R15). Dropped edits
+        // upload the level again from the map as saved, on the next frame.
+        if self.painted.sync(vp, gpu.queue, app).reload {
+            self.world_rev = None;
         }
         // Its placed objects too, again whenever the session reads a new
         // tag's model; the scene draws only those with no native model.
@@ -276,13 +319,16 @@ impl ViewportView {
             vp.set_layers(&app.layers);
             self.layers = Some(app.layers.clone());
         }
+        let playtest_rev = (app.playtest.rev, session.bot_nav().is_some());
         if world_changed || models_changed || layers_changed
+            || self.playtest_rev != Some(playtest_rev)
             || self.markers_rev != Some(session.markers_rev())
             || self.linked != live.linked
         {
             upload_placements(vp, gpu.device, app, &live.linked);
             self.labels = mirror::gameplay_labels(app);
             self.markers_rev = Some(session.markers_rev());
+            self.playtest_rev = Some(playtest_rev);
             self.linked.clone_from(&live.linked);
         }
         if world_changed || live_changed {
@@ -339,6 +385,9 @@ impl ViewportView {
         let aspect = size[0] / size[1].max(1.0);
 
         let (over_gizmo, using_gizmo) = self.gizmo(ui, app, origin, size, aspect, &live.linked);
+        // The area's handles, on the selected netgame flag.
+        let (over_area, using_area) = self.area.run(ui, app, origin, size, aspect);
+        let (over_gizmo, using_gizmo) = (over_gizmo || over_area, using_gizmo || using_area);
 
         let io = ui.io();
         let alt = io.key_alt();
@@ -409,14 +458,44 @@ impl ViewportView {
             .update_shared(app.session.camera_mut(), &input, app.pairing.camera.mode);
         app.set_fly_speed(self.camera.speed);
 
-        if self.placing.is_some() && ui.is_key_pressed(Key::Escape) {
+        if (self.placing.is_some() || self.placing_label.is_some())
+            && ui.is_key_pressed(Key::Escape)
+        {
             self.placing = None;
+            self.placing_label = None;
         }
         let clicked = hovered
             && !alt
             && !over_gizmo
             && !using_gizmo
             && ui.is_mouse_clicked(MouseButton::Left);
+        // Placing a label: the click puts the flag where the cursor meets
+        // the level, as `scenario.add {block: "label"}` does.
+        if clicked && let Some(kind) = self.placing_label {
+            match app.session.surface_hit_visible(&ray, &app.layers) {
+                Some(at) => {
+                    let at = if self.snap.grid {
+                        snap_to_grid(at, self.snap.grid_step)
+                    } else {
+                        at
+                    };
+                    let (team, phase) = app
+                        .session
+                        .scenario()
+                        .map_or((0, 0), |s| crate::app::ground::next_team_phase(s, kind));
+                    actions.push(Action::PlaceLabelAt {
+                        kind,
+                        at,
+                        facing: app.session.camera().yaw,
+                        team,
+                        phase,
+                    });
+                    self.placing_label = None;
+                }
+                None => app.error("place it on the level: nothing is under the cursor"),
+            }
+            return;
+        }
         // Placing: the click puts the new entry where the cursor meets the
         // level.
         if clicked && let Some((kind, like)) = self.placing {
@@ -735,11 +814,45 @@ pub(crate) fn upload_placements(
     linked: &BTreeSet<(BlockKind, usize)>,
 ) {
     let session = &app.session;
-    let markers: Vec<_> = session.markers().iter().copied()
+    let shown: Vec<_> = session.markers().iter().copied()
         .filter(|m| app.layers.placement(m.block))
         .collect();
     let selected = session.selection();
     let gameplay = |m: &geometry::Marker| geometry::Gameplay::of(session.scenario(), m);
+    // Spawns, flags and item spawners are the shared game type markers
+    // (scenario_edit::marker_view). What has no marker is left to the
+    // glyphs: a flag of a type the game does not read, and a spawner whose
+    // model draws.
+    let modelled = |m: &geometry::Marker| {
+        session.scene().is_some_and(|s| s.model_of(m).is_some())
+            || m.object.is_some_and(|o| {
+                session.native_models().is_some_and(|n| n.of(o).is_some())
+            })
+    };
+    let item = |m: &geometry::Marker| {
+        session
+            .scenario()
+            .and_then(|s| s.object_tag(m.block, m.index))
+            .map_or(marker_view::game_markers::Item::Equipment, |r| {
+                marker_view::item_of_group(r.group.0)
+            })
+    };
+    let volumes = session.volumes();
+    let placed = marker_view::placed_with(
+        &shown,
+        gameplay,
+        item,
+        modelled,
+        volumes,
+        |m| session.marker_area(m),
+    );
+    let handled: BTreeSet<(BlockKind, usize)> =
+        placed.iter().flat_map(|p| p.members.iter().copied()).collect();
+    let markers: Vec<_> = shown
+        .iter()
+        .copied()
+        .filter(|m| !handled.contains(&(m.block, m.index)))
+        .collect();
     let style = |m: &geometry::Marker| {
         let data = gameplay(m);
         (crate::theme::placement_color(m.block, data.team), data.flag_type)
@@ -752,33 +865,22 @@ pub(crate) fn upload_placements(
             device, &render::glyph_vertices_styled(&markers, &selected, |_| false, style),
         ),
     }
-
-    let mut lines = Vec::new();
-    if app.layers.visible(LayerId::Markers) {
-        let color = crate::theme::layer_color(LayerId::Flags);
-        for outline in geometry::flag_outlines(&markers, gameplay) {
-            let mut segment = |a, b| {
-                for position in [a, b] {
-                    lines.push(render::Vertex {
-                        position,
-                        center: position,
-                        normal: [0.0, 0.0, 1.0],
-                        color,
-                    });
-                }
-            };
-            for edge in outline.windows(2) {
-                segment(edge[0], edge[1]);
-            }
-            if outline.len() > 2 {
-                segment(outline[outline.len() - 1], outline[0]);
-            }
-        }
+    let selected_volume = session.selected_volume();
+    let mut overlays = marker_view::overlays(
+        &placed,
+        &marker_view::game_markers::Palette::default(),
+        |p| {
+            p.volume.is_some_and(|v| selected_volume == Some(v))
+                || p.members.iter().any(|m| selected.contains(m))
+        },
+    );
+    for id in marker_view::layers() {
+        let (faces, lines) = overlays.remove(&id).unwrap_or_default();
+        vp.set_layer_overlay(device, id, &faces, &lines);
     }
-    vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
-    upload_volumes(vp, device, app);
     upload_collision(vp, device, app);
     nav::upload(vp, device, app);
+    playtest::upload(vp, device, app);
 }
 
 /// A collision surface as the status line and inspector name it.
@@ -865,43 +967,6 @@ fn upload_collision(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
     vp.set_layer_overlay(device, LayerId::ObjectCollision, &[], &lines);
 }
 
-/// The trigger volumes as boxes, one overlay per kind a box is drawn as
-/// (translucent faces and wire edges), the selected box's edges in the
-/// selection colour. Parented volumes are left out: their frame is
-/// relative to an object only a running game places.
-fn upload_volumes(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
-    let empty = scenario_edit::volumes::Volumes::default();
-    let volumes = app.session.volumes().unwrap_or(&empty);
-    let selected = app.session.selected_volume();
-    for kind in VolumeKind::ALL {
-        let (mut faces, mut lines) = (Vec::new(), Vec::new());
-        let color = crate::theme::volume_color(kind);
-        for (i, volume) in volumes.triggers.iter().enumerate() {
-            if !volume.in_world() || !volumes.kinds(i).contains(&kind) {
-                continue;
-            }
-            let (Some(tris), Some(edges)) = (volume.frame.faces(), volume.frame.edges()) else {
-                continue;
-            };
-            faces.extend(render::overlay_vertices(&tris, color));
-            let edge = if selected == Some(i) {
-                crate::theme::VOLUME_SELECTED
-            } else {
-                color
-            };
-            for position in edges.into_iter().flatten() {
-                lines.push(render::Vertex {
-                    position,
-                    center: position,
-                    normal: [0.0, 0.0, 1.0],
-                    color: edge,
-                });
-            }
-        }
-        vp.set_layer_overlay(device, LayerId::Volume(kind), &faces, &lines);
-    }
-}
-
 pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
     let mut tris = Vec::new();
     if let Some(source) = app.compare().and_then(|c| c.view.as_ref().ok()) {
@@ -915,6 +980,45 @@ pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &Ap
         ));
     }
     vp.set_layer_overlay(device, LayerId::Halo1, &tris, &[]);
+    // `tag.uses highlight`: a square on the ground around each placement
+    // it named.
+    let mut lines = Vec::new();
+    if !app.highlighted.is_empty() {
+        let color = crate::theme::layer_color(LayerId::Markers);
+        for m in app
+            .session
+            .markers()
+            .iter()
+            .filter(|m| app.highlighted.contains(&(m.block, m.index)))
+        {
+            let r = 0.75 * m.scale.max(0.25);
+            let [f, l, u] = m.axes;
+            let center = geometry::add(m.position, geometry::scale(u, 0.05));
+            let corner = |a: f32, b: f32| {
+                geometry::add(
+                    geometry::add(center, geometry::scale(f, a * r)),
+                    geometry::scale(l, b * r),
+                )
+            };
+            let square = [
+                corner(1.0, 1.0),
+                corner(1.0, -1.0),
+                corner(-1.0, -1.0),
+                corner(-1.0, 1.0),
+            ];
+            let mut push = |p: [f32; 3]| lines.push(render::Vertex {
+                position: p,
+                center: p,
+                normal: [0.0, 0.0, 1.0],
+                color,
+            });
+            for k in 0..4 {
+                push(square[k]);
+                push(square[(k + 1) % 4]);
+            }
+        }
+    }
+    vp.set_layer_overlay(device, LayerId::Markers, &[], &lines);
 }
 
 #[cfg(test)]

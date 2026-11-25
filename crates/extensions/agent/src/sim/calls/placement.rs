@@ -16,6 +16,9 @@ use super::RespawnTarget;
 /// `world.placement.edit`'s block transaction.
 pub(super) mod edit;
 
+/// `world.object.respawn {definition}`.
+pub(super) mod definition;
+
 fn fault(e: engine::MemFault) -> RpcError {
     RpcError::new(
         code::UNAVAILABLE,

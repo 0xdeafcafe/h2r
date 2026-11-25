@@ -24,7 +24,9 @@ fn the_ui_hooks_can_run_on_the_render_thread() {
     let plan = plan("");
     let points = [
         "UI_RENDER_LAYERS", "UI_ITEM_CALL", "UI_ITEM_RETURN", "UI_SCREEN_QUAD_READY",
+        "UI_LOADING_SPINNER_READY", "UI_LOADING_BITMAP_READY",
         "UI_LOADING_RETURN", "UI_LOADING_EMPTY_RETURN", "UI_FADE_FAN_READY", "HUD_QUAD_READY",
+        "UI_LIST_READY", "UI_LIST_DONE",
     ];
     for point in points {
         let chain = plan.chains.values().find(|c| c.point.name == point)

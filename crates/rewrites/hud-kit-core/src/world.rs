@@ -36,6 +36,17 @@ pub const BAR_END: f32 = 0.5;
 /// approach guide"). [`Style::Go`](crate::model::Style::Go) draws in it.
 pub const GO_GREEN: [f32; 3] = [0.35, 0.95, 0.45];
 
+/// How many axes a gizmo has: the axes [`Style::Axis`](crate::model::Style::Axis)
+/// can name (`0..AXES`), X, Y and Z.
+pub const AXES: u8 = 3;
+/// The colour of each axis, X, Y and Z: the red, green and blue every
+/// editor draws them in. S: ours, not a colour the game's HUD holds.
+pub const AXIS_COLOURS: [[f32; 3]; AXES as usize] = [
+    [0.95, 0.30, 0.25],
+    [0.35, 0.90, 0.35],
+    [0.35, 0.55, 0.98],
+];
+
 /// How many teams a game has: the teams [`Style::Team`](crate::model::Style::Team)
 /// can name (`0..TEAMS`), the rows of the team colours the game reads
 /// (docs/game/hud-kit.md, "Colours").
@@ -64,9 +75,15 @@ pub enum Shape {
     /// One segment, centred on the point, `half[0]` each way along the
     /// heading: an edge of an outline, as a hill's or a territory's.
     Line,
+    /// One segment between two world points, [`Pose::at`] and
+    /// [`Pose::to`], at any slope: an axis of a gizmo, drawn where it
+    /// lies and not [`LIFT`] above a floor. It has no heading and no size.
+    Segment,
 }
 
 impl Shape {
+    /// The shapes that lie flat on the floor at a point, which share
+    /// their reach and lift; [`Shape::Segment`] is the one that does not.
     pub const ALL: [Shape; 6] = [
         Shape::Pipper,
         Shape::Bracket,
@@ -85,6 +102,7 @@ impl Shape {
             Shape::Ticks => "ticks",
             Shape::Bar => "bar",
             Shape::Line => "line",
+            Shape::Segment => "segment",
         }
     }
 }
@@ -102,6 +120,9 @@ pub struct Pose {
     /// 0 to 1: how strongly it draws (its lines' alpha), for a mark that
     /// fades in and out.
     pub strength: f32,
+    /// The far end of a [`Shape::Segment`], whose near end is `at`; no
+    /// other shape reads it. `None` is a segment of no length.
+    pub to: Option<Vec3>,
 }
 
 impl Pose {
@@ -112,7 +133,13 @@ impl Pose {
             along: [1.0, 0.0],
             half,
             strength: 1.0,
+            to: None,
         }
+    }
+    /// The far end of a [`Shape::Segment`].
+    pub const fn to(mut self, to: Vec3) -> Pose {
+        self.to = Some(to);
+        self
     }
     pub const fn heading(mut self, along: [f32; 2]) -> Pose {
         self.along = along;
@@ -131,6 +158,7 @@ impl Pose {
             .iter()
             .chain(&self.along)
             .chain(&self.half)
+            .chain(self.to.iter().flatten())
             .all(|v| v.is_finite());
         if !finite || !self.strength.is_finite() {
             Some("a number that is not finite".into())
@@ -174,6 +202,8 @@ fn offset(p: Vec3, d: [f32; 2], by: f32) -> Vec3 {
 ///   with a band its near and far ends, each [`BAR_END`] as long.
 /// - [`Shape::Line`]: one edge, from `half[0]` behind the point to
 ///   `half[0]` ahead of it.
+/// - [`Shape::Segment`]: one edge from the point to [`Pose::to`], as
+///   given: not lifted, none where `to` is unset or is the point.
 pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
     if pose.fault().is_some() {
         return Vec::new();
@@ -259,6 +289,10 @@ pub fn edges(shape: Shape, pose: &Pose) -> Vec<Edge> {
             }
             vec![[offset(c, u, -a), offset(c, u, a)]]
         }
+        Shape::Segment => match pose.to {
+            Some(to) if to != pose.at => vec![[pose.at, to]],
+            _ => Vec::new(),
+        },
     }
 }
 
@@ -269,6 +303,9 @@ pub fn reach(shape: Shape, pose: &Pose) -> f32 {
     match shape {
         Shape::Pipper | Shape::Ticks | Shape::Line => a,
         Shape::Bracket | Shape::Arrow | Shape::Bar => a.hypot(b),
+        Shape::Segment => pose
+            .to
+            .map_or(0.0, |to| (to[0] - pose.at[0]).hypot(to[1] - pose.at[1])),
     }
 }
 
@@ -397,6 +434,24 @@ mod tests {
         assert!(close(length(&e[0]), 1.0));
         assert!(edges(Shape::Line, &Pose::at([0.0; 3], [0.0, 0.0])).is_empty());
         assert_eq!(Shape::Line.name(), "line");
+    }
+
+    /// A segment runs from its point to its far end as given, up and
+    /// down too, and is nothing without a far end or with the point as it.
+    #[test]
+    fn a_segment_runs_between_its_two_points_unlifted() {
+        let up = Pose::at([1.0, 2.0, 3.0], [0.0, 0.0]).to([1.0, 2.0, 4.5]);
+        assert_eq!(edges(Shape::Segment, &up), vec![[[1.0, 2.0, 3.0], [1.0, 2.0, 4.5]]]);
+        assert!(close(reach(Shape::Segment, &up), 0.0));
+        let slant = Pose::at([0.0; 3], [0.0; 2]).to([3.0, 4.0, -1.0]);
+        assert!(close(reach(Shape::Segment, &slant), 5.0));
+        assert!(edges(Shape::Segment, &Pose::at([0.0; 3], [0.0; 2])).is_empty());
+        assert!(edges(Shape::Segment, &Pose::at([1.0; 3], [0.0; 2]).to([1.0; 3])).is_empty());
+        let bad = Pose::at([0.0; 3], [0.0; 2]).to([f32::NAN, 0.0, 0.0]);
+        assert!(bad.fault().is_some());
+        assert!(edges(Shape::Segment, &bad).is_empty());
+        assert_eq!(Shape::Segment.name(), "segment");
+        assert!(!Shape::ALL.contains(&Shape::Segment));
     }
 
     /// Every shape's lines stay within its reach of the point, and a

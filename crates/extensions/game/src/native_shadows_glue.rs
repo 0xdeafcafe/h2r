@@ -5,6 +5,7 @@
 
 use crate::{
     native_lights_glue::DeviceMemory,
+    native_shadow_chain::{self, Chain, Spill},
     native_shadows_draw::{self, Freeze, SharedGpu},
     native_shadows_scope::{Call as Scope, Gate, State},
 };
@@ -150,6 +151,8 @@ pub(crate) fn target_header(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
 struct ShadowFilterPass {
     filter: frame_scene::ShadowFilter,
     gpu: SharedGpu,
+    /// A private chain's pair stands in for targets 10 and 11.
+    chain: Option<Arc<Chain>>,
 }
 
 impl ShadowFilterPass {
@@ -157,6 +160,20 @@ impl ShadowFilterPass {
         &self,
         t: &d3d::backend::ExternalAttachments,
     ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        if let Some(chain) = &self.chain {
+            let pair = chain.pair().ok_or("private shadow pair missing")?;
+            let mut gpu = self.gpu.lock().map_err(|_| "shadow filter GPU poisoned")?;
+            let encoded = native_render::shadow_filter_gpu::prepare(
+                &t.device,
+                &t.queue,
+                &t.uploads,
+                gpu.filter(),
+                &self.filter,
+                pair.filter_slots(),
+            )?;
+            chain.publish(&pair);
+            return Ok(encoded);
+        }
         let slots = [0, 1].map(|n| {
             t.slots
                 .get(n)
@@ -189,7 +206,7 @@ impl d3d::ExternalPass for ShadowFilterPass {
 
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites {
-            color: true,
+            color: self.chain.is_none(),
             depth_stencil: false,
         }
     }
@@ -199,7 +216,14 @@ impl d3d::ExternalPass for ShadowFilterPass {
         t: &d3d::backend::ExternalAttachments,
         _: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        Some(self.prepare(t))
+        let result = self.prepare(t);
+        if let (Err(why), Some(_)) = (&result, &self.chain) {
+            // The guest's quads are dropped and the receivers wait on this
+            // chain's mask: the generation draws no shadow.
+            native_shadows::dropped_layer();
+            eprintln!("native-shadows: a private filter failed while recording: {why}");
+        }
+        Some(result)
     }
 }
 
@@ -239,6 +263,105 @@ impl d3d::SwallowPass for ShadowFilterPass {
             }
         }
         Ok(())
+    }
+}
+
+impl<B: d3d::backend::Backend + 'static> Glue<B> {
+    /// The running layer-10 call, when its whole group is an object mask
+    /// that may draw into a private chain.
+    fn private_candidate(
+        &self,
+        group: &render_bridge::native_lights::SceneGroup,
+    ) -> Option<(Arc<Scope>, Arc<Chain>)> {
+        let pass = group.group.pass?;
+        if group.group.site != frame_scene::GroupSite::ObjectShadow
+            || group.group.layer != 10
+            || !pass.colour_mask()
+        {
+            return None;
+        }
+        let gpu = self.gate.gpu.as_ref()?;
+        let call = self.gate.state.lock().ok()?.active.clone()?;
+        if call.layer.layer != 10
+            || call.layer.site != Site::Object
+            || call.kind != MapKind::ColourMask
+        {
+            return None;
+        }
+        let ctx = gpu.lock().ok()?.context();
+        let chain = Chain::new(ctx, call.output.clone());
+        Some((call, chain))
+    }
+
+    /// The last caster call and its private chain, while it holds one.
+    fn private_previous(&self) -> Option<(Arc<Scope>, Arc<Chain>)> {
+        let call = self.gate.state.lock().ok()?.previous.clone()?;
+        let chain = call.private_chain()?;
+        Some((call, chain))
+    }
+
+    /// Hand a private chain's casters back to target 10, before any guest
+    /// draw reads it. From here the chain is the guest's.
+    fn spill(&self, mem: &mut dyn GuestMemory, call: &Scope, chain: Arc<Chain>) {
+        if !chain.spill_once() {
+            return;
+        }
+        native_shadows::chain_spilled();
+        let mut d = self.device.lock().unwrap_or_else(|e| e.into_inner());
+        d.request_external_pass(Box::new(Spill {
+            chain,
+            header: call.header,
+        }));
+        let _ = d.begin_external_boundary(&mut DeviceMemory(mem));
+    }
+
+    fn swallow_filter(
+        &self,
+        mem: &mut dyn GuestMemory,
+        esp: u32,
+        filter: frame_scene::ShadowFilter,
+        chain: Option<Arc<Chain>>,
+    ) -> Result<(), &'static str> {
+        let gpu = self.gate.gpu.clone().ok_or("device")?;
+        let headers = vec![target_header(mem, 10), target_header(mem, 11)];
+        if headers.iter().any(Option::is_none) {
+            return Err("target");
+        }
+        let targets = filter
+            .draws
+            .iter()
+            .map(|draw| match draw.dest {
+                10 => 0,
+                11 => 1,
+                _ => u8::MAX,
+            })
+            .collect::<Vec<_>>();
+        if targets.contains(&u8::MAX) {
+            return Err("target");
+        }
+        let mut device = self.device.lock().map_err(|_| "device")?;
+        device
+            .swallow(
+                &mut DeviceMemory(mem),
+                d3d::Swallow {
+                    call: Some(d3d::SwallowCall {
+                        entry: engine::points::OBJECT_SHADOW_FILTER.base,
+                        esp,
+                        ret: engine::render::light_gather::object_shadows::caster::FILTER_RETURN,
+                    }),
+                    end_returns: Vec::new(),
+                    headers,
+                    targets,
+                    primitive: gfx::vertex::PrimitiveType::TriangleFan,
+                    vertices: 4,
+                    shapes: Vec::new(),
+                    drop: true,
+                    pass: Box::new(ShadowFilterPass { filter, gpu, chain }),
+                },
+            )
+            .map_err(|_| "device")?
+            .then_some(())
+            .ok_or("device")
     }
 }
 
@@ -353,6 +476,7 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
                 kind,
                 header,
                 output: Default::default(),
+                private: Default::default(),
             });
             s.active = Some(Arc::clone(&c));
             (c, s.previous.clone())
@@ -363,13 +487,16 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
             && let Some(gpu) = &self.gate.gpu
         {
             if source.kind == MapKind::ColourMask {
-                // Freeze after the object's filter at 0x222a0.
-                d.request_external_pass(Box::new(Freeze {
-                    gpu: gpu.clone(),
-                    output: source.output.clone(),
-                    kind: source.kind,
-                    sampled: Some(source.header),
-                }));
+                // Freeze after the object's filter at 0x222a0. A private
+                // chain's filter publishes its own mask instead.
+                if source.private_chain().is_none() {
+                    d.request_external_pass(Box::new(Freeze {
+                        gpu: gpu.clone(),
+                        output: source.output.clone(),
+                        kind: source.kind,
+                        sampled: Some(source.header),
+                    }));
+                }
                 if !matches!(d.begin_external_boundary(&mut mem), Ok(true)) {
                     return;
                 }
@@ -400,46 +527,22 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
         esp: u32,
         filter: frame_scene::ShadowFilter,
     ) -> Result<(), &'static str> {
-        let gpu = self.gate.gpu.clone().ok_or("device")?;
-        let headers = vec![target_header(mem, 10), target_header(mem, 11)];
-        if headers.iter().any(Option::is_none) {
-            return Err("target");
+        let private = self.private_previous();
+        let chain = private.as_ref().map(|(_, chain)| Arc::clone(chain));
+        let result = self.swallow_filter(mem, esp, filter, chain);
+        if result.is_err()
+            && let Some((call, chain)) = private
+        {
+            // The guest's quads run: they must read the casters.
+            self.spill(mem, &call, chain);
         }
-        let targets = filter
-            .draws
-            .iter()
-            .map(|draw| match draw.dest {
-                10 => 0,
-                11 => 1,
-                _ => u8::MAX,
-            })
-            .collect::<Vec<_>>();
-        if targets.contains(&u8::MAX) {
-            return Err("target");
+        result
+    }
+
+    fn filter_kept(&self, mem: &mut dyn GuestMemory) {
+        if let Some((call, chain)) = self.private_previous() {
+            self.spill(mem, &call, chain);
         }
-        let mut device = self.device.lock().map_err(|_| "device")?;
-        device
-            .swallow(
-                &mut DeviceMemory(mem),
-                d3d::Swallow {
-                    call: Some(d3d::SwallowCall {
-                        entry: engine::points::OBJECT_SHADOW_FILTER.base,
-                        esp,
-                        ret: 0x0003_29de,
-                    }),
-                    end_returns: Vec::new(),
-                    headers,
-                    targets,
-                    primitive: gfx::vertex::PrimitiveType::TriangleFan,
-                    vertices: 4,
-                    shapes: Vec::new(),
-                    drop: true,
-                    pass: Box::new(ShadowFilterPass { filter, gpu }),
-                },
-            )
-            .map_err(|_| "device")?
-            .then_some(())
-            .ok_or("device")
     }
 
     fn finish_filter(&self, mem: &mut dyn GuestMemory, esp: u32) -> Result<(), &'static str> {
@@ -453,13 +556,28 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
             .map_err(|_| "device")
     }
 
+    /// An object mask's whole caster group goes into a private chain when
+    /// the light host claims the offer with the pass it commits.
     fn draw_alone(
         &self,
         mem: &mut dyn GuestMemory,
         view: u32,
         group: &render_bridge::native_lights::SceneGroup,
     ) -> Result<(), &'static str> {
-        render_bridge::native_lights::draw_shadow_alone(mem, view, group)
+        let candidate = self.private_candidate(group);
+        if let Some((_, chain)) = &candidate {
+            native_shadow_chain::offer(Arc::clone(chain));
+        }
+        let result = render_bridge::native_lights::draw_shadow_alone(mem, view, group);
+        let unclaimed = native_shadow_chain::withdraw();
+        if result.is_ok()
+            && unclaimed.is_none()
+            && let Some((call, chain)) = candidate
+        {
+            *call.private.lock().unwrap_or_else(|e| e.into_inner()) = Some(chain);
+            native_shadows::chain_private();
+        }
+        result
     }
 
     fn end(&self, mem: &mut dyn GuestMemory, site: Site, layer: u32) {
@@ -476,6 +594,18 @@ impl<B: d3d::backend::Backend + 'static> Host for Glue<B> {
                 || c.bound != d.bound_target()
             {
                 s.previous = None;
+                // The filter will not know this chain: it reads target 10.
+                // Drain without the state lock; the gate takes it.
+                let spill = c.private_chain().filter(|chain| chain.spill_once());
+                drop(s);
+                if let Some(chain) = spill {
+                    native_shadows::chain_spilled();
+                    d.request_external_pass(Box::new(Spill {
+                        chain,
+                        header: c.header,
+                    }));
+                    let _ = d.begin_external_boundary(&mut mem);
+                }
                 return;
             }
             if layer != 10 {

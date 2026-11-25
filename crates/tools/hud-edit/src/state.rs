@@ -146,9 +146,77 @@ pub fn shown(state: &[u8], words: [u16; 4]) -> bool {
     any(0) && !any(4)
 }
 
+/// The record the engine hands its gate in ECX (`0x13a050` writes it for
+/// the HUD drawn; the gate point names it `weapon`): the three fields the
+/// gate compares a widget's threshold bytes with, by their offsets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GateRecord {
+    /// `+0x10`, a float: word C bit `0x08` is set while the widget's byte
+    /// `+0x10` (as a float) is above it.
+    pub at_10: f32,
+    /// `+0x06`, a signed word: bit `0x10` while it is below the widget's
+    /// byte `+0x11`.
+    pub at_06: i16,
+    /// `+0x08`, a signed word: bit `0x20` while it is below the byte
+    /// `+0x12`.
+    pub at_08: i16,
+}
+
+/// Word C as the gate tests it for one widget (E `0x13ac8a`..`0x13acd3`):
+/// with a record, bits `0x08`, `0x10` and `0x20` set or cleared by the
+/// widget's threshold bytes (state `+0x10`..`+0x12`) against it; without
+/// one (ECX 0), as given.
+pub fn gate_word_c(state: &[u8], word_c: u16, record: Option<GateRecord>) -> u16 {
+    let Some(r) = record else { return word_c };
+    let mut c = word_c;
+    let mut set = |bit: u16, on: bool| {
+        if on {
+            c |= bit;
+        } else {
+            c &= !bit;
+        }
+    };
+    // `comiss`, then `jbe` clears: an unordered compare clears too.
+    set(0x08, f32::from(state[0x10]) > r.at_10);
+    set(0x10, r.at_06 < i16::from(state[0x11]));
+    set(0x20, r.at_08 < i16::from(state[0x12]));
+    c
+}
+
+/// The engine's gate for one widget from the words and record the engine
+/// passed it (E `0x13ac87`): what the game decides, not the preview's
+/// [`HudState::masks`].
+pub fn shown_as_engine(state: &[u8], words: [u16; 4], record: Option<GateRecord>) -> bool {
+    let [a, b, c, d] = words;
+    shown(state, [a, b, gate_word_c(state, c, record), d])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Word C's threshold bits follow the widget's bytes against the
+    /// record (E `0x13ac8f`..`0x13acd3`); without a record it is as given.
+    #[test]
+    fn the_engine_gate_sets_word_c_from_the_widgets_thresholds() {
+        let mut state = [0u8; 20];
+        state[0x10] = 3;
+        state[0x11] = 5;
+        state[0x12] = 1;
+        let r = GateRecord { at_10: 2.5, at_06: 4, at_08: 1 };
+        assert_eq!(gate_word_c(&state, 0, Some(r)), 0x08 | 0x10);
+        assert_eq!(gate_word_c(&state, 0xffff, Some(r)), 0xffff & !0x20);
+        assert_eq!(gate_word_c(&state, 0x20, None), 0x20);
+        let nan = GateRecord { at_10: f32::NAN, ..r };
+        assert_eq!(gate_word_c(&state, 0x08, Some(nan)) & 0x08, 0, "unordered clears");
+        // A widget shown on word C 0x10 alone: the threshold decides it.
+        let mut shows_on_c = state;
+        shows_on_c[4] = 0x10;
+        assert!(shown_as_engine(&shows_on_c, [0; 4], Some(r)));
+        assert!(!shown_as_engine(&shows_on_c, [0; 4], Some(GateRecord { at_06: 5, ..r })));
+        assert!(!shown_as_engine(&shows_on_c, [0; 4], None));
+        assert!(shown_as_engine(&shows_on_c, [0, 0, 0x10, 0], None));
+    }
 
     /// The state flags the Halo 1 converter copies from retail widgets
     /// (`h1objects::h1hud`, V): the frag grenade widgets show with word A

@@ -129,8 +129,8 @@ named `it`. 96 executables become 4.
   (`scripts/it_guard.rs`): it fails, with the line to add, when a file
   under `tests/` is neither a module of `it.rs` nor a `[[test]]` in
   `Cargo.toml`.
-- A test's name gains its file's name: `cargo test -p d3d --test interp`
-  is now `cargo test -p d3d --test it interp::`. The filter is a
+- A test's name gains its file's name: `cargo test -p d3d --test it
+  scene_camera::` runs `tests/scene_camera.rs`. The filter is a
   substring, so a name that ends another name needs a skip:
   `--test it -- disc:: --skip _disc::`. The commands in the docs and
   file headers were rewritten.
@@ -159,8 +159,7 @@ its own process.
 `kernel`, `runtime`, `emit` and `xapi` have process-wide state that
 tests in different files set: `hooks`'s installed hosts and draw
 counters, `boot::fallback::set_recovery`, `kernel/tests/files.rs`'s
-global allocator, `emit/tests/pgo.rs` and `boot/tests/headless_interp.rs`
-setting environment variables, the runtime's signal handler and its 16
+global allocator, `emit/tests/pgo.rs` setting environment variables, the runtime's signal handler and its 16
 protection regions per process. Merging those needs a test run to
 settle which files can share a process (follow-up 2). `live-server`
 (40 files, the largest saving) belongs to another session.

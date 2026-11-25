@@ -6,7 +6,7 @@
 //! check against the original is `light_constants_differential.rs`.
 
 use engine::FlatMemory;
-use engine::light_constants::{BoundsQuery, Call, Fpu, constant, global, light_globals};
+use engine::light_constants::{BoundsQuery, Call, Fpu, LightGlobals, constant, global, light_globals};
 use engine::memory::GuestMemory;
 
 const ARRAY: u32 = 0x0058_0000;
@@ -179,4 +179,142 @@ fn colours_between_one_and_two_are_halved() {
     assert_eq!(m.u32(global::FRAME + 4 * 19).unwrap(), (-0.25f32).to_bits());
     assert_eq!(m.u32(global::ZERO).unwrap(), 0);
     assert_eq!(m.u8(global::RECTANGLE_VALID).unwrap(), 0);
+}
+
+#[test]
+fn the_stored_block_reads_back_what_a_call_left() {
+    let mut m = world();
+    frame_block(&mut m, LOOSE_FRAME, [0.5, 0.25, 1.0], [0.9, 0.2, 0.2], 1.5);
+    let g = light_globals(&m, &call(LOOSE_FRAME, u32::MAX), FPU, &mut |_| None).unwrap();
+    g.write(&mut m).unwrap();
+    let stored = LightGlobals::stored(&m).unwrap();
+    let sphere = [0, 1, 2, 3].map(|i| m.u32(global::SPHERE + 4 * i).unwrap());
+    assert_eq!(stored, LightGlobals { sphere: Some(sphere), ..g.clone() });
+    assert_eq!(stored.frame_constants(&m).unwrap(), g.frame_constants(&m).unwrap());
+    assert_eq!(stored.colour_b_input(), g.colour_b_input());
+}
+
+#[test]
+fn typed_globals_publish_each_sites_setup_including_masks_and_shadow_overrides() {
+    use engine::{light_passes as lp, shadow_constants as sc};
+    use engine::render::light_gather::typed::{self, Site};
+
+    let site_flags = lp::flag::TARGET_10;
+    let weight = 0.375f32.to_bits();
+    let mut initial = world();
+    frame_block(&mut initial, LOOSE_FRAME, [0.5; 3], [0.0, 0.25, 0.0], 1.0);
+    f(&mut initial, CONTEXT + 8, &[1.0]);
+    f(&mut initial, sc::constant::SIZE_MIN, &[32.0]);
+    f(&mut initial, lp::constant::SPECULAR, &[0.5]);
+    initial.set_u32(sc::global::BLOCK + 14 * 4, 0x1122_3344).unwrap();
+    initial.write(sc::global::TEXTURES, &[0x55; 16]).unwrap();
+    let dirty = 0x0048_5b78;
+    let masks = [0x0048_5084, 0x0048_5088, 0x0048_50b4, 0x0048_50b8, 0x0048_5064];
+    for (i, at) in masks.into_iter().enumerate() {
+        initial.set_u32(at, 0x40 << i).unwrap();
+        initial.set_u32(dirty + 4 * i as u32, 1 << i).unwrap();
+    }
+    let call = call(LOOSE_FRAME, u32::MAX);
+    for site in [Site::Dynamic, Site::FirstPerson, Site::ObjectShadow { flags: site_flags, weight }] {
+        let mut actual = initial.clone();
+        let mut reference = initial.clone();
+        let globals = typed::plan(&actual, &call, FPU, site).unwrap();
+        assert!(actual.bytes == initial.bytes, "plan wrote memory for {site:?}");
+
+        // Compute the shadow projection by reading the real globals *after*
+        // the light and flag stores. The planner must see the same values
+        // while the old globals still occupy guest memory.
+        let light = light_globals(&reference, &call, FPU, &mut |_| None).unwrap();
+        light.write(&mut reference).unwrap();
+        for (i, at) in masks.into_iter().enumerate() {
+            let word = dirty + 4 * i as u32;
+            let value = reference.u32(word).unwrap() | reference.u32(at).unwrap();
+            reference.set_u32(word, value).unwrap();
+        }
+        let flags = match site {
+            Site::Dynamic => {
+                let f = lp::pass_flags(&reference, &light, light.shadow, FPU.mxcsr).unwrap();
+                assert!(f.colour_b_zeroed);
+                f.write(&mut reference).unwrap();
+                lp::flag::CONTEXT_ZERO
+            }
+            Site::FirstPerson => lp::flag::CONTEXT_ZERO | lp::flag::SPECULAR,
+            Site::ObjectShadow { flags, .. } => flags,
+        };
+        reference.set_u8(lp::global::PASSES, 1).unwrap();
+        reference.set_u32(lp::global::PASS_FLAGS, flags).unwrap();
+        if let Site::ObjectShadow { weight, .. } = site {
+            let setup = sc::Call {
+                frame: call.frame,
+                context: call.context,
+                definition: call.definition,
+            };
+            let projection = sc::shadow_globals(&reference, &setup, FPU).unwrap();
+            assert_eq!(globals.shadow.as_ref(), Some(&projection));
+            projection.write(&mut reference).unwrap();
+            reference.set_u32(global::FALLOFF, weight).unwrap();
+        } else {
+            assert!(globals.shadow.is_none());
+        }
+        assert_eq!(globals.flags, flags);
+        globals.write(&mut actual).unwrap();
+        let mismatch = actual.bytes.iter().zip(&reference.bytes)
+            .position(|(a, b)| a != b);
+        assert_eq!(mismatch, None, "first differing guest byte for {site:?}");
+    }
+}
+
+#[test]
+fn typed_shadow_refuses_a_live_cached_texture_before_writing() {
+    use engine::light_constants::Error;
+    use engine::render::light_gather::typed::{self, Site};
+    use engine::shadow_constants as sc;
+
+    let mut m = world();
+    for stage in 0..4 {
+        let cached = sc::global::TEXTURES - 16 + stage * 4;
+        m.set_u32(cached, 0x5550 + stage).unwrap();
+        let original = m.bytes.clone();
+        let site = Site::ObjectShadow { flags: 0x10, weight: 0 };
+        assert_eq!(
+            typed::plan(&m, &call(LOOSE_FRAME, u32::MAX), FPU, site),
+            Err(Error::BoundTexture),
+        );
+        assert!(m.bytes == original);
+        m.set_u32(cached, 0).unwrap();
+    }
+}
+
+#[test]
+fn typed_plan_checks_the_last_flag_store_and_propagates_bounds_faults() {
+    use engine::light_constants::Error;
+    use engine::memory::MemFault;
+    use engine::render::light_gather::typed::{self, Site};
+
+    // The first-person pass flags are written but never read during setup.
+    // The bounds view's scale is read only when a light record is present.
+    struct Hole(FlatMemory, u32);
+
+    impl GuestMemory for Hole {
+        fn read(&self, addr: u32, bytes: &mut [u8]) -> Result<(), MemFault> {
+            if self.1.wrapping_sub(addr) < bytes.len() as u32 {
+                Err(MemFault { addr, len: bytes.len() as u32, write: false })
+            } else {
+                self.0.read(addr, bytes)
+            }
+        }
+        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), MemFault> {
+            panic!("planning wrote to guest memory")
+        }
+    }
+
+    for (addr, light) in [
+        (engine::light_passes::global::PASS_FLAGS, u32::MAX),
+        (VIEW + 8, 0),
+    ] {
+        let result = typed::plan(
+            &Hole(world(), addr), &call(LOOSE_FRAME, light), FPU, Site::FirstPerson,
+        );
+        assert!(matches!(result, Err(Error::Memory(fault)) if fault.addr == addr));
+    }
 }

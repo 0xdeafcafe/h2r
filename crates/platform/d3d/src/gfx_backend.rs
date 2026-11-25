@@ -32,7 +32,8 @@
 //! `SurfaceStore::read_depth_as` (which also serves textures over the depth
 //! buffer, [`Backend::read_depth`]). A texture over the back buffer is
 //! sampled from a `SurfaceStore::snapshot` copy
-//! ([`Backend::snapshot_surface`]).
+//! ([`Backend::snapshot_surface`]), refilled in place with
+//! `SurfaceStore::snapshot_into` ([`Backend::snapshot_surface_into`]).
 //! `set_pretransformed_z_max` is renderer-wide, so it is set
 //! before every built-in draw.
 //!
@@ -75,6 +76,7 @@ pub use guest_draw_pass::GuestDrawPass;
 pub use guest_draw_pass::tiles::{ShadowTiles, TileWork};
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use gfx::occlusion::{PixelCounter, PixelReport};
 use gfx::raster::RenderScale;
@@ -114,6 +116,9 @@ pub struct HostTexture {
     /// The texture.
     pub texture: wgpu::Texture,
     view: Option<wgpu::TextureView>,
+    /// A frame-buffer copy's: the last handle to drop hands the texture to
+    /// its backend to destroy.
+    release: Option<Arc<ReleaseOnDrop>>,
 }
 
 impl HostTexture {
@@ -127,6 +132,41 @@ impl HostTexture {
         HostTexture {
             texture: self.texture.clone(),
             view: self.view.clone(),
+            release: self.release.clone(),
+        }
+    }
+}
+
+/// Released frame-buffer copies ([`Backend::snapshot_surface`]), destroyed
+/// by the backend that made them one present after the last handle drops
+/// ([`GfxBackend::destroy_released`]).
+///
+/// Dropping a `wgpu::Texture` frees its memory only once nothing else
+/// holds it: a cached bind group or view keeps a copy (one frame-sized
+/// texture, about 19 MB at 2560x1920) alive until the cache lets it go.
+/// `destroy` frees it when the GPU is done with it, whoever still holds a
+/// handle. It must not come before the commands that use the copy are
+/// submitted (a submission over a destroyed texture is a validation
+/// error), so the backend waits for its next present, after which its own
+/// and, with a scaled pair, the view's work of that frame are submitted.
+type Released = Arc<Mutex<Vec<wgpu::Texture>>>;
+
+/// Copies a backend holds at once for destroying; more (a backend that
+/// does not present) are only dropped, as other textures are.
+const RELEASED_CAP: usize = 64;
+
+/// The copy's handles share one of these; its drop is the release.
+#[derive(Debug)]
+struct ReleaseOnDrop {
+    texture: wgpu::Texture,
+    to: Released,
+}
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        let Ok(mut released) = self.to.lock() else { return };
+        if released.len() < RELEASED_CAP {
+            released.push(self.texture.clone());
         }
     }
 }
@@ -170,6 +210,14 @@ pub struct GfxBackend {
     presented: Option<SurfaceId>,
     /// Last scene-owned display target, retained through the next display swap.
     scene_presented: Option<SurfaceId>,
+    /// The last display frame drawn between or for the guest's presents on
+    /// its own targets ([`Self::retain_shown`]), kept until the next.
+    shown_between: Option<SurfaceId>,
+    /// Frame-buffer copies whose last handle dropped since the last
+    /// present ([`Released`]).
+    released: Released,
+    /// Those of the frame before: destroyed at the next present.
+    releasing: Vec<wgpu::Texture>,
     scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
     guest_present_observer: Option<GuestPresentObserver>,
@@ -228,8 +276,6 @@ pub struct GfxBackend {
     pub(crate) single_copy_aliases: bool,
     only_display: bool,
     pub(crate) blitter: Option<gfx::blit::Blitter>,
-    /// The interpolated reprojection's warp pass (made on first use).
-    warper: Option<gfx::blit::Warper>,
     /// The latest queue submission.
     last_submit: Option<wgpu::SubmissionIndex>,
     /// The latest submission when the previous frame was presented: what a
@@ -288,6 +334,8 @@ pub struct BatchStats {
     pub submits: u64,
     /// Blocking waits for the GPU at `Swap` (`D3DSWAP_FINISH`).
     pub swap_waits: u64,
+    /// Frame-buffer copies destroyed a present after their release.
+    pub snapshots_destroyed: u64,
 }
 
 impl GfxBackend {
@@ -325,8 +373,12 @@ impl GfxBackend {
     /// on (`ShaderProvider::set_hard_shadows`). Only a render-scale view
     /// sets it (`crate::scaled`); the backend the guest reads stays retail.
     pub fn set_hard_shadows(&mut self, on: bool) {
-        self.lighting = if on { crate::Lighting::E3 } else { crate::Lighting::Retail };
-        self.set_scene_receiver(on);
+        self.set_display_lighting(if on { crate::Lighting::E3 } else { crate::Lighting::Retail });
+    }
+
+    pub(crate) fn set_display_lighting(&mut self, lighting: crate::Lighting) {
+        self.lighting = lighting;
+        self.set_scene_receiver(lighting == crate::Lighting::E3);
     }
 
     /// The Sharp edge for the draws prepared from now on
@@ -372,6 +424,9 @@ impl GfxBackend {
             lighting: crate::Lighting::Retail,
             presented: None,
             scene_presented: None,
+            shown_between: None,
+            released: Released::default(),
+            releasing: Vec::new(),
             scene_uploads: Default::default(),
             present_hook: None,
             guest_present_observer: None,
@@ -409,7 +464,6 @@ impl GfxBackend {
             alias_decoder: Default::default(),
             single_copy_aliases: false,
             only_display: false,
-            warper: None,
             last_submit: None,
             prev_frame_end: None,
             swap_finish: SwapFinish::Pipelined,
@@ -556,10 +610,32 @@ impl GfxBackend {
         if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
             hook(ctx, store, surface, 0, gamma);
         }
+        self.poll();
         Ok(())
     }
 
-    /// Observe the guest swaps on this backend. A host-only interpolated
+    /// Shows a display frame drawn between the guest's presents on its own
+    /// targets (`native_render::frame_graph::display_rate`) as a host-only
+    /// present: through the replay hook, with no frame count, shader
+    /// upkeep or swap wait. `image` is kept until the next one.
+    pub fn show_between(&mut self, image: SurfaceId, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        let shown = self.show_replay(None, image, gamma);
+        self.retain_shown(image);
+        shown
+    }
+
+    /// Keeps `image`, a display frame's own target, until the next display
+    /// frame replaces it: the window may read it after its present returns.
+    pub fn retain_shown(&mut self, image: SurfaceId) {
+        if let Some(old) = self.shown_between.replace(image)
+            && old != image
+        {
+            self.scales.remove(&old);
+            self.store.remove(old);
+        }
+    }
+
+    /// Observe the guest swaps on this backend. A host-only display-frame
     /// present does not consume a number or notify this observer. The lighting
     /// mode is the view policy in effect for this swap, before retargeting.
     pub fn observe_guest_present(
@@ -592,8 +668,7 @@ impl GfxBackend {
 
     /// Called instead of the [`Self::on_present`] hook for host-only frames
     /// shown between the guest's presents ([`Backend::present_replay`], the
-    /// interpolated replay's and the reprojection's in-between frames,
-    /// [`crate::interp`]), with flags 0. Without it they go through the
+    /// frame owner's display frames, [`Self::show_between`]), with flags 0. Without it they go through the
     /// present hook, as a window wants; a hook that counts the guest's
     /// swaps (the headless run's screenshots) sets this to keep them apart.
     pub fn on_present_replay(
@@ -625,6 +700,34 @@ impl GfxBackend {
 
     /// `texture` with the view the shaders sample a `kind` texture through,
     /// if its format can be bound as a filterable float texture.
+    /// Records an alpha-only masked clear of the whole of `t` to one: a
+    /// frame-buffer copy read through an `X8` texture.
+    fn force_alpha(&mut self, enc: &mut wgpu::CommandEncoder, t: &wgpu::Texture) {
+        let view = t.create_view(&Default::default());
+        let target = gfx::RenderTarget {
+            color: &view,
+            color_format: t.format(),
+            depth: None,
+            depth_format: None,
+            size: (t.width(), t.height()),
+            samples: 1,
+        };
+        let clear = MaskedClear {
+            color: Some([0.0, 0.0, 0.0, 1.0]),
+            channels: wgpu::ColorWrites::ALPHA,
+            depth: None,
+            stencil: None,
+        };
+        let all = ScissorRect {
+            x: 0,
+            y: 0,
+            width: t.width(),
+            height: t.height(),
+        };
+        self.renderer
+            .clear_rects(&self.ctx, enc, &target, clear, &[all]);
+    }
+
     fn host_texture(&self, texture: wgpu::Texture, kind: TextureKind) -> HostTexture {
         let view =
             gfx::program::filterable(texture.format(), self.ctx.device.features()).then(|| {
@@ -638,7 +741,7 @@ impl GfxBackend {
                     ..Default::default()
                 })
             });
-        HostTexture { texture, view }
+        HostTexture { texture, view, release: None }
     }
 
     /// Reads a colour surface back (after submitting the pending pass), in
@@ -1170,6 +1273,7 @@ impl GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        self.destroy_released();
         // Start the already-submitted query reads before exposing this swap.
         // If one fails, a scaled display can still fall back to the reference
         // without handing the window or parity observer a second image.
@@ -1237,10 +1341,45 @@ impl GfxBackend {
                 let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
                 self.stats.swap_waits += 1;
                 let _ = self.ctx.device.poll(wait);
+                self.prev_frame_end = frame_end;
+                return Ok(());
             }
         }
         self.prev_frame_end = frame_end;
+        self.poll();
         Ok(())
+    }
+
+    /// Lets the device finish what the GPU is done with, without waiting:
+    /// frees destroyed and dropped resources and runs map callbacks. Every
+    /// present does it (a swap wait polls already), so freeing never waits
+    /// on a submission that happens to come later ([`Released`]).
+    fn poll(&self) {
+        let _ = self.ctx.device.poll(wgpu::PollType::Poll);
+    }
+
+    /// Destroys the frame-buffer copies released before the last present
+    /// and drops the cached texture groups over them ([`Released`]). By
+    /// now every use of them is submitted: this backend's at that present
+    /// or this flush, and a scaled view's at its own present, which comes
+    /// after the reference's. Copies released since wait for the next.
+    fn destroy_released(&mut self) {
+        let now = self
+            .released
+            .lock()
+            .map(|mut released| std::mem::take(&mut *released))
+            .unwrap_or_default();
+        let due = std::mem::replace(&mut self.releasing, now);
+        if due.is_empty() {
+            return;
+        }
+        for texture in &due {
+            texture.destroy();
+        }
+        if let Some(s) = self.shaders.as_mut() {
+            s.forget_textures(&due);
+        }
+        self.stats.snapshots_destroyed += due.len() as u64;
     }
 
     /// Records `draw` into the pending pass for `color` and `depth` (after
@@ -1679,33 +1818,56 @@ impl Backend for GfxBackend {
             }
         };
         if opaque {
-            // Alpha to one: an alpha-only masked clear of the copy.
-            let view = t.create_view(&Default::default());
-            let target = gfx::RenderTarget {
-                color: &view,
-                color_format: t.format(),
-                depth: None,
-                depth_format: None,
-                size: (t.width(), t.height()),
-                samples: 1,
-            };
-            let clear = MaskedClear {
-                color: Some([0.0, 0.0, 0.0, 1.0]),
-                channels: wgpu::ColorWrites::ALPHA,
-                depth: None,
-                stencil: None,
-            };
-            let all = ScissorRect {
-                x: 0,
-                y: 0,
-                width: t.width(),
-                height: t.height(),
-            };
-            self.renderer
-                .clear_rects(&self.ctx, &mut enc, &target, clear, &[all]);
+            self.force_alpha(&mut enc, &t);
         }
         self.side_done(enc, passes);
-        Ok(Some(self.host_texture(t, TextureKind::D2)))
+        let mut host = self.host_texture(t, TextureKind::D2);
+        host.release = Some(Arc::new(ReleaseOnDrop {
+            texture: host.texture.clone(),
+            to: Arc::clone(&self.released),
+        }));
+        Ok(Some(host))
+    }
+
+    fn snapshot_surface_into(
+        &mut self,
+        surface: SurfaceId,
+        opaque: bool,
+        into: &mut HostTexture,
+    ) -> Result<bool, String> {
+        // A copy into a texture of another size or format (a run-time
+        // resolution change) is refused before anything is recorded.
+        {
+            let s = self.store.get(surface).map_err(|e| e.to_string())?;
+            let d = s.desc();
+            let t = &into.texture;
+            if (t.width(), t.height()) != (d.width, d.height) || t.format() != s.wgpu_format() {
+                return Ok(false);
+            }
+        }
+        // After the draws recorded so far (the pending pass is encoded
+        // first, so a draw that read this texture before keeps reading
+        // its old contents) and before any draw recorded later.
+        let (mut enc, passes) = self.side_encoder()?;
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        let _t = timeline::span(
+            timeline::Cat::Gfx,
+            timeline::Track::Host,
+            "surface snapshot refill",
+        );
+        let copied = match self.store.snapshot_into(&mut enc, surface, &into.texture) {
+            Ok(copied) => copied,
+            Err(error) => {
+                self.side_done(enc, passes);
+                return Err(error.to_string());
+            }
+        };
+        if copied && opaque {
+            let t = into.texture.clone();
+            self.force_alpha(&mut enc, &t);
+        }
+        self.side_done(enc, passes);
+        Ok(copied)
     }
 
     fn create_texture_target(
@@ -1796,6 +1958,7 @@ impl Backend for GfxBackend {
                 device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
                 depth: dv, depth_format: df, size, sampled, slots, stages,
                 copy: if self.only_display { crate::TargetCopy::Display } else { copy },
+                lighting: crate::Lighting::Retail,
                 single_display: self.only_display,
             }]))
         })();
@@ -1828,6 +1991,7 @@ impl Backend for GfxBackend {
             }
         }
         recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
+        crate::scene_stage::submitted(recording.stage, recording.copy == crate::TargetCopy::Display, recording.ranges);
         if recording.copy == crate::TargetCopy::Reference || recording.single_display {
             recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
         }
@@ -1882,6 +2046,7 @@ impl Backend for GfxBackend {
             sampled: &sampled,
             slots: &[],
             copy: if self.only_display { crate::TargetCopy::Display } else { crate::TargetCopy::Reference },
+            lighting: crate::Lighting::Retail,
             stages: [None; 4],
             on_submit: None,
         });
@@ -2109,6 +2274,7 @@ impl Backend for GfxBackend {
         Ok(Some(HostTexture {
             texture: texture.clone(),
             view,
+            release: None,
         }))
     }
 
@@ -2193,32 +2359,6 @@ impl Backend for GfxBackend {
         self.present_from(None, surface, flags, gamma)
     }
 
-    fn warp_surface(
-        &mut self,
-        src: SurfaceId,
-        dst: SurfaceId,
-        h: [[f32; 3]; 3],
-    ) -> Result<bool, String> {
-        self.flush()?;
-        let s = self.store.get(src).map_err(|e| e.to_string())?;
-        let d = self.store.get(dst).map_err(|e| e.to_string())?;
-        if d.desc().samples > 1 {
-            // A multisampled target would load its stale samples over
-            // the warp at the next pass.
-            return Ok(false);
-        }
-        let (src_view, dst_view, format) = (s.view().clone(), d.view().clone(), d.wgpu_format());
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        self.store
-            .resolve_msaa(&mut enc, src)
-            .map_err(|e| e.to_string())?;
-        let ctx = &self.ctx;
-        self.warper
-            .get_or_insert_with(|| gfx::blit::Warper::new(ctx))
-            .warp(ctx, &mut enc, &src_view, &dst_view, format, h);
-        self.submit(enc);
-        Ok(true)
-    }
 
     fn measure_present_raster(&mut self, surface: Option<SurfaceId>) -> crate::backend::RasterMeasurement {
         self.measure_raster = true;
@@ -2275,31 +2415,13 @@ impl Backend for GfxBackend {
         Ok(Some((size, pixels)))
     }
 
-    fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
-        if self.flush().is_err() {
-            return None;
-        }
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let set = std::sync::Arc::clone(&done);
-        self.ctx.queue.on_submitted_work_done(move || {
-            set.store(true, std::sync::atomic::Ordering::Release)
-        });
-        let device = self.ctx.device.clone();
-        Some(Box::new(move || {
-            if !done.load(std::sync::atomic::Ordering::Acquire) {
-                // Runs finished callbacks; never waits.
-                let _ = device.poll(wgpu::PollType::Poll);
-            }
-            done.load(std::sync::atomic::Ordering::Acquire)
-        }))
-    }
 
     fn present_replay(
         &mut self,
         surface: SurfaceId,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
-        // A host-only frame (crate::interp): submitted and shown through
+        // A host-only frame (a display frame): submitted and shown through
         // the hook; the frame count, shader upkeep, `presented` and the
         // swap wait belong to the guest's presents.
         self.show_replay(None, surface, gamma)
@@ -2487,6 +2609,62 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 mod tests {
     use super::merge_split;
     use wgpu::ColorWrites as W;
+
+    /// A frame-buffer copy is destroyed one present after its last handle
+    /// drops, shared handles keep it, and other textures are never
+    /// destroyed this way.
+    #[test]
+    fn released_frame_buffer_copies_are_destroyed_a_present_later() {
+        use super::{Backend, GfxBackend, GfxContext};
+
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let mut b = GfxBackend::new(ctx);
+        let back = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+        let destroyed = |b: &GfxBackend| b.batch_stats().snapshots_destroyed;
+
+        let copy = b.snapshot_surface(back, false).unwrap().unwrap();
+        let shared = copy.shared();
+        let opaque = b.snapshot_surface(back, true).unwrap().unwrap();
+        let surface = b.surface_texture(back).unwrap();
+        drop(copy);
+        drop(opaque);
+        drop(surface);
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 0, "released this frame: its draws may be unsubmitted");
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 1, "the opaque copy; the other has a handle left");
+        drop(shared);
+        b.present(back, 0).unwrap();
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 2, "the last handle released it");
+        b.present(back, 0).unwrap();
+        assert_eq!(destroyed(&b), 2, "the surface's own texture is not a copy");
+        assert!(b.store.get(back).is_ok());
+    }
+
+    /// A refill copies into the texture the first copy made: the same
+    /// texture and view (so cached bind groups over it stay valid), and
+    /// nothing allocated or released. A texture of another size is refused.
+    #[test]
+    fn a_frame_buffer_copy_refills_its_own_texture() {
+        use super::{Backend, GfxBackend, GfxContext};
+
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let mut b = GfxBackend::new(ctx);
+        let back = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+        let small = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 4, 4, false).unwrap();
+        let mut copy = b.snapshot_surface(back, false).unwrap().unwrap();
+        let first = copy.shared();
+        for opaque in [false, true, false] {
+            assert!(b.snapshot_surface_into(back, opaque, &mut copy).unwrap());
+            assert!(copy.same_sample(&first));
+        }
+        assert!(!b.snapshot_surface_into(small, false, &mut copy).unwrap());
+        assert!(copy.same_sample(&first));
+        b.present(back, 0).unwrap();
+        b.present(back, 0).unwrap();
+        assert_eq!(b.batch_stats().snapshots_destroyed, 0, "the copy is still held");
+    }
 
     #[test]
     fn an_unshown_scaled_swap_still_consumes_its_guest_ordinal() {

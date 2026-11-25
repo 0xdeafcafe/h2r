@@ -43,6 +43,7 @@ use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
 use variants::ext::{self, Ext};
+use variants::ext_weapons;
 
 use crate::layout_glue::chosen_row;
 use crate::list_class::{self, ListClass, ListLayout, LiveText, Rows, TextBlock};
@@ -93,16 +94,17 @@ const TEAMS_LABELS: u32 = GRENADES_LABELS + 3;
 pub const TEAMS_DESCRIPTION: &str = "How many teams a team game makes, at most the map's. \
      Every build plays it.";
 
-/// The damage, shield and health scales: their rows, after the team count.
+/// The damage, shield, health and speed scales: their rows, after the team count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scale {
     Damage,
     Shield,
     Health,
+    Speed,
 }
 
 impl Scale {
-    pub const ALL: [Scale; 3] = [Scale::Damage, Scale::Shield, Scale::Health];
+    pub const ALL: [Scale; 4] = [Scale::Damage, Scale::Shield, Scale::Health, Scale::Speed];
 
     pub fn row(self) -> i16 {
         TEAMS_ROW + 1 + self as i16
@@ -117,6 +119,7 @@ impl Scale {
             Scale::Damage => "Damage",
             Scale::Shield => "Shields",
             Scale::Health => "Health",
+            Scale::Speed => "Speed",
         }
     }
 
@@ -125,6 +128,7 @@ impl Scale {
             Scale::Damage => e.damage,
             Scale::Shield => e.shield,
             Scale::Health => e.health,
+            Scale::Speed => e.speed,
         }
     }
 
@@ -133,6 +137,7 @@ impl Scale {
             Scale::Damage => e.damage = v,
             Scale::Shield => e.shield = v,
             Scale::Health => e.health = v,
+            Scale::Speed => e.speed = v,
         }
     }
 
@@ -146,6 +151,9 @@ impl Scale {
             }
             Scale::Health => {
                 "How much every player's body holds, as a share of the game's. Not on System Link."
+            }
+            Scale::Speed => {
+                "How fast every player moves, as a share of the game's. Not on System Link."
             }
         }
     }
@@ -173,7 +181,85 @@ impl Scale {
 pub const GRAVITY_ROW: i16 = 0;
 pub const GRENADES_ROW: i16 = 1;
 pub const TEAMS_ROW: i16 = 2;
-pub const ROWS: usize = 6;
+pub const ROWS: usize = 9;
+
+/// The other-weapon rows, after the scales: the weapon the block names
+/// for the starting and the secondary weapon ([`variants::ext_weapons`],
+/// the weapons the record's byte cannot name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    Primary,
+    Secondary,
+}
+
+impl Slot {
+    pub const ALL: [Slot; 2] = [Slot::Primary, Slot::Secondary];
+
+    pub fn row(self) -> i16 {
+        TEAMS_ROW + 1 + Scale::ALL.len() as i16 + self as i16
+    }
+
+    pub fn of_row(row: i16) -> Option<Slot> {
+        Slot::ALL.into_iter().find(|s| s.row() == row)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Slot::Primary => "Primary",
+            Slot::Secondary => "Secondary",
+        }
+    }
+
+    pub fn get(self, e: &Ext) -> u16 {
+        match self {
+            Slot::Primary => e.primary,
+            Slot::Secondary => e.secondary,
+        }
+    }
+
+    pub fn set(self, e: &mut Ext, id: u16) {
+        match self {
+            Slot::Primary => e.primary = id,
+            Slot::Secondary => e.secondary = id,
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Slot::Primary => {
+                "A weapon the map's list lacks, given as the starting weapon in place of the one above. \
+                 The map must carry it. Not on System Link."
+            }
+            Slot::Secondary => {
+                "A weapon the map's list lacks, given as the secondary weapon in place of the one above. \
+                 The map must carry it. Not on System Link."
+            }
+        }
+    }
+
+    fn ids_at(self) -> u32 {
+        WEAPON_IDS + self as u32 * (1 + MAX_WEAPON_CHOICES as u32)
+    }
+
+    pub fn description_id(self) -> u32 {
+        IDS.id(self.ids_at())
+    }
+
+    /// The label id of picker step `i` (0 is "not used", then the table).
+    pub fn label_id(self, i: usize) -> u32 {
+        IDS.id(self.ids_at() + 1 + i as u32)
+    }
+
+    /// Step `i`'s label, such as "Primary: Spiker".
+    pub fn label(self, i: usize) -> String {
+        let id = ext_weapons::id_at(i);
+        format!("{}: {}", self.name(), ext_weapons::name(id))
+    }
+}
+
+/// The most picker steps a weapon row has ("not used" and the table).
+pub const MAX_WEAPON_CHOICES: usize = 16;
+const _: () = assert!(ext_weapons::TABLE.len() < MAX_WEAPON_CHOICES);
 
 /// The team count in the edited record (`+0xb4`, an i32).
 pub const EDITED_TEAMS: u32 = EDITED_VARIANT + 0xb4;
@@ -186,7 +272,7 @@ const SCALE_IDS: u32 = TEAMS_LABELS + TEAM_COUNTS.len() as u32;
 /// The script option rows' ids: a label per row, then a description per
 /// row. Their text is the script's and changes with the record, so each id
 /// holds a placeholder of [`OPTION_ROOM`] bytes that `live_text` rewrites.
-const OPTION_IDS: u32 = SCALE_IDS + 3 * (1 + GRAVITY_STEPS.len() as u32);
+const OPTION_IDS: u32 = SCALE_IDS + Scale::ALL.len() as u32 * (1 + GRAVITY_STEPS.len() as u32);
 
 /// The most option rows (an option takes at least one of the record's 32
 /// option bits to be worth a row; the rest are not shown).
@@ -194,7 +280,12 @@ pub const MAX_OPTION_ROWS: usize = 32;
 /// The room each option string has, NUL included.
 pub const OPTION_ROOM: usize = 128;
 
-const _: () = assert!(OPTION_IDS + 2 * MAX_OPTION_ROWS as u32 <= IDS.len);
+/// The weapon rows' ids: per slot a description, then a label per step.
+const WEAPON_IDS: u32 = OPTION_IDS + 2 * MAX_OPTION_ROWS as u32;
+
+const _: () = assert!(
+    WEAPON_IDS + Slot::ALL.len() as u32 * (1 + MAX_WEAPON_CHOICES as u32) <= IDS.len
+);
 
 /// The label id of script option row `i`.
 pub fn option_label_id(i: usize) -> u32 {
@@ -459,6 +550,12 @@ pub fn strings() -> Vec<(u32, String)> {
         v.push((sc.description_id(), sc.description().to_string()));
         for i in 0..GRAVITY_STEPS.len() {
             v.push((sc.label_id(i), sc.label(i)));
+        }
+    }
+    for sl in Slot::ALL {
+        v.push((sl.description_id(), sl.description().to_string()));
+        for i in 0..=ext_weapons::TABLE.len() {
+            v.push((sl.label_id(i), sl.label(i)));
         }
     }
     // The script options' strings are rewritten at run time
@@ -803,6 +900,31 @@ impl Page {
         self.choose_percent(&what, |e| scale.get(e), |e, v| scale.set(e, v), pick)
     }
 
+    /// Sets the weapon of slot `slot` to the table's step `pick` makes of
+    /// the current one. What to log.
+    fn choose_weapon(&self, slot: Slot, pick: impl FnOnce(usize) -> usize) -> String {
+        let what = slot.name().to_ascii_lowercase();
+        let mut b = self.edit.block.lock().unwrap_or_else(|e| e.into_inner());
+        let mut e = Ext::in_effect(&b);
+        let was = slot.get(&e);
+        let i = pick(ext_weapons::step(was));
+        if i > ext_weapons::TABLE.len() {
+            return format!("variant options: no {what} choice at {i}");
+        }
+        let id = ext_weapons::id_at(i);
+        if id == was {
+            return format!("variant options: {what} stays {}", ext_weapons::name(was));
+        }
+        slot.set(&mut e, id);
+        *b = e.encode();
+        self.edit.dirty.store(true, Ordering::SeqCst);
+        format!(
+            "variant options: {what} {} -> {}",
+            ext_weapons::name(was),
+            ext_weapons::name(id)
+        )
+    }
+
     fn choose_percent(
         &self,
         what: &str,
@@ -926,6 +1048,16 @@ impl Page {
                     spec
                 })
             }
+            r if Slot::of_row(r).is_some() => {
+                let slot = Slot::of_row(r)?;
+                let i = ext_weapons::step(slot.get(&self.ext()));
+                Some(
+                    RowSpec::value(slot.name(), &ext_weapons::choices(), i)
+                        .press(picker())
+                        .describe(slot.description())
+                        .ids(&[slot.label_id(i), slot.description_id()]),
+                )
+            }
             r => {
                 let scale = Scale::of_row(r)?;
                 let i = nearest_step(scale.get(&self.ext()));
@@ -953,6 +1085,9 @@ impl Page {
             }),
             GRAVITY_ROW => page.choose_gravity(|_| index),
             TEAMS_ROW => page.choose_teams(|_| index),
+            r if Slot::of_row(r).is_some() => {
+                page.choose_weapon(Slot::of_row(r).expect("weapon picker row"), |_| index)
+            }
             r => page.choose_scale(Scale::of_row(r).expect("scale picker row"), |_| index),
         });
         let pick = Pick::new(
@@ -1007,9 +1142,14 @@ impl Rows for Page {
             )],
             GRENADES_ROW => vec![(LABEL_SLOT, grenades_label_id(self.ext().unlimited_grenades))],
             TEAMS_ROW => vec![(LABEL_SLOT, teams_label_id(teams_step(self.teams())))],
-            r => match Scale::of_row(r) {
-                Some(sc) => vec![(LABEL_SLOT, sc.label_id(nearest_step(sc.get(&self.ext()))))],
-                None => Vec::new(),
+            r => match (Scale::of_row(r), Slot::of_row(r)) {
+                (Some(sc), _) => {
+                    vec![(LABEL_SLOT, sc.label_id(nearest_step(sc.get(&self.ext()))))]
+                }
+                (_, Some(sl)) => {
+                    vec![(LABEL_SLOT, sl.label_id(ext_weapons::step(sl.get(&self.ext()))))]
+                }
+                _ => Vec::new(),
             },
         }
     }
@@ -1038,7 +1178,13 @@ impl Rows for Page {
             GRAVITY_ROW => Some(self.choose_gravity(percent)),
             GRENADES_ROW => Some(self.toggle_grenades()),
             TEAMS_ROW => Some(self.choose_teams(|i| next_step(i, TEAM_COUNTS.len(), right))),
-            r => Scale::of_row(r).map(|s| self.choose_scale(s, percent)),
+            r => match (Scale::of_row(r), Slot::of_row(r)) {
+                (Some(s), _) => Some(self.choose_scale(s, percent)),
+                (_, Some(sl)) => Some(self.choose_weapon(sl, |i| {
+                    next_step(i, ext_weapons::TABLE.len() + 1, right)
+                })),
+                _ => None,
+            },
         }
     }
     fn description(&self, row: i16) -> Option<u32> {
@@ -1049,7 +1195,9 @@ impl Rows for Page {
             GRAVITY_ROW => Some(GRAVITY_DESCRIPTION_ID),
             GRENADES_ROW => Some(GRENADES_DESCRIPTION_ID),
             TEAMS_ROW => Some(TEAMS_DESCRIPTION_ID),
-            r => Scale::of_row(r).map(Scale::description_id),
+            r => Scale::of_row(r)
+                .map(Scale::description_id)
+                .or_else(|| Slot::of_row(r).map(Slot::description_id)),
         }
     }
     /// An edit goes to the record before the row is drawn again.
@@ -1111,6 +1259,13 @@ impl Rows for Page {
                 sc.label(nearest_step(sc.get(&e)))
             ));
         }
+        for sl in Slot::ALL {
+            d.push_str(&format!(
+                ", [{}] \"{}\"",
+                sl.row(),
+                sl.label(ext_weapons::step(sl.get(&e)))
+            ));
+        }
         for (i, o) in self.option_rows().iter().enumerate() {
             d.push_str(&format!(
                 ", [{}] \"{}\"",
@@ -1133,7 +1288,8 @@ impl Describe for Page {
         s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
         s.content.row_help = true;
         s.footer = true;
-        // Six fixed rows (gravity, grenades, teams and the three scales)
+        // Nine fixed rows (gravity, grenades, teams, the four scales and the
+        // two other weapons)
         // and a row per script option: the list scrolls where its room is
         // shorter.
         s.scrolls = true;
@@ -1367,12 +1523,67 @@ mod tests {
     /// The damage, shield and health rows step their percents in the
     /// block, each on its own.
     #[test]
+    fn the_weapon_rows_pick_from_the_table_and_write_the_block() {
+        let p = Page::default();
+        p.read([0; ext::LEN]);
+        assert_eq!(Slot::of_row(7), Some(Slot::Primary));
+        assert_eq!(Slot::of_row(8), Some(Slot::Secondary));
+        assert_eq!(Slot::of_row(9), None);
+        assert_eq!(Slot::Secondary.row() as usize, ROWS - 1);
+        for sl in Slot::ALL {
+            assert_eq!(p.texts(sl.row()), [(LABEL_SLOT, sl.label_id(0))]);
+            assert_eq!(p.description(sl.row()), Some(sl.description_id()));
+            assert_eq!(p.press(sl.row()), Chosen::Open(picker::NAME));
+        }
+        assert_eq!(Slot::Primary.label(0), "Primary: Not Used");
+        let hammer = ext_weapons::TABLE[1];
+        assert_eq!(
+            Slot::Secondary.label(2),
+            format!("Secondary: {}", hammer.label)
+        );
+        // Right steps up the table and stops at its end; left comes back.
+        let last = ext_weapons::TABLE.len();
+        for _ in 0..last + 2 {
+            p.sideways(Slot::Primary.row(), true);
+        }
+        assert_eq!(p.ext().primary, ext_weapons::TABLE[last - 1].id);
+        assert_eq!(p.ext().secondary, 0);
+        assert!(p.pending().is_some());
+        p.sideways(Slot::Primary.row(), false);
+        assert_eq!(p.ext().primary, ext_weapons::TABLE[last - 2].id);
+        assert_eq!(
+            p.sideways(Slot::Secondary.row(), false).as_deref(),
+            Some("variant options: secondary stays Not Used")
+        );
+        // A choice the picker makes sets the slot; one past the table is refused.
+        assert!(p.choose_weapon(Slot::Secondary, |_| 2).contains("Gravity Hammer"));
+        assert_eq!(p.ext().secondary, hammer.id);
+        assert!(p.choose_weapon(Slot::Secondary, |_| 99).contains("no secondary choice at 99"));
+        assert!(p.describe(ROWS).unwrap().contains(&format!("[8] \"Secondary: {}\"", hammer.label)));
+        // Every label and description is served.
+        let served = strings();
+        for sl in Slot::ALL {
+            assert!(served.iter().any(|(i, _)| *i == sl.description_id()));
+            for i in 0..=last {
+                assert!(served.iter().any(|(id, t)| *id == sl.label_id(i) && *t == sl.label(i)));
+            }
+        }
+        // The rows' ids are distinct from every other family id.
+        let mut ids: Vec<u32> = served.iter().map(|(i, _)| *i).collect();
+        let n = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), n);
+    }
+
+    #[test]
     fn the_scale_rows_step_their_percents() {
         let p = Page::new();
         p.read([0; ext::LEN]);
         assert_eq!(Scale::of_row(3), Some(Scale::Damage));
         assert_eq!(Scale::of_row(5), Some(Scale::Health));
-        assert_eq!(Scale::of_row(6), None);
+        assert_eq!(Scale::of_row(6), Some(Scale::Speed));
+        assert_eq!(Scale::of_row(7), None);
         for sc in Scale::ALL {
             assert_eq!(p.texts(sc.row()), [(LABEL_SLOT, sc.label_id(4))]);
             assert_eq!(p.description(sc.row()), Some(sc.description_id()));
@@ -1567,8 +1778,8 @@ mod tests {
         // The fixed rows are as they were.
         assert_eq!(p.texts(GRAVITY_ROW), [(LABEL_SLOT, gravity_label_id(4))]);
         assert_eq!(
-            p.texts(ROWS as i16 - 1),
-            [(LABEL_SLOT, Scale::Health.label_id(4))]
+            p.texts(Scale::Speed.row()),
+            [(LABEL_SLOT, Scale::Speed.label_id(4))]
         );
         // Then one row per option, in the script's order.
         for i in 0..4 {
@@ -1598,7 +1809,7 @@ mod tests {
         assert!(
             p.describe(ROWS + 4)
                 .unwrap()
-                .contains("[8] \"First find: 3\"")
+                .contains(&format!("[{}] \"First find: 3\"", ROWS + 2))
         );
         // A bool, an enum and a small int open a picker on the held value.
         assert_eq!(p.press(ROWS as i16 + 2), Chosen::Open(picker::NAME));

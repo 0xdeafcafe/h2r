@@ -253,12 +253,42 @@ fn build(
     Ok((id, built))
 }
 
-/// Installs the offers again and has the VFS look, as a Live download does.
-fn publish(paths: &Paths, vfs: Option<&Arc<Mutex<vfs::Vfs>>>) {
+/// The installed multiplayer slot for `map_id`, looking again after
+/// `rescan` when the id is not found the first time: the catalogue under
+/// `root` is read fresh on each look, and the VFS asked to identify each
+/// slot. `maps.load` passes [`publish`] as the rescan, so a package
+/// written while the game runs is found (docs/editor/tag-workspace.md,
+/// "Interfaces"); nothing else rescans.
+fn installed_slot(
+    vfs: &Arc<Mutex<vfs::Vfs>>,
+    root: &Path,
+    map_id: &content::MapId,
+    rescan: &dyn Fn(),
+) -> Option<Listed> {
+    let look = |vfs: &mut vfs::Vfs| {
+        let catalogue = crate::map_select::read(&[], root);
+        listed_package(&catalogue, *map_id, |path| vfs.map_id(path))
+    };
+    let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+    let listed = look(&mut v);
+    drop(v);
+    if listed.is_some() {
+        return listed;
+    }
+    rescan();
+    let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+    look(&mut v)
+}
+
+/// Install the offers under `<data>/maps`, refresh the game's own map
+/// list when the boot prepared it, and reload the VFS's map packages.
+/// What a test map's build does when it lands, and what `maps.load` does
+/// when the id it is given is not found.
+fn publish(disc: &Path, data_root: &Path, vfs: Option<&Arc<Mutex<vfs::Vfs>>>) {
     if crate::map_select::prepared() {
-        crate::map_select::packages_changed(&paths.disc);
+        crate::map_select::packages_changed(disc);
     } else {
-        crate::new_maps::install_at_boot(&paths.data_root, &paths.disc);
+        crate::new_maps::install_at_boot(data_root, disc);
     }
     if let Some(v) = vfs {
         v.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps();
@@ -281,6 +311,7 @@ fn request(name: &str, listed: &Listed) -> Request {
         map: listed.id,
         difficulty: level_boot::Difficulty::default(),
         kind: Kind::Multiplayer,
+        variant: None,
     }
 }
 
@@ -416,7 +447,7 @@ pub fn install(
             .spawn(move || {
                 let out = build(&p2, &cp2, &r2);
                 if out.is_ok() {
-                    publish(&p2, vfs.as_ref());
+                    publish(&p2.disc, &p2.data_root, vfs.as_ref());
                 }
                 let mut jobs = lock(&j2);
                 let Some(m) = jobs.maps.get_mut(&r2.name) else { return };
@@ -447,17 +478,20 @@ pub fn install(
 
     let root = paths.content_root();
     let (package_vfs, package_calls) = (vfs.clone(), calls.clone());
+    let load_paths = paths.clone();
     agent.add_game_method(method::MAPS_LOAD, Access::Act, move |v, ctx| {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Load { map_id: content::MapId }
         let Load { map_id } = params(v)?;
         let vfs = package_vfs.as_ref().ok_or_else(|| unavailable("no game VFS"))?;
-        let catalogue = crate::map_select::read(&[], &root);
-        let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
-        let listed = listed_package(&catalogue, map_id, |path| vfs.map_id(path))
-            .ok_or_else(|| unavailable(format!("no installed multiplayer slot for {map_id}")))?;
-        drop(vfs);
+        // A package written while the game runs is installed again and
+        // the VFS's map packages reloaded before the id is refused
+        // (docs/editor/tag-workspace.md, "Interfaces").
+        let listed = installed_slot(vfs, &root, &map_id, &|| {
+            publish(&load_paths.disc, &load_paths.data_root, package_vfs.as_ref());
+        })
+        .ok_or_else(|| unavailable(format!("no installed multiplayer slot for {map_id}")))?;
         queue_load(ctx, package_calls.as_ref(), map_id.to_string(), listed, vec![])
     });
 
@@ -520,7 +554,7 @@ pub fn install(
             }
             std::fs::remove_dir_all(&dir)
                 .map_err(|e| unavailable(format!("removing {}: {e}", dir.display())))?;
-            publish(&p, vfs.as_ref());
+            publish(&p.disc, &p.data_root, vfs.as_ref());
         }
         lock(&j).maps.remove(&name);
         Ok(json!(RemoveResult { name, removed }))

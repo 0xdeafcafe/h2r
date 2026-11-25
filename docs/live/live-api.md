@@ -436,18 +436,18 @@ reference the canonical game ID and the original tick range.
 | `PUT /v1/films/{id}?object=film\|stats&part=<n>` | owner, `films.write` | Store numbered parts, starting at zero. Repeating a part is safe. |
 | `POST /v1/films/{id}?continue=1` | owner, `films.write` | Verify and publish. Continue on 202 until 201. Quota refusals return 413 and a displayable reason. |
 | `GET /v1/films/{id}` | visible reader | Film detail. |
-| `GET /v1/films/{id}/film` | visible reader | A ranged read selects admitted stats extents. Signed-in readers can request `?object=film` for exact film ranges with a revision ETag. |
+| `GET /v1/films/{id}/film` | visible reader | A ranged read selects admitted stats extents. Signed-in readers can request `?object=film` for the film's exact bytes, whole or by range with a revision ETag. For a host game a player can also request `?object=stats` for the whole stats container. |
 | `PUT /v1/films/{id}/visibility` | owner, `films.write` | Set `{visibility}` to `private`, `link` or `public`. |
 | `DELETE /v1/films/{id}` | `films.write` | Remove an upload as owner or admin. A participant can remove a host game from their own library. |
 | `GET /v1/films?player=<xuid>&kind=recent` | public or `read` | Up to 25 of the player's visible games, newest first. |
 | `GET /v1/films?player=<xuid>&kind=saved` | public or `read` | Games pinned by that player, newest game first. |
 | `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
 | `GET /v1/games/{game}/film` | public or `read` | Fetch one permitted range of a visible version 3 film. Returns 206. |
-| `POST /v1/games/{game}/film` | lease `telemetry.ingest` | Upload or finish the authoritative host recording. Returns 202 while work remains and 204 on publication. |
-| `PUT /v1/games/{game}/film?part=<n>` | lease `telemetry.ingest` | Submit the next numbered part. Returns 202 while processing and 204 when ready for the next part. |
+| `POST /v1/games/{game}/film` | lease `telemetry.ingest` | Upload or finish the authoritative host recording's stats stream. Returns 202 while work remains and 204 on publication. With `?object=film`, the film file instead; it returns 204. |
+| `PUT /v1/games/{game}/film?part=<n>` | lease `telemetry.ingest` | Submit the next numbered part. Returns 202 while processing and 204 when ready for the next part. With `?object=film`, a part of the film file. |
 | `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
 | `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
-| `GET /v1/games/{game}/film` without a range | `read`, game participant | Streams the private exact host recording (up to 2 GiB). |
+| `GET /v1/games/{game}/film` without a range | `read` | Streams the host's film file, or the container when the host sent none (up to 2 GiB). The container and a film file with a machine part go only to the game's players; a film file without one goes to any account that can see the game. |
 | `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
 | `POST /v1/films/{game}/clips` | `films.write` | An account that can see the game can create a clip. Returns the clip with 201. |
 | `GET /v1/clips/{id}` | public or `read` | The clip. |
@@ -539,6 +539,18 @@ recording under `films/<game>/`. A multipart receipt identifies a
 manifest of immutable parts that together hold the original file.
 A retry after publication preserves the selected bytes and summary.
 Older receipts resolve to `films/<game>.h2film`.
+
+A host sends its film file (`.h2f`, [input-film.md](../game/input-film.md#layout))
+as a second object, with `?object=film` on the same routes: one POST up
+to 64 MiB, or numbered 16 MiB parts and a completion with the size and
+SHA-256. The film file and the stats stream can arrive in either order.
+Live checks the header, inflates the seed once to match its `game_id` to
+the game, and walks the block lengths and the trailer; it inflates no
+tick chunk (`films/upload/film_file.rs`). It stores the bytes as sent
+under `input-films/<game>/` and signs a `HostFilmFileStored` receipt. The
+first film file of a game is kept: a retry with the same bytes returns
+204 and a different file 409. A pinned host game counts both objects
+against the account's quota.
 
 ### Switching a host to film ingestion
 
@@ -1191,7 +1203,7 @@ public API. HLE keys stay local while sockets use unencrypted host traffic.
 
 | endpoint | authentication | result |
 |---|---|---|
-| `POST /v1/sessions` | account token, `lxm: sessions.write` | 201 `{session_id, session, position}` |
+| `POST /v1/sessions` | account token, `lxm: sessions.write`; or a lease token | 201 `{session_id, session, position}`; a leased host's also has `identifiers`, the seat and machine slots of its game (as `POST /v1/games` returns) |
 | `POST /v1/sessions/{id}/events` | host token, `lxm: sessions.write`; batch JWS | 201 `{position}` |
 | `GET /v1/sessions` | public, or `read` on a private server | `{items, next, position}` |
 | `GET /v1/sessions/{id}` | same read rule | `{session, position}`; 404 if unknown |
@@ -1978,8 +1990,8 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   declares none), for the game variant form ([Game
   variants](#game-variants)).
 - A check that is `ok` also says what a variant of the script starts
-  from: `scoring` (`script`, or `carrier` when the carrier's engine
-  scores the game), `about` (the script's description; omitted when it
+  from: `scoring` (`script`, or `carrier` for a script with a `uses`
+  line, whose built-in game scores), `about` (the script's description; omitted when it
   has none), `settings` (`[{name, label, value}]`, the `settings` block
   in table order, `value` as text: `15`, `Magnum`, `On`, `5 minutes`;
   omitted when empty) and `quick` (`[{kind, name, label}]`, the Quick
@@ -2133,7 +2145,7 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
 - `Variant` is `{id, name, description, author: {xuid, gamertag}, engine,
   game_type, record_hex, script_hash, script_name, visibility, created,
   bundle_url, settings: [{label, value}], eligible}`. `engine` is the record's
-  retail engine index and `game_type` our label of it; `script_hash` and
+  engine index (including 6 for a script record) and `game_type` our label of it; `script_hash` and
   `script_name` are null for an unscripted variant; `created` is RFC 3339;
   `bundle_url` is the file's path; `settings` is the record's settings in
   words (each setting of its game type we have a name for, then the
@@ -2156,8 +2168,10 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   the record decodes and the game would keep it, the name and description
   keep the name rules (1 to 31 characters, at most 150 for a
   description), and a named script hashes to its hash, starts with the
-  prefix, verifies, fits the tick budget and the IR cap (`rules::fits`)
-  and rides the record's engine. A variant whose record runs no script
+  prefix, verifies and fits the tick budget and the IR cap (`rules::fits`).
+  A retail record must match the script's template. A script attached to
+  an index-6 record may write common settings and extension fields. A
+  variant whose record runs no script
   (mode 0, or Firefight's mode 1) is refused by name: Live lists scripted
   variants only. A refusal is 400 with the reason. The file's id is the SHA-256 of its canonical bytes, author
   included, so the same file published again answers 200 with the same
@@ -2165,10 +2179,11 @@ routes (`crates/live/live-server/src/game_variants.rs`, wire types in
   id once published.
 - `from-script` and `bundle` take `{script_hash | source, name,
   description, visibility, options}`. The record is the script's own
-  (`variants::portable::record_for`): the stock record of its carrier
-  engine with the script's `settings` written, named, with mode 2, the
-  IR's prefix and `options` packed into the 32 option bits in
-  declaration order. A `description` left out or blank is the script's
+  (`variants::portable::record_for`). When the script uses Slayer's
+  template and writes no type-area setting, the record has index 6 and
+  a zero type area. Other scripts keep their retail templates. The
+  record carries the requested name, the script's settings, its mode-2
+  reference and the options packed in declaration order. A `description` left out or blank is the script's
   `about`. `options` maps an option's name to a
   number, a bool or an enum value's name; one left out takes its default;
   an unknown name or a value out of range is 400. A `script_hash` is a

@@ -24,6 +24,7 @@ use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, def, err};
 use crate::App;
+use crate::app::{preview_switch::Route, rules_edit::reload_params};
 use crate::play::pair::Request;
 
 mod run;
@@ -63,15 +64,22 @@ enum State {
     Done(Value),
 }
 
-const RESULT_SHAPE: &str = r#"{"id":"integer","what":"weapon|object|ui|hud|audio","target":"string|null","state":"sending|running|done|failed","why?":"string","elapsed_ms":"integer","steps":"[string]","edits":"{pending,sent,left}","applied?":"object","reads?":"object","capture?":"{path,method,tick,present,width,height,mean_luma,dark_share,black}|null","audio?":"object","warnings?":"[string]"}"#;
+const RESULT_SHAPE: &str = r#"{"id":"integer","what":"weapon|object|animation|ui|hud|sound|audio","target":"string|null","state":"sending|running|done|failed","why?":"string","elapsed_ms":"integer","steps":"[string]","edits":"{pending,sent,left}","applied?":"object","reads?":"object","capture?":"{path,method,tick,present,width,height,mean_luma,dark_share,black}|null","audio?":"object","editor?":"object","warnings?":"[string]"}"#;
 
 const METHODS: &[MethodDef] = &[
     def(
         m::PAIR_PREVIEW,
-        "Put content into the paired game and read it back: give the player a weapon, spawn an object in front of them, check the menu screen shown, or show the HUD; then wait, read the game state that matters and capture the frame. Pending edits are sent first. Answers with a job id at once; pair.result has the outcome",
-        r#"{"what":"weapon|object|ui|hud","target?":"string","player?":"integer","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
-        r#"{"id":"integer","state":"sending|running"}"#,
+        "Preview the front document (or doc) in game. A variant boots Studio's own game with its current record; a script reloads into Studio's own game, starting it if needed. With what, run an explicit paired preview: give a weapon, spawn an object, play an animation, check the menu or HUD, or play and sample a sound. Paired jobs send pending edits first and answer with a pair.result job id",
+        r#"{"doc?":"string (tab id, without what)","what?":"weapon|object|animation|ui|hud|sound","target?":"string","animation?":"string","player?":"integer","seconds?":"number","pos?":"[x,y,z]","distance?":"number","keep?":"boolean","ticks?":"integer","view?":"render|screen","out?":"string","edits?":"send|skip"}"#,
+        r#"{"id?":"integer","state?":"sending|running","requested?":"boolean"}"#,
         r#"{"what":"weapon","target":"objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}"#,
+    ),
+    def(
+        m::PREVIEW_TARGET,
+        "A document's preview switch: where its preview shows (studio, game for a game Studio started, attached for one someone else started), and what Preview in game asks of the paired game for its kind (`game`: the pair.preview params, or `why` it has none). With `target` the switch is set; a game target needs a paired game of that kind. The document is `doc` (a shell.tabs id) or the front one",
+        r#"{"doc?":"string (a tab id from shell.tabs)","target?":"studio|game|attached"}"#,
+        r#"{"doc":"string|null","target":"studio|game|attached","targets":"[{id,label,available,why?}]","game":"{what,target?}|null","why?":"string","in_game":"{available,why?}"}"#,
+        "{}",
     ),
     def(
         m::PAIR_AUDIO,
@@ -97,7 +105,10 @@ impl Provider for Preview {
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
         let p = P(params);
         Some(match method {
+            m::PAIR_PREVIEW if !p.has("what") => self.document(app, &p),
+            m::PAIR_PREVIEW if p.has("doc") => Err(err(code::INVALID_PARAMS, "use doc or what")),
             m::PAIR_PREVIEW => self.preview(app, &p),
+            m::PREVIEW_TARGET => self.target(app, &p),
             m::PAIR_AUDIO => self.audio(app, &p),
             m::PAIR_RESULT => self.result(app, &p),
             _ => return None,
@@ -106,7 +117,7 @@ impl Provider for Preview {
 }
 
 /// The paired game's socket, from what the window published.
-fn paired(app: &App) -> Result<(Endpoint, bool), RpcError> {
+pub(super) fn paired(app: &App) -> Result<(Endpoint, bool), RpcError> {
     let s = app.pairing.published.as_ref().ok_or_else(|| {
         err(
             code::REFUSED,
@@ -126,6 +137,20 @@ fn paired(app: &App) -> Result<(Endpoint, bool), RpcError> {
     Ok((endpoint, s["paused"] == true))
 }
 
+/// Studio's own measure of the `snd!` tag a sound preview plays
+/// (`sound.measure`): its levels and verdict, or why there are none.
+fn editor_measure(app: &mut App, sound: &str) -> Value {
+    let tag = if sound.contains(':') || sound.starts_with("0x") {
+        sound.to_owned()
+    } else {
+        format!("snd!:{sound}")
+    };
+    match super::sound_measure::measure(app, &P(&json!({"tag": tag}))) {
+        Ok(v) => v,
+        Err(e) => json!({"why": e.message}),
+    }
+}
+
 /// Rows of Pending the game has not taken yet and will (a conflict, a
 /// refused write or one that needs a reload stays until someone acts).
 fn waiting(app: &App) -> usize {
@@ -141,6 +166,88 @@ fn waiting(app: &App) -> usize {
 }
 
 impl Preview {
+    /// `preview.target`: read or set a document's preview switch.
+    fn target(&mut self, app: &mut App, p: &P) -> Reply {
+        use crate::app::preview_switch::PreviewTarget;
+        let doc = if p.has("doc") {
+            Some(super::shell::doc_param(app, p)?)
+        } else {
+            app.sync_tabs();
+            app.front_doc()
+        };
+        if let Some(t) = p.opt_str("target")? {
+            let target = PreviewTarget::parse(t)
+                .ok_or_else(|| err(code::INVALID_PARAMS, "target is studio, game or attached"))?;
+            let doc = doc.ok_or_else(|| err(code::INVALID_PARAMS, "no document is open"))?;
+            app.set_preview_target(doc, target)
+                .map_err(|why| err(code::REFUSED, why))?;
+        }
+        let targets: Vec<Value> = PreviewTarget::ALL
+            .iter()
+            .map(|t| match app.preview_target_available(*t) {
+                Ok(()) => json!({"id": t.id(), "label": t.label(), "available": true}),
+                Err(why) => json!({"id": t.id(), "label": t.label(), "available": false, "why": why}),
+            })
+            .collect();
+        let mut out = json!({
+            "doc": doc.map(|d| app.doc_id(d)),
+            "target": doc.map_or(PreviewTarget::Studio, |d| app.preview_target(d)).id(),
+            "targets": targets,
+            "game": null,
+            "in_game": match doc.map(|d| app.in_game_available(d)) {
+                Some(Ok(())) => json!({"available": true}),
+                Some(Err(why)) => json!({"available": false, "why": why}),
+                None => json!({"available": false, "why": "no document is open"}),
+            },
+        });
+        match doc.map(|d| app.game_preview(d)) {
+            None => out["why"] = json!("no document is open"),
+            Some(Ok(g)) => out["game"] = g.params(),
+            Some(Err(why)) => out["why"] = json!(why),
+        }
+        Ok(out)
+    }
+
+    fn document(&mut self, app: &mut App, p: &P) -> Reply {
+        if p.0.as_object().is_some_and(|p| p.keys().any(|key| key != "doc")) {
+            return Err(err(code::INVALID_PARAMS, "explicit preview options need what"));
+        }
+        let doc = if p.has("doc") {
+            super::shell::doc_param(app, p)?
+        } else {
+            app.sync_tabs();
+            app.front_doc().ok_or_else(|| err(code::REFUSED, "no document is open to preview"))?
+        };
+        app.in_game_available(doc).map_err(|why| err(code::REFUSED, why))?;
+        self.advance(app);
+        let result = match app.preview_route(doc).map_err(|why| err(code::REFUSED, why))? {
+            Route::Paired(plan) => self.preview(app, &P(&plan.params())),
+            Route::Variant => {
+                let variant = app.preview_variant().map_err(|why| err(code::REFUSED, why))?;
+                super::pair::enqueue(app, Request::StartOwnVariant(variant))
+            }
+            Route::Rules => {
+                let (params, hash) = reload_params(&app.rules.text, app.rules.mode)
+                    .map_err(|why| err(code::REFUSED, why))?;
+                let carrier = if app.pairing.link.as_ref().is_some_and(|l| l.own.is_some()) {
+                    None
+                } else {
+                    let (ir, _) = rules::build(&app.rules.text)
+                        .map_err(|e| err(code::REFUSED, e.to_string()))?;
+                    let variant = variants::portable::settings_record(&ir)
+                        .map_err(|e| err(code::REFUSED, e.to_string()))?;
+                    Some(variants::portable::export(&variant))
+                };
+                super::pair::enqueue(app, Request::PreviewRules { params, hash, carrier })
+            }
+        }?;
+        app.preview.focus_game = true;
+        app.preview.last_job = result["id"].as_u64();
+        app.preview.report = app.preview.last_job.map(|_| result.clone());
+        app.info(format!("Preview in game: {}", app.doc_title(doc)));
+        Ok(result)
+    }
+
     fn preview(&mut self, app: &mut App, p: &P) -> Reply {
         let what = p.str("what")?;
         let target = p.opt_str("target")?.map(str::to_owned);
@@ -156,6 +263,7 @@ impl Preview {
                 )
             })
         };
+        let mut editor = None;
         let (task, what, settle) = match what {
             "weapon" => (
                 Task::Weapon {
@@ -181,12 +289,56 @@ impl Preview {
                     30,
                 )
             }
+            "animation" => {
+                let pos = p.opt_vec3("pos")?.map(|v| v.map(f64::from));
+                let distance = p.opt_f32("distance")?.unwrap_or(3.0);
+                if !(0.0..=100.0).contains(&distance) {
+                    return Err(err(code::INVALID_PARAMS, "distance is 0 to 100 world units"));
+                }
+                let animation = p.str("animation")?.to_owned();
+                if animation.is_empty() {
+                    return Err(err(
+                        code::INVALID_PARAMS,
+                        "animation is a name in the object's graph (anim.list lists them)",
+                    ));
+                }
+                (
+                    Task::Animation {
+                        tag: need_target("animation")?,
+                        animation,
+                        pos,
+                        distance: f64::from(distance),
+                    },
+                    "animation",
+                    30,
+                )
+            }
             "ui" => (Task::Ui { screen: target.clone() }, "ui", 0),
             "hud" => (Task::Hud { state: target.clone() }, "hud", 30),
+            "sound" => {
+                let sound = need_target("sound")?;
+                let seconds = f64::from(p.opt_f32("seconds")?.unwrap_or(2.0));
+                if !(0.1..=30.0).contains(&seconds) {
+                    return Err(err(code::INVALID_PARAMS, "seconds is 0.1 to 30"));
+                }
+                editor = Some(editor_measure(app, &sound));
+                (
+                    Task::Audio {
+                        seconds,
+                        every: Duration::from_millis(100),
+                        call: Some((
+                            agent_proto::sim::method::AUDIO_PLAY.to_owned(),
+                            json!({"sound": sound, "player": format!("player.{player}")}),
+                        )),
+                    },
+                    "sound",
+                    0,
+                )
+            }
             _ => {
                 return Err(err(
                     code::INVALID_PARAMS,
-                    "what is weapon, object, ui or hud",
+                    "what is weapon, object, animation, ui, hud or sound",
                 ));
             }
         };
@@ -199,6 +351,8 @@ impl Preview {
             Some("screen") => Capture::Screen,
             Some(_) => return Err(err(code::INVALID_PARAMS, "view is render or screen")),
         };
+        // A sound has no picture.
+        let capture = if what == "sound" { Capture::None } else { capture };
         let out = p.opt_str("out")?.map(PathBuf::from);
         let send = match p.opt_str("edits")? {
             None | Some("send") => true,
@@ -219,6 +373,7 @@ impl Preview {
             ticks,
             capture,
             out,
+            editor,
         };
         self.start(app, what, target, plan, send)
     }
@@ -260,6 +415,7 @@ impl Preview {
             ticks: 0,
             capture: Capture::None,
             out: None,
+            editor: None,
         };
         self.start(app, "audio", None, plan, false)
     }

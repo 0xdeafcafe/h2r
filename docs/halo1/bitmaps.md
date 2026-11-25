@@ -145,7 +145,7 @@ flags masked to the low five bits.
 ## Decoding (`crates/tools/h1-assets`)
 
 ```rust
-use h1bitmaps::BitmapExt;
+use h1_assets::bitmaps::BitmapExt;
 let bm = h1map::bitmap::Bitmap::read(&map, tag)?;   // header, sequences, images
 let img = bm.decode(&map, index, mip)?;            // Rgba8Image { width, height, rgba }
 let levels = bm.decode_levels(&map, index)?;       // every face and level (assets::Level)
@@ -154,7 +154,7 @@ let bytes = bm.pixels(&map, index)?;               // the stored chain
 
 `decode` stacks a cube's six faces (+X, −X, +Y, −Y, +Z, −Z) or a volume's
 slices top to bottom, so `height` is the face height × 6 or × depth.
-`h1bitmaps::decode::h2_image` restates a Halo 1 image as a `tags::Image`
+`h1_assets::bitmaps::decode::h2_image` restates a Halo 1 image as a `tags::Image`
 and Halo 2's `assets::texture_desc` and `assets::bitmap::decode_bytes` do
 the rest: one decoder for both games, with Halo 2's descriptor checks
 (both or neither storage flag, mips on a linear image, non-square cubes,
@@ -167,9 +167,14 @@ volume slice; every level with `--mips`).
 
 ## Conversion to Halo 2
 
-`h1bitmaps::convert_bitmap(&map, tag)` returns the Halo 1 bitmap, an
-`h1models::Converted { group: bitm, root, raw }`, and per image what was
-cut. `Converted::install(&mut set, name)` adds it to a `map::build::TagSet`.
+`h1_assets::bitmaps::convert_bitmap(&map, tag)` returns the Halo 1 bitmap, an
+`h1_assets::models::Converted { group: bitm, root, raw }`, and per image what
+was cut (`ConvertedImage`). `Converted::install(&mut set, name)` adds it to a
+`map::build::TagSet`. Three more entry points start from the same images:
+`convert_bitmap_opaque` forces every image's alpha opaque
+(`force_opaque`), `bitmaps::mask` bakes a model shader's reflection mask
+into its base map's alpha as DXT5, and `bitmaps::atlas::compose` builds the
+per-cluster lightmap pages ([multiplayer.md](multiplayer.md), "Lightmap").
 
 | Halo 2 | From Halo 1 |
 |---|---|
@@ -186,57 +191,52 @@ cut. `Converted::install(&mut set, name)` adds it to a `map::build::TagSet`.
 Nothing is re-encoded: every Halo 1 format has the same Halo 2 format
 number and layout, P8 bump included.
 
-**Proof** (`tests/real_disc.rs`): every bitmap of beavercreek (357 tags,
+**Proof** (`crates/tools/h1-assets/tests/bitmaps/real_disc.rs`,
+`beavercreek_bitmaps_convert_and_decode_identically` and
+`a30_lightmaps_convert_and_decode_identically`): every bitmap of beavercreek (357 tags,
 501 images) and both of a30's lightmap bitmaps (59 pages) are converted,
 installed in one built map, read back with Halo 2's tag decoder
 (`tags::DecodedTag`) and decoded with Halo 2's bitmap decoder; every face
 and level is **byte-identical** to the Halo 1 decode, every LOD size is the
 layout rounded to 128 and every runtime ID names its tag. The unit test
-`a_conversion_reads_back_through_halo_2s_decoders` does the same on an
+`a_conversion_reads_back_through_halo_2s_decoders`
+(`crates/tools/h1-assets/src/bitmaps/tests.rs`) does the same on an
 invented cube map and sprite sheet, and checks every header, sequence and
 sprite field.
 
 ## Lightmaps for the structure writer
 
-`h1bitmaps::lightmap_pages(&map, &structure_bsp)` returns the `sbsp`'s
-lightmap bitmap reference (`sbsp+0x00`), its tag, and per Halo 1 lightmap
-(the `sbsp+0x104` block, in the order `StructureBsp::lightmaps` returns)
-the page it samples, `None` for `-1`. `convert_bitmap` on that tag gives
-the Halo 2 lightmap bitmap, one image per page, R5G6B5 2D.
+`h1_assets::bitmaps::lightmap_pages(&map, &structure_bsp)` returns the
+`sbsp`'s lightmap bitmap reference (`sbsp+0x00`), its tag, and per Halo 1
+lightmap (the `sbsp+0x104` block, in the order `StructureBsp::lightmaps`
+returns) the page it samples, `None` for `-1`. `convert_bitmap` on that tag
+gives the Halo 2 lightmap bitmap, one image per page, R5G6B5 2D. The
+editor's Halo 1 view reads pages this way
+(`crates/tools/editor-core/src/halo1.rs`).
 
-The structure writer (`h1convert::structure`, from
+The structure writer does not copy those pages. A Halo 2 cluster samples
+one page and a Halo 1 cluster's surfaces sample several, so
+`h1convert::clusters` builds a page per lit cluster from pieces of the
+Halo 1 pages (`h1_assets::bitmaps::atlas`) and writes the render info
+entry `{page, -1}`; unlit clusters keep `{-1, -1}`. The design is in
+[multiplayer.md](multiplayer.md), "Lightmap"; the target layouts are in
 [lighting.md](../formats/lighting.md) and
-[structure-bsp.md](../formats/structure-bsp.md)):
-
-1. Installs the converted lightmap bitmap (`Converted::install`) and
-   references it from the lightmap group's bitmap reference (`ltmp` group
-   `+0x18`, datum at `+0x1c`).
-2. Per cluster, writes render info entries `{page, palette}`: `i16` page =
-   the Halo 1 lightmap's image, `i8` palette = `-1` (Halo 1 pages are
-   R5G6B5 colour, not P8 indices: no palette).
-3. Keeps each Halo 1 lightmap's materials with its page: geometry from
-   different lightmaps can share a part only when they share a page (rare,
-   but it happens once on the disc). The
-   lightmap texture coordinates the writer copies (stream `1f`)
-   are page-relative, in [0, 1].
-4. Leaves lightmaps with no page (`None`, `-1` in Halo 1: sky and unlit
-   surfaces) at `{-1, -1}`.
-
-Nothing needs P8: the renderer stores the page whatever the palette and
-binds one only when named (E `0x0004d40a`), and the CPU query that lights
-objects looks a sample up in a palette only when the image is P8 (E
-`0x000d309a`). The pages go in as R5G6B5, unquantized
-([multiplayer.md](multiplayer.md), "Lightmap").
+[structure-bsp.md](../formats/structure-bsp.md). Pages are R5G6B5, never
+P8: the renderer stores the page whatever the palette and binds one only
+when named (E `0x0004d40a`), and the CPU query that lights objects looks a
+sample up in a palette only when the image is P8 (E `0x000d309a`). One BSP
+has two lightmaps on one page, so no code may assume one lightmap per page.
 
 ## Tests
 
 ```
-cargo test -p h1map bitmap
-cargo test -p h1bitmaps
-H1_ISO=disc/halo1.iso cargo test -p h1map --release -- --ignored real_disc_every_bitmap --nocapture
-H1_ISO=disc/halo1.iso cargo test -p h1bitmaps --release -- --ignored --nocapture
-H2_DISC=disc/halo2.iso cargo test -p h1bitmaps --release -- --ignored halo2 --nocapture
+cargo xtask test -p h1map -p h1-assets
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo xtask test --disc -p h1map -p h1-assets
 ```
+
+The second line runs the `#[ignore]`d disc tests of both crates
+(`every_bitmap_on_the_disc_decodes`, `every_bsp_lightmap_page_resolves`,
+`halo2_image_fields_survey`, `real_disc_every_bitmap_reads`).
 
 Synthetic tests: every format's known texel, swizzle addresses on square
 and non-square images, DXT1/3/5 blocks (colour codes, explicit and

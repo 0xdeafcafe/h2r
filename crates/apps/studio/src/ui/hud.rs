@@ -505,14 +505,11 @@ pub fn inspector(
             ui.text_colored(theme::OK, format!("{} no overlaps, nothing off the screen", icon::CHECK));
         }
         for (i, f) in shot.findings.iter().enumerate() {
-            let c = match f.severity {
-                Severity::Warning => theme::ERROR,
-                Severity::Note => theme::WARN,
+            let severity = match f.severity {
+                Severity::Warning => crate::api::checks::Severity::Warning,
+                Severity::Note => crate::api::checks::Severity::Note,
             };
-            ui.text_colored(c, icon::ALERT);
-            ui.same_line();
-            ui.text_wrapped(&f.text);
-            if ui.is_item_hovered() {
+            if super::problems::finding_line(ui, severity, &f.text) {
                 st.hot = Some(i);
             }
         }

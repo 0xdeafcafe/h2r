@@ -33,6 +33,7 @@ frame-scene = { path = "../frame-scene" }
 scene-extract = { path = "../scene-extract" }
 
 [dev-dependencies]
+lifted = { path = "../../runtime/lifted" }
 # The lifted original for tests/*_differential.rs (feature `differential`).
 analyze.workspace = true
 xbe.workspace = true

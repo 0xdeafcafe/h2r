@@ -113,3 +113,85 @@ fn a_span_outside_its_tags_region_is_left_out() {
     assert_eq!(overlay_metadata(&o, "tiny", &spaces, t.thing.0, &[(arena, vec![1, 2])]), 0);
     assert!(o.is_empty());
 }
+
+#[test]
+fn a_jmad_move_and_revert_flush_shared_and_arena_clip_keys() {
+    use runtime::guest::Permissions;
+
+    const GRAPH: u32 = 0x1000_0000;
+    const SHARED: u32 = GRAPH + 0x2000;
+    const ARENA: u32 = hot_tags::arena::WINDOW.start;
+    const STRIDE: u32 = tags::anim::ANIMATION_SIZE as u32;
+    const SIZES: u32 = 0x3c;
+    let mut g = runtime::Guest::new();
+    g.map_zeroed(GRAPH, 0x4000, Permissions::RW).unwrap();
+    g.map_zeroed(ARENA, 0x1000, Permissions::RW).unwrap();
+
+    let root = GRAPH + ANIMATION_BLOCK;
+    let mut notice = hot_tags::TagWrite {
+        group: FourCC(*b"jmad"),
+        tag: 0x19,
+        address: GRAPH,
+        size: tags::anim::HEADER_SIZE as u32,
+        range: root..root + 8,
+        spans: Vec::new(),
+        moved_blocks: Vec::new(),
+        revert: false,
+    };
+    g.set_u32(root, 2).unwrap();
+    g.set_u32(root + 4, SHARED).unwrap();
+
+    let graph_range = SHARED..SHARED + 2 * STRIDE;
+    let arena_range = ARENA..ARENA + 3 * STRIDE;
+    assert_eq!(animation_clip_ranges(&g, &notice), [graph_range.clone()]);
+
+    g.set_u32(root, 3).unwrap();
+    g.set_u32(root + 4, ARENA).unwrap();
+    notice.moved_blocks = vec![hot_tags::BlockRepoint {
+        root,
+        previous: (2, SHARED),
+    }];
+    assert_eq!(
+        animation_clip_ranges(&g, &notice),
+        [arena_range.clone(), graph_range.clone()]
+    );
+
+    g.set_u32(root, 2).unwrap();
+    g.set_u32(root + 4, SHARED).unwrap();
+    notice.revert = true;
+    notice.moved_blocks[0].previous = (3, ARENA);
+    let ranges = animation_clip_ranges(&g, &notice);
+    assert_eq!(ranges, [graph_range, arena_range]);
+    let unaffected = SHARED + 2 * STRIDE + SIZES;
+    let touched = |key| ranges.iter().any(|r| r.contains(&key));
+    assert!(touched(SHARED + SIZES));
+    assert!(touched(ARENA + 2 * STRIDE + SIZES));
+    assert!(!touched(unaffected), "the next graph's clip stays cached");
+}
+
+#[test]
+fn a_corrupt_jmad_block_pair_cannot_flush_an_unrelated_range() {
+    use runtime::guest::Permissions;
+
+    const GRAPH: u32 = 0x1000_0000;
+    let mut g = runtime::Guest::new();
+    g.map_zeroed(GRAPH, 0x2000, Permissions::RW).unwrap();
+    let root = GRAPH + ANIMATION_BLOCK;
+    let notice = hot_tags::TagWrite {
+        group: FourCC(*b"jmad"),
+        tag: 0x19,
+        address: GRAPH,
+        size: tags::anim::HEADER_SIZE as u32,
+        range: root..root + 8,
+        spans: vec![root..root + 8],
+        moved_blocks: Vec::new(),
+        revert: false,
+    };
+
+    g.set_u32(root, u32::MAX).unwrap();
+    g.set_u32(root + 4, GRAPH + 0x1000).unwrap();
+    assert!(animation_clip_ranges(&g, &notice).is_empty());
+    g.set_u32(root, 1).unwrap();
+    g.set_u32(root + 4, GRAPH + 0x3000).unwrap();
+    assert!(animation_clip_ranges(&g, &notice).is_empty());
+}

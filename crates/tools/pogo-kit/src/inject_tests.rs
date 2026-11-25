@@ -1,17 +1,14 @@
-//! The kit goes into a map, the same way every time, and comes back from
-//! the cache; a map without the room is refused by name. The `#[ignore]`
+//! The kit goes into a map, the same way every time; a map without the
+//! room is refused by name. The `#[ignore]`
 //! test puts it into every multiplayer map of the disc (`$H2_DISC`).
 
 use std::io::Cursor;
-use std::path::PathBuf;
 
 use map::build::{Block, TagPayload, TagSet};
 use map::{CacheType, FourCC, Map, TagId};
-use vfs::Rewrite;
 
 use crate::inject::{self, Given, add_pogo, add_pogo_with};
 use crate::placed::{self, Placed};
-use crate::rewrite::{self, PogoRewrite};
 use crate::tests::{check_chain, disc_multiplayer_maps, fixture, fixture_class};
 use crate::{KIT_VERSION, Style};
 
@@ -23,14 +20,6 @@ fn given() -> Given {
         class: Some(fixture_class()),
         tag_memory: None,
     }
-}
-
-/// A scratch directory of this test's own, empty.
-fn scratch(what: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("pogo-kit-{what}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
 }
 
 #[test]
@@ -147,35 +136,6 @@ fn a_map_that_already_has_the_kit_or_is_not_multiplayer_is_refused() {
     let level = set.build().unwrap().0;
     let e = format!("{:#}", add_pogo(&level, "level").unwrap_err());
     assert!(e.contains("multiplayer"), "{e}");
-    // The rewrite serves it as it is, and says nothing of it.
-    let mut r = PogoRewrite::new().with_given(given());
-    assert!(r.wants(r"maps\level.map"));
-    assert_eq!(r.rewrite(r"maps\level.map", &level), None);
-    assert_eq!(placed::get("level"), None);
-}
-
-#[test]
-fn only_level_maps_are_wanted() {
-    assert_eq!(
-        rewrite::stem_of(r"maps\Lockout.map").as_deref(),
-        Some("lockout")
-    );
-    assert_eq!(
-        rewrite::stem_of(r"MAPS\ascension.MAP").as_deref(),
-        Some("ascension")
-    );
-    for path in [
-        r"maps\mainmenu.map",
-        r"maps\shared.map",
-        r"maps\single_player_shared.map",
-        r"maps\fonts\lockout.map",
-        r"maps\.map",
-        r"maps\lockout.bin",
-        r"lockout.map",
-    ] {
-        assert_eq!(rewrite::stem_of(path), None, "{path}");
-        assert!(!PogoRewrite::new().wants(path), "{path}");
-    }
 }
 
 #[test]
@@ -187,80 +147,6 @@ fn placed_is_kept_by_map() {
     assert_eq!(placed::get("placed_other"), None);
     placed::clear("PLACED_TEST");
     assert_eq!(placed::get("placed_test"), None);
-}
-
-#[test]
-fn a_second_boot_reads_the_map_back_from_the_cache() {
-    let dir = scratch("cache");
-    let original = fixture(0);
-    let mut first = PogoRewrite::new().with_given(given()).with_cache(&dir);
-    let built = first.rebuild("cached", &original).unwrap();
-    assert!(!built.from_cache);
-    let file = dir
-        .join("cache")
-        .join(rewrite::CACHE_DIR)
-        .join("cached.map");
-    assert_eq!(built.file.as_deref(), Some(file.as_path()));
-    assert_eq!(std::fs::read(&file).unwrap(), built.added.bytes);
-    assert!(file.with_extension("json").is_file());
-    assert_eq!(placed::get("cached"), Some(built.added.placed));
-
-    // Another boot: the same bytes, the same weapons, nothing built.
-    placed::clear("cached");
-    let mut second = PogoRewrite::new().with_given(given()).with_cache(&dir);
-    let again = second.rebuild("cached", &original).unwrap();
-    assert!(again.from_cache);
-    assert!(again.added == built.added);
-    assert_eq!(placed::get("cached"), Some(built.added.placed));
-    // Through the VFS's own call, too.
-    assert_eq!(
-        second.rewrite(r"maps\cached.map", &original),
-        Some(built.added.bytes.clone())
-    );
-
-    // A changed map is another key; so is another name.
-    let other = fixture(0x400);
-    assert_ne!(
-        second.key("cached", &other),
-        second.key("cached", &original)
-    );
-    assert_ne!(
-        second.key("other", &original),
-        second.key("cached", &original)
-    );
-    assert!(!second.rebuild("cached", &other).unwrap().from_cache);
-    // A cache file changed on disk is not served.
-    let mut third = PogoRewrite::new().with_given(given()).with_cache(&dir);
-    assert!(third.rebuild("cached", &other).unwrap().from_cache);
-    std::fs::write(&file, b"not the map").unwrap();
-    assert!(!third.rebuild("cached", &other).unwrap().from_cache);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_refused_map_is_served_unchanged_and_not_placed() {
-    let dir = scratch("refused");
-    let original = fixture(0);
-    placed::set("refused", Placed { weapons: [7, 8, 9] });
-    let tight = Given {
-        tag_memory: Some(0),
-        ..given()
-    };
-    let mut r = PogoRewrite::new().with_given(tight).with_cache(&dir);
-    assert_eq!(r.rewrite(r"maps\refused.map", &original), None);
-    assert_eq!(placed::get("refused"), None);
-    assert!(
-        !dir.join("cache")
-            .join(rewrite::CACHE_DIR)
-            .join("refused.map")
-            .exists()
-    );
-
-    // One too large for the VFS to hand over is cleared the same way.
-    placed::set("refused", Placed { weapons: [7, 8, 9] });
-    r.skipped(r"maps\refused.map");
-    assert_eq!(placed::get("refused"), None);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The kit goes into every multiplayer map of the disc; prints what it

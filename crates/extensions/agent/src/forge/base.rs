@@ -22,6 +22,13 @@
 //!   block's object is made again, linked to its index (the sequence
 //!   `world.placement.edit` creates by).
 //!
+//! - **Add** and **Drop** are the kit's: an entry a kit session adds to the
+//!   starting location, netgame flag or netgame equipment block takes the
+//!   next spare row, which is written and the block's root count raised past
+//!   it; a drop writes the spare form back and lowers the count. A row that
+//!   does not read as spare is a map without the kit, `forge_no_kit`, and
+//!   nothing is written (docs/game/forge-design.md, "The kit").
+//!
 //! The host stages a [`BaseStep`] on the call queue ([`ForgeWorld`]'s
 //! `base_*` methods); at the tick boundary [`plan`] checks every step
 //! before the first write, and [`write`] puts the row bytes in.
@@ -36,7 +43,7 @@ use map::scenario_layout::{self as layout, BlockKind, FieldDef, FieldType, Role}
 
 use ::forge::Frame;
 
-use super::local::{OBJECT_GONE, OBJECT_HELD};
+use super::local::{NO_KIT, OBJECT_GONE, OBJECT_HELD};
 
 /// The widest row of any block (`map::scenario_layout`'s widest stride).
 pub const ROW_MAX: usize = 0xa0;
@@ -124,6 +131,14 @@ pub enum BaseStep {
         index: u32,
         row: RowBytes,
     },
+    /// The kit's next spare row, `index`, written as `row` and counted.
+    Add {
+        block: BlockKind,
+        index: u32,
+        row: RowBytes,
+    },
+    /// The kit's last row, `index`, back to its spare form and uncounted.
+    Drop { block: BlockKind, index: u32 },
 }
 
 impl BaseStep {
@@ -132,7 +147,9 @@ impl BaseStep {
             Self::Move { block, .. }
             | Self::Field { block, .. }
             | Self::Inert { block, .. }
-            | Self::Restore { block, .. } => *block,
+            | Self::Restore { block, .. }
+            | Self::Add { block, .. }
+            | Self::Drop { block, .. } => *block,
         }
     }
 
@@ -141,7 +158,9 @@ impl BaseStep {
             Self::Move { index, .. }
             | Self::Field { index, .. }
             | Self::Inert { index, .. }
-            | Self::Restore { index, .. } => *index,
+            | Self::Restore { index, .. }
+            | Self::Add { index, .. }
+            | Self::Drop { index, .. } => *index,
         }
     }
 }
@@ -206,20 +225,8 @@ pub fn row_address(
 /// The spare form of a row of `block`: the bytes the Forge kit gives its
 /// reserved rows, which the engine's readers skip (`forge-build`'s
 /// `kit.rs`, `Block::entry`; docs/game/forge-design.md, F3's kit probe).
-/// A placement's palette and object-name indices are -1, a starting
-/// point's player type and a flag's type are -1, a spawner's item is the
-/// null reference, and any other block's row is zero.
 pub fn inert_row(block: BlockKind) -> Vec<u8> {
-    let def = layout::block(block);
-    let mut bytes = vec![0; def.stride as usize];
-    match block {
-        BlockKind::StartingLocations => bytes[0x2c..0x2e].fill(0xff),
-        BlockKind::NetgameFlags => bytes[0x10..0x12].fill(0xff),
-        BlockKind::NetgameEquipment => bytes[0x58..0x60].fill(0xff),
-        _ if def.role(Role::PaletteIndex).is_some() => bytes[..4].fill(0xff),
-        _ => {}
-    }
-    bytes
+    ::forge::kit::inert_row(block)
 }
 
 // ---- fields ----
@@ -319,6 +326,26 @@ fn encode(field: &FieldDef, value: FieldValue, index: Option<i16>) -> Result<Vec
             .collect(),
         _ => return Err(wrong()),
     })
+}
+
+/// A new row of a kit block: zeroed, as the materialiser's new entry is,
+/// with `fields` written. `resolve` gives the salted datum behind a tag
+/// key.
+pub fn new_row(
+    block: BlockKind,
+    fields: &[(&'static str, Value)],
+    mut resolve: impl FnMut(&TagKey) -> Result<u32, String>,
+) -> Result<RowBytes, String> {
+    if !::forge::kit::is_block(block) {
+        return Err(format!("the kit has no {} rows", block.name()));
+    }
+    let mut row = vec![0; layout::block(block).stride as usize];
+    for (name, value) in fields {
+        let (def, value) = field_value(block, name, value, &mut resolve)?;
+        let bytes = encode(def, value, None)?;
+        row[def.offset as usize..][..bytes.len()].copy_from_slice(&bytes);
+    }
+    RowBytes::new(block, &row)
 }
 
 /// The position of the palette entry of `block` that holds `datum`, or -1
@@ -435,7 +462,100 @@ pub struct Plan {
 /// object (`forge_object_gone` when it has none); a restore of an object
 /// block needs no object already there.
 pub fn plan(m: &dyn GuestMemory, scenario: u32, step: &BaseStep) -> Result<Plan, RpcError> {
+    plan_at(m, scenario, step, false)
+}
+
+/// [`plan`] for a step that is one of a batch, whose earlier steps have
+/// not been written yet: a kit add may name a row past the count, which an
+/// earlier add of the batch will have counted, or one an earlier drop frees.
+pub fn plan_ahead(m: &dyn GuestMemory, scenario: u32, step: &BaseStep) -> Result<Plan, RpcError> {
+    plan_at(m, scenario, step, true)
+}
+
+fn kit_block(block: BlockKind) -> Result<(), RpcError> {
+    if ::forge::kit::is_block(block) {
+        return Ok(());
+    }
+    Err(invalid(format!("the kit has no {} rows", block.name())))
+}
+
+/// The root pair of a kit block: its count and the address of its rows.
+fn kit_pair(m: &dyn GuestMemory, scenario: u32, block: BlockKind) -> Result<(u32, u32), RpcError> {
+    let pair = scenario + layout::block(block).offset;
+    Ok((m.u32(pair).map_err(fault)?, m.u32(pair + 4).map_err(fault)?))
+}
+
+/// An add of row `index` to a kit block: the row must be a spare one. With
+/// `ahead` it may be past the count; otherwise it is the count.
+fn plan_add(
+    m: &dyn GuestMemory,
+    scenario: u32,
+    block: BlockKind,
+    index: u32,
+    row: &RowBytes,
+    ahead: bool,
+) -> Result<Plan, RpcError> {
+    kit_block(block)?;
+    let def = layout::block(block);
+    let (count, base) = kit_pair(m, scenario, block)?;
+    if row.as_slice().len() != def.stride as usize {
+        return Err(invalid("the new row is not this block's width"));
+    }
+    if !ahead && index != count {
+        return Err(invalid(format!(
+            "the next {} row is {count}, not {index}",
+            block.name()
+        )));
+    }
+    if def.max_count.is_some_and(|max| u64::from(index) >= max as u64) {
+        return Err(refused(format!(
+            "the {} block is full at {index} entries",
+            block.name()
+        )));
+    }
+    let at = base
+        .checked_add(index.saturating_mul(def.stride))
+        .filter(|at| base != 0 && at.checked_add(def.stride).is_some())
+        .ok_or_else(|| invalid(format!("the {} block's address is not set", block.name())))?;
+    // A row the batch frees (one under the count) is checked when it is
+    // written.
+    if index >= count && m.bytes(at, def.stride as usize).map_err(fault)? != inert_row(block) {
+        return Err(refused(format!(
+            "{NO_KIT}: the {} block has no spare row {index}",
+            block.name()
+        )));
+    }
+    Ok(Plan {
+        row: at,
+        object: None,
+    })
+}
+
+fn plan_at(
+    m: &dyn GuestMemory,
+    scenario: u32,
+    step: &BaseStep,
+    ahead: bool,
+) -> Result<Plan, RpcError> {
     let (block, index) = (step.block(), step.index());
+    if let BaseStep::Add { row, .. } = step {
+        return plan_add(m, scenario, block, index, row, ahead);
+    }
+    if let BaseStep::Drop { .. } = step {
+        kit_block(block)?;
+        let (count, _) = kit_pair(m, scenario, block)?;
+        if index >= count || (!ahead && index + 1 != count) {
+            return Err(invalid(format!(
+                "the kit's last {} row is {}, not {index}",
+                block.name(),
+                i64::from(count) - 1
+            )));
+        }
+        return Ok(Plan {
+            row: row_address(m, scenario, block, index)?,
+            object: None,
+        });
+    }
     let row = row_address(m, scenario, block, index)?;
     let object = match step {
         BaseStep::Move { frame, .. } => {
@@ -472,6 +592,7 @@ pub fn plan(m: &dyn GuestMemory, scenario: u32, step: &BaseStep) -> Result<Plan,
             }
             None
         }
+        BaseStep::Add { .. } | BaseStep::Drop { .. } => None,
     };
     Ok(Plan { row, object })
 }
@@ -509,6 +630,19 @@ pub fn write(
         }
         BaseStep::Restore { row, .. } => {
             m.write(plan.row, row.as_slice()).map_err(fault)?;
+        }
+        BaseStep::Add { block, row, .. } => {
+            m.write(plan.row, row.as_slice()).map_err(fault)?;
+            // The count passes the row last, so no reader sees it half made.
+            let pair = scenario + layout::block(*block).offset;
+            let count = m.u32(pair).map_err(fault)?;
+            m.set_u32(pair, count + 1).map_err(fault)?;
+        }
+        BaseStep::Drop { block, .. } => {
+            let pair = scenario + layout::block(*block).offset;
+            let count = m.u32(pair).map_err(fault)?;
+            m.set_u32(pair, count.saturating_sub(1)).map_err(fault)?;
+            m.write(plan.row, &inert_row(*block)).map_err(fault)?;
         }
     }
     Ok(())

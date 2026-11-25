@@ -7,8 +7,6 @@
 //!   numbered pads blue) with their numbers.
 //! - [`ruler`]: one world unit square, tiled over every other face: a line
 //!   every tenth, a heavy line at the half and the edge.
-//! - [`lightmap`]: the flat-lit page, mid grey, which the engine reads as
-//!   full light (Halo 2's lightmap texels are half scale).
 //!
 //! Labels are drawn ink on a plate in a 5x7 font, so [`read_label`] reads
 //! them back exactly; the tests read every label of [`labels`].
@@ -342,13 +340,4 @@ pub fn ruler() -> Image {
         }
     }
     img
-}
-
-/// The flat-lit lightmap page's side, texels.
-pub const LIGHTMAP_TEXELS: u32 = 4;
-
-/// The flat-lit lightmap page: mid grey, full light at Halo 2's half
-/// scale.
-pub fn lightmap() -> Image {
-    Image::new(LIGHTMAP_TEXELS, LIGHTMAP_TEXELS, [0x80, 0x80, 0x80, 0xff])
 }

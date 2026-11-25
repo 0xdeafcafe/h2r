@@ -48,27 +48,16 @@ fn each_job_writes_where_the_game_reads() {
     let d = Path::new("/data");
     assert_eq!(
         Job::Campaign("a30").output(d),
-        Path::new("/data/campaigns/halo1/a30.map")
-    );
-    // The Halo 2-assets variant goes where the campaign maps backend
-    // looks for it (boot::h1_variants::campaign_alternate).
-    assert_eq!(
-        Job::CampaignHalo2("a30").output(d),
-        Path::new("/data/campaigns/halo1/h2/a30.map")
+        Path::new("/data/tags/maps/halo1_campaign_a30_h1.converted")
     );
     assert_eq!(
         Job::CampaignHalo2("a30").output(d),
-        boot::h1_variants::campaign_alternate(&Job::Campaign("a30").output(d)).unwrap()
+        Path::new("/data/tags/maps/halo1_campaign_a30_h2.converted")
     );
     assert_eq!(Job::CampaignHalo2("a30").key(), "a30/h2");
     assert_eq!(
         Job::Multiplayer("bloodgulch", Sandbox::Halo1).output(d),
-        Path::new("/data/maps/h1_bloodgulch/h1/h1_bloodgulch.map")
-    );
-    // The map packages' folder is the one boot::new_maps reads.
-    assert_eq!(
-        content::store::maps_dir(d),
-        boot::map_override::packages_dir(d)
+        Path::new("/data/tags/maps/h1_bloodgulch_h1.converted")
     );
 }
 
@@ -143,7 +132,7 @@ fn a_new_converter_version_converts_everything_again() {
 }
 
 #[test]
-fn pending_is_what_is_not_done_or_whose_map_is_gone() {
+fn pending_is_what_is_not_done_or_whose_store_marker_is_gone() {
     let data = scratch("pending");
     let all = jobs(&stems(&["a10", "a30", "bloodgulch"]));
     let mut s = stamp();
@@ -350,18 +339,45 @@ fn discovers_a_halo1_disc_by_its_xbe_under_another_name() {
 }
 
 #[test]
-fn auto_import_without_a_halo1_disc_does_nothing() {
+fn the_converter_without_a_halo1_disc_says_why_and_writes_nothing() {
+    use workspace::Converter as _;
     let d = scratch("auto-none");
     let game = d.join("halo2.iso");
     std::fs::write(&game, b"game").unwrap();
     let data = d.join("data");
-    auto_import(&game, &data);
-    assert!(!data.exists());
-    // With one but a game "disc" that is no image: a warning, nothing written.
+    let conv = package::Halo1 {
+        game_disc: game.clone(),
+        data: data.clone(),
+        force: false,
+    };
+    let spec = workspace::ConvertSpec::parse(b"converter = \"halo1\"\n").unwrap();
+    let why = conv.input(&spec).unwrap_err();
+    assert!(why.contains("no Halo 1 disc"), "{why}");
+    // With one but a game "disc" that is no image: the reason, nothing written.
     std::fs::write(d.join("halo1.iso"), h1map::testing::campaign_disc()).unwrap();
-    auto_import(&game, &data);
+    let why = conv.input(&spec).unwrap_err();
+    assert!(why.contains("not a disc image"), "{why}");
     assert!(!data.exists());
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_recipe_picks_the_jobs() {
+    use package::{Picks, picked};
+    let all = stems(&["a10", "bloodgulch"]);
+    let keys = |p: &Picks| picked(&all, p).iter().map(Job::key).collect::<Vec<_>>();
+    assert_eq!(
+        keys(&Picks::default()),
+        ["a10", "bloodgulch/h2", "bloodgulch/h1", "a10/h2"]
+    );
+    let table = |t: &str| Picks::from_settings(&toml::from_str(t).unwrap());
+    let mp_h1 = table("campaign = false\nsandboxes = [\"h1\"]\n").unwrap();
+    assert_eq!(keys(&mp_h1), ["bloodgulch/h1"]);
+    let no_h2_assets = table("halo2_assets = false\nmultiplayer = false\n").unwrap();
+    assert_eq!(keys(&no_h2_assets), ["a10"]);
+    assert!(table("sandboxes = [\"h3\"]\n").unwrap_err().contains("h3"));
+    assert!(table("levels = 1\n").unwrap_err().contains("levels"));
+    assert!(table("campaign = \"yes\"\n").is_err());
 }
 
 /// Against your discs: the whole import into a scratch data root, then what
@@ -432,7 +448,9 @@ fn real_import_is_found_by_the_game() {
     assert_eq!(sum.failed, 0, "{lines:#?}");
 
     // Multiplayer: in the map list.
-    let mp: Vec<String> = std::fs::read_dir(content::store::maps_dir(&data))
+    let root = boot::store_status::root(&data);
+    let metadata = halo1_metadata(&root);
+    let mp: Vec<String> = std::fs::read_dir(&metadata)
         .map(|d| {
             d.flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -454,7 +472,7 @@ fn real_import_is_found_by_the_game() {
         }
         // Each card is Halo 1's own: its name, description and picture.
         for m in &mp {
-            let dir = content::store::maps_dir(&data).join(m);
+            let dir = metadata.join(m);
             let text = std::fs::read_to_string(dir.join(content::manifest::MANIFEST_FILE)).unwrap();
             let man = content::Manifest::from_toml(&text).unwrap();
             assert_eq!(
@@ -503,16 +521,17 @@ fn real_import_is_found_by_the_game() {
         for l in &b.levels {
             let base = l.scenario.rsplit('\\').next().unwrap();
             let path = format!("maps\\{base}.map");
-            let file = Job::Campaign(&l.map).output(&data);
+            let mut file = vfs::store_map::StoreFile::open(&root, &Job::Campaign(&l.map).stem()).unwrap();
             let meta = fs.stat(&path).unwrap();
             assert_eq!(
                 meta.end_of_file,
-                std::fs::metadata(&file).unwrap().len(),
+                file.len(),
                 "{path}"
             );
             let mut head = [0u8; 0x800];
             fs.read_at(&path, 0, &mut head).unwrap();
-            let want = std::fs::read(&file).unwrap();
+            let mut want = Vec::new();
+            file.read_to_end(&mut want).unwrap();
             assert_eq!(&head[..], &want[..0x800], "{path}");
             let m = map::Map::from_reader(Cursor::new(want)).unwrap();
             assert_eq!(m.header().scenario_path, l.scenario, "{path}");
@@ -526,25 +545,25 @@ fn real_import_is_found_by_the_game() {
             .unwrap();
             assert_eq!((r.campaign, r.map), (b.campaign_id, l.map_id));
         }
-        // With Halo 2's assets chosen, each level's `h2/` map is served
+        // With Halo 2's assets chosen, the alternate store level is served
         // in its place (docs/halo1/campaign.md §5).
         let choice = vfs::SandboxChoice::default();
         choice.set_halo1(false);
         let maps = boot::campaigns::host_maps(&data, &state);
-        let alternates = boot::h1_variants::campaign_alternates(&maps);
+        let alternates = boot::campaigns::halo2_maps(&data);
         let mut fs = vfs::CampaignMapsBackend::new(vfs::open_disc(&h2).unwrap(), maps)
             .with_assets(choice, alternates);
         for l in &b.levels {
-            let file = Job::CampaignHalo2(&l.map).output(&data);
-            if !file.is_file() {
+            let Ok(mut file) = vfs::store_map::StoreFile::open(&root, &Job::CampaignHalo2(&l.map).stem()) else {
                 assert!(only.is_some(), "{}: no Halo 2-assets map", l.map);
                 continue;
-            }
+            };
             let base = l.scenario.rsplit('\\').next().unwrap();
             let path = format!("maps\\{base}.map");
             let mut head = [0u8; 0x800];
             fs.read_at(&path, 0, &mut head).unwrap();
-            let want = std::fs::read(&file).unwrap();
+            let mut want = Vec::new();
+            file.read_to_end(&mut want).unwrap();
             assert_eq!(&head[..], &want[..0x800], "{path} (Halo 2 assets)");
             let m = map::Map::from_reader(Cursor::new(want)).unwrap();
             assert_eq!(

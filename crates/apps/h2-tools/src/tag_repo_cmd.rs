@@ -1,5 +1,6 @@
-//! `h2 tags extract` and `h2 tags build`: the loose tag repository
-//! (docs/formats/tag-repo.md).
+//! `h2 tags extract`, `h2 tags build` and `h2 tags reassemble`: the loose
+//! tag repository (docs/formats/tag-repo.md) and the maps it gives back
+//! (docs/engine/asset-store.md).
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -28,19 +29,31 @@ const USAGE: &str = "usage:
       (default: the map whose scenario it is); --compare reads the result
       back and compares every tag with the disc's map; --onto keeps the
       disc map's file, BSP regions and the tags the repository cannot give
-      exactly, and builds every other tag from REPO (a safer load test)";
+      exactly, and builds every other tag from REPO (a safer load test)
+  h2 tags reassemble [--repo REPO] MAP --out FILE.map [--force]
+      the map file from REPO's skeleton and extent table, byte for byte
+  h2 tags reassemble [--repo REPO] --all [--compare disc.iso]
+      every map REPO records: reassembled and its SHA-256 checked against
+      REPO/extract.toml and, with --compare, against the disc's own file;
+      then the store's size by part. Fails when a map differs, has no
+      skeleton, or (with --compare) a disc map is not in REPO.
+      REPO defaults to <data>/tags";
 
 type DiscMap = Map<BufReader<File>>;
 
 /// Whether `args` (after `h2 tags`) is one of these subcommands.
 pub(crate) fn handles(args: &[String]) -> bool {
-    matches!(args.first().map(String::as_str), Some("extract" | "build"))
+    matches!(
+        args.first().map(String::as_str),
+        Some("extract" | "build" | "reassemble")
+    )
 }
 
 pub(crate) fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("extract") => extract(&args[1..]),
         Some("build") => build(&args[1..]),
+        Some("reassemble") => reassemble(&args[1..]),
         _ => bail!("{USAGE}"),
     }
 }
@@ -241,6 +254,18 @@ fn extract(args: &[String]) -> Result<()> {
             .map_err(|e| tags::repo::Error::Invalid(format!("{e:#}")))
     };
     let mut on_map = |w: &MapWork, r: &PutReport| {
+        if let Some(k) = &r.skeleton {
+            println!(
+                "{:<24} skeleton {} KB ({} KB on disk), {} named extents ({} MB), {} unnamed ({} KB); reassembles to its SHA-256",
+                w.map,
+                k.skeleton.0 >> 10,
+                k.skeleton.1 >> 10,
+                k.named.0,
+                k.named.1 >> 20,
+                k.unnamed.0,
+                k.unnamed.1 >> 10
+            );
+        }
         println!(
             "{:<24} {:>5} new {:>5} same {:>4} variants {:>2} lossy {:>2} refused  raw {:>5} new ({} MB)  {:.1?}",
             w.map,
@@ -624,5 +649,197 @@ fn build_project(args: &[String]) -> Result<()> {
     for gap in &r.scenario_edit.gaps {
         println!("    base scenario: {gap}");
     }
+    Ok(())
+}
+
+/// Files and bytes under `dir` (0 when it is not there).
+fn dir_size(dir: &Path) -> (u64, u64) {
+    let mut out = (0, 0);
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let Ok(t) = e.file_type() else { continue };
+            if t.is_dir() {
+                todo.push(e.path());
+            } else if let Ok(m) = e.metadata() {
+                out.0 += 1;
+                out.1 += m.len();
+            }
+        }
+    }
+    out
+}
+
+fn mb(b: u64) -> String {
+    format!("{:.1} MB", b as f64 / (1u64 << 20) as f64)
+}
+
+/// `h2 tags reassemble`: one map out of the store, or every map checked
+/// (the coordinator's disc check for docs/engine/asset-store.md, AS1).
+fn reassemble(args: &[String]) -> Result<()> {
+    let mut repo_dir = None;
+    let mut out = None;
+    let mut all = false;
+    let mut against = None;
+    let mut force = false;
+    let mut maps = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--repo" => {
+                repo_dir = Some(PathBuf::from(
+                    it.next().context("--repo needs a directory")?,
+                ))
+            }
+            "--out" | "-o" => out = Some(PathBuf::from(it.next().context("--out needs a file")?)),
+            "--compare" => {
+                against = Some(PathBuf::from(it.next().context("--compare needs a disc")?))
+            }
+            "--all" => all = true,
+            "--force" => force = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            a if a.starts_with('-') => bail!("unknown option {a}\n{USAGE}"),
+            a => maps.push(a.trim_end_matches(".map").to_owned()),
+        }
+    }
+    let repo_dir = repo_dir.unwrap_or_else(|| content::store::default_data_root().join("tags"));
+    let repo = TagRepo::open(&repo_dir)?;
+    let record = repo.extract_record()?;
+    if !all {
+        let [map] = maps.as_slice() else {
+            bail!("name one map, or --all\n{USAGE}");
+        };
+        let out = out.context(format!("--out is required for one map\n{USAGE}"))?;
+        let mut bytes = Vec::new();
+        let hash = repo.reassemble(map, &mut bytes)?;
+        let name = out
+            .file_name()
+            .context("--out names a file")?
+            .to_string_lossy()
+            .into_owned();
+        let dir = out
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let path = OutDir::new(dir, force)?.write(&[name], &bytes)?;
+        let recorded = record.as_ref().and_then(|r| r.maps.get(map.as_str()));
+        println!(
+            "{}: {} bytes, SHA-256 {hash}{}",
+            path.display(),
+            bytes.len(),
+            match recorded {
+                Some(m) if m.file == hash => " (the extracted file's)",
+                Some(_) => " (NOT the extracted file's)",
+                None => "",
+            }
+        );
+        if recorded.is_some_and(|m| m.file != hash) {
+            bail!("{map} does not reassemble to the file it was extracted from");
+        }
+        return Ok(());
+    }
+    if out.is_some() || !maps.is_empty() {
+        bail!("--all takes no map and no --out\n{USAGE}");
+    }
+    let record = record.context(format!(
+        "{} has no {EXTRACT_FILE}: extract first",
+        repo_dir.display()
+    ))?;
+    let started = std::time::Instant::now();
+    let mut disc = std::collections::BTreeMap::new();
+    if let Some(d) = &against {
+        for s in sources(std::slice::from_ref(d))? {
+            let h = s.file_hash()?;
+            disc.insert(s.stem.clone(), h);
+        }
+    }
+    let mut names: std::collections::BTreeSet<String> = record.maps.keys().cloned().collect();
+    names.extend(disc.keys().cloned());
+    let mut failed = Vec::new();
+    let (mut logical, mut skel, mut skel_file, mut ext_n, mut ext_b) =
+        (0u64, 0u64, 0u64, 0usize, 0u64);
+    for map in &names {
+        let Some(rec) = record.maps.get(map) else {
+            println!("{map:<24} on the disc, not in the store");
+            failed.push(map.clone());
+            continue;
+        };
+        if !repo.has_skeleton(map) {
+            println!("{map:<24} no skeleton or extent table (extract --update takes it again)");
+            failed.push(map.clone());
+            continue;
+        }
+        let mut f = repo.store_file(map)?;
+        let hash = match tags::repo::extract::file_hash(&mut f) {
+            Ok(h) => h,
+            Err(e) => {
+                println!("{map:<24} does not read back: {e}");
+                failed.push(map.clone());
+                continue;
+            }
+        };
+        let skel_size = std::fs::metadata(repo_dir.join("maps").join(format!("{map}.skel")))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let x = tags::repo::StoreFile::extents(&repo_dir, map)?;
+        logical += f.len();
+        skel += f.skeleton_bytes();
+        skel_file += skel_size;
+        ext_n += x.extents.len();
+        ext_b += x.raw_bytes();
+        let vs_record = hash == rec.file;
+        let vs_disc = disc.get(map).map(|d| *d == hash);
+        let ok = vs_record && vs_disc != Some(false);
+        println!(
+            "{map:<24} {:>10} skeleton {:>10} ({:>10} on disk) {:>6} extents  {}{}",
+            mb(f.len()),
+            mb(f.skeleton_bytes()),
+            mb(skel_size),
+            x.extents.len(),
+            if vs_record {
+                "= extract.toml"
+            } else {
+                "!= extract.toml"
+            },
+            match vs_disc {
+                Some(true) => ", = disc",
+                Some(false) => ", != disc",
+                None => "",
+            }
+        );
+        if !ok {
+            failed.push(map.clone());
+        }
+    }
+    let tags_size = dir_size(&repo_dir.join("tags"));
+    let raw_size = dir_size(&repo_dir.join("raw"));
+    println!(
+        "{} maps, {} as map files; store: tag files {} ({} files), raw {} ({} files), skeletons {} ({} before compression), extent tables {} extents over {}; {:.1?}",
+        names.len(),
+        mb(logical),
+        mb(tags_size.1),
+        tags_size.0,
+        mb(raw_size.1),
+        raw_size.0,
+        mb(skel_file),
+        mb(skel),
+        ext_n,
+        mb(ext_b),
+        started.elapsed()
+    );
+    if !failed.is_empty() {
+        bail!(
+            "{} maps do not reassemble: {}",
+            failed.len(),
+            failed.join(", ")
+        );
+    }
+    println!("every map reassembles to its SHA-256");
     Ok(())
 }

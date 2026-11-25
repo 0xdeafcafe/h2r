@@ -37,7 +37,7 @@ const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|<file.
   without it, $H2_DISC or the .iso in disc/. Community variants are added
   by the game at boot and are not ported here.
   from-script writes the .h2variant of the script's own variant: the stock
-  record of its carrier with the script's settings, named by the script,
+  record of its game with the script's settings, named by the script,
   with its about line as the description and the script and its source
   attached. It prints the file's id and path; the same script and options
   give the same id. --option is as for port. A script check refuses, or
@@ -421,8 +421,8 @@ mod tests {
     }
 
     const SWAT: &str = "rules \"SWAT\" 1
-carrier slayer
-scoring carrier
+type slayer
+uses slayer
 about \"No shields. 50 points to win.\"
 settings {
     score_limit = 50
@@ -449,6 +449,7 @@ settings {
         assert_eq!(b.name, "SWAT");
         assert_eq!(b.description, "No shields. 50 points to win.");
         assert_eq!(b.game_type, "Slayer");
+        assert_eq!(b.engine, variants::GameType::Script.engine());
         let v = b.variant().unwrap();
         assert_eq!(v.get(variants::SettingId(2)), Some(50));
         assert_eq!(v.get(variants::SettingId(19)), Some(1));
@@ -466,9 +467,9 @@ settings {
 
         // Refusals name the file: a compile error, a record the game would
         // not keep, an option the script lacks.
-        let e = from_script_bundle("x.rules", "rules \"X\" 1\ncarrier slayer\n", &[]).unwrap_err();
+        let e = from_script_bundle("x.rules", "rules \"X\" 1\ntype slayer\n", &[]).unwrap_err();
         assert!(e.starts_with("x.rules: "), "{e}");
-        let jugg = "rules \"J\" 1\ncarrier juggernaut\nscoring carrier\nsettings { team_play = true }\n";
+        let jugg = "rules \"J\" 1\ntype juggernaut\nuses juggernaut\nsettings { team_play = true }\n";
         assert_eq!(
             from_script_bundle("j.rules", jugg, &[]).unwrap_err(),
             "j.rules: the game would not keep the record: Juggernaut is never team play"

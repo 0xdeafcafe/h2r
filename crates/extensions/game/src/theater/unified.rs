@@ -33,7 +33,6 @@ pub(super) struct Capture {
     clock: Option<u64>,
     final_clock: Option<u64>,
     ended: bool,
-    pub(super) live_session: bool,
 }
 
 impl Capture {
@@ -54,7 +53,6 @@ impl Capture {
         self.clock = None;
         self.final_clock = None;
         self.ended = false;
-        self.live_session = false;
     }
 
     fn count_drops(&mut self, source: &'static str, n: u64) {
@@ -149,6 +147,13 @@ impl Capture {
             let (checkpoint, dropped) = self.presentation.baseline_observed()?;
             self.count_drops("frame", u64::from(dropped));
             out.push(RecordData::pose(checkpoint));
+            // The monitor looks and poses repeat at each checkpoint, as tag
+            // 3's baselines do, so a seek needs no history.
+            out.extend(
+                crate::forge_glue::net::film_checkpoint()
+                    .into_iter()
+                    .map(RecordData::forge_payload),
+            );
         }
         // The shared Forge session's welcome and the items it applied.
         out.extend(
@@ -252,7 +257,6 @@ impl FilmObserver for Observer {
             };
             for record in &mut records {
                 if let events::Event::GameStarted(start) = &mut record.event {
-                    rec.unified.live_session |= start.game.session_id.is_some();
                     if let Some(id) = game_id {
                         start.game_id = id.to_owned();
                     }

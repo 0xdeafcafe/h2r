@@ -690,6 +690,7 @@ fn every_input_fetch_kind_validates() {
         InputFetch::IntXyz1,
         InputFetch::NormPacked3,
         InputFetch::Float2H,
+        InputFetch::WindowFloat,
     ];
     for k in kinds {
         let opts = vsh::VertexOptions {

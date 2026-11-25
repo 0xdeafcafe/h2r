@@ -28,9 +28,14 @@ user's data and cache directories.
    `Recipes::build`. In `boot::test_maps_recipes`, the default builder
    applies placement edits through `recipe::build_package_with_replace`.
    A recipe with `builder = "firefight-probe"` calls
-   `firefight_kit::build_package` in probe mode on the same base bytes.
+   `firefight_kit::ground::build` in probe mode (no labels) on the same base
+   bytes, installed with `Ground::install`.
    Both save package `test-<name>` under `<data>/maps/` and write the
-   build report to `<cache>/test-maps/<MapId>.json`.
+   build report to `<cache>/test-maps/<MapId>.json`. A placement recipe is
+   also a content package: `test_maps_recipes::recipe_package` runs it on
+   the base's bytes and returns an `onto` `map` item with an `edits` item
+   for the scenario, which `workspace::prepare` builds like any other map
+   ([studio-redesign.md](../editor/studio-redesign.md), "Contents").
 3. **Publish.** The offers are installed again
    (`map_select::packages_changed`, else `new_maps::install_at_boot`) and
    the VFS rescans, as for a Live download ([maps.md](maps.md#3-realtime)).

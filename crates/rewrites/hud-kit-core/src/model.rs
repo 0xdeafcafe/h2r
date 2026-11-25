@@ -167,8 +167,8 @@ impl Element {
         }
     }
     /// A channel element: [`Kind::Message`], [`Kind::Prompt`],
-    /// [`Kind::Training`], [`Kind::Navpoint`] or [`Kind::WorldMark`],
-    /// fullscreen only ([`Place::GAME`]).
+    /// [`Kind::Training`], [`Kind::Banner`], [`Kind::Navpoint`] or
+    /// [`Kind::WorldMark`], fullscreen only ([`Place::GAME`]).
     pub fn channel(id: &'static str, kind: Kind) -> Self {
         debug_assert!(kind.is_channel());
         Element {
@@ -228,6 +228,13 @@ pub enum Kind {
     /// The framed box in the middle of the screen (the scripted training
     /// text).
     Training { longest: &'static str },
+    /// The timed centred line of the message routine, 40 pixels above the
+    /// frame's bottom (the user's timed text, `+0x454`, E `0x0024cc73`):
+    /// one line, shown for [`BANNER_TICKS`] from when its value's text
+    /// changes and fading as it goes. A state value, not an event: a new
+    /// shown text starts the line again, the same text keeps it, and
+    /// hiding the value lets it run out.
+    Banner { longest: &'static str },
     /// A navpoint over a point of the world: the `hudg` waypoint marker
     /// and arrow (E `0x0024e59f`), with the value's text, a whole number,
     /// under them in [`NAVPOINT_FONT`]. Its screen point is the runtime's
@@ -304,11 +311,33 @@ pub const WORLD_FONT: Font = Font::Hud;
 /// engine font 6).
 pub const NAVPOINT_FONT: Font = Font::Hud;
 
-/// The UTF-16 units of a notification the game keeps: the insert copies 63
-/// (E `0x0024cbee`, `push 3Fh`). A [`Kind::Message`] text longer than
-/// this is refused by the prompt check and by the runtime's
+/// The UTF-16 units of a notification the game keeps: the insert copies
+/// through `0x0013fac0` with 63 (E `0x0024cc24`), which keeps one fewer and
+/// ends the text with a zero, as the banner's copy does ([`BANNER_UNITS`]).
+/// A [`Kind::Message`] text longer than this is refused by the prompt check and by the runtime's
 /// `Handle::notify`.
-pub const MESSAGE_UNITS: usize = 63;
+pub const MESSAGE_UNITS: usize = 62;
+
+/// The UTF-16 units of a banner the game keeps: its copy (E `0x0013fac0`,
+/// called with 63 by `0x0024cc73`) keeps one fewer than it is given and
+/// ends the text with a zero.
+pub const BANNER_UNITS: usize = 62;
+
+/// How long a banner shows, in game ticks: three seconds at 30 (Design).
+pub const BANNER_TICKS: u32 = 90;
+
+/// Why `text` cannot be a banner, if it cannot: more than
+/// [`BANNER_UNITS`] UTF-16 units, or a line break (the line is one).
+pub fn banner_fault(text: &str) -> Option<String> {
+    let units = text.encode_utf16().count();
+    if units > BANNER_UNITS {
+        Some(format!("{units} characters, over {BANNER_UNITS}"))
+    } else if text.contains(['\n', '\r']) {
+        Some("more than one line".into())
+    } else {
+        None
+    }
+}
 
 /// Why `text` cannot be a notification, if it cannot: more than
 /// [`MESSAGE_UNITS`] UTF-16 units, or a line break (a notification is one
@@ -336,6 +365,7 @@ impl Kind {
             Kind::Message { .. } => "message",
             Kind::Prompt { .. } => "prompt",
             Kind::Training { .. } => "training",
+            Kind::Banner { .. } => "banner",
             Kind::Navpoint { .. } => "navpoint",
             Kind::WorldMark { .. } => "world mark",
         }
@@ -347,6 +377,7 @@ impl Kind {
             Kind::Message { .. }
                 | Kind::Prompt { .. }
                 | Kind::Training { .. }
+                | Kind::Banner { .. }
                 | Kind::Navpoint { .. }
                 | Kind::WorldMark { .. }
         )
@@ -358,12 +389,15 @@ impl Kind {
             _ => None,
         }
     }
-    /// A channel into the game's text lines: a message, the prompt or the
-    /// training box (the prompt check's).
+    /// A channel into the game's text lines: a message, the prompt, the
+    /// training box or the banner (the prompt check's).
     pub fn is_lines(&self) -> bool {
         matches!(
             self,
-            Kind::Message { .. } | Kind::Prompt { .. } | Kind::Training { .. }
+            Kind::Message { .. }
+                | Kind::Prompt { .. }
+                | Kind::Training { .. }
+                | Kind::Banner { .. }
         )
     }
     pub fn art(&self) -> Option<Art> {
@@ -378,6 +412,7 @@ impl Kind {
             | Kind::Message { longest }
             | Kind::Prompt { longest }
             | Kind::Training { longest }
+            | Kind::Banner { longest }
             | Kind::Navpoint { longest }
             | Kind::WorldMark { longest, .. } => Some(longest),
             _ => None,
@@ -600,6 +635,11 @@ pub enum Style {
     /// finding of the `world` check. Where the game has no colour for the
     /// team the mark is in the user's HUD colour.
     Team(u8),
+    /// Axis `n`'s colour (`0..world::AXES`: X, Y, Z, `world::AXIS_COLOURS`),
+    /// for a world mark alone, as a gizmo's three segments: a widget or a
+    /// text channel in it, or an axis outside the three, is a finding of
+    /// the `world` check.
+    Axis(u8),
 }
 
 impl Style {
@@ -611,6 +651,7 @@ impl Style {
             Style::Flash(p) => format!("flash {}", p.name()),
             Style::Go => "go".into(),
             Style::Team(n) => format!("team {n}"),
+            Style::Axis(n) => format!("axis {n}"),
         }
     }
 }
@@ -738,6 +779,13 @@ impl Values {
     }
 }
 
+/// The retail bitmap widgets, by name string, a user in monitor mode
+/// still draws: the motion tracker's background (V: `ui\hud\masterchief`
+/// bitmap widgets 5 and 7, docs/halo1/hud.md, "The motion sensor's
+/// centre"). Its blips are the game's own draw (`0x1a2823`), not a widget,
+/// and stay with it (docs/game/forge-firefight-ui.md, decision 3).
+pub const MONITOR_KEEPS: &[&str] = &["motion_sensor"];
+
 /// A HUD of ours and the named states its preview sheet draws.
 pub trait Describe {
     fn hud(&self) -> Hud;
@@ -757,6 +805,16 @@ pub trait Describe {
     /// mode.
     fn never_with(&self) -> &'static [&'static str] {
         &[]
+    }
+    /// The HUD is a monitor's: shown only for a user in monitor mode
+    /// (docs/game/forge-firefight-ui.md, "The monitor HUD"). The retail
+    /// widgets are off for that user but the ones named in
+    /// [`MONITOR_KEEPS`] (the runtime's `Handle::retail`), so the HUD is
+    /// compiled and checked against those alone, and its grenade row
+    /// origins resolve to the row's first place
+    /// (`templates::Templates::for_monitor`).
+    fn monitor(&self) -> bool {
+        false
     }
     /// The sample poses of the HUD's world marks in the state `state`,
     /// for the preview and the checks: world units in a scene of the

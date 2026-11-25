@@ -106,7 +106,7 @@ fn every_check_runs_into_one_list_worst_first() {
     assert_eq!(
         r["counts"],
         json!({"error": 1, "warning": 1, "note": 1, "total": 3,
-               "by_area": {"models": 0, "sounds": 2, "ui": 1, "hud": 0}})
+               "by_area": {"models": 0, "sounds": 2, "ui": 1, "hud": 0, "markers": 0}})
     );
     assert_eq!(
         r["ran"],
@@ -116,7 +116,8 @@ fn every_check_runs_into_one_list_worst_first() {
     assert_eq!(
         r["skipped"],
         json!([{"area": "models", "why": "no check is registered for models"},
-               {"area": "hud", "check": "hud.check", "why": "no map is open in the HUD tool"}])
+               {"area": "hud", "check": "hud.check", "why": "no map is open in the HUD tool"},
+               {"area": "markers", "why": "no check is registered for markers"}])
     );
 }
 

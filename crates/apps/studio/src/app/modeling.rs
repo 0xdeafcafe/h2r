@@ -7,6 +7,8 @@ use geometry_edit::mesh_edit::MeshOp;
 use geometry_edit::{GeometrySession, Preview, Target, TargetInfo};
 use scenario_edit::geometry::RawFiles;
 use scenario_edit::{BspPatch, GeometryChanges, GeometryGrown, RawPatch};
+use tags::collision::shape_edit::{self, ShapeEdit};
+use tags::collision::{PHMO, PhysicsModel, ShapeType};
 
 /// Why a save with geometry edits is refused while the session switch is
 /// off.
@@ -44,10 +46,22 @@ pub enum ModelAction {
         ops: Vec<MeshOp>,
         merge: Option<u64>,
     },
+    /// Replace a collision BSP with the current mesh of a render section.
+    CollisionFromRender {
+        render: Target,
+        target: Target,
+        materials: Vec<u16>,
+    },
     /// End a merged run (a gizmo drag).
     Seal,
     Undo,
     Redo,
+    /// **Use for lower LODs** on a model section: point every lower level
+    /// of detail of each permutation that draws it at it (`on`), or leave
+    /// them as they were. One undo step, saved as patches of the
+    /// permutations' LOD indices
+    /// (`geometry_edit::GeometrySession::set_use_for_lower_lods`).
+    UseForLowerLods { target: Target, on: bool },
     /// Add a closed box solid inside `[lo, hi]` to structure `structure`'s
     /// level collision, onto the solids added before
     /// (`geometry_edit::level_collision::LevelEdit::add_box`). A paired
@@ -64,6 +78,50 @@ pub enum ModelAction {
 }
 
 impl App {
+    fn physics_payload(&self, tag: map::TagId) -> Result<(u32, Vec<u8>), String> {
+        let entry = self
+            .tags
+            .tag(tag)
+            .filter(|t| t.group == PHMO)
+            .ok_or("select a physics model (phmo) tag in the open map")?;
+        let bytes = self
+            .tags
+            .read(tag, entry.address, entry.size)
+            .filter(|b| !b.is_empty())
+            .ok_or("physics model has no local payload")?;
+        Ok((entry.address, bytes))
+    }
+
+    pub(crate) fn physics_model(&self, tag: map::TagId) -> Result<PhysicsModel, String> {
+        let (base, bytes) = self.physics_payload(tag)?;
+        PhysicsModel::decode(&bytes, base).map_err(|e| e.to_string())
+    }
+
+    pub(super) fn edit_physics_shape(
+        &mut self,
+        tag: map::TagId,
+        kind: ShapeType,
+        index: usize,
+        edit: &ShapeEdit,
+    ) -> Result<(), String> {
+        let (base, bytes) = self.physics_payload(tag)?;
+        let words = shape_edit::plan(&bytes, base, kind, index, edit).map_err(|e| e.to_string())?;
+        if words.is_empty() {
+            return Ok(());
+        }
+        let writes = words
+            .into_iter()
+            .map(|(offset, word)| {
+                base.checked_add(offset as u32)
+                    .map(|at| (at, word))
+                    .ok_or("physics shape address overflows")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.tags.write_words(tag, format!("edit physics {kind:?} {index}"), writes)?;
+        self.info("Physics shape updated. Rigid-body bounds and mass properties may be stale.");
+        Ok(())
+    }
+
     /// Drop the geometry session when another map (or none) opens.
     pub(crate) fn sync_modeling(&mut self) {
         let rev = Some(self.session.world_rev());
@@ -114,6 +172,12 @@ impl App {
                 .apply(target, &ops, merge)
                 .map(|_| ())
                 .map_err(|e| e.to_string()),
+            ModelAction::CollisionFromRender { render, target, materials } => self
+                .modeling
+                .session
+                .collision_from_render(render, target, &materials)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
             ModelAction::Seal => {
                 self.modeling.session.seal();
                 Ok(())
@@ -134,6 +198,18 @@ impl App {
                 self.info(msg);
                 Ok(())
             }
+            ModelAction::UseForLowerLods { target, on } => self
+                .modeling
+                .session
+                .set_use_for_lower_lods(target, on)
+                .map(|changed| {
+                    self.info(match (changed, on) {
+                        (true, true) => format!("{}: lower levels of detail use this section", target.id()),
+                        (true, false) => format!("{}: lower levels of detail as the file has them", target.id()),
+                        (false, _) => format!("{}: no change to the levels of detail", target.id()),
+                    })
+                })
+                .map_err(|e| e.to_string()),
             ModelAction::AddCollisionBox {
                 structure,
                 lo,
@@ -259,6 +335,13 @@ impl App {
                             }),
                         }
                     }
+                    c.grown.extend(p.grown.into_iter().map(|g| GeometryGrown {
+                        pair_space: g.pair_space,
+                        pair: g.pair,
+                        count: g.count,
+                        bytes: g.bytes,
+                        align: g.align,
+                    }));
                     c.raw_patches = p
                         .raw
                         .into_iter()

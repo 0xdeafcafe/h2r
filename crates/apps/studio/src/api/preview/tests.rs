@@ -81,6 +81,16 @@ struct Game {
 
 impl Game {
     fn start(tag: &str) -> Game {
+        Self::start_with(tag, true)
+    }
+
+    /// The invented game; `audio_play` lists the sound-start method.
+    fn start_with(tag: &str, audio_play: bool) -> Game {
+        Self::start_listing(tag, audio_play, true)
+    }
+
+    /// The invented game; `animate` lists `world.object.animate`.
+    fn start_listing(tag: &str, audio_play: bool, animate: bool) -> Game {
         let dir = std::env::temp_dir().join(format!("h2e-preview-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -110,6 +120,13 @@ impl Game {
             w.spawned = Some(pos);
             Ok(json!({"object": SPAWNED, "pos": pos, "tag": {"tag": "0xe4560007", "group": "scen"}}))
         });
+        if animate {
+            host("world.object.animate", Access::Act, |w, p, _| {
+                assert!(w.spawned.is_some(), "animated before it was spawned");
+                assert_eq!(p["id"], format!("scenery.{SPAWNED}"));
+                Ok(json!({"object": p["id"], "index": 3, "frames": 31, "frame": 0.0}))
+            });
+        }
         host("render.capture", Access::Read, |w, _, dir| {
             let path = dir.join(format!("frame-{}.png", w.calls.len()));
             write_png(&path, if w.black { 0 } else { 128 });
@@ -149,6 +166,16 @@ impl Game {
         host("audio.loops", Access::Read, |_, _, _| {
             Ok(json!({"loops": [{"tag_name": "sound\\pogo\\spring", "tag_datum": "0xe7770001", "segment": "loop"}]}))
         });
+        if audio_play {
+            host("audio.play", Access::Act, |_, p, _| {
+                assert_eq!(p["player"], "player.0");
+                Ok(json!({
+                    "player": "player.0",
+                    "sound": {"tag": "0xe4000040", "group": "snd!", "name": p["sound"]},
+                    "instance": "00cc0001",
+                }))
+            });
+        }
         host("pogo.test", Access::Act, |_, p, _| Ok(json!({"player": 0, "trick": p["trick"], "name": "Backflip"})));
         host("ui.audit", Access::Read, |_, _, _| {
             Ok(json!({"screen": {"id": 1, "name": "main_menu"}, "active": {"id": 191, "name": "settings"}, "issues": []}))
@@ -280,6 +307,67 @@ fn an_object_preview_spawns_it_in_front_of_the_player_facing_them() {
     assert_eq!(r["reads"]["object"]["id"], format!("scenery.{SPAWNED}"));
     assert_eq!(r["capture"]["black"], false);
     assert!(!warned(&r, "black"));
+}
+
+#[test]
+fn an_animation_preview_spawns_animates_waits_and_captures_in_that_order() {
+    let game = Game::start("animation");
+    let mut app = game.app();
+    let mut api = Api::new();
+    let id = api
+        .call(&mut app, m::PAIR_PREVIEW, json!({
+            "what": "animation", "target": "scen:crate", "animation": "idle", "ticks": 2,
+        }))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let r = finish(&mut api, &mut app, id);
+    assert_eq!(r["state"], "done", "{r}");
+    assert_eq!(r["what"], "animation");
+    assert_eq!(game.calls("world.object.animate"), [json!({"id": format!("scenery.{SPAWNED}"), "animation": "idle"})]);
+    let steps: Vec<&str> = r["steps"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    let at = |name: &str| steps.iter().position(|s| *s == name).unwrap_or_else(|| panic!("{name} in {steps:?}"));
+    assert!(at("sim.spawn") < at("world.object.animate"), "{steps:?}");
+    assert!(at("world.object.animate") < at("session.wait"), "{steps:?}");
+    assert!(at("session.wait") < at("render.capture"), "{steps:?}");
+    assert_eq!(r["applied"]["animate"]["index"], 3);
+    assert_eq!(r["reads"]["object"]["id"], format!("scenery.{SPAWNED}"));
+    assert_eq!(r["capture"]["black"], false);
+
+    for (p, want) in [
+        (json!({"what": "animation", "target": "scen:crate"}), code::INVALID_PARAMS),
+        (json!({"what": "animation", "animation": "idle"}), code::INVALID_PARAMS),
+        (json!({"what": "animation", "target": "scen:crate", "animation": ""}), code::INVALID_PARAMS),
+    ] {
+        assert_eq!(api.call(&mut app, m::PAIR_PREVIEW, p.clone()).unwrap_err().code, want, "{p}");
+    }
+    // An object tag with no group names no kind: nothing is spawned.
+    let before = game.calls("sim.spawn").len();
+    let id = api
+        .call(&mut app, m::PAIR_PREVIEW, json!({"what": "animation", "target": "crate", "animation": "idle"}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let r = finish(&mut api, &mut app, id);
+    assert_eq!(r["state"], "failed");
+    assert!(r["why"].as_str().unwrap().contains("with its group"), "{r}");
+    assert_eq!(game.calls("sim.spawn").len(), before);
+}
+
+#[test]
+fn an_animation_preview_needs_the_games_animate_before_it_spawns_anything() {
+    let game = Game::start_listing("animation-missing", true, false);
+    let mut app = game.app();
+    let mut api = Api::new();
+    let id = api
+        .call(&mut app, m::PAIR_PREVIEW, json!({"what": "animation", "target": "scen:crate", "animation": "idle"}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let r = finish(&mut api, &mut app, id);
+    assert_eq!(r["state"], "failed");
+    assert!(r["why"].as_str().unwrap().contains("does not list world.object.animate"), "{r}");
+    assert!(game.calls("sim.spawn").is_empty());
 }
 
 #[test]
@@ -421,4 +509,298 @@ fn brightness_tells_a_black_frame_from_a_lit_one() {
     assert!(!l.black());
     assert!((l.mean_luma - 200.0 / 255.0).abs() < 1e-6);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+mod switch {
+    //! The preview switch and **Preview in game**: each document kind asks
+    //! the invented game for the calls its `what` lists, over a map of
+    //! invented tags.
+
+    use super::*;
+    use crate::app::preview_switch::plan_for_tag;
+    use crate::app::shell_tests::{self as tabbed, Temp};
+    use crate::app::tag_tests::weap_id;
+    use crate::app::{Action, Doc};
+
+    fn refused(r: crate::api::Reply) -> i64 {
+        r.unwrap_err().code
+    }
+
+    fn weap_name(app: &App) -> String {
+        app.tags.tag(weap_id()).unwrap().name.clone()
+    }
+
+    fn app_with_tags(game: &Game, t: &Temp) -> App {
+        let mut app = tabbed::app(&t.0);
+        app.pairing.published = game.app().pairing.published;
+        app
+    }
+
+    fn logged(app: &App, part: &str) -> bool {
+        app.log().iter().any(|l| l.status.text().contains(part))
+    }
+
+    /// The window's click: the ask, then the API run between frames.
+    fn click(api: &mut Api, app: &mut App, doc: Option<Doc>) -> Option<u64> {
+        app.preview.last_job = None;
+        app.dispatch(Action::PreviewInGame(doc));
+        api.run_preview_asks(app);
+        app.preview.last_job
+    }
+
+    #[test]
+    fn a_kind_asks_for_the_preview_its_what_lists() {
+        let tag = |g: &[u8; 4], name: &str| plan_for_tag(map::FourCC(*g), name);
+        let p = tag(b"weap", "objects\\w\\rifle").unwrap();
+        assert_eq!((p.what, p.target.as_deref()), ("weapon", Some("objects\\w\\rifle")));
+        for g in [b"vehi", b"bipd", b"scen", b"eqip"] {
+            let p = tag(g, "objects\\x").unwrap();
+            let want = format!("{}:objects\\x", std::str::from_utf8(g).unwrap());
+            assert_eq!((p.what, p.target.as_deref()), ("object", Some(want.as_str())));
+        }
+        let p = tag(b"wgit", "ui\\screens\\main_menu").unwrap();
+        assert_eq!((p.what, p.target.as_deref()), ("ui", Some("main_menu")));
+        let p = tag(b"nhdt", "ui\\hud\\a").unwrap();
+        assert_eq!((p.what, p.target.as_deref()), ("hud", None));
+        assert_eq!(p.params(), json!({"what": "hud"}));
+        let p = tag(b"snd!", "sound\\pogo\\spring").unwrap();
+        assert_eq!((p.what, p.target.as_deref()), ("sound", Some("sound\\pogo\\spring")));
+        for g in [b"lsnd", b"ugh!", b"proj", b"hlmt", b"mode", b"bitm", b"itmc"] {
+            assert!(tag(g, "x").is_err(), "{g:?}");
+        }
+        assert!(tag(b"lsnd", "x").unwrap_err().contains("snd!"));
+    }
+
+    #[test]
+    fn the_target_switch_follows_the_pairing_and_names_the_game_call() {
+        let game = Game::start("switch");
+        let t = Temp::new("pv-switch");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+        // Nothing open but the map: the map has no game preview.
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({})).unwrap();
+        assert_eq!((r["doc"].as_str(), r["target"].as_str()), (Some("map"), Some("studio")));
+        assert!(r["why"].as_str().unwrap().contains("Playtest"), "{r}");
+
+        app.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        let name = weap_name(&app);
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({})).unwrap();
+        assert_eq!(r["game"], json!({"what": "weapon", "target": name}));
+        let ids: Vec<(&str, bool)> = r["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["id"].as_str().unwrap(), t["available"].as_bool().unwrap()))
+            .collect();
+        // A game someone else started is paired.
+        assert_eq!(ids, [("studio", true), ("game", false), ("attached", true)]);
+        assert_eq!(refused(api.call(&mut app, m::PREVIEW_TARGET, json!({"target": "game"}))), code::REFUSED);
+        assert_eq!(
+            refused(api.call(&mut app, m::PREVIEW_TARGET, json!({"target": "moon"}))),
+            code::INVALID_PARAMS
+        );
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({"target": "attached"})).unwrap();
+        assert_eq!(r["target"], "attached");
+        assert_eq!(app.preview_target(Doc::Tag(weap_id())), crate::app::preview_switch::PreviewTarget::Attached);
+        // The switch is per document.
+        let r = api.call(&mut app, m::PREVIEW_TARGET, json!({"doc": "map"})).unwrap();
+        assert_eq!(r["target"], "studio");
+
+        // Unpaired, a game target is refused and studio stays.
+        let mut alone = tabbed::app(&Temp::new("pv-alone").0);
+        assert_eq!(
+            refused(api.call(&mut alone, m::PREVIEW_TARGET, json!({"target": "attached"}))),
+            code::REFUSED
+        );
+    }
+
+    #[test]
+    fn preview_in_game_sends_each_kinds_calls() {
+        let game = Game::start("click");
+        let t = Temp::new("pv-click");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+
+        // A weapon tag: the tab in front, Cmd+Enter's action.
+        app.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        let name = weap_name(&app);
+        let id = click(&mut api, &mut app, None).expect("a job started");
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!((r["what"].as_str(), r["state"].as_str()), (Some("weapon"), Some("done")), "{r}");
+        assert_eq!(game.calls("sim.give"), [json!({"player": "player.0", "weapon": name})]);
+
+        // The HUD tool's plan is also the explicit paired form.
+        let plan = app.game_preview(Doc::Hud).unwrap().params();
+        let id = api.call(&mut app, m::PAIR_PREVIEW, plan).unwrap()["id"].as_u64().unwrap();
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["what"], "hud");
+        assert!(!game.calls("cheat.list").is_empty());
+
+        // The screens tool's document: the menu is read, not opened.
+        app.ui_screens.pick = Some(crate::app::Pick::Native {
+            screen: "invented_menu".into(),
+            state: "default".into(),
+        });
+        app.dispatch(Action::OpenDoc(Doc::Ui));
+        let id = click(&mut api, &mut app, Some(Doc::Ui)).expect("a job started");
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["what"], "ui");
+        assert!(!game.calls("ui.audit").is_empty());
+
+        // An object kind's params are the ones pair.preview takes for it.
+        let p = plan_for_tag(map::FourCC(*b"scen"), "scen:crate").unwrap().params();
+        let id = api.call(&mut app, m::PAIR_PREVIEW, p).unwrap()["id"].as_u64().unwrap();
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["what"], "object");
+        assert_eq!(game.calls("sim.spawn").len(), 1);
+    }
+
+    #[test]
+    fn document_preview_starts_the_own_game_with_the_unsaved_variant() {
+        use crate::play::pair::Request;
+
+        let game = Game::start("variant");
+        let t = Temp::new("pv-variant");
+        let mut app = app_with_tags(&game, &t);
+        let mut link = crate::play::Play::new().link_view(&app);
+        link.can_play = true;
+        app.pairing.link = Some(link.into());
+        app.rules.new_blank();
+        app.dispatch(Action::NewVariantFromScript(app.rules.text.clone()));
+        app.dispatch(Action::SetVariantName("Invented preview".into()));
+        app.dispatch(Action::OpenDoc(Doc::Variant));
+        let mut api = Api::new();
+
+        // The header and menu both send PreviewInGame through the same
+        // document request as the API.
+        assert_eq!(click(&mut api, &mut app, Some(Doc::Variant)), None);
+        let [Request::StartOwnVariant(from_button)] = app.pairing.requests.as_slice() else {
+            panic!("expected a variant start, got {:?}", app.pairing.requests);
+        };
+        let bundle = variants::portable::read(from_button).unwrap();
+        let actual = bundle.variant().unwrap();
+        let expected = app.variants.as_ref().unwrap().current().unwrap();
+        assert_eq!(actual.bytes(), expected.bytes());
+        assert_eq!(actual.name(), "Invented preview");
+        assert!(bundle.ir().unwrap().is_some());
+        let header_request = app.pairing.requests.pop().unwrap();
+        assert!(app.preview.focus_game);
+        app.preview.focus_game = false;
+
+        assert_eq!(
+            api.call(&mut app, m::PAIR_PREVIEW, json!({})).unwrap(),
+            json!({"requested": true}),
+        );
+        assert_eq!(app.pairing.requests, [header_request]);
+        assert!(app.preview.focus_game);
+        assert!(game.calls("sim.give").is_empty());
+    }
+
+    #[test]
+    fn a_script_without_an_own_game_queues_a_carrier_and_a_reload() {
+        use crate::play::pair::Request;
+
+        let t = Temp::new("pv-script");
+        let mut app = tabbed::app(&t.0);
+        let mut link = crate::play::Play::new().link_view(&app);
+        link.can_play = true;
+        app.pairing.link = Some(link.into());
+        app.pairing.published = Some(json!({"state": "off"}));
+        app.rules.new_blank();
+        app.dispatch(Action::OpenDoc(Doc::Rules));
+        let mut api = Api::new();
+
+        assert_eq!(click(&mut api, &mut app, None), None);
+        let [Request::PreviewRules { params, hash, carrier: Some(carrier) }] =
+            app.pairing.requests.as_slice()
+        else {
+            panic!("expected a script start, got {:?}", app.pairing.requests);
+        };
+        let (ir, _) = rules::build(&app.rules.text).unwrap();
+        let (record, problems) = variants::portable::import(carrier).unwrap();
+        assert!(problems.is_empty());
+        assert_eq!(record, variants::portable::settings_record(&ir).unwrap());
+        assert_eq!(hash, &ir.id().to_string());
+        assert_eq!(params["ir_b64"], variants::portable::base64_encode(&ir.encode()));
+        assert!(app.preview.focus_game);
+    }
+
+    #[test]
+    fn a_sound_preview_plays_samples_the_mixer_and_returns_both_measures() {
+        let game = Game::start("sound");
+        let t = Temp::new("pv-sound");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+        let sound = "sound\\pogo\\spring";
+        let started = api
+            .call(&mut app, m::PAIR_PREVIEW, json!({"what": "sound", "target": sound, "seconds": 0.3}))
+            .unwrap();
+        assert_eq!(started["state"], "running");
+        let r = finish(&mut api, &mut app, started["id"].as_u64().unwrap());
+        assert_eq!((r["what"].as_str(), r["state"].as_str()), (Some("sound"), Some("done")), "{r}");
+        // The game was asked to play it at the player, then its voices were sampled.
+        assert_eq!(game.calls("audio.play"), [json!({"sound": sound, "player": "player.0"})]);
+        let steps: Vec<&str> = r["steps"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+        assert_eq!(&steps[..2], ["session.methods", "audio.play"]);
+        assert!(steps[2].starts_with("audio.voices x"), "{steps:?}");
+        // The game's measure: the mixer's voices.
+        assert_eq!(r["applied"]["instance"], "00cc0001");
+        assert!(r["audio"]["samples"].as_u64().unwrap() >= 2, "{r}");
+        assert_eq!(r["audio"]["voices"], 2);
+        assert_eq!(r["audio"]["loudest"][0]["id"], 7);
+        // The editor's own: sound.measure's answer, or why the map has none
+        // (the invented map holds no such sound).
+        assert!(r["editor"].is_object(), "{r}");
+        assert!(r["editor"]["why"].is_string() || r["editor"]["levels"].is_object(), "{r}");
+        // No picture of a sound.
+        assert!(r["capture"].is_null(), "{r}");
+
+        for (p, want) in [
+            (json!({"what": "sound"}), code::INVALID_PARAMS),
+            (json!({"what": "sound", "target": sound, "seconds": 0}), code::INVALID_PARAMS),
+        ] {
+            assert_eq!(refused(api.call(&mut app, m::PAIR_PREVIEW, p.clone())), want, "{p}");
+        }
+    }
+
+    #[test]
+    fn a_sound_preview_needs_the_games_audio_play() {
+        let game = Game::start_with("sound-missing", false);
+        let t = Temp::new("pv-sound-missing");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+        let id = api
+            .call(&mut app, m::PAIR_PREVIEW, json!({"what": "sound", "target": "x"}))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let r = finish(&mut api, &mut app, id);
+        assert_eq!(r["state"], "failed");
+        assert!(r["why"].as_str().unwrap().contains("does not list audio.play"), "{r}");
+    }
+
+    #[test]
+    fn a_kind_with_no_game_preview_and_a_paused_game_refuse_with_their_message() {
+        let game = Game::start("click-refused");
+        let t = Temp::new("pv-click-refused");
+        let mut app = app_with_tags(&game, &t);
+        let mut api = Api::new();
+
+        // The map has none: the click is refused at once, nothing runs.
+        assert_eq!(click(&mut api, &mut app, None), None);
+        assert!(logged(&app, "Playtest"), "{:?}", app.log().last().map(|l| l.status.text()));
+
+        // The game is paused: the built message, and no call made.
+        app.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        app.pairing.published.as_mut().unwrap()["paused"] = json!(true);
+        assert_eq!(click(&mut api, &mut app, None), None);
+        assert!(logged(&app, "the paired game is paused: resume it (pair.control) to preview"));
+        assert!(game.calls("sim.give").is_empty());
+
+        // Not paired at all.
+        let mut alone = tabbed::app(&Temp::new("pv-click-alone").0);
+        alone.dispatch(Action::OpenDoc(Doc::Tag(weap_id())));
+        assert_eq!(click(&mut api, &mut alone, None), None);
+        assert!(logged(&alone, "pair with a game first") || logged(&alone, "previews run in the editor window"));
+    }
 }

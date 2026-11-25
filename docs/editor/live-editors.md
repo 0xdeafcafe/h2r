@@ -1,7 +1,7 @@
 # Every tag kind: an editor, a preview and three live views
 
-Status: In progress. LE1 (the kind registry, `tag.kinds`, the fan-out and `class` in Pending) is built, and so are the editors named as built below; the subject's follow-ups after a delivery (LE2), Host changes from the HUD, UI Screens and Rules tools, and the missing editors are design.
-Code: built in `crates/apps/studio/src/app/kinds.rs` (the registry), `crates/apps/studio/src/app/live.rs` (the fan-out), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the write path), `crates/apps/studio/src/play/tag_sync.rs` (`Effect`, `Play::fan_out`) and `crates/apps/studio/src/api/tags.rs` (`tag.kinds`); the views' table in `crates/apps/studio/src/fields/rich.rs` (planned). Tests: `app::kinds::tests`, `app::live::tests`, `play::tag_sync::fan_out_tests`, `api::tags::tests`, each editor's own.
+Status: In progress. LE1 (the kind registry, `tag.kinds`, the fan-out and `class` in Pending), LE2 (the subject: `tag.open`, its place in a level and on the stage's pad, the respawn after a `NextSpawn` write, the retrigger of a played sound, the unread mark) and LE3 (bitmaps: the encoder and its Raw delivery, `import.bitmap` as a new `bitm`; sequences and sprites are edited in the inspector) are built, and so are the editors named as built below. The stage's swatch objects, the looping effect and the retrigger of an effect or animation (they need a game method), the build and reload after a `Reload` write (GV6), Host changes from the HUD, UI Screens and Rules tools, and the missing editors are design.
+Code: built in `crates/apps/studio/src/app/kinds.rs` (the registry), `crates/apps/studio/src/app/live.rs` (the fan-out), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the write path), `crates/apps/studio/src/play/tag_sync.rs` (`Effect`, `Play::fan_out`) `crates/apps/studio/src/app/bitmap_import.rs` (`import.bitmap`), `crates/apps/studio/src/app/subject.rs` (the subject's place), `crates/apps/studio/src/play/subject.rs` (the object and its follow-ups in the own game), `crates/tools/stage-kit` (`subject_place`, the stage's pad) and `crates/apps/studio/src/api/tags.rs` (`tag.kinds`, `tag.open`, `tag.subject`); the views' table in `crates/apps/studio/src/fields/rich.rs` (planned). Tests: `app::kinds::tests`, `app::live::tests`, `play::tag_sync::fan_out_tests`, `app::subject::tests`, `play::subject::tests`, `api::tags::tests`, `stage_kit::tests`, each editor's own.
 Switch: none.
 
 Studio is where any piece of content is picked and edited in place: a
@@ -63,15 +63,23 @@ out. The class decides the route:
 | **Shape** | a block grown or shrunk, data resized, a tag added, a string added | re-read | a build of the project and a load of it ([tag-workspace.md](tag-workspace.md)); a block the game can move goes by the edit arena instead |
 | **Host** | content the game draws from host data: HUD kit records, our screens' YAML, a rules script, a host sound | re-read | the host's own reload: `rules.reload`, the UI and HUD kit reloads, `render.reload` for shader overrides |
 
-After a delivery the fan-out makes the change visible where the game
-would otherwise keep showing the old thing, in the own game only:
+After a Field delivery to the subject's own tag the fan-out makes the
+change visible where the game would otherwise keep showing the old
+thing, in the own game only (`play::subject`; each call waits for the
+write's batch to be out, and a write to any other tag queues nothing):
 
-- `NextSpawn`: the **subject** is respawned (`world.object.respawn`).
-- `NextUse`: the subject's use is triggered again: the effect is
-  spawned, the sound played, the animation restarted.
-- `Reload` and Shape: the build and reload of [game-view.md](game-view.md), GV6.
+- `NextSpawn`: the subject's object is respawned
+  (`world.object.respawn`), once however many fields were written, and
+  nothing else is.
+- `NextUse`: the subject's use is triggered again: a sound is played
+  again. An object has no use to trigger, and an effect or an animation
+  has no game method yet, so the subject's `failure` says so and no call
+  is made.
 - `NotKnown`: sent as a Field write and shown with a mark saying the
-  game may not have read it.
+  game may not have read it (`unread` in `tag.subject`).
+- `Reload` and Shape: the build and reload of [game-view.md](game-view.md),
+  GV6. A Shape change is built and reloaded by the fan-out; a Field
+  write that is only read at reload stays a Pending row until GV6.
 
 In an attached game none of these is done for the user: they are rows
 in Pending, as now.
@@ -105,13 +113,25 @@ The tag being edited is the **subject**. The Preview frames it. The own
 game shows it too:
 
 - with a level open, an object-like subject is placed at the viewport
-  camera's focus as an unlinked preview placement, as the scenario
-  tool previews one;
+  camera's focus, on the ground under it, as an unlinked preview: the
+  game's own `sim.spawn`, the ownerless placement a scenario preview
+  makes, so nothing is written to the level (`app::subject::place`,
+  `Scene::Level`);
 - with no level open (a tag opened from the tree), the own game runs
   the [content stage](content-stage.md) and the subject stands on the
-  flat bay's subject pad: a model on its `hlmt`, a shader or bitmap on
-  a swatch object of the stage, an effect or light looping at the pad,
-  a sound played at the pad.
+  flat bay's subject pad (`stage_kit::subject_place`, `Scene::Stage`),
+  facing the spawn: an object on the pad, a sound played (`audio.play`,
+  at the player's unit). A shader or bitmap on a swatch object of the
+  stage, and an effect or light looping at the pad, are design: the
+  stage has no swatch object and the game has no method to start a
+  looping effect, so the subject's `note` says so.
+
+An object-like subject that is a model (`hlmt`, `mode`, `coll`,
+`phmo`) stands as the first scenery, weapon, vehicle or equipment tag
+that uses it (`app::subject::spawn_tag`); with none, `refusal` says so.
+The subject is the tag in front, else the one selected in the Tags tool
+(`App::subject`); a new subject deletes the object of the old one
+(`world.object.delete`) before its own is made, so one object stands.
 
 So every kind has a game view even where Studio's renderer cannot draw
 it. For those kinds (effects, particles, decals, lens flares) the Game
@@ -136,14 +156,14 @@ preview is a query and not a guess.
 | Render models (`mode`), collision and physics models (`coll`, `phmo`) | the Modeling tool (open, read, check) | the viewport, bind pose, first variant | variants and regions, markers, posed preview, the write | rich-editors M1; LE5 |
 | Objects (`hlmt`, `weap`, `vehi`, `bipd`, `scen`, `eqip`, `proj`) | the field panel; `model.*` reads and renders | `model.render` | one object editor: model, variants, markers, attachments, the tuning sheet with units | LE5 |
 | UV layouts (in `mode` and `sbsp` sections) | none | none | a UV view on the mesh kernel: islands over the bitmap, move, scale, pin; Raw writes | LE4 |
-| Bitmaps (`bitm`) | `bitmap-edit`'s canvas (paint, PNG in and out) | thumbnails | the tile encoder and mips, formats, import as a new tag, the sequence and sprite editor | modeling, "Texture editing"; LE3 |
+| Bitmaps (`bitm`) | `bitmap-edit`'s canvas (paint, PNG in and out) and the sprite editor (sequences, sprites) | thumbnails | none | modeling, "Texture editing"; LE3 |
 | Shaders (`shad`, `stem`, `spas`) | the field panel | none | the Shader tab and its preview, animation, code | rich-editors S1 to S6 |
 | Colours and gradients (colour fields, colour functions, colour tables) | the field panel | none | the picker, gradient strips, a table editor | rich-editors C1 to C3; LE6 |
 | Curves (function data) | the field panel | none | the curve editor | rich-editors F1, F2 |
 | Effects, particles, contrails, lights, lens flares, decals (`effe`, `prt3`, `ligh`, `lens`, `deca` and their kin) | the field panel | none | grouped editors on the curves and colours; the game view as preview | LE7 |
-| Sky and fog (`sky `, `fog `) | the field panel | the viewport uses the sky's colour, sun and fog | a tag view with the dome and the fog curve | LE8 |
-| Animations (`jmad`) | none | none | pick and scrub on the model; editing data is out of scope | rich-editors M1 |
-| Sounds (`snd!`, `lsnd`, `ugh!`) | audition: waveform, play, scrub | the waveform | import, levels and distances, mouth curves | rich-editors A2 to A5; workspace W7 |
+| Sky and fog (`sky `, `fog `) | the field panel | the viewport draws the sky's sun and fog from the tag document, so an edit shows on the next frame | a tag view with the dome and the fog curve | LE8 |
+| Animations (`jmad`) | model pose, timeline and curve edits, save to an animation package | live metadata writes flush the decoded clips. New raw streams take effect on map load | retarget, import and paired-game preview | rich-editors M1, [studio-redesign.md](studio-redesign.md) AN1 to AN6 |
+| Sounds (`snd!`, `lsnd`, `ugh!`) | audition: waveform, play, scrub | the waveform | import, distances, waveform edits, drawing the mouth curve | rich-editors A2 to A5; workspace W7 |
 | HUD (`nhdt`, HUD kit) | the HUD tool | its preview | what "Not modelled" lists | hud-editor |
 | Screens (`wgit`, `wgtz`, our YAML) | the UI Screens tool | its preview and sheets | the levels' screens and dialogs | ui-in-maps |
 | Scripts (in `scnr`) | Scripts, read | none | the compiler and the write | rich-editors H2 to H4 |
@@ -158,7 +178,10 @@ preview is a query and not a guess.
   view's changes go now ([agent-api.md](agent-api.md)).
 - `tag.open {tag}` (act): opens the tag in its editor and makes it the
   subject; the reply names the editor, the preview and the subject's
-  place in the own game.
+  place in the own game. A sound subject is played.
+- `tag.subject` (read): the subject's place, the object standing for
+  it, the follow-ups owed after a write, the unread fields and the last
+  refusal ([agent-api.md](agent-api.md)).
 - `tag.preview {tag, out, camera?}` (act): the Preview as a PNG, by
   the kind's provider; `NO_PREVIEW` with the reason for a kind that
   has only the game view.
@@ -166,6 +189,19 @@ preview is a query and not a guess.
   `host`) beside `effect`.
 - Each editor's own namespace is on its page (`shader.*`, `function.*`,
   `sound.*`, `hud.*`, `mesh.*`, `model.*`).
+
+## Sky and fog in the viewport
+
+`ui::sky::live_atmosphere` reads the first of the open scenario's skies
+that decodes from the tag document, edits applied, with
+`scenario_edit::scene::atmosphere_in_doc`: the sun is the first light
+with parameters, the fog the first `fog_a` element. The viewport calls
+`ui::sky::apply` whenever the document's revision moves, and
+`Viewport::set_atmosphere` swaps the sun and fog words the scene shader
+draws with; nothing is uploaded again. A sky that does not decode leaves
+the scene's own atmosphere. The own game reads the same bytes through
+the Field route. The native renderer's world lighting is not changed by
+this path.
 
 ## Rules and limits
 
@@ -189,8 +225,8 @@ preview is a query and not a guess.
 | # | Slice | Owns | Tests | Accepted when |
 |---|---|---|---|---|
 | LE1 | The registry and the fan-out: `KINDS`, `Change` and its classes from every write path, routes for Field, Raw, Shape and Host, `tag.kinds`, `class` in Pending | `studio/src/app/{kinds.rs, live.rs}`, `studio/src/app/tag_doc.rs`, `studio/src/play/tag_sync.rs`, `studio/src/api/tags.rs`, [agent-api.md](agent-api.md) | on the fake game: one write of each class makes its one delivery; an attached game gets a Pending row where the own game gets the delivery; every group has a row or the default | `tag.kinds` lists every group with its editor and preview |
-| LE2 | The subject: `tag.open`, the preview placement in a level, the stage pad with no level, respawn and retrigger after `NextSpawn` and `NextUse` | `studio/src/app/subject.rs`, `studio/src/play/subject.rs`, `stage-kit` (the swatch objects) | the subject's place for each rule; a `NextSpawn` write queues one respawn of the subject and of nothing else | a weapon field changed in the panel shows on the weapon standing in the Game panel |
-| LE3 | Bitmaps: the encoder and mips, import a PNG as a new `bitm`, sequences and sprites, Raw delivery | `crates/tools/bitmap-edit`, `studio/src/app/bitmap.rs`, `studio/src/ui/bitmap.rs`, [modeling.md](modeling.md) | encode then decode within the format's error; a painted pixel is one Raw write; an import is a Shape change | a stroke on a bitmap shows on the model in the Game panel as it is drawn |
+| LE2 | The subject: `tag.open`, the preview placement in a level, the stage pad with no level, respawn and retrigger after `NextSpawn` and `NextUse` | `studio/src/app/subject.rs`, `studio/src/play/subject.rs`, `stage-kit` (the subject pad; the swatch objects are design) | the subject's place for each rule; a `NextSpawn` write queues one respawn of the subject and of nothing else | a weapon field changed in the panel shows on the weapon standing in the Game panel |
+| LE3 (built) | Bitmaps: the encoder and mips, import a PNG as a new `bitm` (`import.bitmap`), sequences and sprites (`bitmap.sprite.*`), Raw delivery | `crates/tools/bitmap-edit`, `studio/src/app/{textures.rs, bitmap_import.rs}`, [modeling.md](modeling.md) | encode then decode within the format's error (`assets::encode`); a painted pixel is one Raw write (`play::raw_sync::tests`); an import is a Shape change (`api::tests::import_tests`); a sprite edit is one undo step and moves the tag on save (`bitmaps_tests::sprites_are_added_edited_removed_undone_and_saved`) | a stroke on a bitmap shows on the model in the Game panel as it is drawn |
 | LE4 | UV layouts: the UV view, island select, move, scale and pin, Raw vertex writes | `crates/tools/mesh-edit` (UV ops), `studio/src/ui/uv.rs`, `studio/src/api/mesh.rs` | an island moved changes only its vertices' UVs; one drag is one undo step | a moved island slides the texture in the Preview and the Game panel |
 | LE5 | The object editor: model, variants and regions, markers, attachments, the tuning sheet; `model.*` as its API | `studio/src/app/object.rs`, `studio/src/ui/object.rs`, `studio/src/api/models.rs` | an invented object: a variant picked changes the Preview's sections; a marker moved is a Field write | a variant picked shows on the subject in the Game panel after its respawn |
 | LE6 | Colour tables and gradients as editors over rich-editors C1, C3 and F1 | `studio/src/fields/rich` (the table view), `tags::effects::function` | a table edited through the view equals the same `tag.set` calls | a gradient stop dragged recolours the Preview and the game |

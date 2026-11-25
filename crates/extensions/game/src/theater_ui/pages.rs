@@ -105,7 +105,8 @@ impl Action {
             Self::Save => entry.clip.is_none(),
             Self::Share | Self::CopyLink => {
                 entry.film.source != super::adapter::Source::Archive
-                    && entry.film.version != Some(1)
+                    && (entry.film.version == Some(4) || entry.film.live_game_id.is_some()
+                        || entry.film.archive_id().is_some())
             }
             Self::Delete => {
                 entry.clip.is_some() || entry.film.source != super::adapter::Source::Archive
@@ -742,7 +743,13 @@ impl Default for GuestTexts {
 }
 
 impl GuestTexts {
+    /// The game's string scanner ends a line at `\r` and ignores `\n`, so a
+    /// wrapped paragraph's `\n` would join its lines without the space the
+    /// break replaced ("its\nsimulation" reads "itssimulation"); ours break
+    /// with `\r\n`, as the game's own strings do.
     fn set(&self, i: u32, value: &str) -> u32 {
+        let value = value.replace("\r\n", "\n").replace('\n', "\r\n");
+        let value = value.as_str();
         let mut slots = self.values.lock().unwrap_or_else(|e| e.into_inner());
         let mut end = value.len().min(CAPACITY as usize - 1);
         while !value.is_char_boundary(end) {
@@ -1110,5 +1117,21 @@ mod tests {
             string(rows.focused_footer(Some(3)).unwrap()),
             footer_legend(&library_prompts("Details"))
         );
+    }
+
+    #[test]
+    fn a_wrapped_paragraph_breaks_lines_the_way_the_games_strings_do() {
+        let texts = GuestTexts::default();
+        let reason = "The film is missing its simulation hook digest.";
+        let wrapped = text_fit::paragraph(reason, 120, 8);
+        assert!(wrapped.contains('\n'), "{wrapped:?} wraps");
+        texts.set(0, &wrapped);
+        let stored = texts.values.lock().unwrap()[0].clone();
+        let stored = String::from_utf8(stored[..stored.len() - 1].to_vec()).unwrap();
+        assert!(!stored.replace("\r\n", "").contains('\n'), "no bare newline, which the game ignores");
+        assert_eq!(stored.replace("\r\n", " "), reason, "the break stands in for the space");
+        texts.set(1, "one\r\ntwo");
+        let stored = texts.values.lock().unwrap()[1].clone();
+        assert_eq!(&stored[..stored.len() - 1], b"one\r\ntwo");
     }
 }

@@ -44,6 +44,8 @@ replay parity on its invented cache.
   removed entry, the removal of a linked entry, a flag in two roles or on
   two channels, a repeated link and a device link whose lower endpoint is
   not first.
+- A group (`Forge::Group`) names 2 to 256 entries of any block by endpoint, with a name of 1 to 32 characters, a pivot flag and a lock flag; `Forge::Ungroup` ends it and `Forge::GroupLock` sets its lock. An entry is in one group, so the validator refuses a second group, a missing or removed member, a repeated member, and the removal of a grouped entry. `ForgeDoc::groups` resolves the active groups to final indices, `ForgeDoc::group_targets` by identity, and `replay` hands them to `Apply::groups`. A group has no scenario bytes, and a document with a group op is format 4 (`FORMAT_GROUPS`).
+- A prefab (`Prefab`, `prefab.rs`) is a file of pieces, each a placement block, a tag key, an optional label and a position and rotation from the pivot (the first piece, as if it faced yaw 0). It has its own number (`PREFAB_FORMAT`), a bounded reader (`Prefab::from_bytes`, 128 KiB, 256 pieces) and canonical JSON. `Prefab::missing` names the first tag a map lacks. `ForgeDoc::label_targets` gives the active labels by placement identity.
 - A label is a string of 1 to 32 bytes from lowercase ASCII, digits, `_`,
   `-` and `.`, plus an optional `i32` number. `Forge::Label` sets or
   clears one on a placement named by an endpoint, as links do, so it
@@ -64,6 +66,12 @@ replay parity on its invented cache.
   well as added ones: `Set` writes one typed, editable field, `Remove`
   removes the entry and `Reset` drops the effect of every earlier entry
   op on a base entry, so it is in the map again as the disc has it.
+  `Property` sets or clears a property with no retail field (an item
+  spawner's `team`, 0 to 7, `teams` reads it; a scenery, crate or
+  machine placement's `games`, engine indices in ascending order,
+  `object_games` reads it and `for_game` gives the document a build for
+  one engine makes); it lowers to nothing.
+  Game types are `games`: a set of engines and the item slots that name it.
   Links and labels are their own ops and a reset leaves them. A target
   is an endpoint, as for links and labels; a base target carries its
   **print**, the first eight bytes (sixteen hex digits) of the SHA-256

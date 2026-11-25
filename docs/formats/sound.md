@@ -29,11 +29,50 @@ permutations -> chunks -> bytes in current map / `mainmenu` / `shared` /
 
 | Table | Layout used | Evidence |
 |---|---|---|
-| `snd!` (0x14) | `+0` u16 flags, `+2` class, `+3` sample rate (0=22050, 1=44100, 2=32000), `+4` encoding (0 mono, 1 stereo, 2 codec), `+5` compression (0 BE PCM, 1 Xbox ADPCM, 2 IMA, 3 LE PCM, 4 WMA), `+6` u16 playback index, `+8` u16 first pitch range, `+0xa` u8 pitch range count, `+0x10` u32 max play time | Names and enum values not covered below are **S**. **V**: rate 1 and 2 values consistent with every decoded duration; `+8/+0xa` chain to permutations whose chunk sizes sum exactly in all 4,000+ sounds of three campaign maps; `+0x10` is milliseconds (floor of longest permutation's duration; **V**, see below). **E**: engine builds 44.1 kHz ADPCM format (`0x0021e421..0x0021e454`). Class, flags, playback index, `+0xb..+0x10`: uninterpreted. |
-| `ugh!` header (0x58) | Eleven `{count, address}` blocks (8 bytes each). Used: `[4]` pitch ranges, `[5]` permutations, `[8]` chunks. | Order **S**; strides **V** from pointer spacing between adjacent blocks (12, 16, 12) and the exact chunk-size sums. Other blocks (playback parameters 0x38, scales 0x14, import names 4, ...) are unread. |
+| `snd!` (0x14) | `+0` u16 flags, `+2` class, `+3` sample rate (0=22050, 1=44100, 2=32000), `+4` encoding (0 mono, 1 stereo, 2 codec), `+5` compression (0 BE PCM, 1 Xbox ADPCM, 2 IMA, 3 LE PCM, 4 WMA), `+6` u16 playback index, `+8` u16 first pitch range, `+0xa` u8 pitch range count, `+0xe` u16 extra info index (`ffff` none), `+0x10` u32 max play time | Names and enum values not covered below are **S**. **V**: rate 1 and 2 values consistent with every decoded duration; `+8/+0xa` chain to permutations whose chunk sizes sum exactly in all 4,000+ sounds of three campaign maps; `+0x10` is milliseconds (floor of longest permutation's duration; **V**, see below). **E**: engine builds 44.1 kHz ADPCM format (`0x0021e421..0x0021e454`). Class, flags, playback index, `+0xb..+0xe`: uninterpreted. |
+| `ugh!` header (0x58) | Eleven `{count, address}` blocks (8 bytes each). Used: `[4]` pitch ranges, `[5]` permutations, `[8]` chunks, `[10]` extra infos (below). | Order **S**; strides **V** from pointer spacing between adjacent blocks (12, 16, 12) and the exact chunk-size sums. Other blocks (playback parameters 0x38, scales 0x14, import names 4, ...) are unread. |
 | Pitch range (12) | `+8` u16 first permutation, `+10` u16 count; `+0..+8` raw | Run bounds **V** (all indices in range, sums exact). Remaining fields raw. |
-| Permutation (16) | `+8` u32 encoded size, `+12` u16 first chunk, `+14` u16 chunk count; `+0..+8` raw | **V**: size == sum of its chunks' sizes for every permutation. |
+| Permutation (16) | `+5` i8 extra info descriptor (below), `+8` u32 encoded size, `+12` u16 first chunk, `+14` u16 chunk count; `+0..+5`, `+6..+8` raw | **V**: size == sum of its chunks' sizes for every permutation. **E**: the signed descriptor index picks a mouth-curve entry (`0x0018c720..0x0018ca20`, [sounds.md](../halo1/sounds.md)). |
 | Chunk (12) | `+0` raw pointer (selector in top 2 bits), `+4` size (bit 31 is a flag of unknown meaning, masked), `+8` runtime (0xffffffff) | **V**: all pointers+sizes lie within the selected file; selector values Local and Shared observed in campaign maps. Streaming chunks are 0x7ff8 bytes. |
+
+## Extra infos and mouth curves
+
+A dialogue sound's `snd!` names an element of the gestalt's block `[10]`
+with its `+0xe` index (`ffff` is none): the sound's *extra info*, the
+lip-sync resource. The element's raw pointer (`+8`, byte length `+0xc`)
+holds one `hklb` resource, as the Halo 1 converter writes it and as
+retail holds it (**V**, retail 01b; `crates/tools/h1-assets`'s disc
+tests read the same layout back):
+
+- `+0x00` `hklb`; `+0x04` u32 the bytes from the first `crsr` to the end
+  of the descriptors (`raw.len() - 0x1c`); `+0x08` u32 the curve data's
+  length; `+0x10` u32 the descriptor count; `+0x18` the first `crsr`;
+- the curve data follows it: zero or more jaw-aperture bytes per
+  permutation, one per 30 Hz tick (the engine's sampler scales by 1/255,
+  **E** `0x218e50`, [sounds.md](../halo1/sounds.md));
+- a second `crsr`, then the 16-byte descriptors: mouth offset (into the
+  curve data), mouth length, facial-sequence offset and
+  facial-sequence length. A permutation's signed `+5` byte picks its
+  descriptor; a negative index and a zero mouth length are an unvoiced
+  permutation. A facial sequence is per-track weight keys for the
+  frames of a facial pose animation: an i16 track count, the version
+  `0x096c`, a seconds-per-unit scale at `+0x0c`, then per track an i16
+  key count and first key index, then the shared 4-byte keys (i16 time,
+  i16 value × 0.0001). The engine keeps the 12 largest smoothed weights
+  and blends those frames as overlays (**E** `0x10de40`, `0x10e530`;
+  [the note](notes/2026-11-24-facial-sequences.md)). Nothing here reads
+  or writes it;
+- `fklb` ends the resource.
+
+The two locators that find the data and the descriptors are the element's
+`+0x18` child block: 8 head bytes (`01 02 00 00 00 00 ff ff` for the
+data, `00 02 08 00 08 00 10 00` for the descriptors), then the buffer's
+byte length and its offset from the first `crsr`. `Gestalt::mouth_curve`
+follows the locators, picks the descriptor and returns its span of the
+data as the permutation's curve; a resource that is not an `hklb` block,
+an index out of range or a span outside the data is an error naming it,
+never a guess. Reading a curve needs no decoder and no executable, so it
+works where the sound's audio cannot be read.
 
 ## Codec facts
 
@@ -90,6 +129,26 @@ permutations -> chunks -> bytes in current map / `mainmenu` / `shared` /
    under the 65 reading (13.4 million boundaries in 01b); printed by the same flag.
 
 Verdict: 64 samples per block per channel; `SamplesPerBlock::Hardware64` is right.
+
+## Writing a sound
+
+A `sound` item of a package with a `tag` is written as a `snd!`
+(`workspace::import`; [studio-redesign.md](../editor/studio-redesign.md),
+"Contents"). The clip's rate is mapped to the nearest of 22,050, 32,000 and
+44,100 Hz that is not below it (`+3` 0, 2, 1) and resampled to it, the
+channel count is `+4` (0 mono, 1 stereo), and `+5` is 1: Xbox ADPCM in
+whole blocks (`audio::adpcm::encode`: each block's header sample is its
+first frame and the next 63 are 4-bit codes, as read above). The bytes are
+cut at 0x7ff8 (910 mono or 455 stereo blocks) into chunks, each a raw
+resource aligned to 0x200. The sound has one pitch range of one
+permutation: the gestalt rows are a playback of zeros (the flags `0x400`,
+`0x800` and `0x1000` take both distances from the class and drop the cone),
+a scale with both multipliers 1.0, the range, the permutation (its
+size the sum of its chunks, its length in milliseconds at `+6`) and its
+chunks, all appended after the rows the gestalt held, so no existing index
+moves. `+0x10` is the floor of the clip's length in milliseconds, as read
+above. A clip is never given an extra info (no mouth curve), a promotion or
+a custom playback.
 
 ## `h2 sound` behaviour
 

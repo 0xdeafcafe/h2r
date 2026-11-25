@@ -514,14 +514,14 @@ pub async fn end_game(cx: &Cx) -> anyhow::Result<()> {
 }
 
 /// Whether the AI's clear-line test passes from `from` to `to`, ignoring
-/// `ignore` (an object datum, or `u32::MAX`). `scratch` is 24 bytes of
+/// the two `ignore` datums (`u32::MAX` for an unused slot). `scratch` is 24 bytes of
 /// guest memory the entry owns, for the two points.
 pub async fn line_of_sight(
     cx: &Cx,
     scratch: u32,
     from: [f32; 3],
     to: [f32; 3],
-    ignore: u32,
+    ignore: [u32; 2],
 ) -> anyhow::Result<bool> {
     cx.write(|m| {
         for (k, v) in from.into_iter().chain(to).enumerate() {
@@ -535,8 +535,8 @@ pub async fn line_of_sight(
         GuestCall::new(points::AI_LINE_OF_SIGHT.base)
             .esi(scratch)
             .edi(scratch + 12)
-            .edx(ignore)
-            .ecx(u32::MAX),
+            .edx(ignore[0])
+            .ecx(ignore[1]),
     )
     .await?;
     Ok(r.eax as u8 != 0)

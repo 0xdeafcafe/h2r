@@ -52,6 +52,22 @@ pub(crate) enum Op {
     QosLookup,
 }
 impl Op {
+    /// Computed from the arguments and guest memory alone. Playback
+    /// computes them again, so they are never taped and take no call
+    /// index (docs/game/input-film.md, "What the replay depends on").
+    fn pure(self) -> bool {
+        matches!(self, Op::Htonl | Op::Htons | Op::FdIsSet)
+    }
+    /// Operations on a socket the guest names. Before the guest has made
+    /// a socket there is none to name.
+    fn on_socket(self) -> bool {
+        use Op::*;
+        matches!(
+            self,
+            Bind | ConnectSocket | Send | SendTo | Recv | RecvFrom | Ioctl | SetOption | GetOption
+                | Shutdown | Close
+        )
+    }
     fn winsock(self) -> bool {
         use Op::*;
         matches!(
@@ -201,6 +217,9 @@ struct Socket {
 }
 #[derive(Default)]
 struct State {
+    /// The guest has made a socket. Until it has, the network is the null
+    /// network: no peers, nothing to receive ([`Network::dark`]).
+    opened: bool,
     net: u32,
     wsa: u32,
     next: u32,
@@ -369,8 +388,10 @@ impl Network {
     }
     pub fn invoke(&self, op: Op, a: &[u32], thread: u32, rt: &Runtime) -> u32 {
         let result = match self.tap.get() {
-            Some(tap) => self.filmed(tap.as_ref(), op, a, thread, rt),
-            None => self.run(op, a, thread, rt),
+            Some(tap) if !op.pure() && !self.dark(op) => {
+                self.filmed(tap.as_ref(), op, a, thread, rt)
+            }
+            _ => self.run(op, a, thread, rt),
         };
         match result {
             Ok(v) => v,
@@ -380,6 +401,15 @@ impl Network {
             }
             Err(e) => e,
         }
+    }
+    /// The null network. A game that has made no socket has none for an
+    /// operation to name, so an operation on a socket is refused by the
+    /// guest's own state alone: the same answer in recording and in
+    /// playback, with nothing for the film to hold. The first `Socket`
+    /// call ends it, and every call after is taped. A dedicated host's
+    /// tunnel answers before the socket table, so it is never dark.
+    fn dark(&self, op: Op) -> bool {
+        op.on_socket() && !lock(&self.state).opened && !tunnel_host::active(self)
     }
     fn socket(&self, id: u32) -> Result<Arc<Socket>> {
         lock(&self.state).sockets.get(&id).cloned().ok_or(10038)

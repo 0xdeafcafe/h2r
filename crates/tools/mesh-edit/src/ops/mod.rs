@@ -6,10 +6,13 @@
 //! primitives alone. An operation may fail half-way: `apply` runs it on a
 //! copy, so a failure leaves the mesh as it was.
 
+mod bevel;
 mod cut;
 mod delete;
 mod extrude;
+mod inset;
 mod merge;
+mod quads;
 mod surface;
 mod transform;
 

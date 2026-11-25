@@ -1,11 +1,11 @@
 # Halo 1 models and animations as Halo 2 tags (`crates/tools/h1-assets`)
 
 Status: **Built** for Halo 1 Xbox `mode` -> Halo 2 `mode` and
-`antr` -> `jmad`, including compressed (keyframed) animations. It is
-proven by decoding the converted tags through `crates/formats/tags` and
-comparing them with the source; what only a game run shows is under
-"Needs a game run". The measurements behind the V labels are in
-[notes/models.md](notes/models.md).
+`antr` -> `jmad`, including compressed (keyframed) animations. It is proven
+by decoding the converted tags through `crates/formats/tags` and comparing
+them with the source; the converted maps load in the game
+([campaign.md](campaign.md), [multiplayer.md](multiplayer.md)), and what
+only a game run shows is under "Needs a game run".
 
 This is the model and animation step of the Halo 1 campaign work
 ([campaign.md](campaign.md) §2). The Halo 1 cache container is in
@@ -21,16 +21,17 @@ run time and print only counts and error figures.
 ## Evidence labels
 
 - **V1:** checked on the owner's Halo 1 Xbox multiplayer maps
-  (`beavercreek.map`, `carousel.map`) by the ignored tests: every `mode`
-  and `antr` tag reads and converts, and the values read pass the stated
-  checks.
+  (`beavercreek.map`, `carousel.map`) by the ignored tests: every one of
+  their 103 `mode` and 39 `antr` tags reads and converts, and the values
+  read pass the stated checks.
 - **V2:** checked on retail Halo 2 `mode` tags (`lockout.map`) by the
   ignored test `retail_h2_mode_layouts`.
 - **V3:** checked against the `jmad` mode/class/type/action trees of every
-  map on the owner's retail Halo 2 disc by the ignored test
+  map on the owner's retail disc (30 maps, 2,268 graphs) by the ignored test
   `retail_h2_animation_names` in `crates/tools/h1-assets/src/models/names.rs`.
-- **V4:** checked on every map of the owner's Halo 1 disc by the ignored
-  test `h1_disc_compressed_animations_decode`.
+- **V4:** checked on every map of the owner's Halo 1 disc (24 maps, 628
+  graphs, 186 compressed animations) by the ignored test
+  `h1_disc_compressed_animations_decode`.
 - **V5:** checked on every biped and first-person model of the disc's a10
   and Blood Gulch by the ignored tests in `crates/tools/h1-assets/src/models/skin_tests.rs`,
   which print only counts and error figures.
@@ -62,7 +63,7 @@ unused.
 | `d0` | geometries, stride `0x30` | V1 |
 | `dc` | shaders, stride `0x20`: tag reference (`00`), i16 permutation (`10`): the per-sampler image index on a model material and the digit a numeric `schi` draws ([objects.md](objects.md), "Ammunition counter") | V1 (references name `soso`/`schi`/... tags); the assault rifle's first-person model names its `numbers` twice, permutations 1 and 0 |
 
-**Built.** The H1 draw uses a nonzero texture override from the object
+The H1 draw uses a nonzero texture override from the object
 (`obje +0x13e`, copied at `0x8febc`), otherwise the model shader's
 permutation. Each bitmap takes the signed remainder by its own image count
 at `0x8038b`. The converted b30 floor light fixtures bind the second image
@@ -97,10 +98,10 @@ reproduces Halo 1's cached inverse frames at node `68` (to 7e-7 on every
 biped). `h1::h2_rotation` converts; **the reader returns every rotation
 already in Halo 2's convention**, so every consumer (the `mode` and
 `jmad` writers, `hlmt` nodes, h1objects' physics and marker placement)
-composes with Halo 2's rule. Copied unconverted, the rotations would
-leave the rest pose matching (the inverse frames use the same rule) but
-put every animated pose's body parts in the wrong place, up to 1.2 units
-off on the cyborg.
+composes with Halo 2's rule. Copied unconverted, the rotations would leave
+the rest pose matching (the inverse frames would be computed with the same
+wrong rule) but put every animated pose's body parts in the wrong place, up
+to 1.2 units off on the cyborg ([notes/models.md](notes/models.md)).
 
 **Region** (`0x4c`): `char[32]` name, block of permutations at `40`.
 **Permutation** (`0x58`): `char[32]` name, u32 flags (`20`), i16 x5
@@ -182,7 +183,7 @@ overriding the clip label. An empty source slot leaves its key empty.
 The Halo 1 XBE's slot label table confirms the names of light-on (6)
 and misfire-2 (19), even though Blood Gulch has no clips with those labels.
 
-**Built. First-person fire and per-shell reloads.** Blood Gulch's assault
+**First-person fire and per-shell reloads.** Blood Gulch's assault
 rifle has a 21-frame clip named `first-person firing` and an empty firing
 slot (2). The Halo 1 XBE selects slot 2 at `0xd70d8`. At
 `0xd757b..0xd75c5` it reads the weapon graph's slot and returns on −1,
@@ -212,7 +213,7 @@ setup asks it for `overcharged_jitter`, `overlays`, `ammunition` and
 `0x001cb9d0`) and for `moving` (`0x001672d6`). V: every retail first-person
 graph on Coagulation keeps `moving`, `overlays` and `pitch_and_turn` (the
 needler also `ammunition`, some `sprint`) there and none of them among its
-actions; the engine never looks for an overlay among actions. Halo 1 requires at least nine frames for slot 4
+actions: the engine never looks for an overlay among the actions. Halo 1 requires at least nine frames for slot 4
 (`0xd8284..0xd82aa`). Halo 2 makes the same check on `overlays`
 (`0x1679a4..0x1679ae`) and samples its additional `pitch_and_turn` slot
 independently (`0x16791b..0x16796b`).
@@ -240,7 +241,7 @@ independently (`0x16791b..0x16796b`).
   secondary key frames in the frame-event block at `+0x4c`. Foot contact
   bytes `+0x40/+0x41` become event types 2 and 3. The Chief and cyborg
   turn left at frames 7/14 and right at frames 14/7.
-- **Built. Loop starts.** H1 `0xa318e..0xa31aa` bounds a positive loop
+- **Loop starts.** H1 `0xa318e..0xa31aa` bounds a positive loop
   frame by the last frame of the clip. H2 consumes the loop start at
   record `+0x2e` directly (`0x1c6810..0x1c6835`). Standing rifle
   airborne repeats from frame 40. The plasma pistol's nine-frame
@@ -255,10 +256,12 @@ independently (`0x16791b..0x16796b`).
 scorpion and the scenery on beavercreek): they animate their model's
 skeleton, and the converter takes the nodes from the model.
 
-**Vehicle graphs.** Halo 2 animates a vehicle by lookups, not by actions
-named for Halo 1's labels (`vehicle:steering`, `suspension:left_back`,
-`combat:fixed:aim_still`, `firing`), which no engine lookup asks for. The
-converter lays a graph with Halo 1's vehicles block out as retail's are
+**Vehicle graphs.** Halo 2 animates a vehicle by lookups: a graph that
+left the Halo 1 warthog's, ghost's and scorpion's animations as actions
+named for their labels (`vehicle:steering`, `suspension:left_back`,
+`combat:fixed:aim_still`, `firing`) would never be asked for them, and no
+converted vehicle would turn its wheels, spring, aim its gun or spin its
+barrels. A graph with Halo 1's vehicles block is laid out as retail's are
 (`jmad::vehicle_plan`):
 
 - **Vehicle slots → overlays of `any:any:any`.** E: the vehicle
@@ -282,10 +285,11 @@ converter lays a graph with Halo 1's vehicles block out as retail's are
   `+0x20 + i * [+0x14] + frame * 16` of the stream with `movaps`
   (`0x0028c589`), which faults on an address that is not a multiple of
   16. V: every codec 8 stream on Coagulation is so aligned in its
-  resource (`h1objects/tests/animation_codec_disc.rs`). Every blob starts
-  16-aligned, and a static stream before a codec 8 stream is padded to 16
-  (its size field covers the padding); a 4-aligned stream faults with
-  `#GP at 0x28c589` when a vehicle's steering or aim overlay first plays.
+  resource (`crates/tools/h1objects/tests/animation_codec_disc.rs`). So every
+  blob starts 16-aligned and a static stream before a codec 8 stream is
+  padded to 16 (its size field covers the padding); with 4-aligned blobs
+  the game stops with `#GP at 0x28c589` when a vehicle's steering or aim
+  overlay first plays.
   The vehicles block's screen is `steering`'s, each class's screen goes
   on its `aim_still_up` / `aim_move_up`.
 - **Aim names.** E: the unit aim update asks for `aim_still_up`
@@ -297,9 +301,9 @@ converter lays a graph with Halo 1's vehicles block out as retail's are
   (`retail_vehicle_graphs`; the overlays may also hold a replacement,
   type 2: the wraith's `any:any:any` `crouch`). E: `acc_*` are looked up
   through `0x1cc1a0` → `0x1dbc80`, the overlay search. What type 2 does in
-  the engine is not established; no Halo 1 vehicle graph has one (the
-  disc's vehicle graphs hold types 0 and 1 only; count in
-  [notes/models.md](notes/models.md)), so the converter needs no rule for it.
+  the engine is not established; no Halo 1 vehicle graph has one (86 on
+  the disc's campaign and multiplayer maps hold types 0 and 1 only), so
+  the converter needs no rule for it.
 - **Suspension (`+0x3c`, `0x28`).** E: `0x001dceb0` copies per element the
   animation (`+4`), marker (`+8`), offset (`+0xc`), full extension
   (`+0x10`) and full compression (`+0x14`) depths, region (`+0x18`) and
@@ -325,15 +329,16 @@ converter lays a graph with Halo 1's vehicles block out as retail's are
 - **Weapon pairs (`+0x54`).** (`any`, `any`) and each (type, class) Halo
   1's slot tables list: the warthog's (`cg`, `fixed`). The gun's own
   class comes from the same tables when no animation name votes for it
-  (`Converter::weapon_class`): the warthog gun, label `cg`, takes its
-  class there, which gives it aim.
+  (`Converter::weapon_class`): the warthog gun, label `cg`, had no class
+  and so would have no aim.
 
 Not converted: the ghost's `suspension` overlay (no slot or suspension
 element names it; which Halo 2 lookup it matches is not established), its
 `stand fixed c ghost gun fire-1`, and the scorpion's `tread pitch ...`
-overlays, which stay overlays under their names. Tests: h1models
+overlays, which stay overlays under their names. Tests:
+`crates/tools/h1-assets/src/models/tests.rs`
 `a_vehicle_graph_takes_halo_2s_vehicle_layout`,
-`reads_a_vehicle_graph_s_tables`; h1objects
+`reads_a_vehicle_graph_s_tables`; `crates/tools/h1objects/tests`
 `vehicle_animation_disc` (Blood Gulch on Coagulation, and the retail
 layout).
 
@@ -362,7 +367,7 @@ f32 vector range (`38`). V1 (links).
 | `5c` | u64 translation flags, one bit per node | V1 (frame sizes) |
 | `6c` | u64 rotation flags | V1 |
 | `7c` | u64 scale flags | V1 |
-| `88` | u32 offset of the compressed data within the frame data | X, V4 (0 on every compressed animation) |
+| `88` | u32 offset of the compressed data within the frame data | X, V4 (0 on all 186 compressed animations) |
 | `8c` | tag data: default data | V1 |
 | `a0` | tag data: frame data, frame count x frame size bytes | V1 |
 
@@ -380,9 +385,10 @@ the node does *not* animate, and is constant over the animation.
 
 ### Compressed animations
 
-Animations with flag bit 0 set sit on the campaign's cinematic graphs
-(`cinematics\animations\...`); none occur in the multiplayer maps (the
-census is in [notes/models.md](notes/models.md)). They are keyframed rather than stored per frame;
+186 animations on the disc have flag bit 0 set, all on cinematic graphs
+(`cinematics\animations\...`: the pilot, captain, chief, Cortana,
+marines and others on a10, a30, a50, b40, c40, d20 and d40). None occur in
+the multiplayer maps. They are keyframed rather than stored per frame;
 `crates/tools/h1-assets/src/models/compressed.rs` decodes them to the same per-frame
 transforms as the uncompressed path, and they convert through the same
 `jmad` path.
@@ -417,7 +423,7 @@ the rotation channel table:
 | `2c` | (inline) rotation channel table | u32 |
 
 X: the rotation, translation and scale samplers (`0x000a3750`,
-`0x000a2ee0`, `0x000a2d90`) read these offsets. V4: on every one the regions
+`0x000a2ee0`, `0x000a2d90`) read these offsets. V4: on all 186 the regions
 are contiguous in this order with no padding, `[00]` is `0x2c` + 4 x
 rotation channels, the tables hold 4 bytes per animated channel, the
 statics 6 x nodes, 12 x nodes and 4 x scale channels, and the data ends
@@ -428,7 +434,8 @@ node order. Its table entry is a u32: key count in the low 12 bits, index
 of its first key (into that kind's times and values) in the high 20 bits.
 X (`and 0xfff`, `shr 0xc`). V4: every key index is in range; times
 strictly increase, never include frame 0, and every keyed channel's last
-key is the last frame (frame count - 1). Some channels have no keys.
+key is the last frame (frame count - 1). 17 of 3,031 channels have no
+keys.
 
 **Sampling** at frame `f` (X, the three samplers):
 
@@ -464,13 +471,24 @@ bits by repeating its top four bits below it (`v << 4 | v >> 8`) and
 divided by 32767; the result is normalised. X (`0x000a2b70`; the
 constant at `0x001f0ae8` is 1/32767).
 
-**Measured** (V4): every animation has the header's frame count, unit
-rotations on every frame of every node and finite translations and scales,
-and decodes to within the keyframe reduction's own loss of its uncompressed
-copy on another graph. Undriven channels do not sit at the model's rest
-pose on these cinematic graphs (the uncompressed animations on the same
-graphs hold non-rest poses there too), so the rest pose is not a reference
-here. The numbers are in [notes/models.md](notes/models.md).
+**Measured** (V4):
+
+| Check | Result |
+|---|---|
+| Animations, frames, keys | 186, 31,596, 202,404 |
+| Frames per animation | the header's frame count, every one |
+| Rotations | unit, every frame of every node |
+| Translations, scales | finite |
+| a50's chief `B30HoloMapShort` (compressed) against a30's copy on the b30 graph (uncompressed, same 130 frames and channels) | max 0.0026 rad, translation 1.3e-4 |
+| a10's chief x30 `stand rifle idle` (compressed) against the cyborg's (uncompressed, same 59 frames) | max 0.0028 rad, translation 0 |
+| Converted to `jmad` and decoded by `crates/formats/tags` | max 6.1e-5 rad, translation and scale 0 |
+
+The two uncompressed copies agree to under 0.003 rad, which is the
+keyframe reduction's own loss. Undriven channels sit at the rest pose of
+the model with the same node list for 1,426 of 2,007 undriven rotation
+channels (within 0.01 rad), but not generally on these cinematic graphs (the uncompressed
+animations on the same graphs, such as the pilot's `death_pose`, hold
+non-rest poses there too), so the rest pose is not a reference here.
 
 ## Halo 2 output
 
@@ -491,14 +509,15 @@ section:
 | Subparts | one per part covering its indices, `+4` = `ffff` | |
 | Node map | the nodes this geometry's vertices use, ascending | map-format.md |
 | Vertices | type `04` (s16 position, u8 node) or `06` (s16 position, two u8 nodes, u8 weights summing to 255); `19` s16 texcoords; `1b` normal, binormal, tangent repacked 11:11:10 | map-format.md |
-| Nodes (`0x60`) | name, parent `04`, first child `06`, next sibling `08`, import index -1 `0a`, default translation `0c`, rotation `18`, **default scale 1 at `28`, inverse forward/left/up at `2c`/`38`/`44`, inverse position at `50`, distance from parent at `5c`** | V2: on every lockout node, `2c`..`5c` invert the model-space default pose computed from `0c`/`18`: the three vectors are the inverse's columns (the rows of the model-space rotation R); `28` is 1. V5: the same on every node of 05a's marine and grunt (`retail_h2_bipeds_pose_sanely`, rest frame times stored inverse within 5e-7). R's columns there would skin a vertex of a rotated node by R twice |
-| Marker groups (`58`, `0xc`) | one per Halo 1 marker name, then one per engine marker name the model has a Halo 1 marker for ("Marker names" below): name, block of markers (`0x24`): i8 region (-1 = any), i8 permutation (-1 = any), i8 node, pad, translation `04`, rotation `10`, f32 `20` written 0 | V2: every lockout marker sits in a named group at `58`, with a node in range and a unit rotation; `20` is 0 on most and nonzero on some (likely a scale; meaning not established) |
+| Nodes (`0x60`) | name, parent `04`, first child `06`, next sibling `08`, import index -1 `0a`, default translation `0c`, rotation `18`, **default scale 1 at `28`, inverse forward/left/up at `2c`/`38`/`44`, inverse position at `50`, distance from parent at `5c`** | V2: on every lockout node, `2c`..`5c` invert the model-space default pose computed from `0c`/`18`: the three vectors are the inverse's columns (the rows of the model-space rotation R); `28` is 1. V5: the same on every node of 05a's marine and grunt (`retail_h2_bipeds_pose_sanely`, rest frame times stored inverse within 5e-7). R's columns there would skin a vertex of a rotated node by R twice (twisted shards on the biped models and the first-person arms) |
+| Marker groups (`58`, `0xc`) | one per Halo 1 marker name, then one per engine marker name the model has a Halo 1 marker for ("Marker names" below): name, block of markers (`0x24`): i8 region (-1 = any), i8 permutation (-1 = any), i8 node, pad, translation `04`, rotation `10`, f32 `20` written 0 | V2: all 922 lockout markers sit in named groups at `58`, with a node in range and a unit rotation; `20` is 0 on 842 and nonzero on 80 (likely a scale; meaning not established) |
 | Materials (`60`, `0x20`) | first reference null, second the caller's `shad` for that shader index, or null | map-format.md |
-| Header `44` | 0, as on every retail `mode` (a nonzero word that falls in the map's address range reads as a stray pointer, and a fresh level refuses the tag) | V |
-| Section groups (`34`, `0xc`) | one: detail levels `0x3f` (all six) at `00`, compound nodes (`04` block) empty; the LOD bytes at `3c`..`41` stay 0, naming it | V: every `mode` of 05a has exactly this. E: `0x00137650` reads `groups[byte[3c + lod]]`'s `+4` (compound node count) with no count check and adds the node count; an empty block faults at `0x0013767a` |
+| Header `44` | 0, as on every retail `mode` (a Halo 1 node list checksum here that fell in the map's address range would read as a stray pointer, and a fresh level refused the tag) | V |
+| Section groups (`34`, `0xc`) | one: detail levels `0x3f` (all six) at `00`, compound nodes (`04` block) empty; the LOD bytes at `3c`..`41` stay 0, naming it | V: all 181 of 05a's `mode`s have exactly this. E: `0x00137650` reads `groups[byte[3c + lod]]`'s `+4` (compound node count) with no count check and adds the node count; an empty block faulted at `0x0013767a` (a30's second crash) |
 
-Header flags (`04`): left 0. Retail sets `0x8` on every `mode` and `0x4`
-on most (counts in [notes/models.md](notes/models.md)); with `0x4` set, `0x00137650`
+Header flags (`04`): left 0. Retail sets `0x8` on all and `0x4` on 167
+of 181 (on Coagulation: `0x4` on 103 of 121 `mode`s, 17 of the 22
+first-person ones; `0x8` on all 121); with `0x4` set, `0x00137650`
 skips the section group and counts one. Its callers are the object draw
 `0x0004b5d0` (`0x0004b854`) and `0x0003e393`, which size a per-draw
 record from the count. Without the bit the count is the section group's
@@ -526,7 +545,7 @@ drawn (`[0x510c4c]+0x1b4` via `0x0014cca0`, or `+0x1c0` via
 Halo 1's model draw at `0xa2449..0xa246d` selects the authored shader
 for each geometry part. The source cyborg models have no player-emblem
 part. The converter adds one to a player
-biped's model (`h1models::emblem`, called from `Converter::model` for a
+biped's model (`h1_assets::models::emblem`, called from `Converter::model` for a
 `bipd` that `health_hud::is_player_biped` names):
 
 - `place` casts a ray in the default pose. It starts 0.03 down the anchor
@@ -554,16 +573,19 @@ biped's model (`h1models::emblem`, called from `Converter::model` for a
 Default placement (`LEFT_SHOULDER`, a choice to confirm): the outside of
 the left shoulder plate. The anchor is `bip01 l upperarm`, the direction
 model +y (Halo 1 models face +x with z up, so +y is the biped's left),
-up +z, a square of 0.07 (about 21 cm) and a reach of 0.3. The right shoulder or the chest is a change of
+up +z, a square of 0.07 (about 21 cm) and a reach of 0.3. On Blood
+Gulch's cyborg the joint is at (-0.008, 0.09, 0.569) and the arm's x axis
+is (0.01, 0.19, -0.98). The right shoulder or the chest is a change of
 the placement's constants. The model is converted once per `mode` tag,
 so every object drawing the cyborg model wears the emblem; on
 multiplayer maps that is the player bipeds alone. Proof: the unit tests
-in `h1models/src/emblem.rs` (an invented arm) and
-`h1objects/tests/model_shaders_disc.rs`
+in `crates/tools/h1-assets/src/models/emblem.rs` (an invented arm) and
+`crates/tools/h1objects/tests/model_shaders_disc.rs`
 `bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder` hides the
 base's `mc_emblem` instance and checks that the cyborg binds the rebuilt
 material. `rebuilt_emblem_binds_the_player_inputs_at_the_native_pass`
-checks the animation bindings and the foreground frame function.
+checks the animation bindings and the foreground frame function
+(`crates/tools/h1convert/src/shad.rs`).
 
 ### Marker names
 
@@ -596,8 +618,8 @@ the same instances (`mode::marker_aliases`); Halo 1's names stay, so the
 seat, attachment and unit fields the converter writes still resolve. The
 disc test `every_engine_marker_resolves_on_the_converted_objects` checks
 both on every converted biped, weapon, vehicle and equipment of every
-multiplayer map. Without the alias the cyborg has no `left_hand`, and its
-grenades leave from its origin (inferred: the lookup's fallback).
+multiplayer map. Before this the cyborg had no `left_hand`, so its
+grenades left from its origin (inferred: the lookup's fallback).
 
 ### `jmad`
 
@@ -606,7 +628,7 @@ grenades leave from its origin (inferred: the lookup's fallback).
 | Nodes (`0x20`) | name, next sibling, first child, parent, joint flags, base vector, vector range from the graph (or the model, for graphs without nodes) |
 | Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, source frame info type and biped permutation links and weights |
 | Data | one raw resource for the whole graph (`0x200`-aligned and padded), each animation's blob at a 16-byte aligned offset. Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data (padded to 16 bytes before a codec 8 stream). Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales), or codec 8 (float rotations) on steering, look and aim screens. Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)`. `tags::anim::AnimationGraph::engine_problems` checks each animation against the engine's reader |
-| Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order**, laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Levels in name order hide names from the search: the cyborg's graph would find `combat:<class>:<type>:idle` for none of the Halo 1 weapons, and the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The cyborg's bindings come directly from the source slot tables (Multiplayer cyborg, above). Campaign bipeds bind their resting poses, locomotion and talk overlays by slot. |
+| Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order**, laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Levels in name order would hide names from the search: the cyborg's graph would find `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The cyborg's bindings come directly from the source slot tables (Multiplayer cyborg, above). Campaign bipeds bind their resting poses, locomotion and talk overlays by slot. |
 | Resource (`0x14`) | the tag's datum, size, local raw pointer, `ffffffff`, 0 |
 
 Animation sounds (first-person graphs): see
@@ -617,8 +639,8 @@ carry the single pair (`any`, `any`).
 
 ## Campaign biped idles and talking (Built)
 
-The ten Xbox campaign maps reference their animation graphs from their
-biped object layers. On a10, crew and armored marines share the marine
+The ten Xbox campaign maps reference 25 distinct animation graphs from
+their biped object layers. On a10, crew and armored marines share the marine
 graph. Keyes and Cortana have their own. The pilot and cinematic Chief
 reference graphs in the cinematics directory. The biped's animation
 reference selects the conversion, including graphs shared by several models.
@@ -626,8 +648,8 @@ reference selects the conversion, including graphs shared by several models.
 Halo 1 selects a resting pose from class slot 0 and directional cycles
 from slots 8–11. Keyes's standing slot points to `stand unarmed idle%1`.
 The marine's standing unarmed slot points to an alert pistol idle, and
-its bridge-chair mode has its own seated idle. Label splitting can
-produce a variant key without an `idle` key, and merges standing and
+its bridge-chair mode has its own seated idle. Splitting labels alone
+would give a variant key without an `idle` key and merge standing and
 alert labels. Halo 2 searches the actual action key and tries the
 eight combinations of specific and wildcard mode, class and weapon type
 (`0x1db170`, `0x2963f0`). The converted graph binds each source slot
@@ -685,20 +707,19 @@ the cyborg).
 | action `melee` | `melee` (unchanged) | V3 (`combat:rifle:any:melee`, `combat:pistol:any:melee` on the retail elite; the cyborg binds its weapon melee under overlay `melee_strike_1`) |
 | action `throw-grenade` | `throw_grenade` | V3 (`combat:sword:any:throw_grenade` on the masterchief) |
 | vehicle actions `stand opening` / `stand closing` | `combat:opening` / `combat:closing` | V3 — the only actions any retail vehicle graph carries (banshee, scorpion, pelican, `c_turret_ap`, the phantom and wraith turrets) |
-| `first-person <action>` (a weapon's first-person graph) | mode, class and type `any`, animation `first_person:<action>`; `melee` becomes `melee_strike_1`; the graph's `+0x54` the one pair (`any`, `any`) | V3 (every retail first-person graph on Coagulation has the one mode `any` and that pair; h1objects `first_person_graphs_take_retail_modes` lists the converted actions retail has and has not; `ammunition`, `moving`, `overcharged_jitter` and `overlays` are overlays, not actions, and the AR's empty firing slot is followed (First-person graphs, above)) |
+| `first-person <action>` (a weapon's first-person graph) | mode, class and type `any`, animation `first_person:<action>`; `melee` becomes `melee_strike_1`; the graph's `+0x54` the one pair (`any`, `any`) | V3 (every retail first-person graph on Coagulation, 34, has the one mode `any` and that pair; h1objects `first_person_graphs_take_retail_modes`, which lists the converted actions retail has and has not: 19 shared on Blood Gulch, and `ammunition`, `enter`, `firing`, `light_off`, `moving`, `overcharged_jitter`, `overheating_again`, `overlays`, `reload_full2`, `stealth_melee` it lacks; `ammunition`, `moving`, `overcharged_jitter` and `overlays` are overlays, not actions, and the converter follows the AR’s empty firing slot) |
 | `%n` | `:var<n>` on the action | Design; retail variant suffixes (`:var0`, ...) sit on animation names, never on tree actions |
 
 **No Halo 2 equivalent, or not mapped:**
 
-- Unit damage outside the cyborg has only record labels. The
+- Unit damage outside the cyborg still has only record labels. The
   cyborg uses the directional damage tables described above.
 - Vehicle overlays (`suspension left back`, `vehicle steering`,
   `vehicle ground-speed`, `firing`, `acc-front-back` and kin): V3 that
   retail vehicle graphs carry only `combat:opening`/`combat:closing` as
   actions, no `suspension` or `vehicle` mode. Halo 2 finds the rest as
   overlays, in the suspension and object overlay blocks and by blend
-  screen; the converter puts them there
-  (Vehicle graphs, above).
+  screen; the converter puts them there (Vehicle graphs, above).
 - Seats that keep their Halo 1 label: `P-riderLM`, `P-riderLB`,
   `P-riderRM`, `P-riderRB` (their retail row number among `pelican_p_l01..05`
   is not recoverable from the trees) and the dropship seats
@@ -706,11 +727,11 @@ the cyborg).
   `phantom_p_a01..c03`, with no left/right correspondence).
 - Other biped graphs use named actions and borrowed slots. The cyborg,
   sentinel and vehicle graphs have dedicated slot bindings.
-- **Built.** Root movement follows both channel flag sets in the rebuilt
+- Root movement follows both channel flag sets in the rebuilt
   resource. H2 `0x20aa70` reads one record per frame, with strides of 8,
   12 and 16 for XY, XY/yaw and XYZ/yaw. The source values retain their
   signs and order. The synthetic and disc round trips compare every byte.
-- **Built.** Overlay and replacement animations repeat each non-identity
+- Overlay and replacement animations repeat each non-identity
   default rotation, translation and scale in their animated stream. H2
   reads the static stream only on base animations. An undriven identity
   channel keeps its mask clear. The round-trip tests sample each frame
@@ -721,11 +742,11 @@ the cyborg).
 ## API
 
 ```rust
-use h1models::{graph_from_map, model_from_map, mode::ModelOptions};
+use h1_assets::models::{graph_from_map, model_from_map, mode::ModelOptions};
 
 let map = h1map::H1Map::from_reader(file)?;
 let tag = map.find(h1map::Group::new(b"mode"), "characters\\cyborg\\cyborg").unwrap();
-let opts = ModelOptions { shaders: vec![/* H2 shad datum per H1 shader index */] };
+let opts = ModelOptions { shaders: vec![/* H2 shad datum per H1 shader index */], ..Default::default() };
 let (h1_model, converted) = model_from_map(&map, tag, &opts)?;
 let mode_id = converted.install(&mut tag_set, "characters\\cyborg\\cyborg")?;
 
@@ -748,51 +769,51 @@ Halo 1 animation can name the converted one (h1campaign's cutscenes).
 
 ## Tests and measured error
 
-`cargo test -p h1models` runs the synthetic tests. The real-data tests
-build a v8 map in memory with `map::build`, open it with `map::Map`,
+`cargo xtask test -p h1-assets` runs the synthetic tests. The real-data
+tests build a v8 map in memory with `map::build`, open it with `map::Map`,
 decode through `tags::model::RenderModelGeometry` and
 `tags::anim::AnimationGraph`, and compare with the Halo 1 source:
 
 ```sh
-H1_MAPS=<dir with beavercreek.map, carousel.map> cargo test -p h1models --release -- --ignored --nocapture
-H2_DISC=disc/halo2.iso [H2_MAP=lockout] cargo test -p h1models --release -- --ignored retail_h2 --nocapture
-H1_ISO=disc/halo1.iso cargo test -p h1models --release -- --ignored h1_disc --nocapture
+H1_MAPS=<dir with beavercreek.map, carousel.map> H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso [H2_MAP=lockout] cargo xtask test --disc -p h1-assets
 ```
 
-Every vertex and triangle of every geometry of beavercreek's cyborg,
-assault rifle and warthog, all LODs, round-trips: node names, hierarchy,
-default transforms, region and permutation names, LOD sections, marker
-names and instances (exact), and per-triangle indices all match, and
-position, texture coordinate, normal and weight errors stay at the
-quantisation of their stored forms.
+The geometry test compares every vertex and triangle of every geometry at
+all LODs: node names, hierarchy, default transforms, region and permutation
+names, LOD sections, marker names and instances (exactly), per-triangle
+indices, and the largest position, texture coordinate, normal and weight
+errors, which are the i16 and u8 quantisation (about 1e-5 world units for
+positions). The animation test compares every frame of every animation,
+each channel the conversion carries; the rotation error is the i16
+re-quantisation of normalised quaternions (6e-5 rad at most). The figures
+are in [notes/models.md](notes/models.md).
 
 **Retail control** (V5, `retail_h2_bipeds_pose_sanely`, 05a). The Halo 2
 side of the round trip below is first held to retail data, so the round
 trip cannot share an assumption with the converter: a retail biped's rest
 frames times the inverse frames its `mode` stores, read as columns, are the
-identity on every node (read as rows they are not), and its own retail
-animations, decoded by `crates/formats/tags` and composed the same way,
-stretch the mesh's triangle edges less than the same frames with conjugated
-rotations do, so the decoded quaternions are used as they are.
+identity on every node (within 5e-7; read as rows, off by up to 2.0), and
+its own retail animations, decoded by `crates/formats/tags` and composed
+the same way, stretch the mesh's triangle edges little (median 1.0, 99th
+percentile 1.5 to 2.4) and less than the same frames with conjugated
+rotations (2.6 to 3.5), so the decoded quaternions are used as they are.
 
-**Skinned round trip** (V5, `h1_disc_bipeds_skin`). Each model and its graph
-are converted, built into a map and decoded through `crates/formats/tags`;
-every vertex is skinned the Halo 2 way (decoded position, node indices
-through the section node map, weights, the decoded jmad frame composed by
-Halo 2's rule, times the inverse frame the `mode` stores at node `+0x2c`,
-read as the control reads retail's) and compared with the Halo 1 vertex
-skinned the Halo 1 way (its frame composed by Halo 1's rule, times Halo 1's
-own cached inverse). The comparison covers the bind pose and the middle
-frame of about seven base animations per graph, for the cyborg, the
-marines, the elite, the grunt, the captain, the pilot, Cortana and the
-cyborg's first-person arms. Errors are the largest vertex distance in world
-units; what is left is the i16 quantisation of positions and rotations.
-Every bind-pose vertex stays within the model's Halo 1 bounding radius.
-
-The cyborg and warthog graphs' animations, every frame of every animation,
-each channel the conversion carries, round-trip with a rotation error that
-is the i16 re-quantisation of normalised quaternions, and exact
-translations and scales. The figures are in [notes/models.md](notes/models.md).
+**Skinned round trip** (V5, `h1_disc_bipeds_skin`). Each model and its
+graph are converted, built into a map and decoded through
+`crates/formats/tags`; every vertex is skinned the Halo 2 way (decoded
+position, node indices through the section node map, weights, the decoded
+jmad frame composed by Halo 2's rule, times the inverse frame the `mode`
+stores at node `+0x2c`, read as the control reads retail's) and compared
+with the Halo 1 vertex skinned the Halo 1 way (its frame composed by Halo
+1's rule, times Halo 1's own cached inverse), at the bind pose and at the
+middle frame of about seven base animations per graph. Errors are the
+largest vertex distance in world units (a biped is about 0.7 tall); the
+vertices travel up to 0.93 in those frames. What is left is the i16
+quantisation of positions and rotations: under 1e-5 at the bind pose and
+under 4e-4 posed, on the cyborg, the armored marine, crewman, elite, grunt,
+captain, pilot, Cortana and the cyborg's first-person arms. Every bind-pose
+vertex stays within the model's Halo 1 bounding radius. The per-model
+figures are in [notes/models.md](notes/models.md).
 
 ### First-person graphs
 
@@ -806,25 +827,26 @@ returns whether every node was found, which sets the state's flag `4`
 (arms) or `2` (weapon). `0x0016774f` then seeds each bound graph node's
 pose from the model node's default rotation and translation. Node order
 does not matter: retail graphs list the arms' 37 nodes first, then the
-weapon's and `camera_control` (V2), but that is the
+weapon's and `camera_control` (V2, 14 graphs on 05a), but that is the
 tool's order, not a rule the engine needs. Halo 1's graphs interleave
 them (the assault rifle's `frame gun` is node 7) and are kept in their
 order.
 
-The Halo 1 sandbox and campaign use Halo 1's arms
-(docs/halo1/multiplayer.md, "First-person arms"), whose 37 names all
-occur in every Halo 1 first-person graph; Halo 2's arms have nodes
-(`l_upperarm`, ...) that match no node of a Halo 1 graph
-(`frame l upperarm`, ...).
+Halo 2's arms have nodes (`l_upperarm`, ...) that match no node of a Halo
+1 graph (`frame l upperarm`, ...), so the Halo 1 sandbox and campaign use
+Halo 1's arms (docs/halo1/multiplayer.md, "First-person arms"), whose 37
+names all occur in every Halo 1 first-person graph.
 
 V5 (`h1_disc_first_person_skin`): Halo 1's arms and five weapons'
 first-person models on Blood Gulch, with each weapon's converted graph,
 bound by name, posed at the middle frame of base animations and skinned
 both ways as for the bipeds. Every node of both models finds its graph
-node, and the vertex errors are the i16 quantisation (figures in
-[notes/models.md](notes/models.md)). The arms' and the weapons'
-first-person models carry the column-convention inverse frames (Nodes,
-above); transposed ones draw as a large flat shape over the view.
+node. Largest vertex error per weapon over 5 to 8 animations: assault
+rifle 1.2e-4, pistol 1.5e-4, plasma rifle 5.4e-5, needler 6.0e-5,
+rocket launcher 6.3e-5 (the i16 quantisation). The inverse frames are
+stored as columns (Nodes, above); stored transposed, the arms and the
+weapons' first-person models would be drawn as a large flat shape over the
+view.
 
 **The first-person body** (the representation's `+0x8`) stays Halo 2's,
 and the engine skips it for a Halo 1 player (E). The first-person draw
@@ -851,7 +873,7 @@ first-person body.
 - Overlay semantics: Halo 1 overlays are copied verbatim (frame 0 is not
   subtracted). The engine may expect a different reference.
 - Every name in the table above.
-- How the emblem part looks on a live player.
+- How the player emblem on the converted cyborg looks in the running game.
 
 ## Animation sounds
 
@@ -870,9 +892,10 @@ events (`0x001c7545` `+0x54`, `0x001c7564` `+0x58`) of the animation
 and plays those whose frame the update passed (E). The string ID is
 written empty (S: `retail_animation_sound_events` prints retail's).
 
-`h1models::sounds` reads Halo 1's and, after `jmad::convert_graph`,
+`h1_assets::models::sounds` reads Halo 1's and, after `jmad::convert_graph`,
 writes them into the converted graph (`add_sound_events`): the sounds
 `h1objects` converted, in order, and one event per animation that plays
 one; a sound that did not convert takes its events with it. The
-weapons' first-person graphs carry them (`Converter::graph`); unit,
-vehicle and cutscene graphs do not.
+weapons' first-person graphs and the vehicle graphs the object
+converter builds carry them (`Converter::graph_sounds`,
+`crates/tools/h1objects/src/convert_arsenal.rs`).

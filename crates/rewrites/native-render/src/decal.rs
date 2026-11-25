@@ -2,10 +2,10 @@
 //! `d3d::DrawAdmission` snapshot; this module has no guest-memory decoder.
 
 /// Bytes in one guest decal vertex: float3 position and a packed 11:11:10
-/// signed normalised vector (`NORMPACKED3`, the declaration's v3).
+/// signed normalised vector (`NORMPACKED3`, semantic 3).
 pub const VERTEX_SIZE: usize = 16;
 
-/// A dynamic decal pass mode. Modes 0..5 are W-buffered; mode 6 is not.
+/// The guest's dynamic decal pass mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Mode {
@@ -37,25 +37,20 @@ impl Mode {
     pub fn index(self) -> i16 {
         self as i16
     }
-
-    /// Whether this mode's wrapper selects W depth.
-    pub fn w_buffered(self) -> bool {
-        self != Self::Opaque
-    }
 }
 
-/// One vertex as the native pass uploads it. The guest's v3 is
+/// One vertex as the native pass uploads it. The guest's second field is
 /// `NORMPACKED3` ([`decode_packed`]); the wgpu attribute reads it as
 /// `Float32x3`, which supplies the fetch's fixed `w = 1` itself.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
-    /// v3 decoded to floats: 11:11:10 signed normalised `(x, y, z)`.
+    /// Packed field decoded to floats: 11:11:10 signed normalised `(x, y, z)`.
     pub diffuse: [f32; 3],
 }
 
-/// v3 as the NV2A fetches a `NORMPACKED3` attribute: 11:11:10 signed
+/// The packed field as the NV2A fetches a `NORMPACKED3` attribute: 11:11:10 signed
 /// normalised in one dword (`gfx::repack` and the D3D translation decode
 /// the same dword the same way).
 pub fn decode_packed(packed: [u8; 4]) -> [f32; 3] {
@@ -88,21 +83,6 @@ mod tests {
     #[test]
     fn quad_list_expansion_matches_d3d() {
         assert_eq!(quad_indices(2), [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
-    }
-
-    #[test]
-    fn only_mode_six_is_not_w_buffered() {
-        for mode in [
-            Mode::Alpha0,
-            Mode::Alpha1,
-            Mode::Multiply,
-            Mode::Darken,
-            Mode::Maximum,
-            Mode::Alpha5,
-        ] {
-            assert!(mode.w_buffered());
-        }
-        assert!(!Mode::Opaque.w_buffered());
     }
 
     #[test]

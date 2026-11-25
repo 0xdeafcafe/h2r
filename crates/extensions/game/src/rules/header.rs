@@ -3,11 +3,11 @@
 //! (docs/game/rules-engine.md, "Firefight, AI and bounces";
 //! docs/game/community-gametypes.md, "Tweakers").
 
-use ::rules::ir::{Header, Ir};
+use ::rules::ir::Ir;
+use ::rules::types::Type;
 use variants::ext::{Ext, LEN, Mode, Script};
 
 use super::runtime;
-use crate::community_variants::Row;
 
 /// The capability a script requires for the superbounce mode: its HUD,
 /// its marks over the map and its medals.
@@ -17,12 +17,6 @@ pub const SUPERBOUNCE: &str = "hud.superbounce";
 /// [`SUPERBOUNCE`].
 pub fn asks_superbounce(ir: &Ir) -> bool {
     ir.header.requires.iter().any(|c| c == SUPERBOUNCE)
-}
-
-/// The row of ours a script's header files it under: `list research`
-/// or `list party`.
-pub fn list_row(header: &Header) -> Option<Row> {
-    Row::of_list(header.list)
 }
 
 /// The script a record's prefix names, when this machine has it: a
@@ -53,12 +47,9 @@ pub fn block_script(block: &[u8; LEN]) -> Option<Ir> {
     header_of(Ext::in_effect(block).script)
 }
 
-/// The row of ours a block naming a rules script (mode 2) is listed
-/// under: the script it names is on this machine and its header names one
-/// ([`list_row`]). A script this machine lacks is listed under its
-/// carrier's game type.
-pub fn block_row(block: &[u8; LEN]) -> Option<Row> {
-    header_of(Ext::in_effect(block).script).and_then(|ir| list_row(&ir.header))
+/// The declared type of a rules script available on this machine.
+pub fn script_type(script: Script) -> Option<Type> {
+    header_of(script).map(|ir| ir.header.game_type)
 }
 
 /// Whether a record's script reference names a script that asks for the
@@ -100,33 +91,20 @@ mod tests {
         p
     }
 
-    /// The Superbounce and Bounce Practice scripts ask for the mode and
-    /// list under Research and Devolution; Gun Game, Siege, Race and VIP
-    /// list under Party Games. No port and no other example does either.
     #[test]
-    fn only_the_bounce_scripts_ask_for_the_mode_and_a_row() {
+    fn every_compiled_in_script_files_under_its_declared_type() {
         let sb = ::rules::compile(::rules::builtin::SUPERBOUNCE).unwrap();
         let practice = ::rules::compile(::rules::builtin::BOUNCE_PRACTICE).unwrap();
-        assert!(asks_superbounce(&sb));
-        assert!(asks_superbounce(&practice));
-        assert_eq!(list_row(&sb.header), Some(Row::Research));
-        assert_eq!(list_row(&practice.header), Some(Row::Research));
-        for b in runtime::builtins().iter().chain(runtime::examples()) {
+        for b in runtime::builtins().iter().chain(runtime::examples()).chain(runtime::listed()) {
             let (ir, _) = ::rules::verify::load(&b.blob).unwrap();
             let asks = ir.id() == sb.id() || ir.id() == practice.id();
             assert_eq!(asks_superbounce(&ir), asks, "{}", ir.header.name);
-            let row = match ir.header.name.as_str() {
-                "Superbounce" | "Bounce Practice" => Some(Row::Research),
-                "Gun Game" | "Siege" | "Race" | "VIP" => Some(Row::PartyGames),
-                _ => None,
-            };
-            assert_eq!(list_row(&ir.header), row, "{}", ir.header.name);
-            assert_eq!(block_row(&rules_block(prefix(b))), row, "{}", ir.header.name);
+            let block = rules_block(prefix(b));
+            assert_eq!(script_type(Ext::in_effect(&block).script), Some(ir.header.game_type));
         }
         assert!(runtime::examples().iter().any(|b| b.id == sb.id()));
-        // A block with no script, and one naming a script not here.
-        assert_eq!(block_row(&[0; LEN]), None);
-        assert_eq!(block_row(&rules_block([9; 8])), None);
+        assert_eq!(script_type(Script::default()), None);
+        assert_eq!(script_type(Ext::in_effect(&rules_block([9; 8])).script), None);
     }
 
     /// The built-in Superbounce variant's block turns the mode on through
@@ -204,7 +182,7 @@ mod tests {
             let l = crate::community_variants::listed_named(b.name).unwrap();
             let block = l.block();
             assert_eq!(Ext::in_effect(&block).script.prefix[..], ir.id().0[..8], "{}", b.name);
-            assert_eq!(block_row(&block), list_row(&ir.header), "{}", b.name);
+            assert_eq!(script_type(Ext::in_effect(&block).script), Some(ir.header.game_type), "{}", b.name);
             assert_eq!(
                 script_asks_superbounce(Ext::in_effect(&block).script),
                 b.source == ::rules::builtin::SUPERBOUNCE

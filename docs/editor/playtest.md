@@ -1,7 +1,7 @@
 # Playtest: headless matches on the map being edited
 
-Status: Design. `h2 sim`, its match and batch files, its reports, the spatial trace and its measures, and the bots are built ([sim.md](../runtime/sim.md), "The spatial trace"; [bots.md](../game/bots.md)), and so are the static checks and `playtest.static`; Studio's runner and the overlays are not.
-Code: `crates/apps/studio/src/app/playtest_static.rs` (the static checks), `crates/apps/studio/src/api/playtest.rs`, `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner), `crates/apps/studio/src/viewport/playtest.rs` (the overlays). Tests: `app::playtest_static::tests`, `api::tests::playtest_tests`, `sim::spatial::tests`, `app::playtest::tests`.
+Status: Design, in part built. `h2 sim`, its match and batch files, its reports, the spatial trace and its measures, and the bots are built ([sim.md](../runtime/sim.md), "The spatial trace"; [bots.md](../game/bots.md)), and so are the static checks and `playtest.static`, and the runner's logic and `playtest.run`, `status`, `result` and `cancel` over a `Source` (the build, the bots' mesh and the sim) that tests fake. The overlays and the panel are built over the result the runner publishes, and so are `playtest.compare` and the difference layers. The real `Source`, the run on save and the pool are not built; with no `Source` connected `playtest.run` is refused.
+Code: `crates/apps/studio/src/app/playtest_static.rs` (the static checks), `crates/apps/studio/src/api/playtest.rs`, `crates/live/sim-bench/src/spatial.rs` (the trace and its measures), `crates/extensions/game/src/sim_glue.rs` (the observers), `crates/apps/studio/src/app/playtest.rs` (the runner, its `Source`, the baseline and `compare_runs`), `crates/live/sim-bench/src/spatial/compare.rs` (the comparison), `crates/apps/studio/src/app/playtest_shown.rs` (the result on show), `crates/apps/studio/src/viewport/playtest.rs` (the overlays), `crates/apps/studio/src/ui/playtest.rs` (the panel). Tests: `app::playtest_static::tests`, `api::tests::playtest_tests`, `sim::spatial::tests`, `app::playtest::tests`, `sim::spatial::compare::tests`, `viewport::playtest::tests`, `ui::playtest::tests`.
 Switch: none.
 
 While a map is being made, Studio plays it: bot matches on the current
@@ -47,6 +47,23 @@ own; a run's preset fills it:
 | `standard` | 8 seeds per game type the map is ready for | 5 game minutes | a look before sharing |
 | `soak` | 32 seeds, sides swapped | to the score limit | balance |
 
+The runner is `app::playtest::Runner`, driven through a `Source`: its
+`build` gives the build key and the map's name, `nav` makes the mesh,
+`start` takes the written `Batch` (the batch file, the match file and
+the jobs: game type, seed and which leg), and `poll` gives each match
+that ended with its `Trace` or why it failed. `Runner::start` chooses
+the game types (the preset's among the ready ones, or those named, each
+of which must be ready), builds, marks runs of another build stale,
+answers from the cache when a finished run with no failed match has the
+same key (build, map, image, bots' version, game types, seed count,
+legs, length and seats), otherwise cancels a running run, makes the mesh
+and writes `match.json` (`detail = "spatial"`, `bot_threads = "off"`,
+`max_ticks` from the minutes) and `batch.json` (`arm_swap` with two
+arms for `soak`) under `<cache>/playtest/<run>/`, in the sim's own
+formats. `pump` folds in each ended match, once; a run is done when
+every match ended, and failed when none gave a trace. A result is
+`sim_bench::spatial::measure` over the traces of one game type so far.
+
 ### What is measured
 
 The sim's tally has scores, the kill log, shots, hits and each bot's
@@ -75,6 +92,34 @@ on invented traces:
 | Team balance | wins, score difference and first-engagement side, with sides swapped | a panel table; no layer |
 | Weapon use | per item placement: pickups a minute, time to first pickup, kills made with it | each placement sized by use; never-picked items ringed |
 | Stuck spots and nav holes | stuck and failed-path events; mesh islands no spawn reaches | marks at the spots; the unreachable islands outlined |
+
+### The layers and the panel
+
+**Code**, `viewport::playtest` and `ui::playtest`. Each `playtest.*` call
+publishes the newest run's measures for one game type to
+`App::playtest` (`app::playtest_shown::Shown`); the viewport draws a
+layer from them when it is shown, in the colour of `theme::playtest_color`:
+
+| Layer | Marks |
+|---|---|
+| `playtest_kills`, `playtest_deaths` | a square and a post a bin, larger and brighter with its count |
+| `playtest_spawns` | a diamond and post a starting location, green to red by the larger of its spawn-death share and its seen share, grey if unused; a red cross a spawn kill |
+| `playtest_traffic` | a square a bin by time spent |
+| `playtest_flow` | an arrow a crossing, brighter the more crossed; the 200 most |
+| `playtest_unvisited` | each polygon the players never entered, outlined and hatched on the bots' mesh |
+| `playtest_sightlines` | the longest lines in gold, the commonest in white |
+| `playtest_weapon_use` | a diamond a placement sized by pickups a minute; a never-picked one red and crossed |
+| `playtest_stuck` | a cross, post and arrow to where it was going a stuck spot; the unreached islands outlined red |
+
+A polygon is the bots' mesh polygon of the trace's index, so those layers
+draw only once the mesh has loaded (showing a playtest layer loads it).
+A measure refused for too few events draws nothing and `view.layers`
+gives its text in `refused`. A result marked stale keeps its marks at
+40% strength. The **Playtest** panel (a tab of the bottom dock) lists
+the run, its flags, each refusal, the spawn rows, the distance histogram
+per weapon and a summary of flow, items and stuck, with a switch for each
+layer. A layer's marks are the bins of the measure, not the game's
+polygons, so a bin off the mesh still draws at its mean place.
 
 ### Static checks
 
@@ -164,17 +209,34 @@ adds the build key. So:
 
 An edit changes the map, so the two builds' matches differ from the
 first tick and are not compared tick by tick. `playtest.compare {a, b}`
-compares results over the same seeds and match file:
+compares results over the same seeds and match file (two runs that
+differ in seeds, length, seats or sides are refused):
 
-- each scalar measure with its spread across seeds; a change is called
-  out only when it is larger than that spread;
-- each layer as a difference layer (more deaths here, fewer there;
-  a spawn that became unfair; a path that opened);
-- what the static checks gained or lost.
+- each scalar measure (`deaths_per_min`, `kills_per_min`,
+  `spawn_kills_per_min`, `mean_life_s`, `mean_in_sight`,
+  `pickups_per_min`, `stuck_ticks_per_min`, `sight_median`) is taken per
+  seed, a seed's swapped leg counting with it, and averaged; a change is
+  called out only when the two means differ by more than the larger of
+  the sides' standard deviations across seeds. A side with fewer than two
+  seeds that could tell has no spread and calls nothing out;
+- each layer as a difference layer (`sim-bench/src/spatial/compare.rs`):
+  a mark where the count per trace moved by more than two standard
+  deviations of a counted event (of a share, for a spawn's fairness),
+  the most changed first. Kills, deaths, traffic, flow lines, the spawns'
+  fairness, the weapons' pickups and the stuck spots are compared by
+  place; the never-entered polygons by index, which is refused when the
+  two meshes differ in size. The sightlines have no difference layer. A
+  layer whose measure was refused on either side says so;
+- what the static checks gained or lost: the problems each run started
+  under, as `kind: text`.
 
-The result before the first edit of a session is kept as the baseline;
-any two results can be compared. Eight seeds is the least that gives a
-spread worth trusting, which is why `probe` results are marked coarse.
+The first run of a session with a match that ended is kept as the
+baseline (`baseline`); any two runs can be compared by id. `playtest.run
+{compare_to}` names the run a result is compared with by default, and
+`view.layers {diff}` draws the difference layers, red where there is more
+and blue where there is less (a polygon opened is green). Eight seeds is
+the least that gives a spread worth trusting, which is why `probe`
+results are marked coarse.
 
 ### On a map of ours
 
@@ -203,12 +265,12 @@ and the stuck-spot measure to be tested against.
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `playtest.static` (**Code**) | read | `{wait?}` | `{ok, nav, problems: [{kind, text, target}], ready: [{game_type, engine, ok, missing}]}`; a placement `target` goes to `nav.go`, a polygon's to `nav.pick`. It checks the open map; a project param comes with the workspace's projects |
-| `playtest.run` | act | `{preset?, game_types?, seeds?, minutes?, bots?, compare_to?}` | `{run, build, matches, parallel}` at once |
-| `playtest.status` | read | `{run?}` | `{state, done, total, speedup, stale, failed: [{seed, why}]}` |
-| `playtest.result` | read | `{run?, measure?}` | the measures, or one in full with its bins |
-| `playtest.compare` | read | `{a, b}` | per measure: `a`, `b`, `spread`, `changed`; the static checks' difference |
-| `playtest.cancel` | act | `{run?}` | `{cancelled}` |
-| `view.layers` | act | the playtest layers by name, and `diff` | as now |
+| `playtest.run` (**Code**) | act | `{preset?, game_types?, seeds?, minutes?, bots?, compare_to?}` | `{run, build, matches, parallel, cached}` at once |
+| `playtest.status` (**Code**) | read | `{run?}` | `{run, state, preset, build, done, total, speedup, stale, coarse, failed: [{game_type, seed, swapped, why}]}` |
+| `playtest.result` (**Code**) | read | `{run?, game_type?, measure?}` | the run's build, match file and seeds, and the measures each `ok` or refused; or one in full with its bins |
+| `playtest.compare` (**Code**) | read | `{a?, b?, game_type?}`: `a` is the run's `compare_to`, else `baseline`; `b` the newest run | `{compared, a, b, game_type, measures: [{name, a, b, spread, n_a, n_b, changed}], changed, traces, layers: {layer: {marks, top, refused?}}, static: {gained, lost}}`; `{compared: false, why}` with nothing to compare |
+| `playtest.cancel` (**Code**) | act | `{run?}` | `{cancelled}` |
+| `view.layers` (**Code**) | act | the playtest layers by name (`playtest_kills`, `playtest_deaths`, `playtest_spawns`, `playtest_traffic`, `playtest_flow`, `playtest_unvisited`, `playtest_sightlines`, `playtest_weapon_use`, `playtest_stuck`), the `playtest` preset; `diff` (`true`, a run id, `baseline`, or `false`) | as now, and `diff: {a, b, game_type}` or null; a playtest row's `count` is its marks (the difference's with `diff`) and its `refused` the refusal |
 | `match.start` | act (the sim) | `{file}` on a sim whose match is over | `{queued}` |
 
 `h2 sim` takes `detail = "spatial"` and writes `spatial.bin` beside the
@@ -238,16 +300,26 @@ child's world stream as it takes a paired game's.
   Firefight match in [sim.md](../runtime/sim.md), "Firefight").
 - Studio builds the bots' mesh in memory for a map with no cache
   (**Test**, `api::tests::nav_bots_builds_the_mesh_when_there_is_no_cache`).
+- A change inside the spread is not called out and one outside it is; each layer's marks are the places that moved beyond counting noise; a spawn that became unfair, a polygon opened and a resized mesh are found or refused (**Test**, `sim::spatial::compare::tests`).
+- The baseline, a run compared with it over the same seeds, the problems gained and lost, other seeds refused, `compare_to`, `view.layers {diff}` counting and refusing, and the difference marks' colours (**Test**, `app::playtest::tests`; `api::tests::playtest_tests`; `viewport::playtest::tests`).
+- A run's files are the sim's: the batch planner reads them and plans
+  every match (**Test**, `app::playtest::tests`).
+- Partial results, a failed match, a cancel, a stale mark on a new build
+  key, a cache hit and a newer run replacing one going, over a fake sim
+  (**Test**, `app::playtest::tests`; `api::tests::playtest_tests`).
 - The speed figures are arithmetic on the cited measurements, not a
   measurement of a batch (**S**: PT7's note).
 
 ## Not verified
 
+- That the real `Source` (the build, the mesh, `h2 sim batch`) gives the runner what the fake does.
+- That `h2 sim batch` ends a child's trace file before reporting it, and that a cancel stops its children.
 - That the bots' mesh builder accepts a hand-made level's collision.
 - That a sim process can take a second match without a restart.
 - The number of processes a machine runs before they slow each other.
 - That matches with `bot_threads` off are the matches with it on.
 - How many seeds make each measure's spread small enough to act on.
+- That the difference layers' two-deviation rule calls out the changes a person would on a real edit, such as a moved spawn.
 
 ## Build slices
 
@@ -256,9 +328,9 @@ child's world stream as it takes a paired game's.
 | PT1 | Static checks and `playtest.static` | `studio/src/app/playtest_static.rs`, `studio/src/api/playtest.rs`, [agent-api.md](agent-api.md) | on the invented map with sectors: an off-mesh spawn, an island, two spawns in sight and a missing flag are each found | the checks list the stage's layout as ready for Slayer |
 | PT2 | The spatial trace: `detail = "spatial"`, the observers, the file | `crates/live/sim-bench/src/{spatial.rs, config.rs}`, `crates/extensions/game/src/sim_glue.rs`, [sim.md](../runtime/sim.md) | the file round-trips; over fake guest memory each event is written once with its places; the tally is unchanged with the trace on | a sim match writes a trace whose kills are the report's |
 | PT3 | The measures | `sim-bench/src/spatial/{heat.rs, spawns.rs, flow.rs, sight.rs, items.rs, stuck.rs}` | each measure on invented traces, with too few events refused | `h2 sim` prints the measures of a trace |
-| PT4 | The runner: build, nav, the batch, the gather, the cache, `playtest.run`, `status`, `result`, `cancel`, on save | `studio/src/app/playtest.rs`, `studio/src/api/playtest.rs` | a fake batch: the files written, partial results, a cancel, a stale mark on a new build key, a cache hit | `playtest.run` on a retail map gives a result |
-| PT5 | The overlays and the panel | `studio/src/viewport/playtest.rs`, `studio/src/ui/playtest.rs`, `view.layers` | each layer counts its marks and changes the snapshot's pixels on an invented result | the layers draw over a map in the window |
-| PT6 | Before and after: `playtest.compare`, difference layers, the baseline, swapped sides | `sim-bench/src/spatial/compare.rs`, `studio/src/app/playtest.rs` | two invented results: a change inside the spread is not called out and one outside it is | moving a spawn shows its fairness change |
+| PT4 (the runner's logic, its API and its tests are built; its real `Source` and the save hook are not) | The runner: build, nav, the batch, the gather, the cache, `playtest.run`, `status`, `result`, `cancel`, on save | `studio/src/app/playtest.rs`, `studio/src/api/playtest.rs` | a fake batch: the files written, partial results, a cancel, a stale mark on a new build key, a cache hit | `playtest.run` on a retail map gives a result |
+| PT5 (built) | The overlays and the panel | `studio/src/viewport/playtest.rs`, `studio/src/ui/playtest.rs`, `view.layers` | each layer counts its marks and changes the snapshot's pixels on an invented result | the layers draw over a map in the window |
+| PT6 (built) | Before and after: `playtest.compare`, difference layers, the baseline, swapped sides | `sim-bench/src/spatial/compare.rs`, `studio/src/app/playtest.rs` | two invented results: a change inside the spread is not called out and one outside it is | moving a spawn shows its fairness change |
 | PT7 | The pool: `match.start`, kept children, the sizing, the measured speeds | `crates/extensions/game/src/sim_glue.rs`, `crates/apps/cli/src/sim_cmd.rs`, `studio/src/app/playtest.rs`, `docs/editor/notes/playtest.md` | a second match on a fake sim starts from a clean tally; the pool is sized from cores and memory | the note has matches a minute, cold and warm |
 | PT8 | Fresh maps: the readiness list, the mesh on a hand-made level, the stage as the test | `studio/src/app/playtest_static.rs`, the bots' mesh builder, `stage-kit` (a playable bay) | the stage's ramps and ledges give the links the layout expects | a probe plays on the stage |
 

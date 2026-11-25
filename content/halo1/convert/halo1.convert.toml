@@ -1,0 +1,10 @@
+# The Halo 1 converter (crates/apps/cli/src/h1_import.rs): every level of
+# the campaign and its Halo 2-assets variant, and every multiplayer map in
+# both sandboxes (docs/halo1/campaign.md, "Importing").
+converter = "halo1"
+
+[settings]
+campaign = true
+halo2_assets = true
+multiplayer = true
+sandboxes = ["h2", "h1"]

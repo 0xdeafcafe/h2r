@@ -66,7 +66,7 @@
       "members": [
         {
           "type": "SYMBOL",
-          "name": "carrier_declaration"
+          "name": "type_declaration"
         },
         {
           "type": "SYMBOL",
@@ -74,11 +74,11 @@
         },
         {
           "type": "SYMBOL",
-          "name": "list_declaration"
+          "name": "uses_declaration"
         },
         {
           "type": "SYMBOL",
-          "name": "scoring_declaration"
+          "name": "points_declaration"
         },
         {
           "type": "SYMBOL",
@@ -134,12 +134,12 @@
         }
       ]
     },
-    "carrier_declaration": {
+    "type_declaration": {
       "type": "SEQ",
       "members": [
         {
           "type": "STRING",
-          "value": "carrier"
+          "value": "type"
         },
         {
           "type": "FIELD",
@@ -168,12 +168,12 @@
         }
       ]
     },
-    "list_declaration": {
+    "uses_declaration": {
       "type": "SEQ",
       "members": [
         {
           "type": "STRING",
-          "value": "list"
+          "value": "uses"
         },
         {
           "type": "FIELD",
@@ -185,19 +185,19 @@
         }
       ]
     },
-    "scoring_declaration": {
+    "points_declaration": {
       "type": "SEQ",
       "members": [
         {
           "type": "STRING",
-          "value": "scoring"
+          "value": "points"
         },
         {
           "type": "FIELD",
-          "name": "name",
+          "name": "text",
           "content": {
             "type": "SYMBOL",
-            "name": "identifier"
+            "name": "string"
           }
         }
       ]

@@ -755,6 +755,35 @@ impl SurfaceStore {
         Ok(copy)
     }
 
+    /// Refills `dst`, a texture an earlier [`snapshot`](Self::snapshot) of
+    /// a surface of this size and format made, with colour surface `id` as
+    /// it is now: a copy recorded in `encoder` (MSAA surfaces are resolved
+    /// first), nothing allocated. `Ok(false)`, with nothing recorded:
+    /// `dst` is not of the surface's size and host format, or cannot be
+    /// copied into.
+    pub fn snapshot_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        id: SurfaceId,
+        dst: &wgpu::Texture,
+    ) -> Result<bool, SurfaceError> {
+        let s = self.typed(id, SurfaceKind::Color)?;
+        let size = wgpu::Extent3d { width: s.desc.width, height: s.desc.height, depth_or_array_layers: 1 };
+        if dst.size() != size
+            || dst.format() != s.wgpu_format
+            || dst.sample_count() != 1
+            || dst.mip_level_count() != 1
+            || !dst.usage().contains(wgpu::TextureUsages::COPY_DST)
+        {
+            return Ok(false);
+        }
+        self.resolve_msaa(encoder, id)?;
+        let s = self.typed(id, SurfaceKind::Color)?;
+        let info = |t| wgpu::TexelCopyTextureInfo { texture: t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All };
+        encoder.copy_texture_to_texture(info(&s.texture), info(dst), size);
+        Ok(true)
+    }
+
     /// `CopyRects` when sizes or formats differ: a filtered blit of `src`
     /// (optionally a sub-rectangle) over the whole of `dst`.
     pub fn stretch(

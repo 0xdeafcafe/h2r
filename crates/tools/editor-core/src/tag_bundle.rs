@@ -423,6 +423,7 @@ mod tests {
             label: None,
             unit: None,
             axes: Vec::new(),
+            view: None,
         }
     }
 

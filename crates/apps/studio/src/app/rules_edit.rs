@@ -30,7 +30,7 @@ use rules::workbench::{self, Check};
 use serde_json::{Value, json};
 
 /// A new script's text.
-pub const BLANK: &str = "rules \"New game type\" 1\ncarrier slayer\n\noption kill_points: int 1..5 = 1 \"Kill points\" \"Points for each kill\"\n\non kill(victim, killer) {\n    if killer != none and killer != victim {\n        score(killer, kill_points)\n    }\n}\n";
+pub const BLANK: &str = "rules \"New game type\" 1\ntype slayer\n\noption kill_points: int 1..5 = 1 \"Kill points\" \"Points for each kill\"\n\non kill(victim, killer) {\n    if killer != none and killer != victim {\n        score(killer, kill_points)\n    }\n}\n";
 
 /// The file extension of a script.
 pub const EXTENSION: &str = "rules";
@@ -179,6 +179,9 @@ pub struct RulesEditor {
     pub typing: bool,
     /// Bring the window to the front next frame (set by every open).
     pub show: bool,
+    /// A script was opened and its tab not closed (`app::shell`,
+    /// `Doc::Rules`).
+    pub opened: bool,
     /// The text area the window last drew: x, y, width and height in
     /// points (`ui::game_script`). `None` before it is drawn.
     pub drawn: Option<[f32; 4]>,
@@ -220,6 +223,7 @@ impl Default for RulesEditor {
             marks: None,
             typing: false,
             show: false,
+            opened: false,
             drawn: None,
             watch: None,
             conflict: None,
@@ -321,7 +325,7 @@ pub fn script_section(check: &Check) -> Option<ScriptSection> {
                     "{}. {}: {} ({})",
                     i + 1,
                     q.label,
-                    q.value.as_deref().unwrap_or("the carrier's stock value"),
+                    q.value.as_deref().unwrap_or("the record's stock value"),
                     q.kind
                 )
             })
@@ -354,6 +358,7 @@ impl RulesEditor {
         self.analysed = None;
         self.renaming = None;
         self.show = true;
+        self.opened = true;
         self.conflict = None;
         if self.watch.as_ref().is_some_and(|w| self.path.as_ref() != Some(&w.path)) {
             self.watch = None;
@@ -432,23 +437,28 @@ impl RulesEditor {
                 .ok_or("the script has no file yet: save it as one")?,
         };
         std::fs::write(&path, &self.text).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.mark_saved(&path);
+        Ok(path)
+    }
+
+    /// Update the baseline and watcher after the package records the source.
+    pub(super) fn mark_saved(&mut self, path: &Path) {
         self.saved = self.text.clone();
         // Our own write is no outside change; a save elsewhere leaves the
         // outside editor's file behind.
         if self.watch.as_ref().is_some_and(|w| w.path == path) {
             if let Some(w) = &mut self.watch {
-                w.seen = modified(&path);
+                w.seen = modified(path);
             }
         } else {
             self.watch = None;
         }
-        if self.path.as_deref() != Some(path.as_path()) {
+        if self.path.as_deref() != Some(path) {
             self.title = path
                 .file_name()
                 .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         }
-        self.path = Some(path.clone());
-        Ok(path)
+        self.path = Some(path.to_owned());
     }
 
     /// Formats the text (`rules::ide::format`); refused while it does not

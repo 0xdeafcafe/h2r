@@ -13,10 +13,10 @@ import { For, Index, Show, createMemo, createSignal } from "solid-js";
 import { teamName } from "../lib/game";
 import {
   EVENT_TYPES, MAP_CLASSES, MAX_SEED, MAX_TICKS, SIM_PLAYERS, TICKS_PER_SECOND, classLabel, defaultScenario, describeEvent, endLabel,
-  faultLabel, kindWords, mapGroups, mapInPlay, mapShort, meter, moveEvent, neighbourSeed, newEvent, newThing, nextEventTick, nextSlot,
+  faultLabel, hudStrip, kindWords, mapGroups, mapInPlay, mapShort, meter, moveEvent, neighbourSeed, newEvent, newThing, nextEventTick, nextSlot,
   objectName, ofMatches, parseTickTime, playerName, problemPlace, rerolled, shortTime, signed, simWarnings, standings, suggestedClass,
   teamStandings, thingChoices, thingName, thingsOfMinimal, tickTime, timeline, traceLines, unitOf, winnerName, withEvent, withNeeds,
-  type EventType, type LabelLine, type MapThing, type Problem, type ScenarioDraft, type ScenarioEvent, type ScenarioObject,
+  type EventType, type HudLine, type LabelLine, type MapThing, type Problem, type ScenarioDraft, type ScenarioEvent, type ScenarioObject,
   type ScenarioPlayer, type SimResult, type SimRow, type SimSetup, type Trace, type Trouble,
 } from "../lib/rules";
 
@@ -38,6 +38,39 @@ export function TroubleNote(props: { trouble: Trouble; onRetry?: () => void }) {
       <b>{faultLabel(props.trouble.fault)}.</b> <span>{props.trouble.text}</span>
       <Show when={props.trouble.retry && props.onRetry}><button class="s-btn" onClick={() => props.onRetry?.()}>Try again</button></Show>
     </p>
+  );
+}
+
+/** The script's HUD in the run, as the match's first seated player sees
+ *  it: the last tick that showed a row, with each row's place, words and
+ *  mark. A run whose script never feeds its HUD shows none. */
+export function HudStrip(props: { t: Trace; scenario: ScenarioDraft }) {
+  const strip = () => hudStrip(props.t);
+  const things = () => props.scenario.objects ?? [];
+  const row = (h: HudLine) => {
+    const words = h.kind === "waypoint"
+      ? `marks ${h.at === null ? "nothing" : objectName(h.at, things())}`
+      : h.text ?? String(h.value);
+    return (
+      <li classList={{ "s-rules-hud--hidden": !h.shown }}>
+        <b>{h.name}</b> <span class="s-rules-muted">{h.slot ?? h.kind}</span> <span>{words}</span>
+      </li>
+    );
+  };
+  return (
+    <Show when={strip()}>
+      {(st) => (
+        <>
+          <h4>The script's HUD</h4>
+          <div class="s-rules-hud">
+            <p class="s-rules-muted">
+              At {tickTime(st().tick)} ({st().tick.toLocaleString("en-US")} ticks), as {playerName(props.scenario.players[0]?.slot ?? 0)} sees it.
+            </p>
+            <ul><For each={st().rows}>{(h) => row(h)}</For></ul>
+          </div>
+        </>
+      )}
+    </Show>
   );
 }
 
@@ -695,6 +728,8 @@ export function ResultsView(props: {
             <Show when={teams().length}>
               <p class="s-rules-teams">Teams: <For each={teams()}>{(t, i) => <>{i() > 0 ? ", " : ""}<b>{teamName(t.team)} {t.score}</b></>}</For></p>
             </Show>
+
+            <HudStrip t={r().trace} scenario={r().scenario} />
 
             <h4>What happened</h4>
             <Show when={rows().length} fallback={<p class="s-rules-muted s-rules-none">Nothing happened: the match has no events, and the script made no call and changed nothing.</p>}>

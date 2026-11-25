@@ -261,6 +261,12 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             };
             boot::build_for(&xbe, &out, jobs, arch)?;
         }
+        // The store is extracted on compile, once the image is built
+        // (docs/engine/asset-store.md, "Extraction on compile"). A host
+        // slim build has no data root of its own to fill.
+        if !slim {
+            crate::store_prepare::on_build(&disc, &data)?;
+        }
         return Ok(());
     }
     // `serve` never builds, and runs clang's module unless told otherwise.
@@ -302,14 +308,10 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
         }
     }
+    // The packages' convert items: the Map Pack and Halo 1 discs beside
+    // the game disc (docs/editor/studio-redesign.md, "Conversions").
     #[cfg(feature = "desktop")]
-    if crate::mappack_cmd::auto_enabled(no_mappack) {
-        crate::mappack_cmd::auto_install(&disc, &data);
-    }
-    #[cfg(feature = "desktop")]
-    if crate::h1_import::auto_enabled(no_halo1) {
-        crate::h1_import::auto_import(&disc, &data);
-    }
+    crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
     let host = boot::Host {
         film_out: film,
         #[cfg(unix)]

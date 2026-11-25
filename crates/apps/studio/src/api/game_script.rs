@@ -65,11 +65,11 @@ const METHODS: &[MethodDef] = &[
         "Replace the open script's text (unsaved) and check it",
         r#"{"source":"string"}"#,
         STATE,
-        r#"{"source":"rules \"Mine\" 1\ncarrier slayer\nscoring carrier\n"}"#,
+        r#"{"source":"rules \"Mine\" 1\ntype slayer\nuses slayer\n"}"#,
     ),
     def(
         m::RULES_SAVE,
-        "Save the script to its file, or to path (which becomes its file). Reloads it into the paired game when reload is true, or by default when the editor's reload on save is on",
+        "Save the script as a rules item of the edit target; with none, answers NO_TARGET. A path explicitly exports a copy. Package saves reload into the paired game when reload is true, or when the editor's reload on save is on",
         r#"{"path?":"string","reload?":"boolean"}"#,
         r#"{"path":"string","reload":"{queued:hash}|{refused:why}|null"}"#,
         r#"{"path":"$OUT/mine.rules"}"#,
@@ -143,9 +143,34 @@ fn mode_name(m: ReloadMode) -> &'static str {
     }
 }
 
+pub(super) fn save_item(app: &mut App, p: &P) -> Reply {
+    let reload = match p.get("reload") {
+        Some(_) => p.bool("reload")?,
+        None => app.rules.reload_on_save,
+    };
+    let target = super::packages::save_target(app, None)?;
+    let saved = app.save_rules_item(&target).map_err(super::packages::refuse)?;
+    let reloaded = reload.then(|| match app.rules.queue_reload() {
+        Ok(hash) => json!({ "queued": hash }),
+        Err(why) => json!({ "refused": why }),
+    });
+    Ok(json!({ "saved": true, "path": saved, "edit_target": target, "reload": reloaded }))
+}
+
+fn save(app: &mut App, p: &P) -> Reply {
+    if let Some(path) = p.opt_str("path")? {
+        std::fs::write(path, &app.rules.text)
+            .map_err(|e| err(code::FAILED, format!("{path}: {e}")))?;
+        Ok(json!({ "path": path, "reload": null }))
+    } else {
+        save_item(app, p)
+    }
+}
+
 fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::RULES_EXTERNAL => return external(app, p),
+        m::RULES_SAVE => return save(app, p),
         m::RULES_RUN => return run(app, p),
         _ => {}
     }
@@ -181,21 +206,6 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::RULES_SET => {
             r.set_text(p.str("source")?.to_string());
             Ok(state(r, false))
-        }
-        m::RULES_SAVE => {
-            let path = p.opt_str("path")?;
-            let saved = r
-                .save(path.map(Path::new))
-                .map_err(|e| err(if r.path.is_none() { code::REFUSED } else { code::FAILED }, e))?;
-            let reload = match p.get("reload") {
-                Some(_) => p.bool("reload")?,
-                None => r.reload_on_save,
-            };
-            let reloaded = reload.then(|| match r.queue_reload() {
-                Ok(hash) => json!({ "queued": hash }),
-                Err(why) => json!({ "refused": why }),
-            });
-            Ok(json!({ "path": saved.display().to_string(), "reload": reloaded }))
         }
         m::RULES_FORMAT => {
             r.format().map_err(refused)?;
@@ -466,7 +476,7 @@ mod tests {
         assert_eq!(v["check"]["ok"], true, "{v}");
         assert!(v["check"]["report"]["budget"].as_u64().unwrap() > 0);
         assert_eq!(v["reload"]["state"], "idle");
-        assert!(v["text"].as_str().unwrap().contains("carrier slayer"));
+        assert!(v["text"].as_str().unwrap().contains("type slayer"));
         assert!(v["starters"].as_array().unwrap().iter().any(|s| s == "Slayer (built in)"));
 
         // The report lists the script's settings and its Quick Options marks.

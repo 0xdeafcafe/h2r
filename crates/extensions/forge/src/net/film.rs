@@ -8,6 +8,8 @@ use std::fmt;
 
 use forge_doc::Limits;
 
+use crate::look::film::{self as looks, Playback};
+
 use super::{Item, MAX_MESSAGE_BYTES, MAX_WELCOME_BYTES, Peer, PeerError, Stamped, Welcome};
 
 /// The first byte of a record's payload: the session's welcome.
@@ -62,15 +64,22 @@ impl From<PeerError> for FilmError {
     }
 }
 
-/// A film's Forge records, replayed through a peer.
+/// A film's Forge records, replayed through a peer. Look and pose records
+/// (`look::film::LOOK`, `POSE`) are presentation: they go to [`Playback`],
+/// not the peer, and need no welcome before them.
 pub struct Replay {
     limits: Limits,
     peer: Option<Peer>,
+    presence: Playback,
 }
 
 impl Replay {
     pub fn new(limits: Limits) -> Self {
-        Self { limits, peer: None }
+        Self {
+            limits,
+            peer: None,
+            presence: Playback::default(),
+        }
     }
 
     /// The peer the records feed, once the welcome has come.
@@ -78,7 +87,12 @@ impl Replay {
         self.peer.as_ref()
     }
 
-    /// Take the welcome or item one record holds.
+    /// The monitor looks and poses the film's records have given so far.
+    pub fn presence(&self) -> &Playback {
+        &self.presence
+    }
+
+    /// Take the welcome, item, look or pose one record holds.
     pub fn feed(&mut self, payload: &[u8]) -> Result<(), FilmError> {
         let (&kind, bytes) = payload
             .split_first()
@@ -100,12 +114,12 @@ impl Replay {
                 if bytes.len() > MAX_MESSAGE_BYTES {
                     return Err(FilmError::Record("item too large".into()));
                 }
-                let item =
-                    Stamped::from_bytes(bytes).map_err(|e| FilmError::Record(e.to_string()))?;
                 let peer = self
                     .peer
                     .as_mut()
                     .ok_or(FilmError::Order("an item before the welcome"))?;
+                let item =
+                    Stamped::from_bytes(bytes).map_err(|e| FilmError::Record(e.to_string()))?;
                 // The watermarks were not recorded: each is a gap in `n`.
                 while peer.next_n() < item.n {
                     peer.receive(Stamped {
@@ -117,6 +131,10 @@ impl Replay {
                 peer.receive(item)?;
                 Ok(())
             }
+            looks::LOOK | looks::POSE => self
+                .presence
+                .feed(payload)
+                .map_err(|e| FilmError::Record(e.to_string())),
             other => Err(FilmError::Record(format!("unknown kind {other}"))),
         }
     }

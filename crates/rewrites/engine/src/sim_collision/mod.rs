@@ -1,32 +1,38 @@
-//! Guest adapters for native point and location queries and the differential
-//! BSP segment kernels. See docs/engine/collision-queries.md.
+//! Guest adapters for the phase two collision world.
+//! See docs/engine/collision-queries.md for the ABI and admission rules.
 //!
-//! Each adapter reads the entry's arguments and the live guest words its
-//! query needs, runs the kernel against the decoded BSP, and only then
-//! writes what the original leaves in guest memory. It returns `Ok(None)`
-//! with nothing written when the kernel bails; the installer then runs the
-//! original from the untouched entry state.
-//!
-//! Point and location also replay the saved stack words, scratch registers
-//! and flags. The vector entries set the result as the original does.
-//! Callee-saved registers, EFLAGS, `esp` and the return are exact. The
-//! remainder of the vector clobber set (scratch GPRs and XMM registers,
-//! x87 condition codes, last-instruction words and the dead stack below
-//! `esp`) is excluded only in the vector differential harness.
-//! The x87 precision flag the original's split divisions raise is set.
+//! An authoritative path checks its inputs and writable spans before it
+//! changes guest state. C, D, G and H replay scratch registers and frame
+//! bytes on selected exits. Their broader kernels feed predictions for
+//! comparison at the lifted return. J uses the same read-only trace for
+//! its return comparison and the agent API.
 mod cluster;
+mod flood;
+pub use flood::spatial_parity;
+pub mod instance;
 pub mod layout;
+pub mod mopp_box;
+pub mod mopp_ray;
 mod point;
 mod preflight;
+pub mod query;
+pub mod source_audit;
 mod sources;
+mod sphere;
+pub mod straight;
+mod topology;
+pub mod vector_parity;
+pub use flood::{cluster_flood, object_spatial_visit};
+pub use mopp_box::mopp_box;
 pub use point::{location, point_to_leaf};
 pub use preflight::CollisionMemory;
+pub use sphere::object_sphere_pretest;
 use preflight::Outputs;
 
 use crate::sim_native::Memory;
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::bsp::NONE;
-pub use sim_collision::{Bail, CollisionWorld, Entry, Stats};
+pub use sim_collision::{Bail, CollisionWorld, Entry, Stats, VectorParity};
 use sim_collision::{Consts, Fault, GuestRead, Outcome, Segment};
 use sim_core::Epoch;
 use sim_core::det::{self, Fp};
@@ -38,7 +44,7 @@ use std::sync::LazyLock;
 pub static EPOCH: Epoch = Epoch::new();
 
 /// The process-wide collision world.
-pub static WORLD: LazyLock<CollisionWorld> = LazyLock::new(|| CollisionWorld::new(&EPOCH));
+pub static WORLD: LazyLock<CollisionWorld> = LazyLock::new(|| CollisionWorld::with_shared_store(&EPOCH));
 
 /// Drop every decoded BSP.
 pub fn invalidate() {
@@ -242,35 +248,12 @@ fn plan_context(
 }
 
 fn commit(c: &mut CpuAbi, g: &mut impl Memory, plan: Plan) -> Result<TransferAbi, GuestFault> {
-    use layout::record as r;
-    let at = |offset: u32| plan.record.wrapping_add(offset);
     let o = &plan.outcome;
-    if let Some(fraction) = plan.init {
-        g.set_u32(at(r::FRACTION), fraction)?;
-        g.set_u32(at(r::COUNT), 0)?;
-    }
-    let (count, writes) = o.list_writes(plan.listed);
-    for (offset, leaf) in writes {
-        g.set_u32(at(offset), leaf)?;
-    }
-    if count != plan.listed {
-        g.set_u32(at(r::COUNT), count)?;
-    }
-    if let Some(h) = o.hit {
-        g.set_u32(at(r::FRACTION), h.fraction)?;
-        g.set_u32(at(r::PLANE), h.plane_addr)?;
-        g.set_u32(at(r::LEAF), h.leaf)?;
-        g.set_u32(at(r::SURFACE), h.surface)?;
-        g.set_u32(at(r::SURFACE_PLANE), h.plane)?;
-        g.set_u8(at(r::FLAGS), h.flags)?;
-        g.set_u8(at(r::BREAKABLE), h.breakable)?;
-        g.set_u16(at(r::MATERIAL), h.material)?;
-    }
+    o.write_record(plan.init, plan.listed, |offset, bytes| {
+        g.write_bytes(plan.record.wrapping_add(offset), bytes, 1)
+    })?;
     if let Some(context) = plan.context {
-        use layout::context as ctx;
-        g.set_u32(context.wrapping_add(ctx::PREV_LEAF), o.prev_leaf)?;
-        g.set_u8(context.wrapping_add(ctx::PREV_KIND), o.prev_kind)?;
-        g.set_u32(context.wrapping_add(ctx::PLANE), o.plane)?;
+        o.write_context(|offset, bytes| g.write_bytes(context.wrapping_add(offset), bytes, 1))?;
     }
     if o.inexact {
         c.x87.status |= 0x20;

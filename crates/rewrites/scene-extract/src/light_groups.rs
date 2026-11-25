@@ -28,11 +28,11 @@
 //!   definitions at `+0x13c`, `0xc8` each, data at `+0x50`). The data's
 //!   `+4` parts (`0x48` each: `+2` flags, bit 3 a triangle list; `+6` the
 //!   first index; `+8` the index count), `+8` subparts, `+0x20` the
-//!   indices.
+//!   index count and `+0x24` the pointer to their u16 stream.
 //! - What the handler does beyond binding the material and drawing the
 //!   part, which the scene does not carry, and so is the entry's
 //!   remainder ([`Cause`]): the auxiliary state toggle, state around one
-//!   part (`+0x1a`), visible subparts, the shader's `+0x16` bit 0, a
+//!   part (`+0x1a`), subparts selecting less than one full draw, the shader's `+0x16` bit 0, a
 //!   material animation (the shader's `+0x24` block `+0x3c`), and a
 //!   template callback (the shader's `stem` `+0x44`, `+0x50`).
 //! - The shadow projection block [`SHADOW_PROJECTION`] (`0x00048ee0`'s
@@ -71,6 +71,17 @@ pub struct Sorted {
     pub index: u16,
     pub implementation: u8,
     pub vertex_class: u16,
+}
+
+impl Sorted {
+    /// The used fields of the private 24-byte entry after the layer sort.
+    pub fn read(mem: &dyn GuestRead, slot: u32) -> R<Self> {
+        Ok(Self {
+            index: half(mem, slot)?,
+            implementation: byte(mem, at(slot, 4)?)?,
+            vertex_class: half(mem, at(slot, 8)?)?,
+        })
+    }
 }
 
 /// Why a sorted entry is not in the scene: the guest's handler still
@@ -207,7 +218,24 @@ fn material(mem: &dyn GuestRead, shader: u32) -> R<()> {
 /// One sorted entry of the list whose items are at `items`, with the
 /// node rows of an object's pose.
 pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>)> {
-    let item = index(items, u32::from(sorted.index), ITEM_SIZE)?;
+    let (entry, rows, _) = entry_at(mem, index(items, u32::from(sorted.index), ITEM_SIZE)?, sorted)?;
+    Ok((entry, rows))
+}
+
+/// The loop has already resolved the item address and omitted excluded
+/// dispatches. The sorted slot supplies the implementation and vertex
+/// class the handler actually received. The third result is the guest
+/// index address for this full-part emission, before D3D rebases indices.
+pub fn dispatched_entry(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>, u32)> {
+    let (entry, rows, data) = entry_at(mem, item, sorted)?;
+    let indices = ptr(mem, data, 0x24)?;
+    let address = index(indices, entry.stream.first_index, 2)?;
+    index(address, entry.stream.index_count - 1, 2)?.checked_add(1).ok_or(Cause::Range)?;
+    Ok((entry, rows, address))
+}
+
+/// Decode the entry once and retain its section data for the emitter.
+fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>, u32)> {
     if word(mem, item)? != GEOMETRY_BUILD || word(mem, at(item, 4)?)? != GEOMETRY_DRAW {
         return Err(Cause::Callback);
     }
@@ -267,9 +295,6 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
             LightPose::Rows(0..0),
         )
     };
-    if flags & 1 << 6 != 0 && word(mem, at(rec, 0x14)?)? != 0 && word(mem, at(data, 8)?)? != 0 {
-        return Err(Cause::Subparts);
-    }
     let part = index(ptr(mem, data, 4)?, argument & 0xff, 0x48)?;
     let part_flags = half(mem, at(part, 2)?)?;
     let first_index = u32::from(half(mem, at(part, 6)?)?);
@@ -277,12 +302,23 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
     if index_count < 3 || first_index + index_count > word(mem, at(data, 0x20)?)? {
         return Err(Cause::Range);
     }
+    let strip = flags & (1 << 9) != 0 && part_flags & 8 == 0;
+    if flags & (1 << 6) != 0 {
+        let bitmap = word(mem, at(rec, 0x14)?)?;
+        if bitmap != 0 {
+            let spans = crate::layout::world_ranges::emissions(mem, data, part, flags, bitmap, strip)
+                .map_err(|_| Cause::Subparts)?;
+            if !matches!(spans.as_slice(), [span] if span.start == first_index && span.end == first_index + index_count) {
+                return Err(Cause::Subparts);
+            }
+        }
+    }
     material(mem, shader)?;
     let rows = match pose {
         LightPose::Rows(_) => record_rows(mem, record).map_err(|_| Cause::Pose)?,
         _ => Vec::new(),
     };
-    let topology = if flags & 1 << 9 != 0 && part_flags & 8 == 0 {
+    let topology = if strip {
         Topology::Strip
     } else {
         Topology::List
@@ -308,7 +344,7 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
             implementation: sorted.implementation,
         },
     };
-    Ok((entry, rows))
+    Ok((entry, rows, data))
 }
 
 /// The shadow projection block as nine registers; `None` when a word
@@ -351,28 +387,31 @@ pub fn shadow_pass(mem: &dyn GuestRead, layer: u8) -> Option<ShadowPass> {
     })
 }
 
-/// The object filter `0x000222a0`, from its call's stack and the weight
-/// the mask branch published. The native pass draws full-target quads, so
-/// no guest window argument is needed.
+/// The three float immediates the object filter pushes for its call to
+/// the blur at `0x000222c2`. The wrapper itself takes no arguments.
+const FILTER_STEPS: u32 = 0x0002_22b9;
+const FILTER_SCALE: u32 = 0x0002_22b4;
+const FILTER_GROWTH: u32 = 0x0002_22af;
+
+/// The object filter `0x000222a0` requests full-target quads and the
+/// plain blur combiner (the blur's ninth and tenth arguments are zero).
 pub fn shadow_filter(
     mem: &dyn engine::memory::GuestMemory,
-    esp: u32,
     mxcsr: u32,
     x87_control: u16,
 ) -> Option<ShadowFilter> {
     use engine::glow::{self, BlurArgs};
     let args = BlurArgs {
         source: 10,
-        steps: mem.u32(esp.checked_add(4)?).ok()?,
-        scale: mem.u32(esp.checked_add(8)?).ok()?,
-        growth: mem.u32(esp.checked_add(12)?).ok()?,
+        steps: mem.u32(FILTER_STEPS).ok()?,
+        scale: mem.u32(FILTER_SCALE).ok()?,
+        growth: mem.u32(FILTER_GROWTH).ok()?,
         dest: 11,
         other: u32::MAX,
         last: 10,
     };
     let blur = glow::blur(mem, &args, mxcsr).ok()?;
-    let strength = mem.u32(OBJECT_SHADOW_WEIGHT).ok()?;
-    let combiner = glow::blur_combiner(mem, strength, 0, mxcsr, x87_control)
+    let combiner = glow::blur_combiner(mem, 0, 0, mxcsr, x87_control)
         .ok()?
         .0;
     let target_size = |index: u32| {
@@ -656,6 +695,38 @@ mod tests {
     }
 
     #[test]
+    fn dispatched_model_uses_the_sorted_class_and_the_same_pose_as_the_gather() {
+        let mut m = fixture();
+        let handle = placement_and_object(&mut m);
+        let slot = 0x0067_0000;
+        let item = ITEMS + 2 * ITEM_SIZE;
+        m.w(slot, 0xbeef_0002);
+        m.w(slot + 4, 0xaabb_cc03);
+        m.w(slot + 8, 0xface_0101);
+        m.w(DATA + 0x24, 0x0068_0000);
+        let sorted_slot = Sorted::read(&m, slot).unwrap();
+        let (draw, rows, address) = dispatched_entry(&m, item, sorted_slot).unwrap();
+        assert_eq!(address, 0x0068_0000 + 16 * 2);
+        assert_eq!(draw.owner, LayerOwner::Object(InstanceKey(handle)));
+        assert_eq!((draw.binding.selector, draw.binding.variant), (1, 2));
+        assert_eq!(rows.len(), 3);
+        assert_eq!((draw, rows), entry(&m, ITEMS, Sorted {
+            index: 2,
+            implementation: 3,
+            vertex_class: 0x101,
+        }).unwrap());
+        m.w(DATA + 0x24, 0);
+        assert_eq!(dispatched_entry(&m, item, sorted_slot), Err(Cause::Section));
+
+        m.w(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE, 1 << 11);
+        assert_eq!(dispatched_entry(&m, item, sorted_slot), Err(Cause::State));
+        m.w(item + 4, 0x1234);
+        assert_eq!(dispatched_entry(&m, item, sorted_slot), Err(Cause::Callback));
+        m.0.remove(&(slot + 8));
+        assert_eq!(Sorted::read(&m, slot), Err(Cause::Memory));
+    }
+
+    #[test]
     fn strip_topology_needs_record_bit_9_on_a_part_without_the_list_flag() {
         let mut m = fixture();
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 1 << 9);
@@ -668,6 +739,35 @@ mod tests {
             entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology,
             Topology::Strip
         );
+    }
+
+    #[test]
+    fn a_light_accepts_visible_subparts_only_when_the_emitter_draws_one_whole_part() {
+        let mut m = fixture();
+        let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
+        let (bitmap, descriptors) = (0x0067_0000, 0x0068_0000);
+        m.w(rec, 1 << 6);
+        m.w(rec + 0x14, bitmap);
+        m.w(DATA + 8, 33);
+        m.w(DATA + 12, descriptors);
+        set_half(&mut m, PARTS + 10, 31);
+        set_half(&mut m, PARTS + 12, 2);
+        m.w(descriptors + 31 * 8, 2 << 16);
+        m.w(descriptors + 32 * 8, 2 | 4 << 16);
+        m.w(bitmap, 1 << 31);
+        m.w(bitmap + 4, 1);
+        let part = entry(&m, ITEMS, sorted(0)).unwrap().0;
+        assert_eq!((part.stream.first_index, part.stream.index_count), (0, 6));
+
+        m.w(bitmap, 0);
+        assert_eq!(entry(&m, ITEMS, sorted(0)), Err(Cause::Subparts));
+        m.w(bitmap, 1 << 31);
+        m.w(rec, (1 << 6) | (1 << 9));
+        set_half(&mut m, PARTS + 2, 0);
+        assert_eq!(entry(&m, ITEMS, sorted(0)), Err(Cause::Subparts), "two separate strips");
+        m.w(bitmap + 4, 0);
+        m.w(descriptors + 31 * 8, 6 << 16);
+        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology, Topology::Strip);
     }
 
     #[test]
@@ -852,26 +952,28 @@ mod tests {
             m.set_u32(TARGETS + target * TARGET_STRIDE + 0x84, 128)
                 .unwrap();
         }
-        let esp = 0x1000;
-        m.set_u32(esp + 4, 1.0f32.to_bits()).unwrap();
-        m.set_u32(esp + 8, 0.5f32.to_bits()).unwrap();
-        m.set_u32(esp + 12, 0).unwrap();
-        let filter = shadow_filter(&m, esp, 0x1f80, 0x37f).unwrap();
+        m.set_u32(FILTER_STEPS, 2.25f32.to_bits()).unwrap();
+        m.set_u32(FILTER_SCALE, 0.5f32.to_bits()).unwrap();
+        m.set_u32(FILTER_GROWTH, 0.5f32.to_bits()).unwrap();
+        let filter = shadow_filter(&m, 0x1f80, 0x37f).unwrap();
         assert_eq!(
             filter.draws,
-            [ShadowFilterDraw {
-                source: 10,
-                dest: 11,
-                spread: 0.5f32.to_bits()
-            }]
+            [
+                ShadowFilterDraw { source: 10, dest: 11, spread: 0.5f32.to_bits() },
+                ShadowFilterDraw { source: 11, dest: 10, spread: 0.75f32.to_bits() },
+                ShadowFilterDraw { source: 10, dest: 11, spread: 0.28125f32.to_bits() },
+            ]
         );
         assert_eq!(filter.copy, Some((11, 10)));
-        assert_eq!(filter.combiner.len(), 60);
+        assert_eq!(
+            filter.combiner,
+            engine::glow::blur_combiner(&m, 0, 0, 0x1f80, 0x37f).unwrap().0
+        );
         assert_eq!(filter.signs, [(-1.0f32).to_bits(), 1.0f32.to_bits()]);
         assert_eq!(filter.size, [128, 128]);
         m.set_u32(TARGETS + 11 * TARGET_STRIDE + 0x80, 64).unwrap();
         assert!(
-            shadow_filter(&m, esp, 0x1f80, 0x37f).is_none(),
+            shadow_filter(&m, 0x1f80, 0x37f).is_none(),
             "mismatched target sizes refuse"
         );
     }

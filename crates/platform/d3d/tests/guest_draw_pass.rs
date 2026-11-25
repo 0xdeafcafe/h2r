@@ -56,6 +56,7 @@ fn a_carried_copy_samples_scene_colour_as_it_was_before_the_copy() {
             of: aux,
             id: 0,
             how: ReplaySample::InPlace,
+            into: None,
         },
         ReplayOp::Bind {
             colour: scene,
@@ -65,6 +66,7 @@ fn a_carried_copy_samples_scene_colour_as_it_was_before_the_copy() {
             draw: draw.into(),
             textures: [Some(ReplayTexture::Sample(0)), None, None, None],
             camera: CameraUse::Screen,
+            external: None,
         },
     ];
     frame.ops = ops

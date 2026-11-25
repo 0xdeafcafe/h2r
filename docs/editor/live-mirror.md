@@ -293,7 +293,7 @@ heads its group in the Pending tab.
 |---|---|---|---|
 | `now` (**Now**) | Applies now. | values the draw path reads every draw: shader colours, vectors and bitmaps, effect and light colours where the draw reads the tag; moved and grown render geometry (clusters, instanced definitions, `mode` sections) and painted pixels of the same size and format | `edit.batch`; shows on the next frame. A grown section's row says the level rebuilds for a moment |
 | `next_use` (**Next use**) | Applies the next time the game uses it. | values read when used: damage, rates of fire, machine speeds and delays, a projectile's drag | `edit.batch`; shows on the next shot, hit or cycle |
-| `next_spawn` (**Next spawn**) | Applies when the object next spawns. | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn. **Respawn now** remakes supported, unattached occupants of unnamed palette entries with default creation fields. Other placements take the edit on their next creation or a reload |
+| `next_spawn` (**Next spawn**) | Applies when the object next spawns. | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn. **Respawn now** remakes supported, unattached occupants of unnamed palette entries with default creation fields. Other placements take the edit on their next creation or a reload. A `next_spawn` row on an object tag, or on an `hlmt` or `phmo` that object tags reach, also sends `world.object.respawn {definition}` for each such object tag |
 | `not_known` (**Not known**) | Not known; reload to be sure. | any field with no recorded `applies` | `edit.batch`; written at once, when the game reads it is not known |
 | `reload` (**After reload**) | Applies after reload. | placement slots added, duplicated or removed in a game without `world.placement.edit` or that refuses the transaction, sound scenery slots, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap fields edited in the Tags tool, a geometry edit the save refuses or whose tag the game has not loaded, a grown section a play copy already holds, a bitmap resized or reformatted | saving the play copy and loading the map again |
 
@@ -436,8 +436,8 @@ bytes and the bytes the game reports for fields it leaves alone. Choosing
 then reverts before closing the link. The journal contains field bytes. Reloading
 the map restores its original population of live objects and removes previews.
 
-Saving is the existing path and is not changed by pairing: **Save map
-as** and **Save as package** write the document
+Saving is the existing path and is not changed by pairing: **Save**
+and **Export map...** write the document
 (`scenario_edit::save::save_as`, `MapEditor`), never the game's memory
 read back. `edit.revert` on unpair is offered ("Put the game back as it
 loaded"), not done by default.
@@ -526,11 +526,11 @@ by `session.methods`, documented in
 | `live.key` | read | `{stream}` | `{at, seq}`: the next frame is a key frame, taken now when paused |
 | `live.status` | read | none | `{map: {name, checksum, epoch, activation}, streams: [{stream, layers, every, frames, bytes, dropped, skipped, queue}], capture_us: {p50, p99, budget}, shed: [name]}` |
 | `live.close` | read | `{stream}` | `{closed}`; closing the stream's connection does the same |
-| `edit.map` | read | `{known_epoch?}` | `{at, name, file, checksum, scenario, epoch, session, loaded?}` |
+| `edit.map` | read | `{known_epoch?}` | `{at, name, file, checksum, scenario, epoch, session, bsp, loaded?}` |
 | `edit.batch` | act | `{writes, label?, epoch?, confirm_peers?}`. A write is `{tag, group?, path, value, was?}` or `{at, value, was?}` with hex bytes | `{id, applied, changes}`: all written at one tick boundary as one journal entry, or none, with `MISMATCH` and `data.fields` (`path`, `was`, `holds`) |
 | `world.object.set` | act | `{id, pos?, forward?, up?, epoch?, confirm_peers?}` | `{at, object}` after the next tick, through the engine's object move |
 | `world.object.delete` | act | `{id, epoch?, confirm_peers?}` | `{at, deleted}` through `OBJECT_DELETE` |
-| `world.object.respawn` | act | `{id, epoch?, confirm_peers?}` or `{placement: {block, index}, epoch?, confirm_peers?}` | `{at, old, object, linked}` with the replacement's placement-link status |
+| `world.object.respawn` | act | `{id, epoch?, confirm_peers?}`, `{placement: {block, index}, epoch?, confirm_peers?}` or `{definition, epoch?, confirm_peers?}` | `{at, old, object, linked}` with the replacement's placement-link status; a definition answers `{respawned, skipped, engine_made}` (agent-api.md, "Object edits") |
 | `map.reload` | act | `{file?, confirm_peers?}` | `{queued, map, activation, file?, checksum?}`. Wait for gameplay on the requested map and activation. A file reload also returns the path and expected header checksum |
 
 `sim.session` gains `live` (the session is on a Live service) and

@@ -63,41 +63,60 @@ struct Reading {
 const LATENCY_WINDOW: Duration = Duration::from_secs(30);
 const LATE_TICK: Duration = Duration::from_millis(live_proto::host_pack::LATE_TICK_MS);
 
-/// Exact nearest-rank p99 of individual tick intervals. Evict by wall
-/// time so the horizon stays 30 seconds even when tick rate changes.
+/// Exact nearest-rank p99 of individual tick intervals, wall and game-thread
+/// CPU. Evict by wall time so the horizon stays 30 seconds even when tick
+/// rate changes.
 #[derive(Default)]
 struct TickIntervals {
-    last_tick: Option<Instant>,
-    intervals: VecDeque<(Instant, Duration)>,
+    last_tick: Option<(Instant, Option<u64>)>,
+    intervals: VecDeque<(Instant, Duration, Option<Duration>)>,
+}
+
+fn nearest_rank_p99(mut durations: Vec<Duration>) -> Option<f64> {
+    if durations.is_empty() {
+        return None;
+    }
+    let index = durations.len() - 1 - durations.len() / 100;
+    let (_, p99, _) = durations.select_nth_unstable(index);
+    Some(p99.as_secs_f64() * 1000.0)
 }
 
 impl TickIntervals {
-    fn tick(&mut self, now: Instant, playing: bool) {
+    /// `game_ns` is the game thread's CPU clock at this tick; the CPU
+    /// interval is its change since the previous tick. Leaving gameplay
+    /// clears the window, so the next match starts empty.
+    fn tick(&mut self, now: Instant, game_ns: Option<u64>, playing: bool) {
         if !playing {
             self.last_tick = None;
             self.intervals.clear();
             return;
         }
-        while self.intervals.front().is_some_and(|(at, _)| now.duration_since(*at) >= LATENCY_WINDOW) {
+        while self.intervals.front().is_some_and(|(at, _, _)| now.duration_since(*at) >= LATENCY_WINDOW) {
             self.intervals.pop_front();
         }
-        if let Some(last) = self.last_tick.replace(now) {
-            self.intervals.push_back((now, now.duration_since(last)));
+        if let Some((last, last_ns)) = self.last_tick.replace((now, game_ns)) {
+            let cpu = game_ns
+                .zip(last_ns)
+                .and_then(|(n, l)| n.checked_sub(l))
+                .map(Duration::from_nanos);
+            self.intervals.push_back((now, now.duration_since(last), cpu));
         }
     }
 
+    fn window(&self, now: Instant) -> impl Iterator<Item = &(Instant, Duration, Option<Duration>)> {
+        self.intervals.iter().rev().take_while(move |(at, _, _)| now.duration_since(*at) < LATENCY_WINDOW)
+    }
+
     fn report(&self, now: Instant) -> (Option<f64>, usize) {
-        let mut durations: Vec<_> = self.intervals.iter().rev()
-            .take_while(|(at, _)| now.duration_since(*at) < LATENCY_WINDOW)
-            .map(|(_, elapsed)| *elapsed)
-            .collect();
-        if durations.is_empty() {
-            return (None, 0);
-        }
+        let durations: Vec<_> = self.window(now).map(|(_, elapsed, _)| *elapsed).collect();
         let late = durations.iter().filter(|&&d| d > LATE_TICK).count();
-        let index = durations.len() - 1 - durations.len() / 100;
-        let (_, p99, _) = durations.select_nth_unstable(index);
-        (Some(p99.as_secs_f64() * 1000.0), late)
+        (nearest_rank_p99(durations), late)
+    }
+
+    /// p99 of per-tick game-thread CPU over the window; `None` when empty
+    /// or the platform has no thread clock.
+    fn cpu_p99(&self, now: Instant) -> Option<f64> {
+        nearest_rank_p99(self.window(now).filter_map(|(_, _, cpu)| *cpu).collect())
     }
 }
 
@@ -125,7 +144,7 @@ impl Sampler {
         let playing = self.host_light.then(is_multiplayer);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(playing) = playing {
-            state.intervals.tick(now, playing);
+            state.intervals.tick(now, thread_cpu_ns(), playing);
         }
         if boundary {
             let sample = Sample::now(now);
@@ -191,6 +210,7 @@ pub fn install(
             let now = Instant::now();
             let timing = host_light.then(|| state.intervals.report(now));
             reply["wall_ms_per_tick_p99"] = json!(timing.and_then(|(p99, _)| p99));
+            reply["game_cpu_ms_per_tick_p99"] = json!(host_light.then(|| state.intervals.cpu_p99(now)).flatten());
             reply["late_ticks"] = json!(timing.map(|(_, late)| late));
             reply["age_ms"] = json!(now.duration_since(*at).as_millis() as u64);
             drop(state);
@@ -314,13 +334,17 @@ mod tests {
     fn rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s() {
         let mut w = TickIntervals::default();
         let mut at = Instant::now();
-        w.tick(at, true);
+        let mut cpu = 0u64;
+        w.tick(at, Some(0), true);
         // Two late ticks of 50 ms, 97 regular ticks and one at the threshold.
         for ms in [50, 50, 36].into_iter().chain(std::iter::repeat_n(33, 97)) {
             at += Duration::from_millis(ms);
-            w.tick(at, true);
+            cpu += ms * 400_000;
+            w.tick(at, Some(cpu), true);
         }
         assert_eq!(w.report(at), (Some(50.0), 2));
+        // CPU deltas are per tick: 40% of each wall interval, so 20 ms at the top.
+        assert_eq!(w.cpu_p99(at), Some(20.0));
         // When only the first 50 ms tick expires, the second is the maximum.
         // With 99 intervals, nearest-rank p99 is still the maximum.
         assert_eq!(
@@ -328,9 +352,10 @@ mod tests {
             (Some(50.0), 1)
         );
         assert_eq!(w.report(at + LATENCY_WINDOW), (None, 0));
-        w.tick(at, false);
-        w.tick(at + Duration::from_secs(5), true);
+        w.tick(at, None, false);
+        w.tick(at + Duration::from_secs(5), Some(cpu), true);
         assert_eq!(w.report(at + Duration::from_secs(5)), (None, 0));
+        assert_eq!(w.cpu_p99(at + Duration::from_secs(5)), None);
     }
 
     #[test]

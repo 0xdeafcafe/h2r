@@ -19,6 +19,8 @@ use timeline::phase::{self, Phase};
 
 const MAIN: u32 = 0x40_1000;
 const LEAF: u32 = 0x40_2000;
+/// A synthetic entry which returns success in AL.
+const ACTIVATE: u32 = 0x40_3005;
 const STACK: u32 = 0x60_0e00;
 /// Data pages: render-written by guest code, by D3D only, by the host
 /// only; render-read and sim-written; written by another thread.
@@ -100,6 +102,7 @@ fn the_census_pairs_render_and_sim_accesses_on_a_real_runtime() {
         .build(&Remap::new(&[
             (&points::RENDER_FRAME, MAIN),
             (&points::RENDER_SCENE_PASSES, LEAF),
+            (&points::GAME_ACTIVATE, ACTIVATE),
         ]))
         .unwrap();
     plan.install(&rt).unwrap();
@@ -186,10 +189,28 @@ fn the_census_pairs_render_and_sim_accesses_on_a_real_runtime() {
     );
     // The trap stays installed; nothing the census armed broke the bytes.
     assert_eq!(rt.memory().u32(B).unwrap(), 0xd3d);
+
+    for _ in 0..3 {
+        call(&rt, ACTIVATE);
+        census.with_census(|c| {
+            let t = c.totals();
+            assert_eq!((t.frames, t.pairs), (0, 0));
+            assert!(c.pages().is_empty());
+            assert!(c.sticky().is_empty());
+            assert!(c.hle().is_empty());
+        });
+        sim();
+        call(&rt, MAIN);
+        census.with_census(|c| {
+            let t = c.totals();
+            assert_eq!((t.frames, t.pairs), (1, 0));
+            assert_eq!(c.pages()[&(A >> 12)].rw_lines, 0);
+        });
+    }
 }
 
 /// Off unless switched on; on, it observes `render_frame_and_present`'s
-/// entry and return and the game's end.
+/// entry and return and the game's boundaries.
 #[test]
 fn the_census_is_off_by_default() {
     let mut r = Registry::new(Switches::defaults());
@@ -200,6 +221,7 @@ fn the_census_is_off_by_default() {
     for want in [
         "RENDER_FRAME: observe_before [render-census:census enter] -> original -> observe_after [render-census:census leave]",
         "GAME_END",
+        "GAME_ACTIVATE",
     ] {
         assert!(text.contains(want), "{want}: {text}");
     }

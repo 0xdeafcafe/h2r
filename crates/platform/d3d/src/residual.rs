@@ -40,6 +40,10 @@ pub struct Tally {
     pub copies: u64,
     /// Texture uploads.
     pub uploads: u64,
+    pub native_guest_binds: u64,
+    pub guest_bind_refused_destroy: u64,
+    pub native_rect_clears: u64,
+    pub clear_refused_rect_count: u64,
 }
 
 impl Tally {
@@ -53,6 +57,10 @@ impl Tally {
             state_words: self.state_words.saturating_sub(before.state_words),
             copies: self.copies.saturating_sub(before.copies),
             uploads: self.uploads.saturating_sub(before.uploads),
+            native_guest_binds: self.native_guest_binds.saturating_sub(before.native_guest_binds),
+            guest_bind_refused_destroy: self.guest_bind_refused_destroy.saturating_sub(before.guest_bind_refused_destroy),
+            native_rect_clears: self.native_rect_clears.saturating_sub(before.native_rect_clears),
+            clear_refused_rect_count: self.clear_refused_rect_count.saturating_sub(before.clear_refused_rect_count),
         }
     }
 }

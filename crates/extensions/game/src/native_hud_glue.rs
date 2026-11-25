@@ -10,11 +10,14 @@ use std::sync::{Arc, Mutex};
 use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest, IndexedStreams};
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalWrites};
 use engine::memory::GuestMemory;
-use render_bridge::native_hud::{Host, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope};
+use render_bridge::native_hud::{
+    Host, HudTagQuad, HudVertices, OUTLINE_PUSH_BYTES, OutlineVertices, UiScope,
+};
 use gfx::vertex::PrimitiveType;
 use native_render::ui_gpu::{Refusal, UiGpu};
 use timeline::native::{Metric, Stage, Ui};
 
+use crate::hud_overlay::ScreenDraw;
 use crate::native_lights_glue::DeviceMemory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +49,14 @@ impl ScopeStack {
         self.active(owner).is_none_or(|scope| scope.eligible)
     }
 
+    fn screen_source(&self, owner: u64) -> Option<ScreenDraw> {
+        match self.active(owner).filter(|scope| scope.eligible)?.kind {
+            UiScope::Hud | UiScope::Layers | UiScope::Widget => Some(ScreenDraw::Widget),
+            UiScope::Loading => Some(ScreenDraw::Loading),
+            UiScope::Model | UiScope::Overlay | UiScope::FrameTail => None,
+        }
+    }
+
     fn position(&self, scope: Scope) -> Option<usize> {
         self.0.iter().rposition(|s| {
             (s.owner, s.kind, s.stack) == (scope.owner, scope.kind, scope.stack)
@@ -67,17 +78,18 @@ impl Admission {
         &self,
         snapshot: &DrawSnapshot<'_>,
         frame: u32,
+        stage: Stage,
         siblings: Arc<[IndexedStreams]>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let draw = snapshot.draw;
         if snapshot.color_header == 0 {
             Ui::Target.count();
-            Stage::Ui.count(Metric::RefusedResources, 1);
+            stage.count(Metric::RefusedResources, 1);
             return None;
         }
         Some((
             ExternalPlan {
-                stage: Stage::Ui,
+                stage,
                 view: 4,
                 ranges: 1 + siblings.len(),
                 slots: Vec::new(),
@@ -92,6 +104,11 @@ impl Admission {
     }
 }
 
+// Both frame-tail helpers draw through the pushed fan in 0x00034420.
+fn tail_fan(entry: &str, primitive: PrimitiveType, vertices: u32) -> bool {
+    entry == "inline Begin/End" && primitive == PrimitiveType::TriangleFan && vertices == 4
+}
+
 impl DrawAdmission for Admission {
     fn admit(
         &self,
@@ -102,11 +119,18 @@ impl DrawAdmission for Admission {
             Ui::ModelGuestBuilderDraw.count();
             return None;
         }
+        if scope.kind == UiScope::FrameTail {
+            let draw = snapshot.draw;
+            if scope.eligible && tail_fan(draw.entry, draw.primitive, draw.vertex_count) {
+                return self.plan(snapshot, scope.frame, Stage::Post, Vec::new().into());
+            }
+            return None;
+        }
         Ui::GuestBuilderDraw.count();
         if !scope.eligible {
             return None;
         }
-        self.plan(snapshot, scope.frame, Vec::new().into())
+        self.plan(snapshot, scope.frame, Stage::Ui, Vec::new().into())
     }
 }
 
@@ -127,7 +151,7 @@ impl DrawAdmission for Direct<'_> {
         &self,
         snapshot: &DrawSnapshot<'_>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        self.admission.plan(snapshot, self.frame, self.siblings.clone())
+        self.admission.plan(snapshot, self.frame, Stage::Ui, self.siblings.clone())
     }
 }
 
@@ -244,6 +268,23 @@ impl<B: d3d::Backend> Glue<B> {
         drawn
     }
 
+    /// A screen draw from the overlay (`hud_overlay::draw_screen`): its
+    /// immediate fan, with the guest's combiner and blend at the draw.
+    fn screen_overlay<const N: usize>(
+        &self,
+        mem: &mut dyn GuestMemory,
+        what: ScreenDraw,
+        vertices: &[[(u8, [f32; 4]); N]; 4],
+    ) -> bool
+    where
+        B: Send + 'static,
+    {
+        self.permits_draw()
+            && crate::hud_overlay::draw_screen(&self.device, mem, what, |d, m, a| {
+                d.try_native_immediate_draw(m, PrimitiveType::TriangleFan, vertices, a)
+            })
+    }
+
     fn permits_draw(&self) -> bool {
         SCOPES.with(|scopes| scopes.borrow().permits(self.admission.owner))
     }
@@ -273,20 +314,64 @@ fn inline_space(mem: &dyn GuestMemory, layout: d3d::layout::GuestLayout, bytes: 
 }
 
 impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
+    fn draw_tag_quad(&self, mem: &mut dyn GuestMemory, at: &HudTagQuad, vertices: &HudVertices) -> bool {
+        self.permits_draw() && crate::hud_overlay::draw_tag_quad(&self.device, mem, at, vertices)
+    }
+
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
-        self.fan(mem, vertices, None)
+        SCOPES.with(|s| s.borrow().screen_source(self.admission.owner))
+            .is_some_and(|source| self.screen_overlay(mem, source, vertices))
+            || self.fan(mem, vertices, None)
+    }
+
+    fn draw_text_quad(&self, mem: &mut dyn GuestMemory, shader: u32, vertices: &HudVertices) -> bool {
+        if !self.permits_draw() {
+            return false;
+        }
+        let Some(layout) = self.device.lock().ok().map(|device| device.config().layout) else {
+            return false;
+        };
+        if !inline_space(mem, layout, SCREEN_FAN_PUSH_BYTES, false) {
+            return false;
+        }
+        let cache = || -> Option<_> {
+            let bitmap = mem.u32(d3d::glyph::GLYPH_CACHE_BITMAP).ok()?;
+            let texture = mem.u32(bitmap.checked_add(d3d::glyph::BITMAP_TEXTURE)?).ok()?;
+            if texture == 0 {
+                return None;
+            }
+            let hud_input = render_bridge::native_hud::hud_overlay::inputs(mem)?;
+            Some(HudTagQuad {
+                bitmap: texture, image: 0, shader, hud_input,
+            })
+        };
+        cache().is_some_and(|at| crate::hud_overlay::draw_text_quad(&self.device, mem, &at, vertices))
     }
 
     fn screen_fan(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        if let Some(source) = SCOPES.with(|s| s.borrow().screen_source(self.admission.owner)) {
+            let layout = self.device.lock().ok().map(|device| device.config().layout);
+            if layout.is_some_and(|layout| inline_space(mem, layout, SCREEN_FAN_PUSH_BYTES, false))
+                && crate::hud_overlay::draw_screen(&self.device, mem, source, |d, m, a| {
+                    d.try_native_pushed_draw(m, PrimitiveType::TriangleFan, vertices, a)
+                })
+            {
+                return true;
+            }
+        }
         self.fan(mem, vertices, Some(SCREEN_FAN_PUSH_BYTES))
     }
 
     fn fade_fan(&self, mem: &mut dyn GuestMemory, vertices: &[[(u8, [f32; 4]); 1]; 4]) -> bool {
-        self.fan(mem, vertices, None)
+        self.screen_overlay(mem, ScreenDraw::Fade, vertices) || self.fan(mem, vertices, None)
     }
 
     fn loading_bitmap_fan(&self, mem: &mut dyn GuestMemory, vertices: &[[(u8, [f32; 4]); 2]; 4]) -> bool {
-        self.fan(mem, vertices, None)
+        self.screen_overlay(mem, ScreenDraw::Loading, vertices) || self.fan(mem, vertices, None)
+    }
+
+    fn loading_spinner(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        self.screen_overlay(mem, ScreenDraw::Loading, vertices) || self.fan(mem, vertices, None)
     }
 
     fn backdrop_wash(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
@@ -357,6 +442,17 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             return false;
         }
         let Some(primitive) = PrimitiveType::from_xbox(primitive) else { return false };
+        // A bar on the overlay, with the combiner the last record with an
+        // image left (`0x00052857` writes none for a record without). The
+        // overlay's corners go round the quad: a strip's do not.
+        let carried = [None; 16];
+        if matches!(primitive, PrimitiveType::TriangleFan | PrimitiveType::QuadList)
+            && crate::hud_overlay::draw_screen(&self.device, mem, ScreenDraw::Bar, |d, m, a| {
+                d.try_native_inline_draw(m, primitive, bytes.clone(), &carried, a)
+            })
+        {
+            return true;
+        }
         let Ok(mut device) = self.device.lock() else { return false };
         let candidate = Direct::new(&self.admission, device.swap_count());
         let drawn = device.try_native_inline_draw(
@@ -370,6 +466,34 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
 
     fn replace_widget(&self, mem: &mut dyn GuestMemory, widget: u32) -> bool {
         self.permits_draw() && crate::skulls_model::gpu::replace_widget(&self.device, mem, widget)
+    }
+
+    fn ui_overlay(&self, _mem: &mut dyn GuestMemory) -> Option<bool> {
+        // The UI scope's order must hold for a pass placed in it.
+        Some(self.permits_draw())
+    }
+
+    fn ui_text(&self, _mem: &dyn GuestMemory) -> Option<Box<dyn render_bridge::native_hud::ui_overlay::UiText>> {
+        Some(Box::new(crate::hud_overlay::menu_text::MenuText(crate::hud_overlay::fonts()?)))
+    }
+
+    fn ui_custom_widget(&self, mem: &dyn GuestMemory, widget: u32) -> bool {
+        widget.checked_add(crate::list_class::WIDGET_BLOCK)
+            .and_then(|addr| mem.u32(addr).ok())
+            .is_some_and(|block| crate::skulls_model::noted(widget, block).is_some())
+    }
+
+    fn ui_pass(&self, mem: &mut dyn GuestMemory, part: &frame_scene::Overlay) -> bool {
+        self.permits_draw() && crate::hud_overlay::place_menu(&self.device, mem, part)
+    }
+
+    fn modal_blur(&self, mem: &mut dyn GuestMemory, call: &render_bridge::native_hud::modal_blur::ModalBlur) -> bool {
+        // The UI scope's order must hold for a pass placed in it.
+        self.permits_draw() && crate::modal_blur_glue::arm(&self.device, mem, call)
+    }
+
+    fn finish_modal_blur(&self, mem: &mut dyn GuestMemory, esp: u32) -> bool {
+        crate::modal_blur_glue::finish(&self.device, mem, esp)
     }
 
     fn enter_ui(&self, mem: &mut dyn GuestMemory, kind: UiScope, stack: u32, eligible: bool) {
@@ -423,6 +547,14 @@ mod tests {
     use engine::testing::FakeGuest;
 
     #[test]
+    fn frame_tail_admits_only_the_pushed_screen_fan() {
+        assert!(tail_fan("inline Begin/End", PrimitiveType::TriangleFan, 4));
+        assert!(!tail_fan("D3DDevice_End", PrimitiveType::TriangleFan, 4));
+        assert!(!tail_fan("inline Begin/End", PrimitiveType::TriangleStrip, 4));
+        assert!(!tail_fan("inline Begin/End", PrimitiveType::TriangleFan, 3));
+    }
+
+    #[test]
     fn ui_scope_pairs_require_the_same_callback_and_stack() {
         let mut scopes = ScopeStack::default();
         let layers = Scope { owner: 1, kind: UiScope::Layers, stack: 0x2000, frame: 2, eligible: true };
@@ -447,6 +579,43 @@ mod tests {
         assert!(scopes.permits(1));
         scopes.0.truncate(scopes.position(next_widget).unwrap());
         assert_eq!(scopes.active(1), Some(layers));
+    }
+
+    #[test]
+    fn screen_source_tracks_the_innermost_eligible_producer() {
+        let mut scopes = ScopeStack::default();
+        let hud = Scope { owner: 1, kind: UiScope::Hud, stack: 0x9000, frame: 1, eligible: true };
+        assert_eq!(scopes.screen_source(1), None);
+        scopes.enter(hud);
+        assert_eq!(scopes.screen_source(1), Some(ScreenDraw::Widget));
+        assert_eq!(scopes.screen_source(2), None);
+        for (kind, expected) in [
+            (UiScope::Layers, Some(ScreenDraw::Widget)),
+            (UiScope::Widget, Some(ScreenDraw::Widget)),
+            (UiScope::Model, None),
+            (UiScope::Overlay, None),
+            (UiScope::Loading, Some(ScreenDraw::Loading)),
+        ] {
+            scopes.enter(Scope { kind, stack: 0x8000, ..hud });
+            assert_eq!(scopes.screen_source(1), expected);
+        }
+        scopes.enter(Scope { eligible: false, ..hud });
+        scopes.enter(Scope { kind: UiScope::Widget, stack: 0x8000, ..hud });
+        assert_eq!(scopes.screen_source(1), None);
+    }
+
+    #[test]
+    fn loading_resumes_after_a_nested_fade_or_bar() {
+        let mut scopes = ScopeStack::default();
+        let loading = Scope { owner: 5, kind: UiScope::Loading, stack: 0x9000, frame: 1, eligible: true };
+        scopes.enter(loading);
+        let child = Scope { kind: UiScope::Overlay, stack: 0x8000, ..loading };
+        scopes.enter(child);
+        assert_eq!(scopes.screen_source(5), None);
+        scopes.0.truncate(scopes.position(child).unwrap());
+        assert_eq!(scopes.screen_source(5), Some(ScreenDraw::Loading));
+        scopes.enter(Scope { eligible: false, ..loading });
+        assert_eq!(scopes.screen_source(5), None);
     }
 
     #[test]

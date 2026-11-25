@@ -10,7 +10,7 @@
 //! out stays as Rust set it.
 
 use crate::ui_kit::spec::{DescriptionBlock, ScreenSpec};
-use crate::ui_kit::view::{Art, Kind};
+use crate::ui_kit::view::Art;
 
 use super::{DataError, DesignDoc, ScreenDoc, WidgetDoc, fill, slots_of};
 
@@ -65,39 +65,7 @@ pub fn present(s: &ScreenSpec, doc: &ScreenDoc, design: &DesignDoc) -> Result<Sc
         }
     };
     for (id, w) in &doc.widgets {
-        let on_hud = s.hud.as_ref().is_some_and(|h| h.widgets.iter().any(|x| x.id == *id));
         match id.as_str() {
-            _ if on_hud => {
-                let slot = id.replace(['.', '-'], "_");
-                if let Some(hud) = &mut s.hud
-                    && let Some(h) = hud.widgets.iter_mut().find(|h| h.id == *id)
-                {
-                    h.rect = placed(h.rect, w.at, w.size);
-                    let justify = match &w.component {
-                        Some(c) => Some(design.component(c)?.justify()),
-                        None => None,
-                    };
-                    let style = style(&w.component)?;
-                    if let Kind::Text {
-                        text,
-                        font,
-                        colour,
-                        justify: j,
-                    } = &mut h.kind
-                    {
-                        if let Some(t) = text_over(doc, id, w, &slot, &text.clone())? {
-                            *text = t;
-                        }
-                        if let Some((f, c)) = style {
-                            *font = f;
-                            *colour = crate::ui_kit::components::rgb(c);
-                        }
-                        if let Some(js) = justify {
-                            *j = js;
-                        }
-                    }
-                }
-            }
             "title" => {
                 if let Some(t) = text_over(doc, id, w, "title", &s.title)? {
                     s.title = t;

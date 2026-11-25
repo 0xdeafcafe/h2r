@@ -1,0 +1,4 @@
+# The campaign-cards kit has no settings. The cards are the user's own
+# pictures under <data>/campaigns/<key>/cards
+# (crates/extensions/game/src/campaign_cards.rs).
+{}

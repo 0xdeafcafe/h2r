@@ -50,7 +50,7 @@ pub const LIST: &[Weapon] = &[
 ];
 
 /// A tag path as the list compares it: lowercase, `/` between parts.
-fn canonical(path: &str) -> String {
+pub(crate) fn canonical(path: &str) -> String {
     path.trim().replace('\\', "/").to_ascii_lowercase()
 }
 

@@ -9,7 +9,8 @@
 //! shadows (identity, groups), layer draws (layer, flags, remainder,
 //! material inputs, items with their owner, model, rows and lighting) and
 //! decorator draws (`crate::decorator::summary_words`), and the late passes
-//! (fog, water and post: `crate::late::summary_words`). A group hashes its
+//! (fog, water and post: `crate::late::summary_words`), then the overlay
+//! when it has items (`crate::overlay::summary_words`). A group hashes its
 //! layer, site, projection, remainder and entries (slot, record, owner,
 //! model, stream, pose with its rows, binding).
 //! Floats by their
@@ -77,6 +78,22 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
                 h.floats(&a.rest_clip);
             }
             None => h.word(0),
+        }
+        for (_, caster) in scene
+            .nearby_casters
+            .iter()
+            .filter(|(view, _)| *view as usize == vi)
+        {
+            h.word(caster.handle);
+            h.word(caster.definition);
+            h.floats(&caster.sphere.0);
+            h.float(caster.sphere.1);
+            h.floats(&caster.towards_light);
+            h.float(caster.strength);
+            h.word(caster.nodes.len() as u32);
+            for n in &caster.nodes {
+                h.floats(bytemuck::cast_ref::<_, [f32; 13]>(n));
+            }
         }
         let instances = scene.instances_of(v);
         h.word(instances.len() as u32);
@@ -234,6 +251,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         crate::decorator::summary_words(scene, v, &mut |w| h.word(w));
         crate::late::summary_words(scene, v, &mut |w| h.word(w));
     }
+    crate::overlay::summary_words(&scene.overlay, &mut |w| h.word(w));
     h.0
 }
 

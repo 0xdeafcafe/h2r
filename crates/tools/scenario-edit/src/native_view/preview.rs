@@ -1,7 +1,8 @@
 //! One object, or a render model alone, drawn offscreen through the native
 //! renderer the viewport draws placed objects with ([`NativeObjects`]),
 //! with no level around it: Studio's `model.render`
-//! (docs/editor/agent-api.md, "`model.*`").
+//! (docs/editor/agent-api.md, "`model.*`") and its posed model
+//! (`anim.pose`, the M1 slice of docs/editor/rich-editors.md).
 //!
 //! - [`object`]: an object tag's model at a variant (a collection stands
 //!   for its first entry, as the viewport draws it).
@@ -10,6 +11,10 @@
 //! - [`markers`]: a `mode`'s markers (`mode +0x58`), and [`marker_frame`]
 //!   where one sits in the rest pose, so a weapon can be put in a hand.
 //! - [`render`]: the pieces, each placed by a node matrix, into a picture.
+//! - [`render_posed`]: the pieces with their own node matrices (a sampled
+//!   animation's pose, built by [`super::posed_nodes`]), each piece
+//!   carrying the skeleton it was posed on ([`Piece::skeleton`]) and
+//!   [`posed_bounds`] framing the posed vertices.
 //!
 //! A material whose shader names no base map the renderer decodes is
 //! drawn [`UNTEXTURED`] rather than left out, so a preview shows every
@@ -29,7 +34,12 @@ use tags::StringId;
 use tags::model::RenderModelGeometry;
 use tags::object::{Context, PermutationChoice};
 
-use super::{Clear, Files, Lighting, NativeModel, NativeModels, NativeObjects, invert};
+use super::{
+    Clear, Files, Lighting, NativeLayers, NativeLoad, NativeModel, NativeModels, NativeObjects,
+    NativeWorld, SkeletonNode, invert,
+};
+use native_render::layers_load;
+use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
 
 /// The node matrix a piece is placed by (the renderer's), so callers
 /// need no dependency on the renderer crate.
@@ -58,6 +68,9 @@ pub struct Piece {
     /// The permutation drawn per region of the variant, `(region,
     /// permutation)`; empty for a render model alone (each region's first).
     pub picked: Vec<(String, String)>,
+    /// The render model's skeleton, model node order: what
+    /// [`super::posed_nodes`] poses a graph's animation on.
+    pub skeleton: Vec<SkeletonNode>,
 }
 
 impl Piece {
@@ -201,6 +214,19 @@ fn finish<R: Read + Seek>(
         mode,
         untextured,
         picked: Vec::new(),
+        skeleton: geo
+            .nodes
+            .iter()
+            .map(|n| SkeletonNode {
+                parent: n.wire.parent_index,
+                translation: n.wire.translation,
+                rotation: n.wire.orientation,
+                // The mode node stores no default scale (the words at
+                // `+0x28` are its inverse rest frame), so the channel's
+                // default is 1.
+                scale: 1.0,
+            })
+            .collect(),
     })
 }
 
@@ -385,13 +411,7 @@ pub fn render(
     size: [u32; 2],
     background: [f64; 3],
 ) -> wgpu::Texture {
-    let models = NativeModels {
-        models: pieces
-            .iter()
-            .map(|(p, _)| (p.model.object, Arc::new(p.model.clone())))
-            .collect(),
-        errors: Vec::new(),
-    };
+    let models = models_of(pieces.iter().map(|(p, _)| *p));
     let markers: Vec<Marker> = pieces
         .iter()
         .enumerate()
@@ -406,6 +426,55 @@ pub fn render(
         .collect();
     let mut objects = NativeObjects::new(device, queue, &models, Lighting::Flat);
     objects.place(&models, &markers, &[]);
+    draw(device, queue, objects, camera, size, background)
+}
+
+/// A posed model to draw: its piece, the node matrices in place of the
+/// rest pose (as [`super::posed_nodes`] builds them), and the sphere the
+/// posed vertices lie in, for culling.
+pub struct Posed<'a> {
+    pub piece: &'a Piece,
+    pub nodes: &'a [NodeMatrix],
+    pub sphere: ([f32; 3], f32),
+}
+
+/// Draws `posed` models with their own node matrices (a sampled pose in
+/// place of the rest pose), as [`render`] draws pieces placed in theirs:
+/// same camera, background, texture format and copy readability.
+pub fn render_posed(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    posed: &[Posed<'_>],
+    camera: &Camera,
+    size: [u32; 2],
+    background: [f64; 3],
+) -> wgpu::Texture {
+    let models = models_of(posed.iter().map(|p| p.piece));
+    let mut objects = NativeObjects::new(device, queue, &models, Lighting::Flat);
+    objects.place_posed(posed.iter().map(|p| (&p.piece.model.object, p.nodes, p.sphere)));
+    draw(device, queue, objects, camera, size, background)
+}
+
+/// The models of `pieces`, each one once, shared.
+fn models_of<'a>(pieces: impl IntoIterator<Item = &'a Piece>) -> NativeModels {
+    NativeModels {
+        models: pieces
+            .into_iter()
+            .map(|p| (p.model.object, Arc::new(p.model.clone())))
+            .collect(),
+        errors: Vec::new(),
+    }
+}
+
+/// The picture itself: `objects` drawn into a new `size` texture.
+fn draw(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mut objects: NativeObjects,
+    camera: &Camera,
+    size: [u32; 2],
+    background: [f64; 3],
+) -> wgpu::Texture {
     let extent = wgpu::Extent3d {
         width: size[0].max(1),
         height: size[1].max(1),
@@ -458,6 +527,442 @@ pub fn covered(rgba: &[u8], background: [f64; 3]) -> usize {
     rgba.chunks_exact(4)
         .filter(|p| (0..3).any(|k| p[k].abs_diff(bg[k]) > 2))
         .count()
+}
+
+/// The posed model's bounds: every vertex skinned by the posed node
+/// matrices (the vertex shader's arithmetic, on the CPU: `Model::skin`),
+/// for the camera that frames it and the culling sphere. `None` when the
+/// model has no finite vertex position.
+pub fn posed_bounds(piece: &Piece, nodes: &[NodeMatrix]) -> Option<([f32; 3], [f32; 3])> {
+    let model = &piece.model.model;
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    let mut any = false;
+    for v in &model.vertices {
+        let p = model.skin(v, nodes);
+        for k in 0..3 {
+            if p[k].is_finite() {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+                any = true;
+            }
+        }
+    }
+    any.then_some((lo, hi))
+}
+
+/// What a material preview is drawn on (`shader.preview`'s `shape`,
+/// docs/editor/rich-editors.md, "Shaders").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Shape {
+    /// A unit sphere ([`sphere`]).
+    #[default]
+    Sphere,
+    /// A flat two-unit square facing up ([`quad`]).
+    Quad,
+    /// An object tag's own model in its rest pose (a collection stands
+    /// for its first entry, as the viewport draws it).
+    Object(TagId),
+}
+
+impl Shape {
+    /// The id `shader.preview` takes.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Sphere => "sphere",
+            Self::Quad => "quad",
+            Self::Object(_) => "object",
+        }
+    }
+
+    /// The words the Shader tab's shape picker shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sphere => "Sphere",
+            Self::Quad => "Flat square",
+            Self::Object(_) => "An object's model",
+        }
+    }
+
+    /// The camera's turn and tilt (radians): the square is seen from
+    /// above, the others from a little above.
+    fn view(self) -> (f32, f32) {
+        match self {
+            Self::Quad => (0.6, 1.0),
+            _ => (0.8, 0.35),
+        }
+    }
+}
+
+/// The preview sphere's rings (pole to pole) and segments (around).
+pub const SPHERE_RINGS: usize = 24;
+pub const SPHERE_SEGMENTS: usize = 48;
+
+/// A unit sphere about the origin, +z up: positions, base-map
+/// coordinates (`u` around, `v` from the top), the outward normal and
+/// the tangent frame (tangent along `u`, binormal the normal crossed
+/// with it), one part of material 0, its triangles counter-clockwise
+/// seen from outside (as [`quad`]'s are seen from above).
+pub fn sphere() -> SectionInput {
+    let mut s = SectionInput::default();
+    for r in 0..=SPHERE_RINGS {
+        let theta = std::f32::consts::PI * r as f32 / SPHERE_RINGS as f32;
+        for k in 0..=SPHERE_SEGMENTS {
+            let phi = std::f32::consts::TAU * k as f32 / SPHERE_SEGMENTS as f32;
+            let n = [theta.sin() * phi.cos(), theta.sin() * phi.sin(), theta.cos()];
+            let t = [-phi.sin(), phi.cos(), 0.0];
+            s.positions.push(n);
+            s.normals.push(n);
+            s.tangents.push(t);
+            s.binormals.push(cross(n, t));
+            s.uvs.push([
+                k as f32 / SPHERE_SEGMENTS as f32,
+                r as f32 / SPHERE_RINGS as f32,
+            ]);
+        }
+    }
+    let row = SPHERE_SEGMENTS + 1;
+    let at = |r: usize, k: usize| (r * row + k) as u16;
+    let mut triangles = Vec::new();
+    for r in 0..SPHERE_RINGS {
+        for k in 0..SPHERE_SEGMENTS {
+            let (a, b, c, d) = (at(r, k), at(r, k + 1), at(r + 1, k), at(r + 1, k + 1));
+            triangles.push([a, c, b]);
+            triangles.push([b, c, d]);
+        }
+    }
+    s.parts.push(PartInput {
+        material: 0,
+        transparent: false,
+        triangles,
+    });
+    s
+}
+
+/// A two-unit square in the xy plane about the origin, facing +z, with
+/// the base map once across it and the tangent frame along x and y.
+pub fn quad() -> SectionInput {
+    SectionInput {
+        positions: vec![
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ],
+        uvs: vec![[0.0, 1.0], [1.0, 1.0], [0.0, 0.0], [1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 4],
+        tangents: vec![[1.0, 0.0, 0.0]; 4],
+        binormals: vec![[0.0, 1.0, 0.0]; 4],
+        parts: vec![PartInput {
+            material: 0,
+            transparent: false,
+            triangles: vec![[0, 1, 2], [1, 3, 2]],
+        }],
+        ..Default::default()
+    }
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Why an object's model cannot carry the preview: past this many
+/// vertices a section's triangles cannot name them.
+pub const OBJECT_TOO_BIG: &str = "the model has more than 65,536 vertices, which one section cannot index";
+
+/// Object tag `object`'s model in its rest pose as one section of
+/// material 0: every draw of it, opaque and transparent, with its
+/// positions, base-map coordinates and normals.
+fn object_section<R: Read + Seek>(
+    map: &mut Map<R>,
+    files: &mut ResourceFiles,
+    object: TagId,
+) -> Result<SectionInput, String> {
+    let ctx = Context::read(map).map_err(|e| e.to_string())?;
+    let (definition, _) = crate::object_collision::resolve(&ctx, object)?;
+    let loaded = model_load::load_object_model(map, &ctx, &mut Files(files), definition)
+        .map_err(|e| e.to_string())?;
+    let m = loaded.model;
+    if m.vertices.len() > usize::from(u16::MAX) + 1 {
+        return Err(OBJECT_TOO_BIG.to_owned());
+    }
+    let mut triangles = Vec::new();
+    for d in m.draws.iter().chain(&m.transparents) {
+        let start = d.first_index as usize;
+        let end = start + d.index_count as usize;
+        for t in m.indices.get(start..end).unwrap_or(&[]).chunks_exact(3) {
+            triangles.push([t[0] as u16, t[1] as u16, t[2] as u16]);
+        }
+    }
+    if triangles.is_empty() {
+        return Err("the model has no triangles".to_owned());
+    }
+    Ok(SectionInput {
+        positions: m.vertices.iter().map(|v| v.position).collect(),
+        uvs: m.vertices.iter().map(|v| v.uv).collect(),
+        normals: m.vertices.iter().map(|v| v.normal).collect(),
+        parts: vec![PartInput {
+            material: 0,
+            transparent: false,
+            triangles,
+        }],
+        ..Default::default()
+    })
+}
+
+/// One material ready to draw alone: the shape as a one-section world
+/// whose material 0 is the shader, loaded as the viewport loads a BSP
+/// ([`NativeLoad::new`], [`NativeLayers::read`]) with no lightmap, and
+/// the camera that frames it.
+#[derive(Clone, Debug)]
+pub struct MaterialPreview {
+    pub shader: TagId,
+    pub shape: Shape,
+    pub load: NativeLoad,
+    pub camera: Camera,
+}
+
+/// Why a material's base look does not draw: its shader names no base
+/// map the renderer decodes and its own layer-3 pass does not draw.
+pub const NO_BASE_LOOK: &str =
+    "no base look: the shader names no base map the renderer decodes, and its own layer-3 pass does not draw";
+/// Why a layer that compiled and planned is still not drawn: the editor
+/// draws the world layers over the translated base look only.
+pub const NO_LAYERS_WITHOUT_BASE: &str =
+    "the base look does not draw, and the editor draws the layers over it only";
+
+/// `shader` drawn alone on `shape`, read from `map` (the map's own bytes,
+/// or the editor's document laid over them): the game's material path
+/// with no game (`layers_load::load_with`, `plan_without_game` at time
+/// 0, `load_layer3` for an unlit BSP), as the viewport's Game mode draws
+/// a level.
+pub fn material<R: Read + Seek>(
+    map: &mut Map<R>,
+    files: &mut ResourceFiles,
+    shader: TagId,
+    shape: Shape,
+) -> Result<MaterialPreview, String> {
+    material_at(map, files, shader, shape, 0.0)
+}
+
+/// [`material`] with the layer plan's pixel and vertex constants sampled
+/// at `time` seconds on the preview clock.
+pub fn material_at<R: Read + Seek>(
+    map: &mut Map<R>,
+    files: &mut ResourceFiles,
+    shader: TagId,
+    shape: Shape,
+    time: f64,
+) -> Result<MaterialPreview, String> {
+    let section = match shape {
+        Shape::Sphere => sphere(),
+        Shape::Quad => quad(),
+        Shape::Object(object) => object_section(map, files, object)?,
+    };
+    let mut b = WorldBuilder::new();
+    b.add_section(Owner::Cluster(0), &section, &Placement::IDENTITY, None);
+    let world = b.finish();
+    let bounds = world
+        .bounds
+        .map(|a| (a.min, a.max))
+        .ok_or("the shape has no triangles")?;
+    let mut base = HashMap::new();
+    if let Some(image) =
+        load::base_map(map, shader).and_then(|bitmap| load::decode_first(map, files, bitmap))
+    {
+        base.insert(0u16, image);
+    }
+    let pages = HashMap::new();
+    let layers = NativeLayers::read_at(map, files, &[shader], &world, &pages, true, time);
+    let mut load = NativeLoad::new(shader, world, base, pages);
+    load.layers = Some(Arc::new(layers));
+    let (yaw, pitch) = shape.view();
+    Ok(MaterialPreview {
+        shader,
+        shape,
+        load,
+        camera: framing(bounds, yaw, pitch),
+    })
+}
+
+/// What of one material a preview draws (read after a draw, which
+/// learns whether the GPU bound the base look).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MaterialDraws {
+    /// Why the base look does not draw, when it does not.
+    pub base: Option<String>,
+    /// The world layers the material has passes in that draw, in the
+    /// game's layer order.
+    pub drawn: Vec<u8>,
+    /// The layers it has passes in that do not draw, each with why
+    /// (the plan's causes, joined). Layer 3 refused draws the base look
+    /// in its place.
+    pub refused: Vec<(u8, String)>,
+    /// Why the material did not resolve, when it did not (then it has
+    /// no layer passes at all).
+    pub unresolved: Vec<String>,
+}
+
+/// [`MaterialDraws`] of `preview`.
+pub fn material_draws(preview: &MaterialPreview) -> MaterialDraws {
+    let load = &preview.load;
+    let mut out = MaterialDraws::default();
+    let Some(l) = load.layers() else {
+        return out;
+    };
+    out.unresolved = l.unresolved().keys().cloned().collect();
+    for (&layer, plan) in l.plans() {
+        if plan.drawn.contains(&0) {
+            out.drawn.push(layer);
+        } else if !plan.refused.is_empty() {
+            let why: Vec<&str> = plan.refused.keys().map(String::as_str).collect();
+            out.refused.push((layer, why.join("; ")));
+        }
+    }
+    let layer3 = out.drawn.contains(&layers_load::LAYER_3);
+    out.base = if load.world().draws.is_empty() && !layer3 {
+        Some(NO_BASE_LOOK.to_owned())
+    } else {
+        load.base_fallback().map(str::to_owned)
+    };
+    if out.base.is_some() {
+        for layer in std::mem::take(&mut out.drawn) {
+            out.refused.push((layer, NO_LAYERS_WITHOUT_BASE.to_owned()));
+        }
+        out.refused.sort_by_key(|(layer, _)| *layer);
+    }
+    out
+}
+
+/// Draws `preview` in the Game mode over `background` (sRGB-encoded)
+/// into a new `size` texture in the viewport's native format
+/// (`render::UI_FORMAT`, RGBA8), readable by a copy.
+pub fn render_material(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    preview: &MaterialPreview,
+    size: [u32; 2],
+    background: [f64; 3],
+) -> wgpu::Texture {
+    let mut surface = MaterialSurface::new(device, queue, preview, size);
+    surface.draw(device, queue, preview, background);
+    surface.color
+}
+
+/// A preview's uploaded geometry, programs, stage images and render
+/// targets. The Shader tab keeps them while the clock runs.
+pub struct MaterialSurface {
+    world: NativeWorld,
+    color: wgpu::Texture,
+    depth: wgpu::Texture,
+}
+
+impl MaterialSurface {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        preview: &MaterialPreview,
+        size: [u32; 2],
+    ) -> Self {
+        let extent = wgpu::Extent3d {
+            width: size[0].max(1),
+            height: size[1].max(1),
+            depth_or_array_layers: 1,
+        };
+        let color_format = crate::render::UI_FORMAT;
+        let depth_format = crate::render::DEPTH_FORMAT;
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("material preview colour"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("material preview depth"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: depth_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        Self {
+            world: NativeWorld::new(device, queue, &preview.load, Lighting::Game),
+            color,
+            depth,
+        }
+    }
+
+    pub fn color(&self) -> &wgpu::Texture {
+        &self.color
+    }
+
+    pub fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        preview: &MaterialPreview,
+        background: [f64; 3],
+    ) {
+        self.world.render(
+            device,
+            queue,
+            &self.color.create_view(&Default::default()),
+            self.color.format(),
+            &self.depth.create_view(&Default::default()),
+            self.depth.format(),
+            [self.color.width(), self.color.height()],
+            &preview.camera,
+            Clear::all(background),
+        );
+    }
+
+    /// Redraws on the same targets when a clock sample changes a drawn
+    /// layer's constants. A material preview contains only material 0.
+    pub fn draw_at(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        preview: &MaterialPreview,
+        background: [f64; 3],
+        time: f64,
+    ) {
+        if !time.is_finite() {
+            return;
+        }
+        let Some(layers) = preview.load.layers() else {
+            return;
+        };
+        let mut changed = false;
+        for layer in &mut self.world.layers {
+            if layer.constants.is_empty() {
+                continue;
+            }
+            let sampled = if layer.layer == layers_load::LAYER_3 {
+                layers_load::plan_layer3(&layers.layer3, time)
+            } else {
+                layers_load::plan_without_game(&layers.view, &[preview.shader], layer.layer, time)
+            };
+            if layer.constants != sampled.constants {
+                layer.constants = sampled.constants;
+                changed = true;
+            }
+        }
+        if changed {
+            self.draw(device, queue, preview, background);
+        }
+    }
 }
 
 #[cfg(test)]

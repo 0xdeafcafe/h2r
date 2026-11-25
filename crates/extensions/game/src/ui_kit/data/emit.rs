@@ -1,5 +1,5 @@
 //! A screen doc written back as its file: the canonical form the files in
-//! `assets/ui/screens/` are in, so a load and a save with no edit gives the
+//! `content/ui/screens/` are in, so a load and a save with no edit gives the
 //! same bytes (docs/game/ui-builder.md "Screens in YAML").
 //!
 //! The form: keys in [`super::ScreenDoc`]'s order, two-space indents, a
@@ -14,7 +14,7 @@
 
 use std::fmt::Write;
 
-use super::{Glyphs, RowDoc, ScreenDoc, SettingsDoc, WidgetDoc};
+use super::{Glyphs, PropDoc, RowDoc, ScreenDoc, SettingsDoc, WidgetDoc};
 
 /// `s` double-quoted, YAML-escaped.
 pub(super) fn quoted(s: &str) -> String {
@@ -124,6 +124,24 @@ fn row(out: &mut String, id: &str, r: &RowDoc) {
     }
 }
 
+fn prop_row(out: &mut String, id: &str, p: &PropDoc) {
+    let _ = writeln!(out, "  {}:", key(id));
+    let _ = writeln!(out, "    text: {}", quoted(&p.text));
+    if let Some(h) = &p.help {
+        let _ = writeln!(out, "    help: {}", quoted(h));
+    }
+    if !p.on.is_empty() {
+        let on: Vec<String> = p.on.iter().map(|k| key(k)).collect();
+        let _ = writeln!(out, "    on: [{}]", on.join(", "));
+    }
+    let _ = writeln!(out, "    prop: {}", key(&p.prop));
+    let _ = writeln!(out, "    open: {}", key(&p.open));
+    if let Some(vs) = &p.values {
+        let items: Vec<String> = vs.iter().map(|v| quoted(v)).collect();
+        let _ = writeln!(out, "    values: [{}]", items.join(", "));
+    }
+}
+
 fn settings(out: &mut String, st: &SettingsDoc) {
     out.push_str("settings:\n");
     let _ = writeln!(out, "  host: {}", key(&st.host));
@@ -195,6 +213,12 @@ pub fn to_yaml(doc: &ScreenDoc) -> String {
         out.push_str("rows:\n");
         for (id, r) in &doc.rows {
             row(&mut out, id, r);
+        }
+    }
+    if !doc.props.is_empty() {
+        out.push_str("props:\n");
+        for (id, p) in &doc.props {
+            prop_row(&mut out, id, p);
         }
     }
     out

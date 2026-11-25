@@ -41,6 +41,7 @@ fn every_point_has_its_shape_in_the_image() {
     // leaf adapters' addresses (opaque, so a function start each).
     let mut all: Vec<&Point> = points::ALL.to_vec();
     all.extend(DECLARED.iter().map(|(p, _)| *p));
+    all.extend(engine::sim_anim::manager::bodies().map(|b| points::by_base(b.entry).unwrap_or(&b.point)));
     let leaves: Vec<Point> = engine::abi::OVERRIDES
         .iter()
         .map(|o| Point::new(o.name, o.addr, Sig::Opaque, "docs/engine/README.md"))

@@ -8,6 +8,7 @@ mod media;
 pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
 pub use media::Media;
 mod compatibility;
+pub mod forge_film;
 #[cfg(feature = "gpu")]
 mod host_view;
 #[cfg(feature = "gpu")]
@@ -29,6 +30,10 @@ pub use startup::Startup;
 pub use startup::configure_replay_child;
 mod replay;
 mod sidecar;
+pub mod start_point;
+pub mod start_play;
+pub mod start_point_agent;
+pub mod start_point_state;
 pub use sidecar::{ReplayCache, RetrySeek};
 mod replay_cursor;
 pub(crate) mod ring;
@@ -46,7 +51,7 @@ pub use verify::VerificationMode;
 use anyhow::{Context, Result, bail, ensure};
 use rig::ReplayCamera;
 pub use agent_proto::theater::CompatibilityState;
-pub use compatibility::{Installation, image_match};
+pub use compatibility::{Installation, hook_digest, image_match};
 pub use controls::{library_methods, playback_images};
 use film::{
     FilmMeta, Header, Reader, Source, Writer,
@@ -138,6 +143,10 @@ struct Recording {
     file: PathBuf,
     match_over: bool,
     track: film::blam::TrackWriter,
+    /// A default recording's film file: its actions, digests and machine
+    /// part, written as the game is played (docs/game/input-film.md). The
+    /// container's writer mirrors its machine chunks into it.
+    film: Option<Arc<Mutex<film::file::FilmWriter<File>>>>,
     meta: metadata::Capture,
     frame: record::Capture,
     unified: unified::Capture,
@@ -145,6 +154,9 @@ struct Recording {
     upload: Option<UploadTarget>,
     /// Wall time of the current game's first tick: a cut film's start.
     game_started_ms: Option<u64>,
+    /// What the last header appended to the tape said of the game, so a
+    /// new game, a join or a leave appends another.
+    described: Option<metadata::Described>,
 }
 
 struct UploadTarget {
@@ -265,8 +277,6 @@ pub struct Session {
     bots: Mutex<bot_tape::BotTape>,
     upload: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
     require_upload: bool,
-    recording_account: std::sync::OnceLock<Option<live_hle::films::sync::Sync>>,
-    film_sync: std::sync::OnceLock<Box<dyn Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync>>,
 }
 
 /// Cuts the game in play and discards the tape when it drops
@@ -293,9 +303,6 @@ impl Drop for Seal {
     }
 }
 impl Session {
-    pub fn sync_library(&self, sync: impl Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync + 'static) {
-        let _ = self.film_sync.set(Box::new(sync));
-    }
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -375,6 +382,10 @@ impl Session {
             let guest_image = film::image::GuestImage::capture(
                 &stamp, recomp::host_triple(), &xbe_sha256,
             );
+            // A default recording and a host's keep their actions in a film
+            // file, which a host sends to Live beside its stats stream; an
+            // explicit recording is one container.
+            let split = player_features || host_recording;
             let header = Header {
                 version: 3,
                 title_id,
@@ -396,6 +407,7 @@ impl Session {
                 live_service,
                 features: switches.with(admission, true).spec(),
                 player_features: player_features && !host_recording,
+                inputs_in_film: split,
                 tape_id: None,
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
@@ -431,6 +443,27 @@ impl Session {
                     .with_context(|| path.display().to_string())?,
                 &header,
             )?;
+            let film = if split {
+                let mut file = File::options();
+                file.read(true).write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    file.mode(0o600);
+                }
+                let film_path = film::file::beside(&path);
+                let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
+                let writer = film::file::FilmWriter::new(
+                    file.open(&film_path).with_context(|| film_path.display().to_string())?,
+                    &seed,
+                    30,
+                )?;
+                let writer = Arc::new(Mutex::new(writer));
+                out.set_mirror(Some(film::file::machine_mirror(Arc::clone(&writer))));
+                Some(writer)
+            } else {
+                None
+            };
             out.chunk(film::DATA, &manifest)?;
             (
                 Mode::Record(Recording {
@@ -439,13 +472,19 @@ impl Session {
                     sidecar: None,
                     file: path,
                     match_over: false,
-                    track: Default::default(),
+                    track: if split {
+                        film::blam::TrackWriter::default().without_inputs()
+                    } else {
+                        Default::default()
+                    },
+                    film,
                     meta: metadata::Capture::new(&header),
                     frame: Default::default(),
                     unified: Default::default(),
                     disk: Arc::new(Mutex::new(disk)),
                     upload,
                     game_started_ms: None,
+                    described: None,
                 }),
                 header,
                 1.,
@@ -490,8 +529,6 @@ impl Session {
         Ok(Some(Arc::new(Self {
             warm: Mutex::new(warm),
             version: header.version,
-            film_sync: Default::default(),
-            recording_account: Default::default(),
             video_menu: Default::default(),
             capture: Default::default(),
             media: Default::default(),
@@ -661,10 +698,12 @@ impl Session {
                 }
                 if rec.meta.descriptor().match_start_tick == Some(tick) {
                     rec.game_started_ms = Some(autorecord::now_ms());
-                    let _ = self.recording_account.set(self.film_sync.get().and_then(|account| account()));
                 }
             } else {
                 Session::check_replay_tick(&mut s, guest, hash);
+            }
+            if s.failure.is_none() {
+                Session::describe_tape(&mut s);
             }
             if s.failure.is_none() {
                 s.measure_match_start(tick);
@@ -684,6 +723,34 @@ impl Session {
         }
         s.finish_warm_tick(tick);
         s.completed_transport_tick(reached_target);
+    }
+
+    /// Append a header naming the game on the tape (its map, variant and
+    /// players) when that changes, and an empty one when the game is gone, so
+    /// a tape a hard kill leaves is recovered as the game it held
+    /// (`film::recover_tape`). A session in menus appends none.
+    fn describe_tape(s: &mut State) {
+        if s.header.version < 3 {
+            return;
+        }
+        let Mode::Record(rec) = &mut s.mode else { return };
+        let now = rec.meta.description();
+        if now == rec.described || (now.is_none() && rec.described.is_none()) {
+            return;
+        }
+        rec.described = now.clone();
+        let mut header = s.header.clone();
+        if let Some(game) = now {
+            header.meta.map = game.map;
+            header.meta.variant = game.variant;
+            header.meta.players = game.players;
+        }
+        if let Mode::Record(rec) = &mut s.mode
+            && let Some(out) = rec.out.as_mut()
+            && let Err(e) = out.chunk(film::HEAD, &header)
+        {
+            s.fail(format!("writing the tape's game header: {e:#}"));
+        }
     }
 
     /// The guest-arena hash and HLE call cursor share the 30-tick checkpoint.
@@ -895,13 +962,6 @@ impl Session {
             return Ok(());
         }
         let matched = rec.match_over;
-        // Default recordings stay in the local library; only films the
-        // player asked for go to the account's archive.
-        let account_upload = !s.header.player_features
-            && !rec.meta.archived_on_live
-            && !rec.unified.live_session
-            && rec.meta.descriptor().mode != film::blam::Mode::Matchmaking
-            && s.header.game_id.is_none();
         let mut summary = rec.meta.summary(s.tick);
         rec.unified.summary_medals(&mut summary.players);
         if !summary.level.is_empty() {
@@ -937,6 +997,16 @@ impl Session {
                 },
             )?;
             out.finish()?.sync_all()?;
+            // A host's film file, sealed beside its stats stream once the
+            // container's mirror into it has closed.
+            if let Some(film) = rec.film.take() {
+                Arc::try_unwrap(film)
+                    .map_err(|_| anyhow::anyhow!("the film file is still shared"))?
+                    .into_inner()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .finish()?
+                    .sync_all()?;
+            }
             Ok(())
         })();
         if let Err(e) = done {
@@ -952,13 +1022,6 @@ impl Session {
         rec.frame = Default::default();
         s.complete = true;
         drop(s);
-        if matched
-            && account_upload
-            && let Some(sync) = self.recording_account.get().and_then(Option::as_ref)
-            && let Err(error) = sync.enqueue(&header.meta.id, &path)
-        {
-            eprintln!("film library: {error}");
-        }
         if matched && let Some(target) = upload {
             // Create before spawning so a stopped uploader leaves its sealed
             // output recoverable when the supervisor cleans the lease.
@@ -1024,6 +1087,7 @@ impl State {
             return;
         }
         drop(rec.out.take());
+        drop(rec.film.take());
         drop(rec.sidecar.take());
         rec.frame = Default::default();
         let dir = rec.file.parent().unwrap_or(std::path::Path::new(".")).to_owned();
@@ -1173,7 +1237,7 @@ impl Tap for Session {
             }
         }
     }
-    fn record(&self, tag: film::Tag, mut c: Call) {
+    fn record(&self, mut c: Call) {
         let mut s = self.lock();
         if s.complete || s.failure.is_some() {
             return;
@@ -1183,7 +1247,7 @@ impl Tap for Session {
             return;
         };
         if let Some(out) = &mut rec.out {
-            match rec.batch.append(out, tag, c) {
+            match rec.batch.append(out, c) {
                 Ok(()) => s.calls += 1,
                 Err(e) => s.fail(e.to_string()),
             }

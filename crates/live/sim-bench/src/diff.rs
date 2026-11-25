@@ -378,6 +378,50 @@ pub fn diff(a: &Report, b: &Report) -> Verdict {
     aggregate(a, b)
 }
 
+/// Sound parity needs evidence for every counted tick, including quiet ticks.
+/// A partial component series or aggregate-only report cannot establish it.
+pub fn sound_diff(a: &Report, b: &Report) -> Result<Verdict, String> {
+    for (label, report) in [("first", a), ("second", b)] {
+        let error = |msg: &str| format!("{label} report: {msg}");
+        let series = report.state_components_v1.as_ref()
+            .ok_or_else(|| error("missing state_components_v1"))?;
+        if series.truncated_after.is_some() {
+            return Err(error("truncated state_components_v1"));
+        }
+        if series.ticks.is_empty() || series.ticks.len() as u64 != report.ticks {
+            return Err(error("component rows do not cover the counted ticks"));
+        }
+        if !series.ticks.iter().map(|r| r.tick).eq(report.state_hashes_v1.iter().map(|r| r.tick)) {
+            return Err(error("component and digest ticks differ"));
+        }
+        if let Some(row) = report.state_hashes_v1.iter().find(|r| r.arena.is_none()) {
+            return Err(error(&format!("missing arena digest at tick {}", row.tick)));
+        }
+        let mut previous: Option<u32> = None;
+        let mut voices = None;
+        for row in &series.ticks {
+            if previous.is_some_and(|last| last.checked_add(1) != Some(row.tick)) {
+                return Err(error(&format!("nonconsecutive voice samples at tick {}", row.tick)));
+            }
+            previous = Some(row.tick);
+            if let Some(events) = row.changed.get("sound.voices") {
+                voices = Some(events.as_str());
+            }
+            let Some(events) = voices.filter(|v| *v != ABSENT) else {
+                return Err(error(&format!("missing sound.voices at tick {}", row.tick)));
+            };
+            if events.lines().any(|line| line.split_whitespace().nth(1) == Some("unreadable")) {
+                return Err(error(&format!("unreadable guest voice at tick {}", row.tick)));
+            }
+        }
+    }
+    let verdict = diff(a, b);
+    if matches!(verdict, Verdict::Identical { .. }) && a.state_hashes_v1 != b.state_hashes_v1 {
+        return Ok(aggregate(a, b));
+    }
+    Ok(verdict)
+}
+
 /// A comparison with a training report in it: its digests are sparse, so
 /// only the ticks both reports recorded are compared, then the rolling
 /// digests when both have one and cover the same ticks.
@@ -740,6 +784,56 @@ mod tests {
         let text = Verdict::Components(d).render();
         assert!(text.contains("first differing tick: 6 (2 components)"));
         assert!(text.contains("arena.03 [block 3, 0x10030000..0x10040000]  a=7  b=8"));
+    }
+
+    #[test]
+    fn voice_order_and_grid_differ_even_when_gameplay_components_agree() {
+        let reference = "32 callback 1 2 3 0\n32 callback 1 2 4 0\n";
+        let recorded = |events| report(Some(series(&[
+            (10, &[("sound.voices", ""), ("rng.seed", "aa")]),
+            (11, &[("sound.voices", events)]),
+        ])));
+        assert_eq!(diff(&recorded(reference), &recorded(reference)), Verdict::Identical { ticks: 2 });
+        for other in [
+            "32 callback 1 2 4 0\n32 callback 1 2 3 0\n",
+            "32 callback 1 2 3 0\n64 callback 1 2 4 0\n",
+        ] {
+            let Verdict::Components(d) = diff(&recorded(reference), &recorded(other)) else {
+                panic!("expected a voice divergence");
+            };
+            assert_eq!(d.tick, 11);
+            assert_eq!(d.differences[0].component, "sound.voices");
+        }
+    }
+
+    #[test]
+    fn strict_sound_diff_requires_every_tick_and_both_observers() {
+        let mut a = report(Some(series(&[(4, &[("sound.voices", "")]), (5, &[])])));
+        a.ticks = 2;
+        a.state_hashes_v1 = [4, 5].map(|tick| TickHash {
+            tick, gameplay: "a".into(), arena: Some("b".into()),
+        }).to_vec();
+        assert_eq!(sound_diff(&a, &a), Ok(Verdict::Identical { ticks: 2 }));
+        let mut other = a.clone();
+        other.state_components_v1 = None;
+        assert!(sound_diff(&a, &other).unwrap_err().contains("missing state_components"));
+        let mut other = a.clone();
+        other.state_components_v1.as_mut().unwrap().ticks[0].changed.clear();
+        assert!(sound_diff(&other, &other).unwrap_err().contains("missing sound.voices at tick 4"));
+        let mut other = a.clone();
+        other.state_components_v1.as_mut().unwrap().ticks[1].tick = 6;
+        other.state_hashes_v1[1].tick = 6;
+        assert!(sound_diff(&other, &other).unwrap_err().contains("nonconsecutive"));
+        let mut other = a.clone();
+        other.state_components_v1.as_mut().unwrap().truncated_after = Some(5);
+        assert!(sound_diff(&other, &other).unwrap_err().contains("truncated"));
+        let mut other = a.clone();
+        other.state_components_v1.as_mut().unwrap().ticks[1].changed
+            .insert("sound.voices".into(), "0 unreadable finish".into());
+        assert!(sound_diff(&other, &other).unwrap_err().contains("unreadable guest voice"));
+        let mut other = a.clone();
+        other.state_hashes_v1[0].arena = Some("c".into());
+        assert!(sound_diff(&a, &other).unwrap().differs());
     }
 
     #[test]

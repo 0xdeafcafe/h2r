@@ -3,9 +3,13 @@
 //! Its screens are the game's (`crate::forge_screens`): it builds their
 //! sheets and acts on their choices.
 use super::{GENERATION, admitted, controls};
+use agent::forge::ground as ground_api;
+use agent::forge::nav as nav_api;
 use agent::forge::local::{self as local_api, ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
-use forge::tool::{Axes, Command, Extent, Tool};
+use forge::camera::Camera;
+use forge::tool::{Action, Axes, Command, Extent, Input, Overlay, Show, Tool};
+use forge::files::variants::{self, Listed};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session, Thing, ThingKind};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
@@ -17,23 +21,24 @@ use std::{
 use crate::forge_map::Opened;
 use crate::forge_screens::{
     self as screens, Facts,
-    sheet::{self, Ask, Choice, Group, Kind, Prop, Sheet, Tool as ToolKind},
-};
-use crate::ui_kit::{
-    forge::{ANGLE_STEPS, HEADINGS, Hud, Mode},
-    spec::ScreenSpec,
+    sheet::{self, ANGLE_STEPS, Ask, Choice, Group, HEADINGS, Kind, Prop, Sheet, Tool as ToolKind},
+    variants as flows,
 };
 
+mod area;
 mod net;
 
 pub(crate) use net::MonitorStart;
 
 enum After {
     Tool(Command),
+    Area,
     /// Items of a shared session's stream.
     Shared(Vec<forge::net::Stamped>),
     Load(String),
     Proposal(mpsc::Sender<Result<Entry, String>>),
+    /// An edit that leaves the tool's state as it is.
+    Edited,
 }
 
 struct Pending {
@@ -42,12 +47,31 @@ struct Pending {
 }
 
 enum FileResult {
-    /// The saved maps, for Load.
-    Names(Vec<String>),
-    /// Saved as this name; the saved maps after.
-    Saved(String, Vec<String>),
+    /// The map's variants, for Load, the saved prefabs, and a line for each
+    /// prefab file that did not read.
+    Listed(Vec<Listed>, Vec<forge::Prefab>, Vec<String>),
+    /// A prefab was saved as this name; the prefabs after, and the files
+    /// that did not read.
+    Prefab(String, Vec<forge::Prefab>, Vec<String>),
+    /// Saved as this variant name; the map's variants after.
+    Saved(String, Vec<Listed>),
+    /// The store has a variant of this name: Replace asks.
+    Taken(String),
+    /// A map variant was renamed, copied or deleted: the notice, the map's
+    /// variants after, and a rename's old and new names.
+    Variants(String, Vec<Listed>, Option<(String, String)>),
     Loaded(Pending),
+    /// The ground build's copy of the session, and whether it built.
+    Ground(Box<(Session, bool)>),
+    /// The nav generation's copy of the session.
+    Nav(Box<Session>),
 }
+
+/// Where a ground build's answer goes when an agent asked for it.
+type GroundAnswer = mpsc::Sender<Result<Value, String>>;
+
+/// Where a nav generation's answer goes when an agent asked for it.
+type NavAnswer = mpsc::Sender<Result<Value, String>>;
 
 #[derive(Clone, Copy)]
 enum CoordinateTarget {
@@ -55,34 +79,65 @@ enum CoordinateTarget {
     Existing(Endpoint),
 }
 
+/// How far under a carried thing the readout looks for the structure.
+const GROUND_REACH: f32 = 100.;
+/// How far in front of the monitor a ground marker is placed, in world
+/// units.
+const MARKER_REACH: f32 = 3.;
+/// How far from an object the placed objects browser's fly-to stands, in
+/// world units.
+const FLY_DISTANCE: f32 = 5.;
+
 pub(super) struct Editor {
     pub session: Arc<Session>,
     tags: Arc<[u32]>,
     walls: Vec<bots::los::Walls>,
+    bsp: Option<usize>,
     guard: Guard,
     calls: calls::Shared,
     tool: Tool,
     pending: Option<Pending>,
     file_job: Option<mpsc::Receiver<Result<FileResult, String>>>,
     data: PathBuf,
+    /// The name of the map variant the session was last saved or loaded
+    /// as; none for a session opened from Original.
     filename: Option<String>,
     selected: usize,
     rotation_step: usize,
     movement_step: usize,
+    /// The height of the carried thing above the structure under it, from
+    /// the last tick's downward ray: the readout's hold line.
+    hold_height: Option<f32>,
     local_axes: bool,
     /// The Coordinates target and its current frame, while its screen is up.
     coordinates: Option<(CoordinateTarget, forge::Frame)>,
+    area: Option<area::Draft>,
     notice: Option<(String, u32)>,
+    /// The right trigger is held: a held thing is being turned.
+    rotating: bool,
+    /// The sentence of the last refused edit and its tick: the readout's
+    /// guide row says it for [`crate::forge_readout::REFUSAL_TICKS`].
+    refusal: Option<(String, u32)>,
     /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
     /// The delete or removal the question is about.
     delete_asked: Option<Command>,
     /// The name the overwrite question is about.
     overwrite_asked: Option<String>,
+    /// The variant file the load question is about.
+    load_asked: Option<String>,
+    /// The variant file the delete question is about.
+    variant_asked: Option<String>,
+    /// A question that could not open because a Forge screen was still
+    /// closing: tried again each tick.
+    ask_wait: Option<(Ask, String)>,
     /// The log head as last saved or loaded: edits since are not saved.
     saved_head: LogHead,
-    /// The saved maps, for Load.
-    saved: Vec<String>,
+    /// The map's variants, for Load.
+    variants: Vec<Listed>,
+    /// The saved prefabs, which the object menu lists when the map holds
+    /// their tags.
+    prefabs: Vec<forge::Prefab>,
     /// They were asked for, at the first tick.
     listed: bool,
     /// A screen is up, ours or the game's.
@@ -91,22 +146,36 @@ pub(super) struct Editor {
     refused: Vec<String>,
     /// Set in a shared session (docs/game/forge-design.md, F5).
     net: Option<net::Net>,
+    /// The tick the last [`Editor::tick`] ran at, for a notice asked for
+    /// between ticks.
+    now: u32,
+    /// The file job is a ground build (`forge_glue::ground`).
+    ground_building: bool,
+    /// The agent that asked for the running build, to answer when it ends.
+    ground_answer: Option<GroundAnswer>,
+    /// The file job is a nav generation (`forge_glue::nav`).
+    nav_generating: bool,
+    /// The agent that asked for the running generation.
+    nav_answer: Option<NavAnswer>,
 }
 
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
         let saved_head = opened.session.head();
+        let mut tool = Tool::with_extents(opened.extents.into());
+        tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
             session: Arc::new(opened.session),
             tags: opened.tags.into(),
             walls: opened.walls,
+            bsp: None,
             guard: Guard {
                 scenario,
                 generation: GENERATION.load(Ordering::Acquire),
                 admitted,
             },
             calls,
-            tool: Tool::with_extents(opened.extents.into()),
+            tool,
             pending: None,
             file_job: None,
             data: data.into(),
@@ -114,18 +183,31 @@ impl Editor {
             selected: 0,
             rotation_step: 2,
             movement_step: 0,
+            hold_height: None,
             local_axes: false,
             coordinates: None,
+            area: None,
             notice: None,
+            rotating: false,
+            refusal: None,
             link_dialog: None,
             delete_asked: None,
             overwrite_asked: None,
+            load_asked: None,
+            variant_asked: None,
+            ask_wait: None,
             saved_head,
-            saved: Vec::new(),
+            variants: Vec::new(),
+            prefabs: Vec::new(),
             listed: false,
             ui_up: false,
             refused: opened.refused,
             net: None,
+            now: 0,
+            ground_building: false,
+            ground_answer: None,
+            nav_generating: false,
+            nav_answer: None,
         }
     }
 
@@ -137,6 +219,11 @@ impl Editor {
         }
     }
 
+    /// Whether an overlay is on.
+    pub fn overlay(&self, overlay: Overlay) -> bool {
+        self.tool.overlays.on(overlay)
+    }
+
     pub fn monitor(&self) -> bool {
         self.tool.monitor
     }
@@ -145,6 +232,13 @@ impl Editor {
     /// `forge.status.monitors`.
     pub fn pose(&self) -> Option<([f32; 3], f32, f32)> {
         self.tool.camera.map(|c| (c.position, c.yaw, c.pitch))
+    }
+
+    /// An edit was refused: the sentence is the notice and the readout's
+    /// guide row.
+    fn refuse(&mut self, reason: String, tick: u32) {
+        self.refusal = Some((reason.clone(), tick));
+        self.notice = Some((reason, tick));
     }
 
     /// Says `text` in the HUD strip for a while, as a file notice is.
@@ -167,6 +261,82 @@ impl Editor {
         }
     }
 
+    /// What the Forge readout shows this tick (docs/game/
+    /// forge-map-variants-ui.md, "The readout"): the thing aimed at or held,
+    /// and the things with no body for the near marks. Nothing with the
+    /// monitor off.
+    pub fn readout_scene(&self, game: Option<i32>) -> crate::forge_readout::Scene {
+        use crate::forge_readout as readout;
+        let Some(camera) = self.tool.camera.as_ref().filter(|_| self.tool.monitor) else {
+            return readout::Scene::default();
+        };
+        let things = self.session.things();
+        let target = self
+            .tool
+            .held_thing
+            .or(self.tool.aimed_thing)
+            .and_then(|id| self.session.thing(id))
+            .map(|thing| {
+                let held = self.tool.held_thing.is_some();
+                let frame = self.tool.ghost.filter(|_| held).unwrap_or(thing.frame);
+                readout::aimed(
+                    &thing,
+                    thing_name(&thing),
+                    frame.position,
+                    frame.rotation[0].to_degrees(),
+                    self.tool.thing_extent(&self.session, &thing).radius,
+                    game,
+                )
+            });
+        // An added thing is what a hold spends the budget on; moving an own
+        // entry costs nothing.
+        let budget = self
+            .tool
+            .held_thing
+            .and_then(|id| self.session.thing(id))
+            .filter(|thing| !thing.own)
+            .and_then(|thing| self.session.budget_for(thing.block))
+            .and_then(|b| crate::forge_readout::budget_of(&b));
+        let zone = self
+            .tool
+            .held_thing
+            .or(self.tool.aimed_thing)
+            .and_then(|id| self.session.thing(id))
+            .map(|goal| readout::zone_of(&goal, &things))
+            .unwrap_or_default();
+        // The hold line needs the ground under the thing: with no structure
+        // within reach it is absent.
+        let hold = self
+            .tool
+            .held_thing
+            .zip(self.hold_height)
+            .zip(target.as_ref())
+            .map(|((_, height), aimed)| {
+                let snap = sheet::MOVE_STEPS[self.movement_step];
+                forge_readout_hold(
+                    aimed.at,
+                    height,
+                    (snap > 0.).then_some(snap),
+                    self.local_axes(),
+                    self.tool.picked_up_at(),
+                )
+            });
+        readout::Scene {
+            monitor: true,
+            eye: camera.position,
+            hold,
+            zone,
+            target,
+            refusal: self.refusal.as_ref().map(|(text, _)| text.clone()),
+            budget,
+            things: things
+                .iter()
+                .filter_map(|t| readout::placed(t, game))
+                .collect(),
+            ..readout::Scene::default()
+        }
+    }
+
     pub fn status(&self) -> Value {
         self.shared_status(self.local_status())
     }
@@ -184,23 +354,200 @@ impl Editor {
             "aimed":self.tool.aimed, "held":self.tool.held, "placing":self.tool.placing,
             "aimed_thing":self.tool.aimed_thing, "held_thing":self.tool.held_thing,
             "show":self.tool.show.name(), "game":self.tool.game,
+            "area_edit":self.area.as_ref().map(area::Draft::status),
             "variant":local_api::variant_status(self.session.document(), self.filename.as_deref(), self.dirty()),
             "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
             "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
             "rotation_snap":ANGLE_STEPS[self.rotation_step], "movement_snap":sheet::MOVE_STEPS[self.movement_step],
             "axes":self.tool.axes.name(),
+            "overlays":Value::Object(Overlay::ALL.iter()
+                .map(|o| (o.name().to_string(), Value::Bool(self.tool.overlays.on(*o)))).collect()),
             "ui_up":self.ui_up, "dirty":self.dirty(),
             "aimed_link":self.tool.aimed_link.map(linkable_json), "link_from":self.tool.link_from.map(linkable_json),
             "teleporters":self.session.teleporters().iter().map(|t| json!({
                 "flag":t.index, "sender":t.sender, "channel":t.channel, "position":t.position,
             })).collect::<Vec<_>>(),
-            "links":self.links_json(),
+            "links":self.links_json(), "groups":self.groups_json(), "selection":self.tool.selection(),
+            "labels":self.labels_json(), "prefabs":self.prefabs_json(),
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
             "palette":self.session.palette().len(), "palette_refused":self.refused,
+            "ground":ground_api::status(&self.session, self.ground_facts()),
+            "nav":nav_api::status(&self.session, self.nav_facts()),
             "parked":controls::parked().map(|unit| format!("{unit:#010x}")),
             "pending_call":self.pending.is_some(), "pending_file":self.file_job.is_some(), "file":self.filename,
             "notice":self.notice.as_ref().map(|(text,_)|text)
         })
+    }
+
+    /// What the game knows of the ground besides the session
+    /// (`forge.ground`).
+    fn ground_facts(&self) -> ground_api::Facts {
+        ground_api::Facts {
+            available: super::ground::available(),
+            building: self.ground_building,
+            loaded: super::ground::loads()
+                && self.session.ground_state() == forge::GroundState::Current,
+        }
+    }
+
+    /// `forge.ground`'s reply.
+    pub fn ground_json(&self) -> Value {
+        ground_api::reply(&self.session, self.ground_facts())
+    }
+
+    /// **Build AI ground** (`if_stale` false) or **Test waves**: build the
+    /// ground on a worker over a copy of the session, which the editor takes
+    /// back when the worker is done. Edits wait meanwhile. `answer` is told
+    /// how it ended.
+    fn start_ground(
+        &mut self,
+        tick: u32,
+        if_stale: bool,
+        answer: Option<GroundAnswer>,
+    ) -> Result<(), String> {
+        if self.is_shared() {
+            return Err("AI ground is built in a local session.".into());
+        }
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        if !super::ground::available() {
+            return Err(super::ground::NO_BUILDER.into());
+        }
+        let session = self.session.clone();
+        self.file(move || {
+            let mut copy = Session::clone(&session);
+            let built = super::ground::run(&mut copy, if_stale)?;
+            Ok(FileResult::Ground(Box::new((copy, built))))
+        })?;
+        self.ground_building = true;
+        self.ground_answer = answer;
+        self.notice = Some(("Building AI ground...".into(), tick));
+        Ok(())
+    }
+
+    /// `forge.ground.build`: start a build and answer when it has ended.
+    pub fn ground_build(
+        &mut self,
+        if_stale: bool,
+    ) -> Result<mpsc::Receiver<Result<Value, String>>, String> {
+        let (tx, rx) = mpsc::channel();
+        self.start_ground(self.now, if_stale, Some(tx))?;
+        Ok(rx)
+    }
+
+    /// What the game knows of the nav besides the session (`forge.nav`).
+    fn nav_facts(&self) -> nav_api::Facts {
+        nav_api::Facts {
+            available: super::nav::available(),
+            generating: self.nav_generating,
+        }
+    }
+
+    /// `forge.nav`'s reply.
+    pub fn nav_json(&self) -> Value {
+        nav_api::reply(&self.session, self.nav_facts())
+    }
+
+    /// **Generate nav**: generate on a worker over a copy of the session,
+    /// which the editor takes back when the worker is done. Edits wait
+    /// meanwhile. `answer` is told how it ended.
+    fn start_nav(&mut self, tick: u32, answer: Option<NavAnswer>) -> Result<(), String> {
+        if self.is_shared() {
+            return Err("Nav is generated in a local session.".into());
+        }
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        if !super::nav::available() {
+            return Err(super::nav::NO_GENERATOR.into());
+        }
+        let session = self.session.clone();
+        self.file(move || {
+            let mut copy = Session::clone(&session);
+            super::nav::run(&mut copy)?;
+            Ok(FileResult::Nav(Box::new(copy)))
+        })?;
+        self.nav_generating = true;
+        self.nav_answer = answer;
+        self.notice = Some(("Generating nav...".into(), tick));
+        Ok(())
+    }
+
+    /// `forge.nav {generate: true}`: start a generation and answer when it
+    /// has ended.
+    pub fn nav_generate(&mut self) -> Result<mpsc::Receiver<Result<Value, String>>, String> {
+        let (tx, rx) = mpsc::channel();
+        self.start_nav(self.now, Some(tx))?;
+        Ok(rx)
+    }
+
+    /// The game type markers of the session: a marker for each spawn,
+    /// flag, hill, teleporter, item spawner and ground label, and each
+    /// problem the last ground build found
+    /// ([`super::markers_world::entries`]), then with the Nav overlay on
+    /// each problem the last **Generate nav** found
+    /// ([`super::markers_world::nav_problems`]). None with the monitor off.
+    pub fn marker_entries(&self) -> Vec<super::markers_world::Entry> {
+        use super::markers_world::{Facts, entries, nav_problems, with_area};
+        let nav = match self.session.nav_report() {
+            Some(report) if self.tool.monitor && self.overlay(Overlay::Nav) => {
+                nav_problems(&report.problems)
+            }
+            _ => Vec::new(),
+        };
+        if !self.tool.monitor || !self.overlay(Overlay::Markers) {
+            return nav;
+        }
+        let placed = self.session.ground_counts().iter().sum::<usize>() > 0;
+        let mut ground = placed
+            .then(|| self.session.markers().unwrap_or_default())
+            .unwrap_or_default();
+        let mut things = self.session.things();
+        if let Some((id, frame)) = self.tool.held_thing.zip(self.tool.ghost) {
+            if let Some(t) = things.iter_mut().find(|t| t.id.identity() == id.identity()) {
+                t.frame = frame;
+            }
+            if let Endpoint::Added(id) = id
+                && let Some(m) = ground.iter_mut().find(|m| m.id == id)
+            {
+                m.frame = frame;
+            }
+        }
+        let problems = self
+            .session
+            .ground_report()
+            .map_or(&[][..], |r| r.problems.as_slice());
+        let mut entries = entries(&Facts {
+            monitor: true,
+            things: &things,
+            ground: &ground,
+            labels: &self.session.labels().unwrap_or_default(),
+            areas: &self.session.areas().unwrap_or_default(),
+            problems,
+            game: self.tool.game,
+            show: self.tool.show,
+        });
+        if let Some(draft) = &self.area
+            && let Some(entry) = entries.iter_mut().find(|e| e.id == Some(draft.id))
+        {
+            entry.marker.kind = with_area(entry.marker.kind.clone(), draft.area.clone());
+            entry.draft_path = matches!(draft.area.shape, game_markers::Shape::Path(_));
+        }
+        entries.extend(nav);
+        entries
+    }
+
+    pub fn marker_preview(&self) -> bool {
+        self.area.is_some() || self.tool.held_thing.is_some()
+    }
+
+    /// The things aimed at and held, which their markers draw selected.
+    pub fn marker_pins(&self) -> (Option<Endpoint>, Option<Endpoint>) {
+        (
+            self.tool.aimed_thing,
+            self.area.as_ref().map(|area| area.id).or(self.tool.held_thing),
+        )
     }
 
     /// What is placed, held or aimed at: its name, block and frame (the
@@ -217,6 +564,110 @@ impl Editor {
             thing.block,
             self.tool.ghost.unwrap_or(thing.frame),
         ))
+    }
+
+    /// What the Properties page says of selecting and grouping `id`.
+    fn group_facts(&self, id: Endpoint) -> sheet::GroupFacts {
+        sheet::GroupFacts {
+            thing: id.identity(),
+            selected: self.tool.is_selected(id),
+            selection: self.tool.selection().len(),
+            group: self.session.group_of(id),
+            pivot_editable: self.session.seat().is_none(),
+        }
+    }
+
+    /// What the Properties page reads of the session for `id`: its label,
+    /// and how many objects Save as prefab would take.
+    fn property_extras(&self, id: Endpoint) -> sheet::Extras {
+        sheet::Extras {
+            labellable: true,
+            label: self.session.label_of(id).map(|l| (l.text, l.number)),
+            savable: self.prefab_members(id).len(),
+        }
+    }
+
+    /// The things Save as prefab takes for `id`: its group, else the
+    /// selection when it is in it with another, else itself. Nothing when
+    /// one is not an object the session placed.
+    fn prefab_members(&self, id: Endpoint) -> Vec<Endpoint> {
+        let members: Vec<Endpoint> = match self.session.group_of(id) {
+            Some(group) => group.members,
+            None if self.tool.selection().len() >= 2 && self.tool.is_selected(id) => {
+                self.tool.selection().to_vec()
+            }
+            None => vec![id],
+        };
+        if members
+            .iter()
+            .all(|m| matches!(m.identity(), Endpoint::Added(op) if self.session.objects().iter().any(|o| o.id == op)))
+        {
+            members
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The prefabs the object menu lists: those whose every tag the map
+    /// holds ([`Session::prefab_fits`] names a tag it lacks when one is
+    /// placed).
+    fn prefab_items(&self) -> Vec<sheet::PrefabItem> {
+        self.prefabs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                p.missing(|block, tag| {
+                    self.session
+                        .palette()
+                        .iter()
+                        .any(|i| i.block == block && i.tag == *tag)
+                })
+                .is_none()
+            })
+            .map(|(index, p)| sheet::PrefabItem {
+                index,
+                name: p.name.clone(),
+                line: sheet::prefab_line(p.pieces.len(), p.grouped),
+            })
+            .collect()
+    }
+
+    /// The prefabs for `forge.status`, each with whether this map takes it
+    /// and why not.
+    fn prefabs_json(&self) -> Vec<Value> {
+        self.prefabs
+            .iter()
+            .map(|p| {
+                let fit = self.session.prefab_fits(p);
+                json!({
+                    "name":p.name, "pieces":p.pieces.len(), "grouped":p.grouped,
+                    "fits":fit.is_ok(), "reason":fit.err(),
+                })
+            })
+            .collect()
+    }
+
+    /// The active labels, for `forge.status`.
+    fn labels_json(&self) -> Vec<Value> {
+        self.session
+            .active_labels()
+            .into_iter()
+            .map(|(thing, l)| json!({"thing":thing, "text":l.text, "number":l.number}))
+            .collect()
+    }
+
+    /// The active groups with their members, for `forge.status`.
+    fn groups_json(&self) -> Vec<Value> {
+        self.session
+            .groups()
+            .iter()
+            .map(|g| {
+                json!({
+                    "id":g.id, "name":g.name, "locked":g.locked, "pivot":if g.pivot_first { "first" } else { "centre" },
+                    "members":g.members,
+                })
+            })
+            .collect()
     }
 
     /// The active links with their ends' final indices, for `forge.status`.
@@ -290,63 +741,156 @@ impl Editor {
         }
     }
 
-    /// The Links tool's target line: what is aimed at, or the link in hand.
-    fn link_target(&self) -> String {
-        let aimed = self
+    /// What the HUD kit's `forge` HUD shows this tick (docs/game/
+    /// forge-firefight-ui.md, "The monitor HUD"): the tool and what its hand
+    /// has, the budget, the rebuilds pending and the notice, and where its
+    /// navpoints and gizmo are in the world at `now` seconds. Nothing with
+    /// the monitor off.
+    pub fn monitor_hud(&self, now: f32) -> crate::forge_hud::Published {
+        use hud_kit_core::views::forge::{Hand, Tool as KitTool, View};
+        if !self.tool.monitor {
+            return crate::forge_hud::Published::default();
+        }
+        let (tool, hand, target) = if self.tool.links {
+            let aimed = self
+                .tool
+                .aimed_link
+                .filter(|&t| Some(t) != self.tool.link_from);
+            let hand = if self.tool.link_from.is_some() {
+                Hand::Linking
+            } else if aimed.is_some() {
+                Hand::Aimed
+            } else {
+                Hand::Idle
+            };
+            (
+                KitTool::Links,
+                hand,
+                aimed.map(|t| self.linkable(t)).unwrap_or_default(),
+            )
+        } else {
+            let hand = if self.tool.placing.is_some() {
+                Hand::Placing
+            } else if self.tool.held_thing.is_some() {
+                Hand::Holding
+            } else if self.tool.aimed_thing.is_some() {
+                Hand::Aimed
+            } else {
+                Hand::Idle
+            };
+            (
+                KitTool::Objects,
+                hand,
+                self.target().map_or_else(String::new, |(name, _, _)| name),
+            )
+        };
+        // A held thing being turned says its heading, as the readout's.
+        let changing = (self.rotating && matches!(hand, Hand::Placing | Hand::Holding))
+            .then(|| self.tool.ghost)
+            .flatten()
+            .map(|frame| format!("Heading {}", heading_degrees(frame.rotation[0])));
+        crate::forge_hud::Published {
+            view: View {
+                monitor: true,
+                tool,
+                hand,
+                target,
+                used: self.session.objects().len() as u32,
+                limit: self.session.budget() as u32,
+                rebuild: self.session.pending_rebuild() as u32,
+                changing,
+                teach: None,
+                marks: Default::default(),
+            },
+            notice: self.notice.clone(),
+            points: self.monitor_points_of(now, self.overlays()),
+        }
+    }
+
+    /// The drawings over the world that are on.
+    fn overlays(&self) -> crate::forge_hud::Show {
+        crate::forge_hud::Show {
+            markers: self.tool.overlays.on(Overlay::Markers),
+            rings: self.tool.overlays.on(Overlay::Monitors),
+            gizmo: self.tool.overlays.on(Overlay::Gizmo),
+        }
+    }
+
+    /// Where a link's end is: a teleporter flag's position, or a placed
+    /// machine's.
+    fn linkable_at(&self, thing: Linkable) -> Option<[f32; 3]> {
+        match thing {
+            Linkable::Teleporter(index) => self
+                .session
+                .teleporters()
+                .iter()
+                .find(|t| t.index == index)
+                .map(|t| t.position),
+            Linkable::Object(id) => self
+                .session
+                .objects()
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| o.frame.position),
+        }
+    }
+
+    /// The world points of the monitor's navpoints and gizmo, the drawings
+    /// `show` turns off left out. The held, aimed or placed thing and the
+    /// link's second end are the target; the link's first end and the other
+    /// seats' monitors have their own navpoints; the gizmo is at the held,
+    /// placed or aimed thing.
+    fn monitor_points_of(
+        &self,
+        now: f32,
+        show: crate::forge_hud::Show,
+    ) -> crate::forge_hud::Points {
+        let Some(camera) = self.tool.camera else {
+            return Default::default();
+        };
+        let links = self.tool.links;
+        let aimed_link = self
             .tool
             .aimed_link
             .filter(|&t| Some(t) != self.tool.link_from);
-        match (self.tool.link_from, aimed) {
-            (Some(from), Some(to)) => format!("{} to {}", self.linkable(from), self.linkable(to)),
-            (Some(from), None) => format!("From {}", self.linkable(from)),
-            (None, Some(thing)) => self.linkable(thing),
-            (None, None) => String::new(),
-        }
-    }
-
-    fn hud(&self) -> Hud {
-        if self.tool.links {
-            let mode = if self.tool.link_from.is_some() {
-                Mode::Linking
-            } else if self.tool.aimed_link.is_some() {
-                Mode::Aimed
-            } else {
-                Mode::Idle
-            };
-            return Hud {
-                mode,
-                links: true,
-                target: self.link_target(),
-                used: self.session.objects().len(),
-                limit: self.session.budget(),
-                rebuild: self.session.pending_rebuild(),
-                notice: self.notice.as_ref().map(|(text, _)| text.clone()),
-            };
-        }
-        let mode = if self.tool.placing.is_some() {
-            Mode::Placing
-        } else if self.tool.held_thing.is_some() {
-            Mode::Holding
-        } else if self.tool.aimed_thing.is_some() {
-            Mode::Aimed
+        let (target, from) = if links {
+            (
+                aimed_link.and_then(|t| self.linkable_at(t)),
+                self.tool.link_from.and_then(|t| self.linkable_at(t)),
+            )
         } else {
-            Mode::Idle
+            // A thing being placed has no place until the ghost has one.
+            let at = if self.tool.placing.is_some() {
+                self.tool.ghost.map(|frame| frame.position)
+            } else {
+                self.target().map(|(_, _, frame)| frame.position)
+            };
+            (at, None)
         };
-        Hud {
-            mode,
-            target: self.target().map_or_else(String::new, |(name, _, _)| name),
-            used: self.session.objects().len(),
-            limit: self.session.budget(),
-            rebuild: self.session.pending_rebuild(),
-            notice: self.notice.as_ref().map(|(text, _)| text.clone()),
-            links: false,
+        let axes = (!links && show.gizmo)
+            .then(|| {
+                let frame = match self.ghost() {
+                    Some((frame, _)) => frame,
+                    None if self.ui_up => return None,
+                    None => {
+                        let id = self.tool.aimed_thing?;
+                        self.session.thing(id)?.frame
+                    }
+                };
+                super::gizmo::Axes::from_frame(frame, self.local_axes(), camera.position)
+            })
+            .flatten();
+        crate::forge_hud::Points {
+            eye: camera.position,
+            target: target.filter(|_| show.markers),
+            from: from.filter(|_| show.markers),
+            monitors: if show.rings {
+                self.monitor_points(now)
+            } else {
+                Vec::new()
+            },
+            axes,
         }
-    }
-
-    /// The compositor's HUD (slice U3 moves it to the HUD kit). The
-    /// screens are the game's, so the compositor draws none.
-    pub fn page(&self) -> Option<ScreenSpec> {
-        self.tool.monitor.then(|| self.hud().spec())
     }
 
     /// Edits since the last save or load.
@@ -357,7 +901,9 @@ impl Editor {
     /// What X opens: Properties with something aimed at or held, else the
     /// object menu (the Links tool: the aimed thing's Link dialog).
     fn x_properties(&self) -> bool {
-        if self.tool.links {
+        if self.area.is_some() {
+            true
+        } else if self.tool.links {
             self.tool.link_from.is_none() && self.tool.aimed_link.is_some()
         } else {
             self.tool.aimed_thing.is_some()
@@ -368,7 +914,8 @@ impl Editor {
 
     /// Whether B has something to cancel.
     fn cancellable(&self) -> bool {
-        self.tool.held_thing.is_some()
+        self.area.is_some()
+            || self.tool.held_thing.is_some()
             || self.tool.placing.is_some()
             || self.tool.link_from.is_some()
     }
@@ -418,9 +965,28 @@ impl Editor {
                 self.session = Arc::new(session);
                 match after {
                     After::Shared(items) => self.shared_applied(&items),
-                    After::Tool(command) => self.tool.applied(&command),
+                    After::Tool(command) => {
+                        self.tool.applied(&command);
+                        // Duplicate: the copy is the log's last op, and the
+                        // monitor holds it at once where the add put it.
+                        if let Command::Duplicate { frame, .. } = &command {
+                            let op = self.session.last_op_id();
+                            let id = forge::Endpoint::Added(op);
+                            self.tool.take_up(&self.session, id, Some(op), *frame);
+                        }
+                        if let Command::Goal { goal, .. } = command
+                            && self.tool.show == Show::ThisGameType
+                            && !goal.in_game(self.tool.game)
+                        {
+                            self.tool.set_show(Show::AllGameTypes);
+                            self.say("Showing all game types so the new goal is visible.".into(), tick);
+                        }
+                    }
+                    After::Area => self.area = None,
+                    After::Edited => {}
                     After::Load(name) => {
-                        self.notice = Some((format!("Loaded {name}."), tick));
+                        self.area = None;
+                        self.notice = Some((flows::loaded(&name), tick));
                         self.filename = Some(name);
                         self.saved_head = self.session.head();
                         self.tool.clear_selection();
@@ -441,7 +1007,7 @@ impl Editor {
                 if let After::Proposal(reply) = after {
                     let _ = reply.send(Err(reason.clone()));
                 }
-                self.notice = Some((reason, tick));
+                self.refuse(reason, tick);
             }
         }
     }
@@ -450,17 +1016,34 @@ impl Editor {
     /// game's (`forge_screens::ui_up`). `game`: the session's game type, as
     /// the variant record's engine index, which decides the things the
     /// Objects tool aims at.
-    pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool, game: Option<i32>) {
+    pub fn tick(
+        &mut self,
+        tick: u32,
+        bsp: Option<usize>,
+        ui_up: bool,
+        game: Option<i32>,
+        memory: &dyn engine::GuestMemory,
+    ) {
+        self.now = tick;
+        self.bsp = bsp;
         self.ui_up = ui_up;
         if self.tool.game != game {
             self.tool.game = game;
+            self.area = None;
             self.tool.clear_selection();
         }
         if !self.listed && !self.busy() {
             self.listed = true;
             let data = self.data.clone();
-            if let Err(reason) = self.file(move || forge::saved_names(&data).map(FileResult::Names))
-            {
+            let session = self.session.clone();
+            if let Err(reason) = self.file(move || {
+                let (prefabs, skipped) = forge::load_prefabs(&data)?;
+                Ok(FileResult::Listed(
+                    list_variants(&data, &session)?,
+                    prefabs,
+                    skipped,
+                ))
+            }) {
                 self.notice = Some((reason, tick));
             }
         }
@@ -471,13 +1054,21 @@ impl Editor {
         {
             self.notice = None;
         }
+        if self.refusal.as_ref().is_some_and(|(_, at)| {
+            tick.saturating_sub(*at) > crate::forge_readout::REFUSAL_TICKS
+        }) {
+            self.refusal = None;
+        }
         self.poll_file(tick);
         self.poll(tick);
         self.net_tick(tick);
+        if let Some((ask, name)) = self.ask_wait.take() {
+            self.ask(ask, &name);
+        }
         if !self.busy() {
             for choice in screens::take_choices() {
                 if let Err(error) = self.choose(tick, choice) {
-                    self.notice = Some((error, tick));
+                    self.refuse(error, tick);
                 }
             }
         }
@@ -487,26 +1078,55 @@ impl Editor {
             }
             let mut input = controls::sample();
             input.dialog = self.ui_up;
+            self.rotating = input.rotating && !self.ui_up;
+            self.take_input(tick, input, bsp);
             let walls = bsp.and_then(|i| self.walls.get(i));
-            let result = self
-                .tool
-                .update_with_surface(&self.session, tick, input, |c| {
-                    walls?.hit(c.position, c.point(80.)).map(|(t, _)| t * 80.)
-                })
-                .and_then(|cmd| match cmd {
-                    Some(cmd) => self.command(tick, cmd),
-                    None => Ok(()),
-                });
-            if let Err(error) = result {
-                self.notice = Some((error, tick));
-            }
+            self.hold_height = match (self.tool.held_thing, self.tool.ghost, walls) {
+                (Some(_), Some(ghost), Some(walls)) => {
+                    let [x, y, z] = ghost.position;
+                    walls
+                        .hit(ghost.position, [x, y, z - GROUND_REACH])
+                        .map(|(t, _)| t * GROUND_REACH)
+                }
+                _ => None,
+            };
             self.poll(tick);
         }
-        self.publish();
+        self.publish(memory);
+    }
+
+    fn take_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) {
+        if let Err(error) = self.drive_input(tick, input, bsp) {
+            self.refuse(error, tick);
+        }
+    }
+
+    /// Pad, keyboard and forge.input use the same tick and BSP ray.
+    fn drive_input(&mut self, tick: u32, input: Input, bsp: Option<usize>) -> Result<(), String> {
+        let walls = bsp.and_then(|i| self.walls.get(i));
+        let surface = |camera| surface_hit(walls, camera);
+        if input.action == Some(Action::Toggle) && !input.dialog {
+            self.area = None;
+        }
+        if let Some(draft) = &mut self.area {
+            let next = draft.input(
+                &mut self.tool.camera,
+                input,
+                sheet::MOVE_STEPS[self.movement_step],
+                surface,
+            )?;
+            return self.apply_area_input(tick, next);
+        }
+        if let Some(cmd) = self.tool.update_with_surface(&self.session, tick, input, |camera| {
+            surface(camera).map(|(dist, _)| dist)
+        })? {
+            self.command(tick, cmd)?;
+        }
+        Ok(())
     }
 
     /// The session's state for the input bridge and the screens.
-    fn publish(&self) {
+    fn publish(&self, memory: &dyn engine::GuestMemory) {
         controls::publish(controls::State {
             active: true,
             monitor: self.tool.monitor,
@@ -514,6 +1134,10 @@ impl Editor {
             camera: self.tool.camera,
             x_properties: self.x_properties(),
             cancel: self.cancellable(),
+            select_on_hold: !self.tool.links
+                && self.tool.placing.is_none()
+                && self.tool.held_thing.is_none(),
+            area: self.area.as_ref().map(area::Draft::mode),
         });
         screens::publish(Facts {
             active: true,
@@ -527,9 +1151,28 @@ impl Editor {
             } else {
                 ToolKind::Objects
             }),
-            saved: self.saved.clone(),
+            variants: flows::rows(&self.variants),
             filename: self.filename.clone(),
+            placed: self.placed(),
+            folders: sheet::folder_rows(&self.session.groups()),
+            map_limits: screens::map_limits::Usage::read(memory, self.guard.scenario),
         });
+    }
+
+    /// The added objects as the placed objects browser lists them.
+    fn placed(&self) -> Vec<sheet::Placed> {
+        let palette = self.session.palette();
+        let names = groups(palette);
+        let objects: Vec<_> = self
+            .session
+            .objects()
+            .iter()
+            .filter_map(|o| {
+                let (group, name) = names.get(palette.iter().position(|p| *p == o.item)?)?;
+                Some((o.id, *group, name.clone(), o.frame.position))
+            })
+            .collect();
+        sheet::placed_rows(&objects)
     }
 
     fn busy(&self) -> bool {
@@ -558,16 +1201,84 @@ impl Editor {
         };
         self.file_job = None;
         match result {
-            Ok(FileResult::Names(names)) => self.saved = names,
-            Ok(FileResult::Saved(name, names)) => {
-                self.notice = Some((format!("Saved {name}."), tick));
+            Ok(FileResult::Listed(listed, prefabs, skipped)) => {
+                self.variants = listed;
+                self.prefabs = prefabs;
+                if let Some(first) = skipped.first() {
+                    self.notice = Some((format!("Not a prefab, {first}"), tick));
+                }
+            }
+            Ok(FileResult::Prefab(name, prefabs, skipped)) => {
+                let replaced = self.prefabs.iter().any(|p| p.name == name);
+                self.notice = Some((
+                    match skipped.first() {
+                        Some(first) => format!("Saved prefab {name}. Not a prefab, {first}"),
+                        None if replaced => format!("Saved prefab {name}, replacing it."),
+                        None => format!("Saved prefab {name}."),
+                    },
+                    tick,
+                ));
+                self.prefabs = prefabs;
+            }
+            Ok(FileResult::Saved(name, listed)) => {
+                self.notice = Some((flows::saved(&name), tick));
                 self.filename = Some(name);
-                self.saved = names;
+                self.variants = listed;
                 // No edit runs while a file job does: this is what was saved.
                 self.saved_head = self.session.head();
             }
+            Ok(FileResult::Taken(name)) => match screens::open(sheet::question(Ask::Overwrite, &name)) {
+                Ok(()) => self.overwrite_asked = Some(name),
+                Err(reason) => self.notice = Some((reason, tick)),
+            },
+            Ok(FileResult::Variants(notice, listed, renamed)) => {
+                self.notice = Some((notice, tick));
+                if let (Some((old, new)), Some(open)) = (renamed, &self.filename)
+                    && flows::same_name(&old, open)
+                {
+                    self.filename = Some(new);
+                }
+                self.variants = listed;
+            }
             Ok(FileResult::Loaded(pending)) => self.pending = Some(pending),
-            Err(reason) => self.notice = Some((reason, tick)),
+            Ok(FileResult::Ground(done)) => {
+                // No edit runs while a file job does: the copy is the
+                // session as it was, with the build recorded.
+                let (session, built) = *done;
+                self.session = Arc::new(session);
+                self.ground_building = false;
+                let text = super::ground::notice(self.session.ground_report(), built);
+                self.notice = Some((text, tick));
+                if let Some(answer) = self.ground_answer.take() {
+                    let mut reply = self.ground_json();
+                    reply["built"] = json!(built);
+                    let _ = answer.send(Ok(reply));
+                }
+            }
+            Ok(FileResult::Nav(done)) => {
+                // No edit runs while a file job does: the copy is the
+                // session as it was, with the generation recorded.
+                self.session = Arc::new(*done);
+                self.nav_generating = false;
+                let text = super::nav::notice(self.session.nav_report());
+                self.notice = Some((text, tick));
+                if let Some(answer) = self.nav_answer.take() {
+                    let _ = answer.send(Ok(self.nav_json()));
+                }
+            }
+            Err(reason) => {
+                if std::mem::take(&mut self.ground_building)
+                    && let Some(answer) = self.ground_answer.take()
+                {
+                    let _ = answer.send(Err(reason.clone()));
+                }
+                if std::mem::take(&mut self.nav_generating)
+                    && let Some(answer) = self.nav_answer.take()
+                {
+                    let _ = answer.send(Err(reason.clone()));
+                }
+                self.notice = Some((reason, tick));
+            }
         }
     }
 
@@ -575,9 +1286,18 @@ impl Editor {
         use Command::*;
         match cmd {
             Palette => {
-                let sheet = sheet::objects(&self.items(), self.selected)
-                    .ok_or("This map has nothing to place.")?;
-                screens::open(sheet)?;
+                let mut menu = sheet::objects_with_ai(&self.items(), self.selected, &self.ai_items());
+                if self.session.can_place_goals() {
+                    menu = Some(sheet::with_goals_for(
+                        menu,
+                        &self.session.goals(self.tool.game),
+                    ));
+                }
+                if self.session.has_kit() {
+                    menu = Some(sheet::with_kit(menu, &self.kit_menu()));
+                }
+                let menu = sheet::with_prefabs(menu, &self.prefab_items());
+                screens::open(menu.ok_or("This map has nothing to place.")?)?;
             }
             Properties if self.tool.links => {
                 let thing = self
@@ -612,8 +1332,23 @@ impl Editor {
                         .ok_or("Aim at a thing of the map.")?;
                     self.session.thing(id).ok_or("The thing is gone.")?
                 };
-                let sheet = sheet::properties_sheet(&name, &thing, frame.rotation[0].to_degrees())
-                    .ok_or_else(|| format!("{name} has no properties to set."))?;
+                let extras = if self.tool.placing.is_none() {
+                    self.property_extras(thing.id)
+                } else {
+                    sheet::Extras::default()
+                };
+                let mut sheet = sheet::properties_sheet_with(
+                    &name,
+                    &thing,
+                    frame.rotation[0].to_degrees(),
+                    &extras,
+                )
+                .ok_or_else(|| format!("{name} has no properties to set."))?;
+                if self.tool.placing.is_none() {
+                    sheet
+                        .rows
+                        .extend(sheet::group_rows(&self.group_facts(thing.id)));
+                }
                 let target = if let Some(item) = self.tool.placing {
                     CoordinateTarget::New(item)
                 } else {
@@ -624,13 +1359,19 @@ impl Editor {
                             .ok_or("Aim at a thing of the map.")?,
                     )
                 };
+                if self.area_goal(&thing).is_some() {
+                    sheet::add_area_row(&mut sheet, thing.id);
+                }
                 self.coordinates = Some((target, frame));
                 screens::screen(Kind::Coordinates).show(sheet::coordinates_sheet(&name, frame))?;
                 screens::open(sheet)?;
             }
             Tools => screens::request(Kind::Tools)?,
             Settings => screens::request(Kind::Settings)?,
+            Overlays => screens::open(sheet::overlays(self.tool.overlays))?,
             Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
+            BuildGround => return self.start_ground(tick, false, None),
+            TestWaves => return self.start_ground(tick, true, None),
             DialogUp | DialogDown | DialogAccept | DialogBack => {
                 return Err("A screen is up; it takes the pad.".into());
             }
@@ -729,6 +1470,36 @@ impl Editor {
         self.command(tick, cmd)
     }
 
+    fn goal_frame(&self) -> Result<forge::Frame, String> {
+        let mut frame = self.marker_frame()?;
+        let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+        if let Some((distance, normal)) = surface_hit(self.bsp.and_then(|i| self.walls.get(i)), eye)
+            && normal[2] >= area::FLOOR_NORMAL
+        {
+            frame.position = eye.point(distance);
+        }
+        Ok(frame)
+    }
+
+    fn marker_frame(&self) -> Result<forge::Frame, String> {
+        let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+        Ok(forge::Frame {
+            position: eye.point(MARKER_REACH),
+            rotation: [eye.yaw, 0., 0.],
+        })
+    }
+
+    /// The ground labels the AI and objectives page offers, each with how
+    /// many are placed.
+    fn ai_items(&self) -> Vec<sheet::AiItem> {
+        let counts = self.session.ground_counts();
+        forge::GroundLabel::ALL
+            .into_iter()
+            .zip(counts)
+            .map(|(label, placed)| sheet::AiItem { label, placed })
+            .collect()
+    }
+
     /// The palette as the object menu lists it: each object's group, name,
     /// how many are placed and how many more fit.
     fn items(&self) -> Vec<sheet::Item> {
@@ -753,6 +1524,38 @@ impl Editor {
             .collect()
     }
 
+    /// What the kit adds to the object menu: the items its spawners can
+    /// name, and the rows each block has left.
+    fn kit_menu(&self) -> sheet::KitMenu {
+        let items = self
+            .session
+            .kit_items()
+            .into_iter()
+            .enumerate()
+            .map(|(index, tag)| sheet::KitItem {
+                index,
+                group: match forge::kit::item_group(&tag) {
+                    forge::kit::ItemGroup::Weapons => Group::Weapons,
+                    forge::kit::ItemGroup::Vehicles => Group::Vehicles,
+                    forge::kit::ItemGroup::Equipment => Group::Equipment,
+                },
+                name: tag
+                    .path
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(&tag.path)
+                    .replace('_', " "),
+            })
+            .collect();
+        let left = |block| self.session.kit_left(block).unwrap_or(0);
+        sheet::KitMenu {
+            items,
+            items_left: left(BlockKind::NetgameEquipment),
+            spawns_left: left(BlockKind::StartingLocations),
+            flags_left: left(BlockKind::NetgameFlags),
+        }
+    }
+
     fn link_sheet(&self, active: &ActiveLink) -> Sheet {
         let [from, to] = active.link.endpoints();
         let writes = match active.link {
@@ -769,6 +1572,155 @@ impl Editor {
                 self.selected = i;
                 self.tool.select(i);
             }
+            Choice::Goal(goal) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Goal { goal, frame });
+            }
+            Choice::Spawn(team) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Spawn { team, frame });
+            }
+            Choice::Teleporter(sender) => {
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Teleporter { sender, frame });
+            }
+            Choice::Item(i) => {
+                let item = self
+                    .session
+                    .kit_items()
+                    .get(i)
+                    .cloned()
+                    .ok_or("That item is gone.")?;
+                let frame = self.goal_frame()?;
+                return self.command(tick, Command::Item { item, frame });
+            }
+            Choice::EditArea(id) => return self.begin_area(id),
+            Choice::Marker(forge::GroundLabel::Site) => {
+                return self.choose(tick, Choice::Goal(forge::Goal::Site));
+            }
+            // A barrier labels the object the monitor aims at (or holds),
+            // opening in the first phase: Properties' label number changes
+            // the phase.
+            Choice::Marker(forge::GroundLabel::Barrier) => {
+                let id = self.property_target()?;
+                return self.command(tick, Command::Barrier { id, phase: 1 });
+            }
+            Choice::Marker(label) => {
+                let frame = self.marker_frame()?;
+                return self.command(tick, Command::Marker { label, frame });
+            }
+            Choice::FlyTo(id) => {
+                let at = self
+                    .session
+                    .objects()
+                    .iter()
+                    .find(|o| o.id == id)
+                    .ok_or("That object is gone.")?
+                    .frame
+                    .position;
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                self.tool.camera = Some(eye.toward(at, FLY_DISTANCE));
+            }
+            Choice::FlyToGroup(id) => {
+                let group = self
+                    .session
+                    .groups()
+                    .into_iter()
+                    .find(|g| g.id == id)
+                    .ok_or("That group is gone.")?;
+                let at: Vec<[f32; 3]> = group
+                    .members
+                    .iter()
+                    .filter_map(|m| self.session.thing(*m))
+                    .map(|t| t.frame.position)
+                    .collect();
+                if at.is_empty() {
+                    return Err("That group is gone.".into());
+                }
+                let n = at.len() as f32;
+                let centre: [f32; 3] =
+                    std::array::from_fn(|i| at.iter().map(|p| p[i]).sum::<f32>() / n);
+                let spread = at
+                    .iter()
+                    .map(|p| {
+                        (0..3)
+                            .map(|i| (p[i] - centre[i]).powi(2))
+                            .sum::<f32>()
+                            .sqrt()
+                    })
+                    .fold(0., f32::max);
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                self.tool.camera = Some(eye.toward(centre, FLY_DISTANCE + spread));
+            }
+            Choice::ToggleSelected(id) => self.tool.toggle_selected(id),
+            Choice::ClearLabel(id) => {
+                return self.command(tick, Command::SetLabel { id, label: None });
+            }
+            Choice::ResetOrientation => {
+                let id = self
+                    .tool
+                    .held_thing
+                    .or(self.tool.aimed_thing)
+                    .ok_or("Aim at a thing of the map.")?;
+                let (_, _, mut frame) = self.target().ok_or("The thing is gone.")?;
+                // Pitch and roll to zero; the yaw rounds to the rotation
+                // snap, as the tool's own turning does.
+                let step = sheet::ANGLE_STEPS.get(self.rotation_step).copied().unwrap_or(0.);
+                let yaw = frame.rotation[0].to_degrees();
+                let yaw = if step > 0. { (yaw / step).round() * step } else { yaw };
+                let yaw = yaw.to_radians();
+                if self.tool.placing.is_some() || self.tool.held_thing.is_some() {
+                    self.tool.set_orientation(yaw);
+                } else {
+                    frame.rotation = [yaw, 0., 0.];
+                    let cmd = match self.tool.aimed {
+                        Some(id) => Command::Move { id, frame },
+                        None => Command::MoveThing { id, frame },
+                    };
+                    return self.command(tick, cmd);
+                }
+            }
+            Choice::Duplicate(id) => {
+                // The copy is made in front of the monitor, as a prefab is
+                // placed, and held at once.
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                let frame = forge::Frame {
+                    position: eye.point(MARKER_REACH),
+                    rotation: [eye.yaw, 0., 0.],
+                };
+                return self.command(tick, Command::Duplicate { id, frame });
+            }
+            Choice::PlacePrefab(i) => {
+                let prefab = self.prefabs.get(i).ok_or("That prefab is gone.")?;
+                self.session.prefab_fits(prefab)?;
+                let eye = self.tool.camera.ok_or("The monitor has no view.")?;
+                let frame = forge::Frame {
+                    position: eye.point(MARKER_REACH),
+                    rotation: [eye.yaw, 0., 0.],
+                };
+                let prefab = Box::new(prefab.clone());
+                return self.command(tick, Command::PlacePrefab { prefab, frame });
+            }
+            Choice::GroupSelection => {
+                let members = self.tool.selection().to_vec();
+                let taken: Vec<String> =
+                    self.session.groups().into_iter().map(|g| g.name).collect();
+                let name = (taken.len() + 1..)
+                    .map(|n| format!("Group {n}"))
+                    .find(|name| !taken.contains(name))
+                    .ok_or("No name is free.")?;
+                return self.command(tick, Command::Group { name, members });
+            }
+            Choice::Ungroup(group) => return self.command(tick, Command::Ungroup { group }),
+            Choice::LockGroup(group, locked) => {
+                return self.command(tick, Command::LockGroup { group, locked });
+            }
+            Choice::SetGroupPivot(group, pivot_first) => {
+                return self.command(tick, Command::SetGroupPivot { group, pivot_first });
+            }
+            Choice::BuildGround => return self.command(tick, Command::BuildGround),
+            Choice::TestWaves => return self.command(tick, Command::TestWaves),
+            Choice::GenerateNav => return self.start_nav(tick, None),
             Choice::Tool(t) => self.tool.set_links(t == ToolKind::Links),
             Choice::Set(Prop::RotationSnap, i) => {
                 let step = *ANGLE_STEPS.get(i).ok_or("No such rotation snap.")?;
@@ -788,6 +1740,12 @@ impl Editor {
                     Axes::World
                 });
             }
+            Choice::Set(Prop::Overlay(overlay), i) => {
+                if i > 1 {
+                    return Err("No such value.".into());
+                }
+                self.tool.overlays.set(overlay, i == 0);
+            }
             Choice::Set(Prop::Heading, i) => {
                 let yaw = HEADINGS.get(i).ok_or("No such heading.")?.to_radians();
                 if self.tool.placing.is_some() || self.tool.held_thing.is_some() {
@@ -796,9 +1754,9 @@ impl Editor {
                     let id = self.tool.aimed_thing.ok_or("Aim at a thing of the map.")?;
                     let (_, _, mut frame) = self.target().ok_or("The thing is gone.")?;
                     frame.rotation[0] = yaw;
-                    let cmd = match id {
-                        Endpoint::Added(id) => Command::Move { id, frame },
-                        id => Command::MoveThing { id, frame },
+                    let cmd = match self.tool.aimed {
+                        Some(id) => Command::Move { id, frame },
+                        None => Command::MoveThing { id, frame },
                     };
                     return self.command(tick, cmd);
                 }
@@ -846,16 +1804,76 @@ impl Editor {
                 sheet::NumberField::Coordinate(axis) => {
                     return self.coordinate_number(tick, axis, &text);
                 }
-                sheet::NumberField::RespawnTime => {
+                sheet::NumberField::Area(field) => return self.area_number(field, &text),
+                sheet::NumberField::Label => {
+                    let id = self.property_target()?;
+                    let text = text.to_ascii_lowercase();
+                    if text.is_empty() {
+                        return Err("Type a label, or use Clear label.".into());
+                    }
+                    let number = self.session.label_of(id).and_then(|l| l.number);
+                    let label = forge::Label::new(text, number).map_err(|e| e.to_string())?;
+                    return self.command(
+                        tick,
+                        Command::SetLabel {
+                            id,
+                            label: Some(label),
+                        },
+                    );
+                }
+                sheet::NumberField::LabelNumber => {
+                    let id = self.property_target()?;
+                    let have = self.session.label_of(id).ok_or("This has no label.")?;
+                    let number = match text.trim() {
+                        "" => None,
+                        n => Some(
+                            n.parse::<i32>()
+                                .map_err(|_| "Type a whole number.".to_string())?,
+                        ),
+                    };
+                    let label = forge::Label::new(have.text, number).map_err(|e| e.to_string())?;
+                    return self.command(
+                        tick,
+                        Command::SetLabel {
+                            id,
+                            label: Some(label),
+                        },
+                    );
+                }
+                sheet::NumberField::PrefabName => {
+                    let id = self.property_target()?;
+                    let members = self.prefab_members(id);
+                    if members.is_empty() {
+                        return Err(
+                            "Only objects placed in this session can be saved as a prefab.".into(),
+                        );
+                    }
+                    let (data, session) = (self.data.clone(), self.session.clone());
+                    return self.file(move || {
+                        let prefab = session.save_prefab(&data, &text, &members)?;
+                        let (list, skipped) = forge::load_prefabs(&data)?;
+                        Ok(FileResult::Prefab(prefab.name, list, skipped))
+                    });
+                }
+                // The keyboard's completion names the variant
+                // (`forge_screens`); a number that got here has none.
+                sheet::NumberField::RenameVariant | sheet::NumberField::DuplicateVariant => {
+                    return Err("That map variant is gone.".into());
+                }
+                sheet::NumberField::RespawnTime | sheet::NumberField::ReturnTime => {
                     let value = text
                         .parse::<i64>()
                         .map_err(|_| "Type a whole number.".to_string())?;
                     let id = self.tool.aimed_thing.ok_or("Aim at an item entry.")?;
+                    let name = match field {
+                        sheet::NumberField::ReturnTime => "return time",
+                        _ => "respawn time",
+                    };
                     return self.command(
                         tick,
                         Command::SetField {
                             id,
-                            name: "respawn time",
+                            name,
                             value: forge_doc::Value::Int(value),
                         },
                     );
@@ -884,63 +1902,207 @@ impl Editor {
             } => {
                 let name = self.overwrite_asked.take().ok_or("Nothing to save.")?;
                 if yes {
-                    return self.save(Some(name));
+                    return self.save(name, true);
                 }
+                self.notice = Some((flows::NOT_SAVED.into(), tick));
+            }
+            Choice::Answer {
+                ask: Ask::Load,
+                yes,
+            } => {
+                let file = self.load_asked.take().ok_or("Nothing to load.")?;
+                if yes {
+                    return self.load(tick, file);
+                }
+                self.notice = Some((flows::NOT_LOADED.into(), tick));
             }
             // Leave Game's answer is the screens' own (`forge_screens`).
             Choice::Answer {
                 ask: Ask::Leave, ..
             } => {}
-            Choice::Save => return self.save(self.filename.clone()),
-            Choice::SaveAs(name) => {
-                if Some(&name) != self.filename.as_ref() && self.saved.contains(&name) {
-                    screens::open(sheet::question(Ask::Overwrite, &name))?;
-                    self.overwrite_asked = Some(name);
+            Choice::Save => match flows::save(self.filename.as_deref()) {
+                // GAME MENU opens the keyboard for an unnamed map before it
+                // sends Save; a Save that gets here without one is refused.
+                flows::SaveStep::Keyboard => return Err(flows::UNNAMED.into()),
+                flows::SaveStep::Write { name, replace } => return self.save(name, replace),
+            },
+            Choice::SaveAs(typed) => match flows::save_as(self.filename.as_deref(), &typed)? {
+                flows::SaveStep::Write { name, replace } => return self.save(name, replace),
+                flows::SaveStep::Keyboard => return Err(flows::UNNAMED.into()),
+            },
+            Choice::Load(file) => {
+                if self.dirty() {
+                    self.load_asked = Some(file);
+                    self.ask(Ask::Load, "");
                 } else {
-                    return self.save(Some(name));
+                    return self.load(tick, file);
                 }
             }
-            Choice::Load(name) => {
-                let (data, session, tags, calls, guard) = (
-                    self.data.clone(),
-                    self.session.clone(),
-                    self.tags.clone(),
-                    self.calls.clone(),
-                    self.guard,
-                );
-                return self.file(move || {
-                    let edit = ForgeWorld::apply(
-                        &session,
-                        &calls,
-                        guard,
-                        |tag| resolve(&session, &tags, tag),
-                        |s, w| s.load(w, tick, &data, &name),
-                    )?;
-                    Ok(FileResult::Loaded(Pending {
-                        edit,
-                        after: After::Load(name),
-                    }))
-                });
+            Choice::DeleteVariant(file) => {
+                let name = self.variant_name(&file);
+                self.variant_asked = Some(file);
+                self.ask(Ask::DeleteVariant, &name);
+            }
+            Choice::Answer {
+                ask: Ask::DeleteVariant,
+                yes,
+            } => {
+                let file = self.variant_asked.take().ok_or("Nothing to delete.")?;
+                if yes {
+                    return self.delete_variant(file);
+                }
+                self.notice = Some((flows::NOT_DELETED.into(), tick));
+            }
+            Choice::RenameVariant(file, typed) => {
+                return self.rename_variant(file, typed.trim().to_owned());
+            }
+            Choice::DuplicateVariant(file, typed) => {
+                return self.duplicate_variant(file, typed.trim().to_owned());
+            }
+            Choice::Games(set) => {
+                let id = self
+                    .tool
+                    .held_thing
+                    .or(self.tool.aimed_thing)
+                    .ok_or("Aim at an item entry.")?;
+                return self.stage(After::Edited, move |s, w| s.set_games(w, tick, id, set));
             }
             Choice::Notice(text) => self.notice = Some((text, tick)),
         }
         Ok(())
     }
 
-    /// Saves as `name`, or as a new name from the map's when none.
-    fn save(&mut self, name: Option<String>) -> Result<(), String> {
+    /// The thing a Properties row acts on: the one held or aimed at.
+    fn property_target(&self) -> Result<Endpoint, String> {
+        self.tool
+            .held_thing
+            .or(self.tool.aimed_thing)
+            .ok_or_else(|| "Aim at a thing of the map.".to_string())
+    }
+
+    /// Saves the session as the map variant `name`. A name another variant
+    /// has, when `replace` is not set, ends in the Replace question.
+    fn save(&mut self, name: String, replace: bool) -> Result<(), String> {
         let data = self.data.clone();
         let session = self.session.clone();
-        self.file(move || {
-            let name = if let Some(name) = name {
-                session.save(&data, &name)?;
-                name
-            } else {
-                session.save_new(&data, &session.document().base.map)?
-            };
-            Ok(FileResult::Saved(name, forge::saved_names(&data)?))
+        self.file(move || match session.save_variant(&data, &name, replace) {
+            Ok(_) => Ok(FileResult::Saved(name, list_variants(&data, &session)?)),
+            Err(variants::Error::NameTaken(_)) => Ok(FileResult::Taken(name)),
+            Err(e) => Err(e.to_string()),
         })
     }
+
+    /// The name of the listed variant of file stem `file`.
+    fn variant_name(&self, file: &str) -> String {
+        self.variants
+            .iter()
+            .find(|v| v.file == file)
+            .map_or_else(|| file.to_owned(), |v| v.name.clone())
+    }
+
+    /// Opens the question `ask`; while a Forge screen is still up it opens
+    /// at a later tick.
+    fn ask(&mut self, ask: Ask, name: &str) {
+        if screens::open(sheet::question(ask, name)).is_err() {
+            self.ask_wait = Some((ask, name.to_owned()));
+        }
+    }
+
+    /// Gives the saved variant of file stem `file` the name `name`. A name
+    /// another variant has is the store's refusal: nothing is replaced.
+    fn rename_variant(&mut self, file: String, name: String) -> Result<(), String> {
+        forge_doc::variant_name(&name).map_err(|e| e.to_string())?;
+        let old = self.variant_name(&file);
+        let (data, session) = (self.data.clone(), self.session.clone());
+        self.file(move || {
+            let map = session.document().base.map.clone();
+            variants::rename(&data, &map, &file, &name).map_err(|e| e.to_string())?;
+            Ok(FileResult::Variants(
+                flows::renamed(&name),
+                list_variants(&data, &session)?,
+                Some((old, name)),
+            ))
+        })
+    }
+
+    /// Copies the saved variant of file stem `file` under `name`.
+    fn duplicate_variant(&mut self, file: String, name: String) -> Result<(), String> {
+        forge_doc::variant_name(&name).map_err(|e| e.to_string())?;
+        let (data, session) = (self.data.clone(), self.session.clone());
+        self.file(move || {
+            let map = session.document().base.map.clone();
+            variants::duplicate(&data, &map, &file, &name).map_err(|e| e.to_string())?;
+            Ok(FileResult::Variants(
+                flows::duplicated(&name),
+                list_variants(&data, &session)?,
+                None,
+            ))
+        })
+    }
+
+    /// Removes the saved variant of file stem `file`. The open variant is
+    /// refused here as its dialog has no row for it.
+    fn delete_variant(&mut self, file: String) -> Result<(), String> {
+        let name = self.variant_name(&file);
+        if self
+            .filename
+            .as_deref()
+            .is_some_and(|open| flows::same_name(open, &name))
+        {
+            return Err(flows::OPEN_CANNOT_DELETE.into());
+        }
+        let (data, session) = (self.data.clone(), self.session.clone());
+        self.file(move || {
+            let map = session.document().base.map.clone();
+            variants::delete(&data, &map, &file).map_err(|e| e.to_string())?;
+            Ok(FileResult::Variants(
+                flows::deleted(&name),
+                list_variants(&data, &session)?,
+                None,
+            ))
+        })
+    }
+
+    /// Loads the map variant of file stem `file` over the session.
+    fn load(&mut self, tick: u32, file: String) -> Result<(), String> {
+        let (data, session, tags, calls, guard) = (
+            self.data.clone(),
+            self.session.clone(),
+            self.tags.clone(),
+            self.calls.clone(),
+            self.guard,
+        );
+        self.file(move || {
+            let base = &session.document().base;
+            let doc = variants::load(&data, &base.map, &file, Some(&base.sha256))
+                .map_err(|e| e.to_string())?;
+            let name = doc.title.clone();
+            let edit = ForgeWorld::apply(
+                &session,
+                &calls,
+                guard,
+                |tag| resolve(&session, &tags, tag),
+                |s, w| s.load_variant(w, tick, doc),
+            )?;
+            Ok(FileResult::Loaded(Pending {
+                edit,
+                after: After::Load(name),
+            }))
+        })
+    }
+}
+
+/// The variants of the session's map on this machine, with the session's
+/// base as the installed map.
+fn list_variants(data: &Path, session: &Session) -> Result<Vec<Listed>, String> {
+    let base = &session.document().base;
+    variants::list(data, &base.map, Some(&base.sha256)).map_err(|e| e.to_string())
+}
+
+fn surface_hit(walls: Option<&bots::los::Walls>, camera: Camera) -> Option<(f32, [f32; 3])> {
+    walls?
+        .hit(camera.position, camera.point(forge::tool::MAX_HOLD))
+        .map(|(t, normal)| (t * forge::tool::MAX_HOLD, normal))
 }
 
 /// A tool command's edit of the session: the same path the pad, the agent
@@ -954,13 +2116,34 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         MoveThing { id, frame } => s.move_thing(w, tick, id, frame),
         HoldThing { id, frame } => s.hold(w, tick, id, frame),
         SetField { id, name, value } => s.set_field(w, tick, id, name, value),
+        Duplicate { id, frame } => s.duplicate(w, tick, id, frame).map(|_| ()),
         Remove { id } => s.remove(w, tick, id),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
+        Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),
+        Ungroup { group } => s.ungroup(w, tick, group),
+        LockGroup { group, locked } => s.set_group_locked(w, tick, group, locked),
+        SetGroupPivot { group, pivot_first } => s.set_group_pivot(w, tick, group, pivot_first),
+        SetLabel { id, label } => s.set_label(w, tick, id, label),
+        Barrier { id, phase } => s.label_barrier(w, tick, id, phase),
+        PlacePrefab { prefab, frame } => s.place_prefab(w, tick, &prefab, frame).map(|_| ()),
         Undo => s.undo(w, tick),
         Redo => s.redo(w, tick),
+        Marker { label, frame } => s.place_marker_next(w, tick, label, frame).map(|_| ()),
+        Goal { goal, frame } => s.place_goal(w, tick, goal, frame).map(|_| ()),
+        Spawn { team, frame } => s.place_spawn(w, tick, team, frame).map(|_| ()),
+        Teleporter { sender, frame } => s.place_teleporter(w, tick, sender, frame).map(|_| ()),
+        Item { item, frame } => s.place_item(w, tick, &item, frame).map(|_| ()),
         _ => Err("A screen's command is not an edit.".into()),
     }
+}
+
+/// A heading in whole degrees, 0 to 359.
+fn heading_degrees(radians: f32) -> i32 {
+    if !radians.is_finite() {
+        return 0;
+    }
+    (radians.to_degrees().rem_euclid(360.0).round() as i32) % 360
 }
 
 /// A thing's name as the readout and the Properties header show it: the
@@ -1067,3 +2250,15 @@ fn label(item: &PaletteItem) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// The readout's hold line for a thing carried at `at`, `height` over the
+/// ground, picked up at `from`.
+fn forge_readout_hold(
+    at: [f32; 3],
+    height: f32,
+    snap: Option<f32>,
+    local: bool,
+    from: Option<[f32; 3]>,
+) -> hud_kit_core::views::forge_readout::Hold {
+    crate::forge_readout::hold(at, height, snap, local, from)
+}

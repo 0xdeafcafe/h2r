@@ -15,9 +15,10 @@ use super::lower::FIELDS;
 use super::sig;
 use super::types::{Handle, SetKind, Type};
 use super::{Diagnostic, MAX_ERRORS, Pos, Severity};
-use crate::caps::{self, CARRIERS, ENTRIES, TICKS_PER_SECOND, VARIANT_FIELDS, id};
-use crate::ir::{self, Event, LabelDef, LabelKind, List, Scope, label_flags};
+use crate::caps::{self, ENTRIES, TICKS_PER_SECOND, VARIANT_FIELDS, id};
+use crate::ir::{self, Event, LabelDef, LabelKind, Scope, label_flags};
 use crate::settings;
+use crate::types as game;
 use crate::ty::{MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_LABELLED, MAX_SQUADS, MAX_TEAMS};
 
 /// What the compiler ends a `time` option's label with: the IR stores no
@@ -45,7 +46,7 @@ impl Label {
         match self.def.kind {
             LabelKind::Object => Some(Handle::Object),
             LabelKind::Zone => Some(Handle::Zone),
-            LabelKind::Spawn => None,
+            LabelKind::Spawn | LabelKind::Path => None,
         }
     }
 
@@ -55,6 +56,7 @@ impl Label {
             LabelKind::Object => SetKind::Objects,
             LabelKind::Zone => SetKind::Zones,
             LabelKind::Spawn => SetKind::Spawns,
+            LabelKind::Path => SetKind::Paths,
         }
     }
 }
@@ -81,13 +83,11 @@ pub struct Checked<'s> {
     pub settings: Vec<ir::Setting>,
     /// The Quick Options marks, in the script's order.
     pub quick: Vec<ir::Quick>,
-    /// Who scores the game: `scoring carrier`, or the script.
-    pub scoring: ir::Scoring,
+    /// The `type` line's game type; `None` when it is missing or unknown.
+    pub game_type: Option<game::Type>,
+    /// The `uses` line's built-in game: the script holds settings only.
+    pub uses: Option<game::Type>,
 }
-
-/// The carriers a `list` line may file a variant of: our rows hold Slayer
-/// and Juggernaut variants (`docs/game/rules-variants.md`, "Slices").
-const LIST_CARRIERS: &[&str] = &["slayer", "juggernaut"];
 
 /// A message's text as the IR stores it, and its holes ("Messages" in
 /// `docs/game/rules-language-types.md`).
@@ -341,12 +341,53 @@ struct Cx<'s> {
     /// The function whose argument is being checked, for messages.
     arg_of: Option<&'s str>,
     templates: HashMap<*const Expr, Template>,
-    /// The carrier's engine index; `None` when the carrier is missing or
-    /// unknown.
-    carrier: Option<u8>,
+    /// The engine index the script's record is on (`ir::Header::engine`);
+    /// `None` when the type or the `uses` game is missing or unknown.
+    engine: Option<u8>,
     settings: Vec<ir::Setting>,
     quick: Vec<ir::Quick>,
-    scoring: ir::Scoring,
+    game_type: Option<game::Type>,
+    uses: Option<game::Type>,
+}
+
+/// The message for a retired header line, naming the line to write
+/// instead (`docs/game/game-types-without-carriers.md`, "The header").
+fn retired_line(word: &str, arg: &str, s: &Script) -> String {
+    // A retired `carrier` word as a type: `king` became `koth`.
+    let as_type = |c: &str| game::Type::named(if c == "king" { "koth" } else { c }).filter(|t| t.is_retail());
+    match word {
+        "carrier" => match as_type(arg) {
+            Some(t) => format!(
+                "carrier is gone: write `type {}`. A script names its game type, not an engine",
+                t.name()
+            ),
+            None => format!("carrier is gone: write `type` and one of {}", game::names()),
+        },
+        "list" => match game::Type::named(arg) {
+            Some(t) => format!("list is gone: write `type {}`, which files the game in its row", t.name()),
+            None => format!("list is gone: write `type` and one of {}", game::names()),
+        },
+        _ => {
+            let from_carrier = s.retired.iter().find(|(w, _, _)| w == "carrier").and_then(|(_, a, _)| as_type(a));
+            let from_type = s.game_type.as_ref().and_then(|(t, _)| game::Type::named(t)).filter(|t| t.is_retail());
+            let t = from_carrier.or(from_type).unwrap_or(game::Type::Slayer);
+            format!(
+                "scoring {arg} is gone: write `uses {}` to play that built-in game's rules under this script's settings",
+                t.name()
+            )
+        }
+    }
+}
+
+/// What a name of the world API's objects slice that is not built waits
+/// for, to say with the refusal (docs/game/rules-world-api.md, "Objects").
+fn world_refusal(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "move_along" => "it needs a `path` label, which the drop-ship slice builds; move_to takes one point",
+        "face" => "whether the engine's position and facing flags carry a host-set facing to clients is not researched (R2); teleport and move_to keep the object's facing",
+        "attach" | "detach" => "the engine's attach routine is not traced; move_to with the parent's position each tick follows it",
+        _ => return None,
+    })
 }
 
 fn is_none_lit(e: &Expr) -> bool {
@@ -447,10 +488,11 @@ impl<'s> Cx<'s> {
             implicit: Vec::new(),
             arg_of: None,
             templates: HashMap::new(),
-            carrier: None,
+            engine: None,
             settings: Vec::new(),
             quick: Vec::new(),
-            scoring: ir::Scoring::Script,
+            game_type: None,
+            uses: None,
         }
     }
 
@@ -462,6 +504,7 @@ impl<'s> Cx<'s> {
                 code,
                 severity,
                 pos,
+                file: None,
                 message,
             });
         }
@@ -506,7 +549,8 @@ impl<'s> Cx<'s> {
             templates: self.templates,
             settings: self.settings,
             quick: self.quick,
-            scoring: self.scoring,
+            game_type: self.game_type,
+            uses: self.uses,
         }
     }
 
@@ -565,6 +609,9 @@ impl<'s> Cx<'s> {
                     pos,
                 } => self.table(name, columns, rows, *pos),
                 Item::Fn(f) => {
+                    if matches!(f.name.as_str(), "vec" | "length" | "distance") {
+                        self.err("decl", f.pos, format!("fn {} is the name of a built-in", f.name));
+                    }
                     if self.fns.insert(f.name.as_str(), f).is_some() {
                         self.err("decl", f.pos, format!("fn {} is declared twice", f.name));
                     }
@@ -572,6 +619,7 @@ impl<'s> Cx<'s> {
                 Item::Enum { .. } | Item::Label(_) | Item::Const { .. } | Item::On { .. } => {}
             }
         }
+        self.show_decls();
         self.quick_marks();
         self.label_clashes();
         self.const_clashes();
@@ -611,50 +659,50 @@ impl<'s> Cx<'s> {
         if u16::try_from(s.version).is_err() {
             self.err("decl", pos, "the version is 0 to 65535");
         }
-        match &s.carrier {
-            None => self.err("decl", pos, "a script names its carrier: carrier slayer"),
-            Some((c, cpos)) => {
-                if !CARRIERS.iter().any(|(n, _)| n == c) {
-                    self.err("name.unknown", *cpos, format!("unknown carrier {c}"));
+        match &s.game_type {
+            // A retired `carrier` line names the type to write in its own error.
+            None if s.retired.iter().any(|(w, _, _)| w == "carrier") => {}
+            None => self.err("decl", pos, "a script names its game type: type slayer"),
+            Some((t, tpos)) => match game::Type::named(t) {
+                Some(t) => self.game_type = Some(t),
+                None => {
+                    let m = format!("unknown type {t}: a type is {}", game::names());
+                    self.err("name.unknown", *tpos, m);
                 }
-            }
+            },
         }
         if let Some((n, tpos)) = s.teams
             && !(1..=MAX_TEAMS as i64).contains(&n)
         {
             self.err("decl", tpos, "teams is 1 to 8");
         }
-        if let Some((name, lpos)) = &s.list
-            && List::named(name).is_none()
-        {
-            let names: Vec<&str> = List::NAMED.iter().filter_map(|l| l.name()).collect();
-            let names = names.join(", ");
-            self.err("name.unknown", *lpos, format!("unknown list {name}: a list is {names}"));
-        }
-        self.carrier = s
-            .carrier
-            .as_ref()
-            .and_then(|(c, _)| CARRIERS.iter().find(|(n, _)| n == c).map(|&(_, e)| e));
-        if let Some((name, lpos)) = &s.list
-            && List::named(name).is_some()
-            && let Some((c, _)) = &s.carrier
-            && self.carrier.is_some()
-            && !LIST_CARRIERS.contains(&c.as_str())
-        {
-            let m = format!(
-                "list {name} files the variant under one of our rows, which hold Slayer and Juggernaut variants; this script's carrier is {c}"
-            );
-            self.err("list.carrier", *lpos, m);
-        }
-        if let Some((word, spos)) = &s.scoring {
-            if word == "carrier" {
-                self.scoring = ir::Scoring::Carrier;
-            } else {
-                let m = format!(
-                    "unknown scoring {word}: write scoring carrier for the carrier's rules, or no scoring line for a script that scores"
-                );
-                self.err("name.unknown", *spos, m);
+        if let Some((u, upos)) = &s.uses {
+            match game::Type::named(u) {
+                Some(t) if t.is_retail() => self.uses = Some(t),
+                _ => {
+                    let m = format!("uses names a built-in game: {}", game::retail_names());
+                    self.err("name.unknown", *upos, m);
+                }
             }
+        }
+        self.engine = match (&s.uses, self.uses, self.game_type) {
+            (Some(_), None, _) => None,
+            (_, Some(u), _) => Some(u.engine()),
+            (None, None, t) => t.map(game::Type::engine),
+        };
+        if let Some((text, ppos)) = &s.points
+            && (text.is_empty() || text.len() > game::MAX_POINTS_BYTES)
+        {
+            let m = format!("points is 1 to {} bytes", game::MAX_POINTS_BYTES);
+            self.err("limit", *ppos, m);
+        }
+        for (word, arg, rpos) in &s.retired {
+            let m = retired_line(word, arg, s);
+            self.err("header.retired", *rpos, m);
+        }
+        for (name, mpos) in &s.modules {
+            let m = format!("`use \"{name}\"` has no file to read: the compile is of this text alone");
+            self.err("use", *mpos, m);
         }
         if let Some((text, apos)) = &s.about {
             let units = text.encode_utf16().count();
@@ -679,6 +727,53 @@ impl<'s> Cx<'s> {
         }
     }
 
+    /// The `hud` and `waypoint` declarations: a kind the kit draws, a
+    /// slot of its own (two declarations at one slot overlap), the
+    /// counts the show state holds, and the capability that names them.
+    fn show_decls(&mut self) {
+        let s = self.script;
+        let mut slots: Vec<(&str, &str)> = Vec::new();
+        for (cap, empty) in [("hud.widgets", s.huds.is_empty()), ("hud.waypoints", s.waypoints.is_empty())] {
+            if empty {
+                continue;
+            }
+            self.used_caps.insert(cap.to_string());
+            if !self.required(cap) {
+                let pos = if cap == "hud.widgets" { s.huds[0].pos } else { s.waypoints[0].pos };
+                let what = if cap == "hud.widgets" { "a hud declaration" } else { "a waypoint declaration" };
+                self.err("cap.missing", pos, format!("{what} needs capability {cap}: add it to requires"));
+            }
+        }
+        if s.huds.len() > ir::MAX_WIDGETS {
+            self.err("limit", s.huds[ir::MAX_WIDGETS].pos, "a script declares at most 16 hud widgets");
+        }
+        if s.waypoints.len() > ir::MAX_WAYPOINTS {
+            self.err("limit", s.waypoints[ir::MAX_WAYPOINTS].pos, "a script declares at most 8 waypoints");
+        }
+        for h in &s.huds {
+            if ir::WidgetKind::ALL.iter().all(|k| k.word() != h.kind) {
+                let words: Vec<&str> = ir::WidgetKind::ALL.iter().map(|k| k.word()).collect();
+                let m = format!("{} is no hud kind; a hud is {}", h.kind, words.join(", "));
+                self.err("decl", h.pos, m);
+            }
+            if let Some((_, other)) = slots.iter().find(|(slot, _)| *slot == h.slot) {
+                let m = format!("{} is at {} already, where {other} is", h.name, h.slot);
+                self.err("decl", h.pos, m);
+            } else {
+                slots.push((h.slot.as_str(), h.name.as_str()));
+            }
+        }
+        for w in &s.waypoints {
+            let Some(slot) = &w.slot else { continue };
+            if let Some((_, other)) = slots.iter().find(|(s, _)| *s == slot.as_str()) {
+                let m = format!("{} is at {slot} already, where {other} is", w.name);
+                self.err("decl", w.pos, m);
+            } else {
+                slots.push((slot.as_str(), w.name.as_str()));
+            }
+        }
+    }
+
     fn required(&self, cap: &str) -> bool {
         self.requires.iter().any(|(r, _)| r == cap)
     }
@@ -686,12 +781,11 @@ impl<'s> Cx<'s> {
     // ---- the settings block, the quick line and the scorer ----
 
     /// The `settings` block: each name in [`settings::TABLE`], applying to
-    /// the carrier, named once, with a value of the row's kind in its
+    /// the script's game, named once, with a value of the row's kind in its
     /// range. See `docs/game/rules-variants.md`, "The settings block".
     fn settings_block(&mut self) {
         let s = self.script;
         let Some(block) = &s.settings else { return };
-        let carrier_name = s.carrier.as_ref().map_or("", |(c, _)| c.as_str());
         let mut seen: Vec<(u16, Pos)> = Vec::new();
         for line in &block.lines {
             let Some((index, row)) = settings::named(&line.name) else {
@@ -708,15 +802,16 @@ impl<'s> Cx<'s> {
                 continue;
             }
             seen.push((index, line.pos));
-            if let Some(c) = self.carrier
-                && !row.applies(c)
+            if let Some(e) = self.engine
+                && !row.applies(e)
             {
                 let m = format!(
-                    "{} is a {} setting; this script's carrier is {carrier_name}",
+                    "{} is a {} setting; this script's record is {}'s",
                     row.name,
-                    row.carrier_words()
+                    row.carrier_words(),
+                    settings::carrier_label(e)
                 );
-                self.err("setting.carrier", line.pos, m);
+                self.err("setting.type", line.pos, m);
                 continue;
             }
             if let Some(value) = self.setting_value(row, &line.value) {
@@ -788,7 +883,7 @@ impl<'s> Cx<'s> {
     }
 
     /// The `quick` line: at most [`ir::MAX_QUICK`] names, each a record
-    /// setting of the table that applies to the carrier or one of the
+    /// setting of the table that applies to the script's game or one of the
     /// script's options, named once. An option is named apart from every
     /// setting.
     fn quick_marks(&mut self) {
@@ -807,7 +902,6 @@ impl<'s> Cx<'s> {
             let m = format!("Quick Options has five rows; this line names {}", names.len());
             self.err("quick.many", *at, m);
         }
-        let carrier_name = s.carrier.as_ref().map_or("", |(c, _)| c.as_str());
         let mut seen: Vec<&str> = Vec::new();
         for (name, pos) in names {
             if seen.contains(&name.as_str()) {
@@ -821,14 +915,15 @@ impl<'s> Cx<'s> {
             }
             match settings::named(name) {
                 Some((index, row)) if row.is_record() => {
-                    if let Some(c) = self.carrier
-                        && !row.applies(c)
+                    if let Some(e) = self.engine
+                        && !row.applies(e)
                     {
                         let m = format!(
-                            "{name} is a {} setting; this script's carrier is {carrier_name}",
-                            row.carrier_words()
+                            "{name} is a {} setting; this script's record is {}'s",
+                            row.carrier_words(),
+                            settings::carrier_label(e)
                         );
-                        self.err("setting.carrier", *pos, m);
+                        self.err("setting.type", *pos, m);
                         continue;
                     }
                     self.quick.push(ir::Quick::Setting(index));
@@ -850,13 +945,13 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// Who scores: a `scoring carrier` script holds `requires`, `list`,
-    /// `settings`, `quick` and `about` only (`scoring.handlers`); a script
-    /// with no handlers and no `scoring carrier` scores nothing
-    /// (`scoring.none`), reported once the script has no other error.
+    /// Who scores: a `uses` script holds its header lines, `settings` and
+    /// `quick` only (`uses.handlers`); a script with no handlers and no
+    /// `uses` line scores nothing (`scoring.none`), reported once the
+    /// script has no other error.
     fn scorer(&mut self) {
         let s = self.script;
-        if self.scoring == ir::Scoring::Carrier {
+        if let Some(u) = self.uses {
             for item in &s.items {
                 let (what, pos) = match item {
                     Item::On { event, pos, .. } => (format!("on {event}"), *pos),
@@ -870,9 +965,10 @@ impl<'s> Cx<'s> {
                     Item::Const { name, pos, .. } => (format!("const {name}"), *pos),
                 };
                 let m = format!(
-                    "{what} has no place here: with scoring carrier the carrier's engine scores the game, and the script holds requires, list, settings, quick and about only"
+                    "{what} has no place here: with uses {} the built-in game scores, and the script holds its header lines, settings and quick only",
+                    u.name()
                 );
-                self.err("scoring.handlers", pos, m);
+                self.err("uses.handlers", pos, m);
             }
             return;
         }
@@ -880,11 +976,12 @@ impl<'s> Cx<'s> {
         if scores || self.out.iter().any(Diagnostic::is_error) {
             return;
         }
-        let rules = match self.carrier {
-            Some(c) => settings::carrier_label(c),
-            None => "the carrier",
-        };
-        let m = format!("this script scores nothing. Write `scoring carrier` to play {rules}'s rules.");
+        let uses = self.game_type.filter(|t| t.is_retail()).unwrap_or(game::Type::Slayer);
+        let m = format!(
+            "this script scores nothing. Write `uses {}` to play {}'s rules.",
+            uses.name(),
+            uses.row().label
+        );
         self.err("scoring.none", s.pos, m);
     }
 
@@ -928,11 +1025,12 @@ impl<'s> Cx<'s> {
             ("objects", false) => (LabelKind::Object, false),
             ("zones", false) => (LabelKind::Zone, false),
             ("spawns", false) => (LabelKind::Spawn, false),
+            ("path", false) => (LabelKind::Path, false),
             _ => {
                 self.err(
                     "decl",
                     l.kind.pos,
-                    "a label is object, zone, object?, zone?, objects, zones or spawns",
+                    "a label is object, zone, object?, zone?, objects, zones, spawns or path",
                 );
                 return;
             }
@@ -1005,6 +1103,10 @@ impl<'s> Cx<'s> {
                     Req::AtMost(n) => (None, Some(n)),
                     Req::Exactly(n) => (Some(n), Some(n)),
                     Req::Between(a, b) => (Some(a), Some(b)),
+                    Req::Numbered(_) if kind == LabelKind::Path => {
+                        self.err("decl", rpos, "a path's points are numbered from 0 already; leave numbered out");
+                        continue;
+                    }
                     Req::Numbered(range) => {
                         if numbered {
                             self.err("decl", rpos, "numbered is given twice");
@@ -1030,7 +1132,9 @@ impl<'s> Cx<'s> {
                         continue;
                     }
                     Req::PerTeam => {
-                        if kind == LabelKind::Spawn {
+                        if kind == LabelKind::Path {
+                            self.err("decl", rpos, "per team is for objects and zones, not a path");
+                        } else if kind == LabelKind::Spawn {
                             self.err(
                                 "decl",
                                 rpos,
@@ -1051,6 +1155,12 @@ impl<'s> Cx<'s> {
                 }
                 min = min.or(lo);
                 max = max.or(hi);
+            }
+            if kind == LabelKind::Path {
+                // A flight needs a start and an end, and the points are
+                // numbered from 0 with none missing (`labels::check`).
+                def.flags |= label_flags::NUMBERED;
+                min = Some(min.unwrap_or(0).max(2));
             }
             let (lo, hi) = (min.unwrap_or(0), max.unwrap_or(MAX_LABELLED as i64));
             if lo > hi {
@@ -1334,6 +1444,11 @@ impl<'s> Cx<'s> {
     /// The type a type name names; reports an unknown one.
     fn type_of(&mut self, t: &TypeName) -> Option<Type> {
         if let Some(ty) = Type::named(&t.name, t.optional, &self.enum_names) {
+            if ty == Type::Vec {
+                let m = "a vec is the value of an expression, not a type to store: keep x, y and z as three fixed";
+                self.err("type.mismatch", t.pos, m);
+                return None;
+            }
             return Some(ty);
         }
         if t.optional && Type::named(&t.name, false, &self.enum_names).is_some() {
@@ -1622,7 +1737,7 @@ impl<'s> Cx<'s> {
                 self.err("null.var", pos, format!("none is not a {n}; a {n} that may be none is {n}?"));
                 return None;
             }
-            (ExprKind::Str(s), Type::H(Handle::Tag | Handle::Weapon, _)) => {
+            (ExprKind::Str(s), Type::H(Handle::Tag | Handle::Weapon | Handle::Sound, _)) => {
                 if s.is_empty() || s.len() > ir::MAX_TAG_BYTES {
                     self.err("limit", pos, "a tag path is 1 to 256 bytes");
                     return None;
@@ -1869,7 +1984,8 @@ impl<'s> Cx<'s> {
                 let (name, member) = (self.labels[ix].name.clone(), self.labels[ix].member());
                 match member {
                     None => {
-                        let m = format!("{name} names spawn areas; on {event} takes {} label.", want.a());
+                        let what = if self.labels[ix].def.kind == LabelKind::Path { "a flight path" } else { "spawn areas" };
+                        let m = format!("{name} names {what}; on {event} takes {} label.", want.a());
                         self.err("event.label", pos, m);
                         return;
                     }
@@ -2146,7 +2262,6 @@ impl<'s> Cx<'s> {
         let t = self.expr(value, None);
         let variants: Option<(String, Vec<String>)> = match t {
             Some(Type::Enum(e)) => Some(self.enums[e as usize].clone()),
-            Some(Type::Carrier) => Some(("carrier".into(), CARRIERS.iter().map(|(n, _)| n.to_string()).collect())),
             Some(other) => {
                 let m = format!("match takes an enum value, and {} is {}", describe(value), self.tn(other));
                 self.err("type.mismatch", value.pos, m);
@@ -2473,6 +2588,13 @@ impl<'s> Cx<'s> {
                 };
                 self.err("tag.group", e.pos, format!("{who} takes a weapon, and {x} is a tag. {hint}"));
             }
+            (Type::H(Handle::Tag | Handle::Weapon, _), Type::H(Handle::Sound, _)) => {
+                let hint = match &e.kind {
+                    ExprKind::Field(..) => "Declare the column as sound.",
+                    _ => "Name a sound's tag path, or declare it as sound.",
+                };
+                self.err("tag.group", e.pos, format!("{who} takes a sound, and {x} is not one. {hint}"));
+            }
             (Type::Set(g), Type::Set(w)) => {
                 self.err("label.kind", e.pos, format!("{x} is {}, and {who} takes {}.", g.words(), w.words()));
             }
@@ -2536,7 +2658,7 @@ impl<'s> Cx<'s> {
                 }
             },
             ExprKind::Str(s) => match want {
-                Some(Type::H(h @ (Handle::Tag | Handle::Weapon), _)) => {
+                Some(Type::H(h @ (Handle::Tag | Handle::Weapon | Handle::Sound), _)) => {
                     if s.is_empty() || s.len() > ir::MAX_TAG_BYTES {
                         self.err("limit", pos, "a tag path is 1 to 256 bytes");
                         return None;
@@ -2667,8 +2789,8 @@ impl<'s> Cx<'s> {
                 self.err("label.kind", pos, format!("{n} is {}, and {who} takes {}.", kind.words(), w.words()));
                 None
             }
-            _ if kind == SetKind::Spawns => {
-                let m = format!("{n} names spawn areas, which have no objects to visit. Pass it to spawn_areas.");
+            _ if kind.unvisited(n, "visit").is_some() => {
+                let m = kind.unvisited(n, "visit").unwrap_or_default();
                 self.err("label.spawns", pos, m);
                 None
             }
@@ -2710,6 +2832,13 @@ impl<'s> Cx<'s> {
         if let Some(v) = self.var(f, scope) {
             return Some(v.ty);
         }
+        if scope == Scope::Object {
+            match f {
+                "position" | "velocity" => return Some(Type::Vec),
+                "speed" => return Some(Type::Fixed),
+                _ => {}
+            }
+        }
         let ir_owner = owner.erase()?;
         let &(_, _, id) = FIELDS.iter().find(|&&(o, n, _)| o == ir_owner && n == f)?;
         sig::of(&ENTRIES[id as usize])?.result
@@ -2723,23 +2852,12 @@ impl<'s> Cx<'s> {
                 None => {
                     if b == "variant" {
                         return match VARIANT_FIELDS.iter().find(|(n, _)| *n == f) {
-                            // The engine index reads as the built-in enum.
-                            Some(_) if f == "engine" => Some(Type::Carrier),
                             Some(&(_, t)) => Type::from_ir(t),
                             None => {
                                 self.err("name.unknown", pos, format!("variant has no field {f}"));
                                 None
                             }
                         };
-                    }
-                    if b == "carrier" {
-                        if CARRIERS.iter().any(|(n, _)| *n == f) {
-                            return Some(Type::Carrier);
-                        }
-                        let names: Vec<&str> = CARRIERS.iter().map(|(n, _)| *n).collect();
-                        let m = format!("carrier has no variant {f}; a carrier is {}", names.join(", "));
-                        self.err("name.unknown", pos, m);
-                        return None;
                     }
                     if let Some(i) = self.enums.iter().position(|(n, _)| n == b) {
                         if !self.enums[i].1.iter().any(|v| v == f) {
@@ -2762,6 +2880,13 @@ impl<'s> Cx<'s> {
             _ => {}
         }
         let bt = self.expr(base, None)?;
+        if bt == Type::Vec {
+            if matches!(f, "x" | "y" | "z") {
+                return Some(Type::Fixed);
+            }
+            self.err("name.unknown", pos, format!("a vec has no field {f}: its fields are x, y and z"));
+            return None;
+        }
         if bt.is_opt() {
             self.null_use(base);
             return None;
@@ -2857,7 +2982,7 @@ impl<'s> Cx<'s> {
         let l = self.labels[ix].clone();
         let name = &l.name;
         let Some(member) = l.member() else {
-            let m = format!("{name} names spawn areas, which have no objects to visit. Pass it to spawn_areas.");
+            let m = l.set().unvisited(name, "visit").unwrap_or_default();
             self.err("label.spawns", pos, m);
             return None;
         };
@@ -2921,8 +3046,7 @@ impl<'s> Cx<'s> {
             self.unknown_label(l, lpos);
             return None;
         };
-        if self.labels[ix].def.kind == LabelKind::Spawn {
-            let m = format!("{l} names spawn areas, which have no objects to test. Pass it to spawn_areas.");
+        if let Some(m) = self.labels[ix].set().unvisited(l, "test") {
             self.err("label.spawns", lpos, m);
             return None;
         }
@@ -2938,6 +3062,18 @@ impl<'s> Cx<'s> {
         let lit_first = is_literal(a) && !is_literal(b);
         let (first, second) = if lit_first { (b, a) } else { (a, b) };
         let tf = self.expr(first, hint)?;
+        if tf == Type::Vec {
+            // `a + b`, `a - b` and `v * k`; nothing else is a vec's.
+            return match op {
+                BinOp::Add | BinOp::Sub => self.expect(second, Type::Vec, None).map(|_| Type::Vec),
+                BinOp::Mul => self.expect(second, Type::Fixed, None).map(|_| Type::Vec),
+                _ => {
+                    let m = "a vec takes + and - with a vec and * with a fixed; compare two with distance(a, b)";
+                    self.err("type.mismatch", pos, m);
+                    None
+                }
+            };
+        }
         if matches!(tf, Type::Int | Type::Time) {
             let ts = self.expr(second, Some(tf))?;
             let (ta, tb) = if lit_first { (ts, tf) } else { (tf, ts) };
@@ -3009,14 +3145,7 @@ impl<'s> Cx<'s> {
         if t.comparable(other) {
             return Some(t);
         }
-        let m = match (other, t, const_int(e)) {
-            // `variant.engine == 9`: a carrier is named, not numbered.
-            (Type::Carrier, Type::Int, n) => {
-                let name = n.and_then(|n| CARRIERS.iter().find(|c| c.1 as i64 == n)).map_or("assault", |c| c.0);
-                format!("a carrier is named, not numbered: write carrier.{name}")
-            }
-            _ => format!("expected {}, found {}", self.tn(other), self.tn(t)),
-        };
+        let m = format!("expected {}, found {}", self.tn(other), self.tn(t));
         self.err("type.mismatch", e.pos, m);
         None
     }
@@ -3046,14 +3175,14 @@ impl<'s> Cx<'s> {
     }
 
     fn set_named(&mut self, n: &str, pos: Pos) -> Option<Type> {
-        let spawns = |cx: &mut Self| {
-            let m = format!("{n} names spawn areas, which have no objects to visit. Pass it to spawn_areas.");
+        let spawns = |cx: &mut Self, kind: SetKind| {
+            let m = kind.unvisited(n, "visit").unwrap_or_default();
             cx.err("label.spawns", pos, m);
             None
         };
         if let Some(id) = self.lookup(n) {
             return match self.binds[id].ty {
-                BindTy::Set(SetKind::Spawns) => spawns(self),
+                BindTy::Set(k @ (SetKind::Spawns | SetKind::Paths)) => spawns(self, k),
                 BindTy::Set(k) => k.member().map(|h| Type::H(h, false)),
                 BindTy::Err => None,
                 _ => {
@@ -3068,7 +3197,8 @@ impl<'s> Cx<'s> {
             return None;
         };
         let l = &self.labels[ix];
-        let Some(member) = l.member() else { return spawns(self) };
+        let kind = l.set();
+        let Some(member) = l.member() else { return spawns(self, kind) };
         if l.single {
             let w = member.name();
             let m = format!("{n} is one {w}, not a set. Use it directly, or declare it as {w}s.");
@@ -3178,6 +3308,30 @@ impl<'s> Cx<'s> {
                 }
                 return ok.then_some(Some(t));
             }
+            // A point or an offset: `vec(x, y, z)`, the length of one, and
+            // the distance between two (docs/game/rules-world-api.md,
+            // "Objects"). Three fixed values, never stored.
+            "vec" => {
+                if !arity(self, 3) {
+                    return None;
+                }
+                let mut ok = true;
+                for a in args {
+                    ok &= self.expect(a, Type::Fixed, Some("vec")).is_some();
+                }
+                return ok.then_some(Some(Type::Vec));
+            }
+            "length" | "distance" => {
+                let n = if name == "length" { 1 } else { 2 };
+                if !arity(self, n) {
+                    return None;
+                }
+                let mut ok = true;
+                for a in args {
+                    ok &= self.expect(a, Type::Vec, Some(name)).is_some();
+                }
+                return ok.then_some(Some(Type::Fixed));
+            }
             "grant" => {
                 if !no_value(self) {
                     return None;
@@ -3230,6 +3384,13 @@ impl<'s> Cx<'s> {
         if name == "message" {
             return self.message(args, pos, need_value);
         }
+        if name == "mark" {
+            return self.mark(args, pos, need_value);
+        }
+        if let Some(why) = world_refusal(name) {
+            self.err("name.unknown", pos, format!("{name} is not built: {why}"));
+            return None;
+        }
         let Some(entry) = caps::entry_named(name) else {
             self.err("name.unknown", pos, format!("unknown function {name}"));
             return None;
@@ -3239,7 +3400,14 @@ impl<'s> Cx<'s> {
             self.err("name.unknown", pos, m);
             return None;
         };
-        if !arity(self, sig.args.len()) {
+        // `teleport(o, at, offset)`: an object's place and an offset from it.
+        let offset_form = entry.id == id::TELEPORT && args.len() == 3;
+        let wants: Vec<Type> = if offset_form {
+            vec![Type::OBJECT, Type::Vec, Type::Vec]
+        } else {
+            sig.args.clone()
+        };
+        if !offset_form && !arity(self, sig.args.len()) {
             return None;
         }
         if let Some(cap) = entry.cap {
@@ -3250,9 +3418,22 @@ impl<'s> Cx<'s> {
             self.used_caps.insert(cap.to_string());
         }
         let mut ok = true;
-        for (a, &want) in args.iter().zip(&sig.args) {
+        for (k, (a, &want)) in args.iter().zip(&wants).enumerate() {
+            // The object moved and the place it goes to.
+            if matches!(entry.id, id::TELEPORT | id::MOVE_TO) && k < 2 {
+                ok &= self.moved_arg(a, want, k, offset_form, name).is_some();
+                continue;
+            }
             match self.expect(a, want, Some(name)) {
                 Some(got) => {
+                    if entry.id == id::SET_BODY
+                        && let ExprKind::Str(path) = &a.kind
+                        && crate::bodies::of_path(path).is_none()
+                    {
+                        let names: Vec<&str> = crate::bodies::LIST.iter().map(|&(p, _)| p).collect();
+                        let m = format!("{path} is not a player body; set_body takes {}", names.join(" or "));
+                        self.err("body.unknown", a.pos, m);
+                    }
                     if entry.id == id::DELETE && got.handle() == Some(Handle::Zone) {
                         let x = describe(a);
                         let m = format!(
@@ -3264,10 +3445,73 @@ impl<'s> Cx<'s> {
                 None => ok = false,
             }
         }
+        if ok && crate::fields::is_read(entry.id) {
+            // Resolved at load, so both are written in the call.
+            for a in args {
+                if !matches!(a.kind, ExprKind::Str(_)) {
+                    let m = format!("{name} names its tag and its field as strings written in the call, so a host can resolve them at load");
+                    self.err("type.mismatch", a.pos, m);
+                    ok = false;
+                }
+            }
+            if let Some(Expr { kind: ExprKind::Str(field), pos, .. }) = args.get(1)
+                && let Err(why) = crate::fields::valid_path(field)
+            {
+                self.err("field.path", *pos, why);
+                ok = false;
+            }
+        }
         if sig.result.is_none() && !no_value(self) {
             return None;
         }
         ok.then_some(sig.result)
+    }
+
+    /// The object `teleport` and `move_to` move (a player is refused by
+    /// name: how the player's own machine takes a position the host sets is
+    /// not researched) and the place it goes to: a `vec`, or an object,
+    /// whose position it is (with an offset after it, only an object).
+    fn moved_arg(&mut self, a: &'s Expr, want: Type, k: usize, offset_form: bool, name: &'s str) -> Option<Type> {
+        let saved = self.arg_of;
+        self.arg_of = Some(name);
+        let got = self.expr(a, Some(want));
+        self.arg_of = saved;
+        let got = got?;
+        if k == 1 {
+            if got == Type::Vec && !offset_form {
+                return Some(got);
+            }
+            if got == Type::Vec {
+                let m = format!("{name} with an offset goes to an object's place: give an object, then the offset");
+                self.err("type.mismatch", a.pos, m);
+                return None;
+            }
+            if got.fits(Type::OBJECT) {
+                return Some(got);
+            }
+            let x = describe(a);
+            if got.is_opt() && got.handle().is_some_and(|h| h.fits(Handle::Object)) {
+                let fix = self.null_fix(a);
+                self.err("null.arg", a.pos, format!("{name} goes to a vec or an object, and {x} may be none here. {fix}"));
+            } else {
+                let m = format!("{name} goes to a vec or an object, and {x} is {}", self.tn(got));
+                self.err("type.mismatch", a.pos, m);
+            }
+            return None;
+        }
+        if got.fits(want) {
+            return Some(got);
+        }
+        if got.handle() == Some(Handle::Player) {
+            let x = describe(a);
+            let m = format!(
+                "{name} moves an object, and {x} is a player. Moving a player's unit is not built: how the player's own machine takes a position the host sets is not researched (R9)."
+            );
+            self.err("type.mismatch", a.pos, m);
+            return None;
+        }
+        self.mismatch(a, got, want, Some(name));
+        None
     }
 
     fn fn_call(&mut self, decl: &'s FnDecl, args: &'s [Expr], pos: Pos, need_value: bool) -> Option<Option<Type>> {
@@ -3338,6 +3582,49 @@ impl<'s> Cx<'s> {
         }
         if self.expect(&args[1], Type::Text, Some("message")).is_some() {
             self.template(&args[1]);
+        }
+        Some(None)
+    }
+
+    /// `mark(wp, at)`: every viewer; `mark(wp, at, to)` with `to` a
+    /// player, a team or `all`, which names the waypoint's audience.
+    fn mark(&mut self, args: &'s [Expr], pos: Pos, need_value: bool) -> Option<Option<Type>> {
+        if need_value {
+            self.err("type.mismatch", pos, "mark has no value");
+            return None;
+        }
+        if args.len() != 2 && args.len() != 3 {
+            self.err(
+                "type.mismatch",
+                pos,
+                "mark takes 2 or 3 arguments: mark(wp, at) or mark(wp, at, to)",
+            );
+            return None;
+        }
+        let cap = "hud.waypoints";
+        if !self.required(cap) {
+            self.err("cap.missing", pos, format!("mark needs capability {cap}: add it to requires"));
+        }
+        self.used_caps.insert(cap.to_string());
+        self.expect(&args[0], Type::Int, Some("mark"));
+        self.expect(&args[1], Type::OBJECT, Some("mark"));
+        if let Some(to) = args.get(2) {
+            match &to.kind {
+                ExprKind::Name(n) if n == caps::EVERYONE => {}
+                ExprKind::None => {
+                    self.err("type.mismatch", to.pos, "mark is to a player, a team or all, not none")
+                }
+                _ => match self.expr(to, None) {
+                    Some(Type::H(Handle::Player | Handle::Team, false)) | None => {}
+                    Some(t @ Type::H(h @ (Handle::Player | Handle::Team), true)) => {
+                        self.mismatch(to, t, Type::H(h, false), Some("mark"));
+                    }
+                    Some(other) => {
+                        let m = format!("mark is to a player, a team or all, not {}", self.tn(other));
+                        self.err("type.mismatch", to.pos, m);
+                    }
+                },
+            }
         }
         Some(None)
     }

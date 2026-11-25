@@ -53,10 +53,19 @@ queues Game Setup with a return request, so the window initializes the
 replacement and sends the outgoing selector its normal Back message.
 The supported selectors are **Change Map**, **Change Game Type**, the
 lobby's **Select Level**, and the lobby's **Difficulty**. The feature uses
-the selector's normal confirmation path for A. Profile and sign-in
+the selector's normal confirmation path for A. A variant list opened
+from Change Game Type remembers the category row and its Game Setup return.
+Back rebuilds the category list and restores focus using the new list's
+datum handle. The channel free hook drops each outgoing instance's return. Profile and sign-in
 flows, variant editors, controller settings, and other dialogs with
 their own commit or navigation paths use retail behavior. The game-shell
 channel uses its own reopen history.
+
+The Xbox Live menu's screen-tag lookup serves a private copy of the
+screen header and panes. Other screens resolving the same tag see the
+map's original list and text blocks. Forwarded Live row presses pass a
+private retail datum handle and preserve the selected display row. Building
+the Live or main menu clears pending lobby mode requests and playlist scope.
 
 The [map picker](map-select.md) also restores the folder list when Back
 dismisses a category's maps, independent of the lobby Back switch. Use
@@ -78,7 +87,7 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    a description per row, then the footer legend); `KitScreen::class` panics
    at install if the family is too small.
 2. **Declare it.** Its presentation is its doc,
-   `assets/ui/screens/<name>.yaml` ([ui-builder.md](ui-builder.md)
+   `content/ui/screens/<name>.yaml` ([ui-builder.md](ui-builder.md)
    "Screens in YAML"): the title, the legend, the kind and layout (the
    Controls list, the level select's, or a dialog on Quick Options or the
    large dialog over a named opener), the description block, whether it
@@ -133,7 +142,7 @@ A screen is data a check can read. `ui_kit::spec::ScreenSpec` says what a screen
    focused row's help under the rows:
 
    ```yaml
-   # assets/ui/screens/bots.yaml
+   # content/ui/screens/bots.yaml
    screen: bots
    kind: dialog
    layout: settings

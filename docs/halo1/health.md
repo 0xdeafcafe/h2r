@@ -1,15 +1,15 @@
 # Health: Halo 1's model on Halo 2's engine
 
-Status: Built. The hooks and the switch are confirmed in the game; the
-meter's placement in the HUD is not. The health meter is part of Halo 2's
-HUD (below, "The health meter in the HUD"). At game start the model is
-picked from the loaded map's name (`health::model_for_map`): converted
-Halo 1 multiplayer maps (`h1_<map>`) in the Halo 1 sandbox and Halo 1's
-campaign levels get Halo 1's; the debug override `H2_HEALTH_MODEL`
-beats it ([multiplayer.md](multiplayer.md), "Halo 1 sandbox"). The
-converted player shows Halo 1's own HUD ([hud.md](hud.md)); the HUD with
-the health strip below is the Halo 2 alternative the HUD switch
-selects.
+Status: **Built.** The hooks and the switch are confirmed in a game run by
+the owner. The health meter is part of Halo 2's HUD (below, "The health
+meter in the HUD"); its placement is not confirmed in a game run. The
+game start picks the model from the loaded map's name
+(`health::model_for_map`): converted Halo 1 multiplayer maps (`h1_<map>`)
+in the Halo 1 sandbox and Halo 1's campaign levels get Halo 1's; the
+debug override `H2_HEALTH_MODEL` beats it ([multiplayer.md](multiplayer.md),
+"Halo 1 sandbox"). The converted player shows Halo 1's own HUD by default
+([hud.md](hud.md)); the HUD with the health strip below is the Halo 2
+alternative the player's HUD choice selects.
 
 Halo 1 has a shield that recharges over a health bar that doesn't, and
 health packs that refill it. Halo 2 has a shield over hidden body health
@@ -20,8 +20,7 @@ decision 2). The engine still uses Halo 2's damage, shield and physics code.
 Labels: **confirmed** means read from the retail XBE's instructions with
 `h2 disasm` and asserted by `crates/apps/boot/tests/health_xbe.rs` (ignored;
 needs `H2_XBE`); **likely** means strong evidence but not every path read;
-**community** means public knowledge. Nothing labelled in "What the game
-does" has been seen running; the hooks of "What we do" have been.
+**community** means public knowledge.
 
 ## What the game does
 
@@ -222,7 +221,7 @@ retail level (which has no health meter: its HUD is retail's).
 - each health pack: `health: health pack: object 0x..., a player's body at 0.300, restored to full (Halo 1 model)`
 - `H2_FEATURES` with `h1-health` off leaves Halo 2's model everywhere.
 
-## What the converter writes
+## What the converter must write
 
 For a Halo 1 health pack (Halo 1 `eqip` with a health powerup):
 
@@ -279,7 +278,7 @@ player is Halo 2's biped.
 
 Steps for the user:
 
-1. Play a converted Halo 1 map (converter version 37 or later): a Halo 1
+1. Play a converted Halo 1 map: a Halo 1
    campaign level, or a Halo 1 multiplayer map in the Halo 1 sandbox.
 2. Stderr shows `health: game start: Halo 1 model ...`.
 3. Bottom left, a thin straight strip 2 pixels above the shield bar,

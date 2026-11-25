@@ -1399,6 +1399,7 @@ impl Measures {
     }
 }
 
+pub mod compare;
 pub mod flow;
 pub mod heat;
 pub mod items;

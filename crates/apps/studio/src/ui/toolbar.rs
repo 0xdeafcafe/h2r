@@ -101,6 +101,12 @@ pub(super) fn draw(
         describe(ui, hint, "Fly speed (wheel while flying)");
     });
 
+    next_group(ui, right, 40.0);
+    let building = app.ground_state() == crate::app::ground::GroundState::Building;
+    if button(ui, hint, icon::FLAG, "Build AI ground", building) {
+        actions.push(Action::BuildGround);
+    }
+
     next_group(ui, right, 124.0);
     ui.set_next_item_width(124.0);
     let mode = app.pairing.camera.mode;

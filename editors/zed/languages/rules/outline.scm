@@ -2,21 +2,21 @@
   "rules" @context
   name: (string) @name) @item
 
-(carrier_declaration
-  "carrier" @context
+(type_declaration
+  "type" @context
   name: (identifier) @name) @item
 
 (teams_declaration
   "teams" @context
   count: (integer) @name) @item
 
-(list_declaration
-  "list" @context
+(uses_declaration
+  "uses" @context
   name: (identifier) @name) @item
 
-(scoring_declaration
-  "scoring" @context
-  name: (identifier) @name) @item
+(use_declaration
+  "use" @context
+  path: (string) @name) @item
 
 (about_declaration
   "about" @name) @item

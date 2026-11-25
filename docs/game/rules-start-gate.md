@@ -17,6 +17,11 @@ that page's rule, the carrier's own rules.
 Everything not marked **Code** is **Design**
 ([docs-style.md](../meta/docs-style.md)).
 
+Change Map checks each installed map against the selected script's label and tag
+requirements. For Siege the map must provide a site (a Siege site or a territory)
+or a final stand (a Siege goal or the defending team's flag stand). Start Game
+applies the same check when the party changes variants after choosing a map.
+
 ## The check
 
 **Code**, `crates/formats/rules/src/labels.rs`.
@@ -37,6 +42,11 @@ its text), labels in table order, then tags:
 | an unnumbered member | `a zone labelled "hill_corner" has no number; King of the Hill needs every one numbered` |
 | a team without one | `team 1 has no zone labelled "ctf_flag_spawn"` |
 | a tag of the wrong group | `"<path>" on this map is a vehicle; Siege gives it as a weapon` |
+
+A label reads the members of its own text, and a ground label with a
+default (`siege_site`, whose default is the map's `territory` flags) reads
+the default's while the map holds none of its own (`labels::reads`), so a
+census with only territories satisfies a `siege_site` requirement.
 
 A member whose class does not satisfy the label is reported once per
 label and is not counted; a label with no member of its class reports
@@ -61,11 +71,19 @@ are no team. The game holds no tag paths, so the host's census has no
 tags; no entry a host makes takes a tag. A test builds both from one
 fixture and asserts they are equal.
 
+**Code.** A script's `tag_int` and `tag_fixed` reads are checked beside
+the labels: `Runtime::start` and `Runtime::swap` run
+`rules::fields::check` against the loaded map's tag index
+(`world::map_tags`, read from the map file at `GAME_ACTIVATE`), and a
+tag or field the map or our definitions lack is a problem of the same
+block ([rules-world-api.md](rules-world-api.md#advanced-data)). The lobby's
+and Live's checks do not run it.
+
 ## Where it runs
 
 | Where | Function or hook | Census | On a problem |
 |---|---|---|---|
-| The lobby, when the map, the Forge map or the variant changes (**Code**) | `rules::gate::refresh` (`crates/extensions/game/src/rules/gate.rs`), called from the `party-lobby` feature's `before` on `LOBBY_VARIANT_PANEL` (`lobby_mode.rs`) after `gate::read` reads the lobby with guest memory held. Its key (`gate::Key`) is the lobby's map (`h1_options_row::LOBBY_MAP`), `lobby_start::forge_map()` in Forge mode, and the script prefix, engine and team play of the panel's variant record, whose block is the store bundle's that `game_variants::inject::apply_block` writes at activation (`inject::bundle_block`), else the record's own. A changed key runs the check once and keeps the verdict | `of_file` through the VFS (`gate::InGame`), with the saved Forge map's document (`forge::load_saved`) in Forge mode | the verdict is `Blocked(problems)` |
+| The lobby, when the map, the Forge map or the variant changes (**Code**) | `rules::gate::refresh` (`crates/extensions/game/src/rules/gate.rs`), called from the `party-lobby` feature's `before` on `LOBBY_VARIANT_PANEL` (`lobby_mode.rs`) after `gate::read` reads the lobby with guest memory held. Its key (`gate::Key`) is the lobby's map (`h1_options_row::LOBBY_MAP`), `lobby_start::forge_map()` in Forge mode, and the script prefix, engine and team play of the panel's variant record, whose block is the store bundle's that `game_variants::inject::apply_block` writes at activation (`inject::bundle_block`), else the record's own. A changed key runs the check once and keeps the verdict | `of_file` through the VFS (`gate::InGame`), with the map variant's document (`forge::files::variants::load`, against the installed map's hash) in Forge mode | the verdict is `Blocked(problems)` |
 | The lobby, at Start (**Code**) | the `after` on `LOBBY_START_STATE` in `lobby_mode.rs`: `lobby_mode::start_state` answers `REFUSED_STATE` in place of ready when `lobby_mode::start_refused` reads `gate::blocked()`, the path a Forge lobby with a remote member takes. Start Game acts only on ready, so no countdown runs | the kept verdict | Start Game does nothing |
 | The host, at the game's start: the final authority | `Runtime::start` (`rules/runtime.rs`), from the `rules` feature's `on_start` observer after a successful `GAME_ACTIVATE` (`rules/feature.rs`), after `verify::load` and `verify::unhostable` and before `runtime::host_refusal` | `of_game` | `Status::Blocked`, and the game is ended (below) |
 | Live, when a hopper is edited | `admin::check_pairs`, called by `admin::put_hopper` after `admin::apply_patch` (`crates/live/live-server/src/admin.rs`) | the map's census on Live | the edit is refused |
@@ -78,14 +96,15 @@ runs no script. **Code:** what the lobby cannot decide leaves its
 verdict clear and the host decides at the start: a script that is
 neither compiled in nor in the game-variant store
 (`rules::feature::local_blob`), a blob that does not verify, a script for
-another engine, a script with no labels or tags, and a map file whose
+another retail engine, a script with no labels or tags, and a map file whose
 census cannot be read (logged as
 `rules: the lobby's map census could not be read, ...`). Without the
 `rules` feature no script runs, so the lobby checks nothing. In a team
 game the lobby checks `per team` labels for teams 0 and 1, since it does
 not know which teams its players will be on; none otherwise. Joining a lobby or a game is not gated by
 labels. The gate for a guest whose build lacks a capability is the one
-rules-engine.md's "Versioning" leaves open.
+rules-engine.md's "Versioning" leaves open. On the script index, the lobby
+checks the labels and tags of the script referenced by the record.
 
 ## What a blocked start shows
 

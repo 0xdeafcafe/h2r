@@ -19,7 +19,10 @@
 //! 2. **Gate** (`HUD_WIDGET_GATE`): a kit widget is drawn while its value
 //!    is shown, in a style the runtime draws ([`draws`]), in a screen mode
 //!    its place has, and none of its element's `hide_when_d` bits is set
-//!    in the game's word D.
+//!    in the game's word D. For a local user in monitor mode
+//!    ([`Handle::retail`]) every other widget, the retail ones of the
+//!    player's and the weapon's `nhdt`, is hidden but the motion tracker
+//!    ([`retail_gate`], `model::MONITOR_KEEPS`).
 //! 3. **Inputs** (`HUD_WIDGET_INPUTS`): `hud_input1` is
 //!    `records::Widget::input` of the value's fill.
 //!
@@ -37,7 +40,9 @@
 //! 6. **Channels**: the prompt through the user's prompt fields while the
 //!    game shows no prompt of its own ([`show_prompt`]); the training text
 //!    through the scripted training slot and the string lookup
-//!    ([`write_training`], [`text`]); the navpoint through the game's
+//!    ([`write_training`], [`text`]); the banner through each local user's
+//!    timed centred line when its text changes ([`banner_due`],
+//!    [`write_banner`]); the navpoint through the game's
 //!    navpoint list at a scenario point of ours ([`install_point`],
 //!    [`write_navpoint`]); a notification ([`Handle::notify`]) through the
 //!    game's insert, a guest call at the top of the next tick
@@ -62,7 +67,8 @@ use engine::tags::{GroupTag, tag_get_checked};
 use hooks::{BuildError, Builder, Flow};
 use hud_kit_core::Mode;
 use hud_kit_core::model::{
-    Describe, Hud, Kind, MESSAGE_UNITS, Style, Value, Values, message_fault,
+    BANNER_TICKS, BANNER_UNITS, Describe, Hud, Kind, MESSAGE_UNITS, Style, Value, Values,
+    banner_fault, message_fault,
 };
 use hud_kit_core::motion::{self, Motion};
 use hud_kit_core::records::{self, Compiled, WidgetKind};
@@ -110,6 +116,32 @@ pub const PROMPT_ID: u32 = 0x440;
 pub const PROMPT_SHOWN: u32 = 0x444;
 /// The UTF-16 units of the prompt's text, its zero included.
 pub const PROMPT_UNITS: usize = ((PROMPT_ID - PROMPT_TEXT) / 2) as usize;
+/// The user's timed centred line, as `0x0024cc73` (EAX the user, ECX the
+/// text, the ticks its one stack argument) leaves it: the text at
+/// `+0x454` (copied by `0x0013fac0` with 63, so 62 units and a zero), the
+/// tick at `+0x450` and `+0x4d8`, shown `+0x4d2`, the order byte `+0x4d3`
+/// (the next value of the byte at `[0x005023f4] + 0x1385`, which it steps)
+/// and the duration in ticks at `+0x4dc`. The draw shows it while the game
+/// tick is from the start to the start plus the duration, fading over it
+/// (E `0x0024d58a`..`0x0024d5cf`).
+pub const BANNER_TEXT: u32 = 0x454;
+pub const BANNER_STAMP: u32 = 0x450;
+pub const BANNER_SHOWN: u32 = 0x4d2;
+pub const BANNER_ORDER: u32 = 0x4d3;
+pub const BANNER_START: u32 = 0x4d8;
+pub const BANNER_DURATION: u32 = 0x4dc;
+/// The order byte the timed line and the notifications share, from the
+/// first user's state.
+pub const MESSAGE_ORDER: u32 = 0x1385;
+/// The game time (`[0x00510c54]`): the tick at `+8`, which the message
+/// routine reads (E `0x0024cc97`).
+pub const GAME_TIME: u32 = 0x0051_0c54;
+pub const GAME_TIME_TICK: u32 = 8;
+/// The local user whose HUD is being drawn: `UI_HUD_DRAW` reads it and
+/// hands it to its per-user draws (E `0x001917ed`, the navpoint draw's
+/// ECX at `0x0019186a`). S: that it holds the user through the widget
+/// loop.
+pub const DRAW_USER: u32 = 0x004b_9ed8;
 /// `HUD_INTERACTION_VISIBLE`'s caller, the interaction code (E
 /// `0x00191976`).
 pub const FROM_INTERACTION: u32 = 0x0019_197b;
@@ -149,7 +181,7 @@ pub const POINT_LEN: u32 = 0x38;
 pub const POINT_AT: u32 = 0x24;
 
 /// The notification insert (E `0x0024cbee`): EAX the local user, the
-/// UTF-16 text's address its one stack argument (`ret 4`); it copies 63
+/// UTF-16 text's address its one stack argument (`ret 4`); it copies 62
 /// units into a slot of the user's list (docs/game/hud-kit.md,
 /// "Messages").
 pub const NOTIFY: u32 = 0x0024_cbee;
@@ -158,8 +190,10 @@ pub const USERS: u32 = 4;
 /// Our guest memory for the texts of a tick's notifications: one slot
 /// each of [`NOTE_LEN`] bytes.
 pub const NOTES_LEN: u32 = 0x1000;
-/// One text's slot: [`MESSAGE_UNITS`] units and the zero.
-pub const NOTE_LEN: u32 = (MESSAGE_UNITS as u32 + 1) * 2;
+/// One text's slot: room for [`MESSAGE_UNITS`] units and the zero, and
+/// one unit more, so 32 slots fill the memory.
+pub const NOTE_LEN: u32 = 0x80;
+const _: () = assert!(NOTE_LEN as usize >= (MESSAGE_UNITS + 1) * 2);
 /// The notifications sent at one tick at most; more wait for the next.
 pub const NOTES_PER_TICK: usize = (NOTES_LEN / NOTE_LEN) as usize;
 
@@ -183,6 +217,29 @@ struct Registered {
     navs: Vec<(&'static str, [f32; 3])>,
     /// The pose of each world mark element that has one, by its id.
     marks: Vec<(&'static str, Pose)>,
+    /// A local user's own values, drawn for that user's HUD in place of
+    /// [`Registered::values`] ([`Handle::publish_for`]).
+    own: Vec<Own>,
+}
+
+/// One local user's own values of a HUD, stamped as the shared ones are.
+#[derive(Clone, Debug)]
+pub struct Own {
+    pub user: u32,
+    pub values: Values,
+    pub stamps: Stamps,
+}
+
+/// The values the widget hooks draw for local user `user`: its own, else
+/// the shared ones.
+pub fn values_for<'a>(
+    shared: (&'a Values, &'a Stamps),
+    own: &'a [Own],
+    user: u32,
+) -> (&'a Values, &'a Stamps) {
+    own.iter()
+        .find(|o| o.user == user)
+        .map_or(shared, |o| (&o.values, &o.stamps))
 }
 
 /// How many world marks have a pose, over every registered HUD: what the
@@ -278,6 +335,8 @@ pub struct Note {
     pub text: String,
 }
 static TRAINING_TEXT: Mutex<String> = Mutex::new(String::new());
+/// The banner the last tick showed ([`banner_due`]).
+static BANNER_LAST: Mutex<Option<String>> = Mutex::new(None);
 
 fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     l.read().unwrap_or_else(|e| e.into_inner())
@@ -310,6 +369,7 @@ pub fn register(describe: Arc<dyn Describe + Send + Sync>) -> Handle {
         stamps: Stamps::new(),
         navs: Vec::new(),
         marks: Vec::new(),
+        own: Vec::new(),
     });
     Handle(r.len() - 1)
 }
@@ -326,11 +386,64 @@ impl Handle {
             x.stamps = stamps;
         }
     }
+    /// Local user `user`'s own values, drawn by the widget hooks for that
+    /// user's HUD in place of the shared ones ([`Handle::publish`]); `None`
+    /// takes them away, so the user draws the shared values again. The
+    /// channels (prompt, training, banner, navpoints, world marks) read the
+    /// shared values alone. A user past [`USERS`] is ignored.
+    pub fn publish_for(&self, user: u32, values: Option<Values>) {
+        if user >= USERS {
+            return;
+        }
+        let now = Instant::now();
+        let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
+        let Some(x) = r.get_mut(self.0) else {
+            return;
+        };
+        let at = x.own.iter().position(|o| o.user == user);
+        let Some(values) = values else {
+            if let Some(i) = at {
+                x.own.remove(i);
+            }
+            return;
+        };
+        let (old, stamps) = match at {
+            Some(i) => (&x.own[i].values, &x.own[i].stamps),
+            None => (&x.values, &x.stamps),
+        };
+        let (values, stamps) = stamp_values(old, stamps, values, now, scaled());
+        let own = Own {
+            user,
+            values,
+            stamps,
+        };
+        match at {
+            Some(i) => x.own[i] = own,
+            None => x.own.push(own),
+        }
+    }
+    /// Whether local user `user`'s retail widgets are drawn: `false` while
+    /// the user is in monitor mode (docs/game/forge-firefight-ui.md, "The
+    /// monitor HUD"), when the gate hides every retail widget of that
+    /// user's HUD, the player's and the weapon's, but the motion tracker
+    /// (`model::MONITOR_KEEPS`, [`retail_gate`]). The kit's own widgets
+    /// and the other users' are as they were. A user past [`USERS`] is
+    /// ignored; each install shows them all again.
+    pub fn retail(&self, user: u32, shown: bool) {
+        if user >= USERS {
+            return;
+        }
+        if shown {
+            RETAIL_OFF.fetch_and(!(1 << user), Ordering::Relaxed);
+        } else {
+            RETAIL_OFF.fetch_or(1 << user, Ordering::Relaxed);
+        }
+    }
     /// Queues `text` as a notification for local user `user`, one line of
     /// the game's list, as a retail pickup or medal line is. Sent at the
     /// top of the next tick through the game's insert ([`NOTIFY`]); two
     /// calls are two lines. Refused (false, and logged) for a user over
-    /// [`USERS`], an empty text, or one [`message_fault`] refuses (over 63
+    /// [`USERS`], an empty text, or one [`message_fault`] refuses (over 62
     /// units, more than one line).
     pub fn notify(&self, user: u32, text: &str) -> bool {
         notify(user, text)
@@ -523,25 +636,29 @@ async fn send_notes(
     Ok(Ret::new(0, 0))
 }
 
-/// HUD `hud`'s value for element `id`, as it draws now ([`animated`]).
-fn value(hud: usize, id: &str) -> Option<Value> {
+/// HUD `hud`'s value for element `id` in local user `user`'s HUD, as it
+/// draws now ([`animated`]).
+fn value(hud: usize, user: u32, id: &str) -> Option<Value> {
     let r = read(&REGISTRY);
     let x = r.get(hud)?;
-    let v = x.values.get(id).cloned()?;
-    let stamp = x.stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
+    let (values, stamps) = values_for((&x.values, &x.stamps), &x.own, user);
+    let v = values.get(id).cloned()?;
+    let stamp = stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
     Some(animated(v, stamp, Instant::now(), scaled()))
 }
 
-/// HUD `hud`'s element `id`'s scale now, wide and tall
+/// HUD `hud`'s element `id`'s scale now in local user `user`'s HUD, wide
+/// and tall
 /// (`motion::scale_at`).
-fn scale(hud: usize, id: &str) -> [f32; 2] {
+fn scale(hud: usize, user: u32, id: &str) -> [f32; 2] {
     let r = read(&REGISTRY);
     let Some(x) = r.get(hud) else {
         return [1.0, 1.0];
     };
+    let (values, stamps) = values_for((&x.values, &x.stamps), &x.own, user);
     let (Some(v), Some(stamp)) = (
-        x.values.get(id),
-        x.stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t),
+        values.get(id),
+        stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t),
     ) else {
         return [1.0, 1.0];
     };
@@ -566,29 +683,104 @@ fn channel(want: fn(&Kind) -> bool) -> Option<String> {
     })
 }
 
+/// The first shown banner of `hud` at `values` in screen mode `mode`: a
+/// [`Kind::Banner`] element whose place has the mode and whose value is
+/// shown. A text [`banner_fault`] refuses is no banner (and is logged).
+pub fn banner_of(hud: &Hud, values: &Values, mode: Mode) -> Option<String> {
+    hud.elements
+        .iter()
+        .filter(|e| matches!(e.kind, Kind::Banner { .. }) && e.at.offset(mode).is_some())
+        .filter_map(|e| values.get(e.id).filter(|v| v.shown))
+        .find_map(|v| match banner_fault(&v.text) {
+            Some(why) => {
+                eprintln!("hud kit: banner {:?} not shown: {why}", v.text);
+                None
+            }
+            None => Some(v.text.clone()),
+        })
+}
+
+/// The banner over the registered HUDs in their order ([`banner_of`]).
+fn banner_now(mode: Mode) -> Option<String> {
+    let r = read(&REGISTRY);
+    r.iter().find_map(|x| banner_of(&x.hud, &x.values, mode))
+}
+
+/// Whether the banner `now` is to be written this tick, given the one the
+/// last tick showed (`last`, updated): a shown text that differs from the
+/// last tick's, or follows none. The same text again keeps the line the
+/// game is already showing; no banner lets it run out.
+pub fn banner_due(last: &mut Option<String>, now: Option<String>) -> Option<String> {
+    let due = match (&now, &*last) {
+        (Some(t), Some(l)) if t == l => None,
+        (Some(t), _) => Some(t.clone()),
+        (None, _) => None,
+    };
+    *last = now;
+    due
+}
+
+/// The first slot of each HUD's navpoints, for HUDs in registration order
+/// with `counts` navpoints each, and `exclusive(a, b)` whether HUDs `a` and
+/// `b` never show together: a HUD starts after the navpoints of the
+/// earlier HUDs it can show with, so HUDs of different modes (a biped's,
+/// a monitor's) share the first slots instead of using them up.
+pub fn slot_bases(counts: &[usize], exclusive: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    let mut bases: Vec<usize> = Vec::with_capacity(counts.len());
+    for (i, _) in counts.iter().enumerate() {
+        let base = (0..i)
+            .filter(|&j| !exclusive(i, j))
+            .map(|j| bases[j] + counts[j])
+            .max()
+            .unwrap_or(0);
+        bases.push(base);
+    }
+    bases
+}
+
 /// The point of each of the kit's navpoints now: the navpoint elements
-/// of the registered HUDs in their order, the first [`KIT_POINTS`] of
-/// them, each `Some` while its value is shown and it has a point. An
-/// element keeps its place in the list whatever shows, so it keeps its
-/// scenario point and its slot.
+/// of the registered HUDs in their order, each HUD after the navpoints of
+/// the earlier ones it can show with ([`slot_bases`]), the first
+/// [`KIT_POINTS`] of them, each `Some` while its value is shown and it
+/// has a point. An element keeps its place in the list whatever shows, so
+/// it keeps its scenario point and its slot.
 pub fn navpoints_now() -> [Option<[f32; 3]>; KIT_POINTS as usize] {
     let r = read(&REGISTRY);
+    let counts: Vec<usize> = r
+        .iter()
+        .map(|x| {
+            x.hud
+                .elements
+                .iter()
+                .filter(|e| matches!(e.kind, Kind::Navpoint { .. }))
+                .count()
+        })
+        .collect();
+    let never = |a: usize, b: usize| {
+        r[a].describe.never_with().contains(&r[b].hud.name)
+            || r[b].describe.never_with().contains(&r[a].hud.name)
+    };
+    let bases = slot_bases(&counts, never);
     let mut out = [None; KIT_POINTS as usize];
-    let elements = r.iter().flat_map(|x| {
-        x.hud
+    for (x, base) in r.iter().zip(bases) {
+        let ids = x
+            .hud
             .elements
             .iter()
             .filter(|e| matches!(e.kind, Kind::Navpoint { .. }))
-            .map(move |e| (x, e.id))
-    });
-    for (slot, (x, id)) in out.iter_mut().zip(elements) {
-        let shown = x.values.get(id).is_some_and(|v| v.shown);
-        *slot = x
-            .navs
-            .iter()
-            .find(|(i, _)| *i == id)
-            .map(|(_, at)| *at)
-            .filter(|_| shown);
+            .map(|e| e.id);
+        for (id, k) in ids.zip(base..) {
+            let shown = x.values.get(id).is_some_and(|v| v.shown);
+            let at = x
+                .navs
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, at)| *at)
+                .filter(|_| shown);
+            if let Some(slot) = out.get_mut(k) {
+                *slot = slot.or(at);
+            }
+        }
     }
     out
 }
@@ -631,10 +823,16 @@ pub struct KitWidget {
     pub hide_d: u16,
 }
 
-/// The kit widgets installed, by address.
+/// The kit widgets installed, by address, and the retail widgets a user
+/// in monitor mode still draws.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Table {
     pub widgets: Vec<KitWidget>,
+    /// The addresses of the retail bitmap records the game draws for the
+    /// player `nhdt`s that `model::MONITOR_KEEPS` names (the motion
+    /// tracker's): the copies when the root points at them, else the
+    /// tag's own ([`kept_records`]).
+    pub kept: Vec<u32>,
 }
 
 impl Table {
@@ -645,7 +843,18 @@ impl Table {
 
 static TABLE: RwLock<Table> = RwLock::new(Table {
     widgets: Vec::new(),
+    kept: Vec::new(),
 });
+/// One bit per local user whose retail widgets are off: the user is in
+/// monitor mode ([`Handle::retail`]).
+static RETAIL_OFF: AtomicU32 = AtomicU32::new(0);
+
+/// Whether local user `user`'s retail widgets are drawn
+/// ([`Handle::retail`]).
+pub fn retail_shown(user: u32) -> bool {
+    user >= USERS || RETAIL_OFF.load(Ordering::Relaxed) & (1 << user) == 0
+}
+
 /// Our region's bounds, so a retail widget costs two loads.
 static REGION_START: AtomicU32 = AtomicU32::new(0);
 static REGION_END: AtomicU32 = AtomicU32::new(0);
@@ -656,6 +865,12 @@ fn in_region(address: u32) -> bool {
         REGION_END.load(Ordering::Relaxed),
     );
     s != 0 && address >= s && address < e
+}
+
+/// The local user whose HUD is being drawn ([`DRAW_USER`]); 0 when it
+/// cannot be read or is no local user.
+pub fn draw_user(mem: &dyn GuestMemory) -> u32 {
+    mem.u32(DRAW_USER).ok().filter(|u| *u < USERS).unwrap_or(0)
 }
 
 /// The screen mode the HUD draws in: one local view fullscreen, two half,
@@ -946,6 +1161,46 @@ pub fn gate(
     Ok(Some(shown(w, values(w.hud, w.id).as_ref(), mode(mem)?)))
 }
 
+/// The gate's answer for a widget that is not the kit's (the widget at
+/// `state` less 8, EAX), for local user `user` ([`draw_user`]) when its
+/// bit of `off` is set (its retail widgets are off, [`Handle::retail`]):
+/// hidden, unless it is a record the motion tracker draws from
+/// ([`Table::kept`]). `None` passes it to the game's own gate.
+pub fn retail_gate(
+    mem: &dyn GuestMemory,
+    sp: u32,
+    state: u32,
+    table: &Table,
+    off: u32,
+    user: u32,
+) -> Result<Option<bool>, MemFault> {
+    if user >= USERS || off & (1 << user) == 0 || !GATE_RETURNS.contains(&mem.u32(sp)?) {
+        return Ok(None);
+    }
+    let widget = state.wrapping_sub(8);
+    if table.at(widget).is_some() || table.kept.contains(&widget) {
+        return Ok(None);
+    }
+    Ok(Some(false))
+}
+
+/// The addresses the game draws the kept retail bitmap records from
+/// ([`Table::kept`]): for each player `nhdt` root, its bitmap block's
+/// address now (the kit's copy after an install, whose retail records
+/// come first in the same order, else the tag's own) plus each kept
+/// index's record; an index past the block's count is skipped.
+pub fn kept_records(mem: &dyn GuestMemory, roots: &[(u32, Vec<u32>)]) -> Result<Vec<u32>, MemFault> {
+    let mut out = Vec::new();
+    for (root, indices) in roots {
+        let count = mem.u32(root + records::ROOT_BITMAPS)?;
+        let block = mem.u32(root + records::ROOT_BITMAPS + 4)?;
+        for &i in indices.iter().filter(|i| **i < count) {
+            out.push(block + i * records::BITMAP_SIZE as u32);
+        }
+    }
+    Ok(out)
+}
+
 /// The effects call's return in the bitmap widget draw (E `0x0022b198`):
 /// the call `h1_hud_text::weapon`'s split-screen scale answers too.
 pub const EFFECTS_RETURN: u32 = 0x0022_b19d;
@@ -1149,6 +1404,43 @@ pub fn show_prompt(mem: &mut dyn GuestMemory, user: u32, text: &str) -> Result<(
     mem.set_u8(hud + PROMPT_SHOWN, 1)
 }
 
+/// Writes `text` as user `user`'s timed centred line for `ticks` game
+/// ticks from now, as `0x0024cc73` leaves the fields ([`BANNER_TEXT`]).
+/// With no game time or no HUD state yet, nothing is written (false).
+pub fn write_banner(
+    mem: &mut dyn GuestMemory,
+    user: u32,
+    text: &str,
+    ticks: u32,
+) -> Result<bool, MemFault> {
+    let (time, base) = (mem.u32(GAME_TIME)?, mem.u32(USER_HUDS)?);
+    if time == 0 || base == 0 || user >= USERS {
+        return Ok(false);
+    }
+    let now = mem.u32(time + GAME_TIME_TICK)?;
+    let hud = base + USER_HUD_LEN * user;
+    mem.write(hud + BANNER_TEXT, &utf16(text, BANNER_UNITS + 1))?;
+    mem.set_u32(hud + BANNER_STAMP, now)?;
+    mem.set_u8(hud + BANNER_SHOWN, 1)?;
+    let order = mem.u8(base + MESSAGE_ORDER)?;
+    mem.set_u8(hud + BANNER_ORDER, order)?;
+    mem.set_u8(base + MESSAGE_ORDER, order.wrapping_add(1))?;
+    mem.set_u32(hud + BANNER_START, now)?;
+    mem.set_u32(hud + BANNER_DURATION, ticks)?;
+    Ok(true)
+}
+
+/// The local users the HUD draws for: the local views
+/// (`player_globals +8`, as [`mode`] reads it), at least one and at most
+/// [`USERS`].
+pub fn local_users(mem: &dyn GuestMemory) -> Result<u32, MemFault> {
+    let globals = mem.u32(points::PLAYER_GLOBALS.base)?;
+    if globals == 0 {
+        return Ok(1);
+    }
+    Ok(u32::from(mem.u16(globals + 8)?).clamp(1, USERS))
+}
+
 /// Shows the kit's training text while `show`, unless the game shows a
 /// scripted text of its own; hides it when `show` is off and it is ours.
 /// Returns whether ours is showing.
@@ -1346,10 +1638,16 @@ pub fn write_navpoint_n(
 
 // ---- the feature ----
 
+/// One player `nhdt` of the map: its datum, the indices of its kept
+/// bitmap widgets (`templates::monitor_keeps`) and the HUDs compiled for
+/// it.
+type MapHud = (u32, Vec<u32>, Vec<(usize, Hud, Compiled)>);
+
 /// Compiles every registered HUD for every player `nhdt` of the loaded
-/// map and installs them (the map file through `native_map`).
+/// map and installs them (the map file through `native_map`); a monitor's
+/// HUD with the row's first place (`Templates::for_monitor`).
 #[cfg(feature = "gpu")]
-fn compile_for_map(name: &str) -> Result<Vec<(u32, Vec<(usize, Hud, Compiled)>)>, String> {
+fn compile_for_map(name: &str) -> Result<Vec<MapHud>, String> {
     use hud_kit_core::map_file::{self, MapFile};
     let (mut map, mut files) = crate::native_map::open(name).map_err(|e| e.to_string())?;
     let multiplayer = map.header().cache_type == map::CacheType::Multiplayer;
@@ -1360,6 +1658,13 @@ fn compile_for_map(name: &str) -> Result<Vec<(u32, Vec<(usize, Hud, Compiled)>)>
         .collect();
     let mut out = Vec::new();
     for nhdt in map_file::player_huds(&mut map) {
+        let keeps = {
+            use hud_kit_core::templates::MapView;
+            let mut view = MapFile::new(&mut map, &mut files);
+            view.nhdt(nhdt)
+                .map(|h| hud_kit_core::templates::monitor_keeps(&h))
+                .unwrap_or_default()
+        };
         let mut huds = Vec::new();
         for (index, describe, hud) in &registered {
             if let (false, Some(why)) = (multiplayer, describe.multiplayer_only()) {
@@ -1367,7 +1672,10 @@ fn compile_for_map(name: &str) -> Result<Vec<(u32, Vec<(usize, Hud, Compiled)>)>
                 continue;
             }
             let mut view = MapFile::new(&mut map, &mut files);
-            let t = hud_kit_core::templates::resolve(&mut view, nhdt, hud);
+            let mut t = hud_kit_core::templates::resolve(&mut view, nhdt, hud);
+            if describe.monitor() {
+                t = t.for_monitor();
+            }
             let missing = t.missing_widgets(hud);
             if !missing.is_empty() {
                 eprintln!(
@@ -1382,20 +1690,19 @@ fn compile_for_map(name: &str) -> Result<Vec<(u32, Vec<(usize, Hud, Compiled)>)>
                 Err(e) => eprintln!("hud kit: {name}: {}: {e}", hud.name),
             }
         }
-        if !huds.is_empty() {
-            out.push((nhdt.0, huds));
-        }
+        out.push((nhdt.0, keeps, huds));
     }
     Ok(out)
 }
 
 #[cfg(not(feature = "gpu"))]
-fn compile_for_map(_name: &str) -> Result<Vec<(u32, Vec<(usize, Hud, Compiled)>)>, String> {
+fn compile_for_map(_name: &str) -> Result<Vec<MapHud>, String> {
     Err("this build has no map reader for the HUD kit".into())
 }
 
 fn activate(mem: &mut dyn GuestMemory, region: (u32, u32), points_region: (u32, u32)) {
     *TABLE.write().unwrap_or_else(|e| e.into_inner()) = Table::default();
+    RETAIL_OFF.store(0, Ordering::Relaxed);
     if let Err(e) = restore(mem, region) {
         eprintln!("hud kit: the last install could not be put back ({e:?})");
         return;
@@ -1414,20 +1721,34 @@ fn activate(mem: &mut dyn GuestMemory, region: (u32, u32), points_region: (u32, 
         }
     };
     let mut joins = Vec::new();
-    for (datum, huds) in &compiled {
+    let mut keeps = Vec::new();
+    for (datum, kept, huds) in &compiled {
         match tag_get_checked(&*mem, DatumHandle(*datum), GroupTag(NHDT)) {
-            Ok(Some(root)) => joins.push(Join {
-                root,
-                huds: huds.iter().map(|(i, h, c)| (*i, h, c)).collect(),
-            }),
+            Ok(Some(root)) => {
+                keeps.push((root, kept.clone()));
+                if !huds.is_empty() {
+                    joins.push(Join {
+                        root,
+                        huds: huds.iter().map(|(i, h, c)| (*i, h, c)).collect(),
+                    });
+                }
+            }
             _ => eprintln!("hud kit: {name}: nhdt {datum:#x} is not loaded"),
         }
     }
     if joins.is_empty() {
+        // No HUD joined: the tag's own records, the motion tracker's kept.
+        if let Ok(k) = kept_records(&*mem, &keeps) {
+            TABLE.write().unwrap_or_else(|e| e.into_inner()).kept = k;
+        }
         return;
     }
     match install_records(mem, region, &joins) {
-        Ok(t) => {
+        Ok(mut t) => {
+            match kept_records(&*mem, &keeps) {
+                Ok(k) => t.kept = k,
+                Err(e) => eprintln!("hud kit: {name}: no motion tracker for a monitor ({e:?})"),
+            }
             eprintln!(
                 "hud kit: {name}: {} widgets joined {} HUDs",
                 t.widgets.len(),
@@ -1448,6 +1769,13 @@ fn tick(mem: &mut dyn GuestMemory, points_region: (u32, u32)) -> Result<(), MemF
         *lock(&TRAINING_TEXT) = t.clone();
     }
     write_training(mem, training.is_some())?;
+    // The banner, to every local user, when its text changes.
+    let due = banner_due(&mut lock(&BANNER_LAST), banner_now(mode(&*mem)?));
+    if let Some(text) = due {
+        for user in 0..local_users(&*mem)? {
+            write_banner(mem, user, &text, BANNER_TICKS)?;
+        }
+    }
     // The superbounce target arrows clear the tracker and the readout.
     let on = crate::superbounce_mode::hud_state().is_some();
     crate::superbounce_readout::keep_waypoint_inset(mem, on);
@@ -1534,15 +1862,23 @@ impl hooks::Feature for HudKit {
         // compiler leaves 0 (the state's pad byte) and which lives in the
         // converted nhdt's own blocks, not ours. Each passes the other's
         // widgets through, so the order between them only has to exist.
-        let values = |h: usize, id: &str| value(h, id);
         b.raw()
             .before(&points::HUD_WIDGET_GATE, "hud kit: gate", move |c| {
-                if !in_region(c.cpu.eax.wrapping_sub(8)) {
+                // A retail widget costs two loads and this one while no
+                // user is in monitor mode.
+                let off = RETAIL_OFF.load(Ordering::Relaxed);
+                if off == 0 && !in_region(c.cpu.eax.wrapping_sub(8)) {
                     return Ok(Flow::Continue);
                 }
                 let table = read(&TABLE);
-                let answer =
-                    gate(&*c.ctx.memory(), c.cpu.esp, c.cpu.eax, &table, &values).map_err(fault)?;
+                let mem = c.ctx.memory();
+                let user = draw_user(&*mem);
+                let values = |h: usize, id: &str| value(h, user, id);
+                let mut answer = gate(&*mem, c.cpu.esp, c.cpu.eax, &table, &values).map_err(fault)?;
+                if answer.is_none() {
+                    answer = retail_gate(&*mem, c.cpu.esp, c.cpu.eax, &table, off, user).map_err(fault)?;
+                }
+                drop(mem);
                 match answer {
                     Some(show) => {
                         c.cpu.eax = u32::from(show);
@@ -1559,6 +1895,8 @@ impl hooks::Feature for HudKit {
                 if table.widgets.is_empty() {
                     return Ok(Flow::Continue);
                 }
+                let user = draw_user(&*c.ctx.memory());
+                let values = |h: usize, id: &str| value(h, user, id);
                 if inputs(&mut *c.ctx.memory(), c.cpu.esp, &table, &values).map_err(fault)? {
                     return c.ret(12).map(Flow::Return);
                 }
@@ -1572,6 +1910,8 @@ impl hooks::Feature for HudKit {
                     return Ok(Flow::Continue);
                 }
                 let table = read(&TABLE);
+                let user = draw_user(&*c.ctx.memory());
+                let values = |h: usize, id: &str| value(h, user, id);
                 if string(&mut *c.ctx.memory(), c.cpu.esp, c.cpu.ebx, &table, &values)
                     .map_err(fault)?
                 {
@@ -1606,21 +1946,22 @@ impl hooks::Feature for HudKit {
             .before(&points::HUD_WIDGET_EFFECTS, "hud kit: scale", move |c| {
                 // Only the bitmap draw's call, and only a widget in
                 // the kit's memory: two loads for a retail one.
-                {
+                let user = {
                     let mem = c.ctx.memory();
                     if mem.u32(c.cpu.esp)? != EFFECTS_RETURN
                         || !in_region(mem.u32(c.cpu.ebp.wrapping_add(FRAME_WIDGET))?)
                     {
                         return Ok(Flow::Continue);
                     }
-                }
+                    draw_user(&*mem)
+                };
                 let table = read(&TABLE);
                 let seen = scale_basis(
                     &mut *c.ctx.memory(),
                     c.cpu.esp,
                     c.cpu.ebp,
                     &table,
-                    &|h, id| scale(h, id),
+                    &|h, id| scale(h, user, id),
                 )
                 .map_err(fault)?;
                 if seen {

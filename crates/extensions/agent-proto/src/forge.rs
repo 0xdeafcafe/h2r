@@ -18,6 +18,9 @@ pub mod method {
     pub const LOOK_SET: &str = "forge.look.set";
     pub const MONITORS: &str = "forge.status.monitors";
     pub const THINGS: &str = "forge.things";
+    pub const GROUND: &str = "forge.ground";
+    pub const GROUND_BUILD: &str = "forge.ground.build";
+    pub const NAV: &str = "forge.nav";
 }
 
 /// The kinds of thing `forge.things` names, as its `kind` filter and each
@@ -45,6 +48,9 @@ pub mod refusal {
     pub const PRINT: &str = "forge_print";
     /// The edit names an entry of a block the session could not read.
     pub const LEFT_OUT: &str = "forge_left_out";
+    /// An add to the starting location, netgame flag or netgame equipment
+    /// block names a row the map's kit has not reserved: the map has no kit.
+    pub const NO_KIT: &str = "forge_no_kit";
     /// The target's value is not the one `was` names.
     pub const WAS: &str = "forge_was";
     /// Any other refusal: the message says why.
@@ -104,7 +110,8 @@ pub mod refusal {
 pub const SHARED_SESSION: &str = "shared";
 
 /// `forge.things`: every thing of the session, or those of one kind, or
-/// only those the document changes.
+/// only those the document changes. A netgame flag's row carries its
+/// document area, or null for an unshaped flag.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThingsParams {
@@ -116,6 +123,32 @@ pub struct ThingsParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<bool>,
 }
+
+/// `forge.ground.build`: **Build AI ground**, or with `if_stale` **Test
+/// waves** (build only when the ground is stale or was never built).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroundBuildParams {
+    #[serde(default)]
+    pub if_stale: bool,
+}
+
+/// How many game ticks `forge.ground.build` waits for its answer: a build
+/// reads the base map and builds the ground over it.
+pub const GROUND_WAIT_TICKS: u64 = 3600;
+
+/// `forge.nav`: the nav's state, counts, problems and overlay; with
+/// `generate`, **Generate nav** first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NavParams {
+    #[serde(default)]
+    pub generate: bool,
+}
+
+/// How many game ticks `forge.nav {generate: true}` waits for its answer:
+/// a generation builds the play form and the bots' mesh over it.
+pub const NAV_WAIT_TICKS: u64 = 3600;
 
 /// One monitor input. Directions are normalized axes in camera space.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

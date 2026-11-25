@@ -14,6 +14,7 @@ game-controller = ["input/game-controller"]
 
 [dependencies]
 gfx = { path = "../../platform/gfx" }
+settings = { path = "../../formats/settings" }
 input = { path = "../../platform/input", default-features = false }
 audio = { path = "../../platform/audio" }
 xapi = { path = "../../platform/xapi" }

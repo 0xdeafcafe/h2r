@@ -104,6 +104,17 @@ pub mod addr {
     /// object's `+0x1a` (`0x000b7c87`); `placement_data_new` leaves -1.
     pub const PLACEMENT_INDEX: u32 = 0x10;
     pub const OBJECT_NEW: u32 = 0x000b_7b40;
+    /// `sound_start_at_marker`: EAX the marker, ESI the object, one stack
+    /// argument pointing to (permutation hint, sound, scale, flags).
+    pub const SOUND_START_AT_MARKER: u32 = engine::points::SOUND_START_AT_MARKER.base;
+    /// The head marker's name id.
+    pub const HEAD_MARKER: u32 = 0x0400_0095;
+    /// The recording player: EAX the unit, CX the recording's index in
+    /// `scnr +0x110`, one stack argument (the play flags: 0 play, 8 and
+    /// delete, `0x10` and hover, as the evaluators at `0x2a2d1c`,
+    /// `0x2a2d7c` and `0x2a2ddc` push them), `ret 4`, AL 0 when it starts
+    /// nothing.
+    pub const RECORDING_PLAYER: u32 = 0x001f_b360;
     pub const OBJECT_DELETE: u32 = 0x000b_8540;
     pub const UNIT_ADD_WEAPON: u32 = 0x000c_d0c0;
     pub const PLAYER_PLACE_NEAR: u32 = engine::points::PLAYER_PLACE_NEAR.base;
@@ -276,6 +287,15 @@ pub enum Call {
         to: [f32; 3],
         shield: Option<f32>,
     },
+    /// Start the animation `name` (a string ID) of the object's own graph
+    /// on its first channel (`world.object.animate`).
+    Animate { id: ObjectId, name: u32 },
+    /// Start the `snd!` tag `sound` at `unit`'s head marker
+    /// (`audio.play`).
+    Sound { unit: u32, sound: u32 },
+    /// Play recording `index` on `unit` with the player's `flags`
+    /// (`recording.play`).
+    Recording { unit: u32, index: u16, flags: u32 },
     /// Make an object from `tag` at `pos`.
     Spawn {
         tag: u32,
@@ -292,6 +312,9 @@ pub enum Call {
     },
     ObjectDelete { id: ObjectId },
     ObjectRespawn { target: RespawnTarget },
+    /// Remake every placed object of the tag datum `definition`, linked
+    /// (`world.object.respawn {definition}`).
+    ObjectRespawnDefinition { definition: u32 },
     /// One transaction on a scenario placement block (`world.placement.edit`).
     PlacementEdit { plan: Box<PlacementPlan> },
     /// One local Forge edit's engine work, rechecking its admission and
@@ -1066,7 +1089,8 @@ async fn run_forge(
                 (None, None)
             }
             ForgeStep::Base(base_step) => {
-                if let Err(e) = cx.read(|m| crate::forge::base::plan(m, guard.scenario, base_step))
+                if let Err(e) =
+                    cx.read(|m| crate::forge::base::plan_ahead(m, guard.scenario, base_step))
                 {
                     return Ok(Err(e));
                 }
@@ -1255,6 +1279,13 @@ async fn run_call(
         Call::Animation { unit, path, overlay } => {
             crate::probe::animation::lookup(cx, scratch, unit, path, overlay).await
         }
+        Call::Animate { id, name } => {
+            let body = match cx.read(|m| placement::resolve(m, id)) {
+                Ok(body) => body,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(cx.write(|m| crate::probe::animation::start(m, body.addr, name)))
+        }
         Call::Projectile { tag, target, node, from, to, shield } => {
             let line = cx.read(|m| crate::probe::line(m, target, node, from, to))?;
             let Some((pos, facing, body)) = line else {
@@ -1350,6 +1381,50 @@ async fn run_call(
             }
             out.insert("unit".into(), json!(hex(unit)));
             Ok(Ok(Value::Object(out)))
+        }
+        Call::Sound { unit, sound } => {
+            if cx.read(|m| body_of(m, unit)).is_none() {
+                return Ok(Err(unavailable("the unit is gone (it died?)")));
+            }
+            // One stack argument points to the four parameter words just
+            // above it, as the dialogue line's start passes them.
+            let parameters = cx.entry().esp.wrapping_sub(16);
+            let instance = cx
+                .call(
+                    GuestCall::new(addr::SOUND_START_AT_MARKER)
+                        .esi(unit)
+                        .eax(addr::HEAD_MARKER)
+                        .args([parameters, u32::MAX, sound, 1.0f32.to_bits(), 0]),
+                )
+                .await?
+                .eax;
+            if instance == u32::MAX {
+                return Ok(Err(unavailable(format!(
+                    "the game started no sound from tag {sound:#010x} (sound_start_at_marker, 0x1891d0, answered none: a tag with no permutation, or a full sound table)"
+                ))));
+            }
+            Ok(Ok(json!({ "instance": hex(instance), "unit": hex(unit) })))
+        }
+        Call::Recording { unit, index, flags } => {
+            if cx.read(|m| body_of(m, unit)).is_none() {
+                return Ok(Err(unavailable("the unit is gone (it died?)")));
+            }
+            let started = cx
+                .call(
+                    GuestCall::new(addr::RECORDING_PLAYER)
+                        .eax(unit)
+                        .ecx(u32::from(index))
+                        .args([flags]),
+                )
+                .await?
+                .eax
+                & 0xff;
+            if started == 0 {
+                return Ok(Err(unavailable(format!(
+                    "the game started no recording {index} (the recording player, 0x1fb360, answered no: the unit is already playing one, or the game has no free slot)"
+                ))));
+            }
+            Ok(Ok(json!({ "unit": hex(unit), "index": index })))
         }
         Call::Give { unit, weapon, mode } => {
             if cx.read(|m| body_of(m, unit)).is_none() {
@@ -1464,6 +1539,9 @@ async fn run_call(
             }
             lock(queue).previews.remember(&entry, object);
             Ok(Ok(json!({ "old": old, "object": object.to_string(), "linked": false })))
+        }
+        Call::ObjectRespawnDefinition { definition } => {
+            placement::definition::run(cx, scratch, queue, definition).await
         }
         Call::PlacementEdit { ref plan } => placement::edit::run(cx, scratch, queue, plan).await,
         Call::Forge { guard, ref steps } => run_forge(cx, scratch, queue, guard, steps).await,

@@ -16,8 +16,8 @@ use map::scenario_layout as layout;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::{
-    BlockKind, Edit, Endpoint, FieldWrite, Limits, MAX_DOC_BYTES, Op, OpId, Refusal, Result,
-    Sha256, Value, WorldBounds, validate, wire,
+    Area, BlockKind, Edit, Endpoint, FieldWrite, ForgeDoc, Limits, MAX_DOC_BYTES, Op, OpId,
+    Refusal, Result, Sha256, Value, WorldBounds, games::GameSet, validate, wire,
 };
 
 /// The first eight bytes of the SHA-256 of an entry's typed fields
@@ -129,12 +129,54 @@ pub enum EntryOp {
     /// the map again as the disc has it. Links and labels are their own ops
     /// and are not reset.
     Reset { target: Endpoint },
+    /// Set or clear a property of the entry that has no retail field
+    /// ([`Property`]): document data with no scenario bytes, as a label
+    /// is. It lowers to nothing.
+    Property {
+        target: Endpoint,
+        property: Property,
+    },
+    /// Set or clear the area of a netgame flag, with no scenario bytes.
+    Area {
+        target: Endpoint,
+        #[serde(deserialize_with = "Option::deserialize")]
+        area: Option<Area>,
+    },
 }
+
+/// A property of an entry the retail layout has no field for
+/// (docs/game/forge-map-variants.md, "Properties without a retail
+/// field"). A document that sets one is format 3 as any entry op is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Property {
+    /// An item spawner's team, `0..8`, or none. A rules script reads it as
+    /// it reads a label; no retail game type does.
+    Team(Option<u8>),
+    /// The game types an object is in ([`OBJECT_BLOCKS`]), or none for
+    /// every game type. A retail object has no game-type field: the
+    /// materialiser leaves the placement out of a map built for an engine
+    /// the set lacks ([`for_game`]). A set is never empty and never every
+    /// engine, which is a clear.
+    Games(Option<GameSet>),
+}
+
+/// How many teams a team property names.
+pub const PROPERTY_TEAMS: u8 = 8;
+
+/// The blocks whose entries carry a `games` property: scenery, crates and
+/// machines, the placements with no game-type field.
+pub const OBJECT_BLOCKS: [BlockKind; 3] =
+    [BlockKind::Scenery, BlockKind::Crates, BlockKind::Machines];
 
 impl EntryOp {
     pub fn target(&self) -> Endpoint {
         match self {
-            Self::Set { target, .. } | Self::Remove { target } | Self::Reset { target } => *target,
+            Self::Set { target, .. }
+            | Self::Remove { target }
+            | Self::Reset { target }
+            | Self::Property { target, .. }
+            | Self::Area { target, .. } => *target,
         }
     }
 
@@ -143,6 +185,8 @@ impl EntryOp {
             Self::Set { .. } => "entry set",
             Self::Remove { .. } => "entry removal",
             Self::Reset { .. } => "entry reset",
+            Self::Property { .. } => "entry property",
+            Self::Area { .. } => "entry area",
         }
     }
 }
@@ -153,6 +197,9 @@ impl EntryOp {
 /// field's type. An added target's field is checked with the document.
 pub(crate) fn check_op(edit: &EntryOp, limits: &Limits) -> Result<()> {
     let what = edit.what();
+    if let EntryOp::Area { area: Some(area), .. } = edit {
+        area.check()?;
+    }
     match edit.target() {
         Endpoint::Base {
             block,
@@ -173,6 +220,8 @@ pub(crate) fn check_op(edit: &EntryOp, limits: &Limits) -> Result<()> {
                 EntryOp::Set { write, .. } => validate::placement_field(def, write, limits.world),
                 EntryOp::Remove { .. } => removable(block),
                 EntryOp::Reset { .. } => Ok(()),
+                EntryOp::Property { property, .. } => check_property(block, *property, what),
+                EntryOp::Area { .. } => crate::area::check_block(block),
             }
         }
         Endpoint::Added(OpId(0)) => Err(Refusal::invalid(what, "want the ID of an add op")),
@@ -193,7 +242,156 @@ pub(crate) fn check_added(
         EntryOp::Set { write, .. } => validate::placement_field(layout::block(block), write, world),
         EntryOp::Remove { .. } => removable(block),
         EntryOp::Reset { .. } => Err(Refusal::invalid(edit.what(), "a reset names a base entry")),
+        EntryOp::Property { property, .. } => check_property(block, *property, edit.what()),
+        EntryOp::Area { .. } => crate::area::check_block(block),
     }
+}
+
+/// A property is on the kinds of entry that have it, with a value in its
+/// range.
+fn check_property(block: BlockKind, property: Property, what: &'static str) -> Result<()> {
+    match property {
+        Property::Team(team) => {
+            if block != BlockKind::NetgameEquipment {
+                return Err(Refusal::invalid(what, "a team is an item spawner's"));
+            }
+            if team.is_some_and(|t| t >= PROPERTY_TEAMS) {
+                return Err(Refusal::invalid(what, "a team is 0 to 7"));
+            }
+            Ok(())
+        }
+        Property::Games(set) => {
+            if !OBJECT_BLOCKS.contains(&block) {
+                return Err(Refusal::invalid(
+                    what,
+                    "game types are a scenery, crate or machine placement's",
+                ));
+            }
+            match set {
+                Some(set) if set.is_empty() => {
+                    Err(Refusal::invalid(what, "an object needs a game type"))
+                }
+                Some(set) if set == GameSet::ALL => Err(Refusal::invalid(
+                    what,
+                    "every game type is no property: clear it",
+                )),
+                _ => Ok(()),
+            }
+        }
+    }
+}
+
+/// The game types each object has by the document's ops, by identity: the
+/// last `Games` op of an entry not covered by a later reset, a clear
+/// leaving none. An entry absent here is in every game type. A document
+/// with any is built for one engine ([`for_game`]) and has the engine in
+/// its identity (`MapId::forge_game`).
+pub fn object_games(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, GameSet> {
+    let covered = covered(ops);
+    let mut out = std::collections::BTreeMap::new();
+    for op in ops {
+        let Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::Games(set),
+        }) = &op.edit
+        else {
+            continue;
+        };
+        if covered.contains(&op.id) {
+            continue;
+        }
+        match set {
+            Some(set) => out.insert(target.identity(), *set),
+            None => out.remove(&target.identity()),
+        };
+    }
+    out
+}
+
+/// The document as it is built for the engine at variant index `engine`
+/// (docs/game/forge-map-variants.md, "Game types"): each object whose
+/// `games` set lacks the engine and is still in the map after every op is
+/// removed by an entry op after the last op, and the `Games` ops that set
+/// its set, which have no scenario bytes, are left out, so the document
+/// never grows. Every other op is as it is. `base_counts` are the map's,
+/// as [`crate::resolve`] takes them. The result is for building only: its
+/// hash is not the document's.
+pub fn for_game(
+    doc: &ForgeDoc,
+    engine: i32,
+    base_counts: &std::collections::BTreeMap<BlockKind, u32>,
+) -> Result<ForgeDoc> {
+    let games = object_games(&doc.ops);
+    let out_of_game: BTreeSet<Endpoint> = games
+        .iter()
+        .filter(|(_, set)| !set.has(engine))
+        .map(|(end, _)| *end)
+        .collect();
+    if out_of_game.is_empty() {
+        return Ok(doc.clone());
+    }
+    let resolved = crate::resolve(&doc.ops, base_counts)?;
+    let covered = covered(&doc.ops);
+    // The target as the last uncovered games op names it, print and all.
+    let mut named = std::collections::BTreeMap::new();
+    let mut ops = Vec::with_capacity(doc.ops.len());
+    for op in &doc.ops {
+        if let Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::Games(_),
+        }) = &op.edit
+            && !covered.contains(&op.id)
+            && out_of_game.contains(&target.identity())
+        {
+            named.insert(target.identity(), *target);
+            continue;
+        }
+        ops.push(op.clone());
+    }
+    let mut next = doc.ops.iter().map(|op| op.id.0).max().unwrap_or(0);
+    for (identity, target) in named {
+        if resolved.index(identity).is_none() {
+            continue;
+        }
+        next = next
+            .checked_add(1)
+            .ok_or_else(|| Refusal::invalid("entry removal", "no operation id is left"))?;
+        ops.push(Op {
+            id: OpId(next),
+            edit: Edit::Entry(EntryOp::Remove { target }),
+        });
+    }
+    let mut built = doc.clone();
+    built.ops = ops;
+    built.format = built.required_format();
+    Ok(built)
+}
+
+/// The team each entry has by the document's ops, by identity
+/// ([`Endpoint::identity`]): the last `Team` op of an entry not covered by
+/// a later reset, a clear leaving none. An entry that is removed is not
+/// told apart here: resolve its identity to a final index to find out
+/// ([`crate::resolve`]).
+pub fn teams(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, u8> {
+    let covered = covered(ops);
+    let mut out = std::collections::BTreeMap::new();
+    for op in ops {
+        let Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::Team(team),
+        }) = &op.edit
+        else {
+            continue;
+        };
+        if covered.contains(&op.id) {
+            continue;
+        }
+        match team {
+            Some(t) => out.insert(target.identity(), *t),
+            None => out.remove(&target.identity()),
+        };
+    }
+    out
 }
 
 fn removable(block: BlockKind) -> Result<()> {

@@ -17,8 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use timeline::native::{Metric, Stage};
 
-/// Stages there are counters for (`timeline::native::Stage` is smaller).
-const STAGES: usize = 16;
+const STAGES: usize = Stage::COUNT;
 
 thread_local! {
     // Drops can originate at reservation commit on the guest or at stage
@@ -33,10 +32,25 @@ pub(crate) fn take_local_drops() -> u64 {
 static QUEUED: [AtomicU64; STAGES] = [const { AtomicU64::new(0) }; STAGES];
 static DROPPED: [AtomicU64; STAGES] = [const { AtomicU64::new(0) }; STAGES];
 static DOWN: [AtomicBool; STAGES] = [const { AtomicBool::new(false) }; STAGES];
+/// Committed ranges by copy (reference, display) for retained admissions.
+static FLARE_DRAWS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static SKY_DRAWS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static CAUSES: Mutex<Option<HashSet<(usize, &'static str)>>> = Mutex::new(None);
 
 fn index(stage: Stage) -> usize {
-    (stage as usize).min(STAGES - 1)
+    stage as usize
+}
+
+/// A recording of `stage` was committed to the frame's command stream with
+/// `ranges` draws (`display`: the displayed copy, else the reference copy).
+/// Sky and flare recordings have submission counters.
+pub fn submitted(stage: Stage, display: bool, ranges: usize) {
+    let draws = match stage {
+        Stage::Flares => &FLARE_DRAWS,
+        Stage::Sky => &SKY_DRAWS,
+        _ => return,
+    };
+    draws[usize::from(display)].fetch_add(ranges as u64, Ordering::Relaxed);
 }
 
 /// A stage queued to the render thread.
@@ -72,9 +86,16 @@ pub fn stood_down(stage: Stage) -> bool {
 
 /// `scene_stages_<stage>` and `scene_dropped_<stage>` of the stages that
 /// queue scene stages: the world and the objects (slice 2), the fog and
-/// the water (slice 5) (`render.scene`'s counters).
+/// the water (slice 5) (`render.scene`'s counters), and the flares' committed
+/// draws: `scene_submitted_flares_reference_draws` and
+/// `scene_submitted_flares_display_draws`.
 pub fn counters() -> Vec<(String, u64)> {
-    let mut out = Vec::new();
+    let mut out = vec![
+        ("scene_submitted_sky_reference_draws".to_owned(), SKY_DRAWS[0].load(Ordering::Relaxed)),
+        ("scene_submitted_sky_display_draws".to_owned(), SKY_DRAWS[1].load(Ordering::Relaxed)),
+        ("scene_submitted_flares_reference_draws".to_owned(), FLARE_DRAWS[0].load(Ordering::Relaxed)),
+        ("scene_submitted_flares_display_draws".to_owned(), FLARE_DRAWS[1].load(Ordering::Relaxed)),
+    ];
     for stage in [Stage::World, Stage::Objects, Stage::Fog, Stage::Water] {
         let i = index(stage);
         out.push((format!("scene_stages_{}", stage.name()), QUEUED[i].load(Ordering::Relaxed)));

@@ -26,7 +26,7 @@ use crate::{
     agent_glue, aim_assist, bot_glue, campaign_menu, cheats, clankers, coop_probe, custom_games,
     game_setup_help, h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
     map_copy, map_select, map_slots, precision, signin_screen, skulls, skulls_custom, skulls_menu,
-    skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, xapi_glue,
+    skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, variant_weapons, xapi_glue,
 };
 
 /// The three subsystems measured together on a light host. Resolve each
@@ -61,9 +61,6 @@ pub(crate) fn register_viewer_skips(
     if host_light {
         features
             .add(&sim_bridge::sim_observer::ObserverResources)
-            .map_err(anyhow::Error::msg)?;
-        features
-            .add(&sim_bridge::sim_submix::SimSubmix)
             .map_err(anyhow::Error::msg)?;
         // Off unless `impl.sim.status-poll` is set (docs/runtime/cache-slots.md).
         features
@@ -150,6 +147,47 @@ pub(crate) fn local_forge(
         }
 }
 
+/// What decides the lab takeover ([`lab_takeover`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TakeoverInputs {
+    /// The boot has a window (or a Theater observer window).
+    pub window: bool,
+    /// The guest's own D3D draws.
+    pub d3d: bool,
+    /// XAPI pads are in.
+    pub xapi: bool,
+    pub lockstep: bool,
+    pub host_light: bool,
+    pub sim: bool,
+    /// Theater's playback child.
+    pub replaying: bool,
+}
+
+/// The lab takeover (`lab_takeover`, docs/runtime/lab.md, "Player consent
+/// before a job"): whether a boot plans its dialog's hooks, and whether it
+/// takes a lab's request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Takeover {
+    pub plan: bool,
+    pub accept: bool,
+}
+
+/// A game drawn by its own D3D with XAPI pads, outside lockstep, the light
+/// host and the sim, plans the dialog with or without a window and whether
+/// it records or plays a film. A film's replay installs its recording's
+/// simulation hooks (`theater::compatibility`'s hook digest): the
+/// recording is a windowed game, and its replay is Theater's child, with a
+/// window or none. Only a windowed game that is not a replay takes a
+/// request, so the dialog never opens in a replay; its hooks act on a
+/// request only.
+pub(crate) fn lab_takeover(i: TakeoverInputs) -> Takeover {
+    let plan = i.d3d && i.xapi && !i.lockstep && !i.host_light && !i.sim;
+    Takeover {
+        plan,
+        accept: plan && i.window && !i.replaying,
+    }
+}
+
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
     register_core_film(features, i, None, false, None)
@@ -210,6 +248,12 @@ pub(crate) fn register_core_film(
             if let Err(error) = result {
                 eprintln!("actor-net: sending host tick {tick}: {error}");
             }
+            // The picks a client's players made, back up the channel into
+            // the host's VM (docs/game/rules-world-api.md, "Pickers").
+            #[cfg(feature = "rules")]
+            for (bytes, seats) in crate::actor_net_link::take_picks(live.as_deref()) {
+                crate::actor_net::pick::receive(&bytes, &seats);
+            }
             // actors.net's view of each peer's budget.
             crate::actor_net::report::publish_host(tick, link.peers());
         },
@@ -224,6 +268,19 @@ pub(crate) fn register_core_film(
         });
         if client.take_key_request() && !crate::actor_net_link::request_key(inbox.as_deref()) {
             eprintln!("actor-net: tick {tick}: no actor tunnel to ask the host for a key");
+        }
+        // This machine's players' picks, back up the channel
+        // (docs/game/rules-world-api.md, "Pickers"), and whether the
+        // tunnel carries them at all.
+        #[cfg(feature = "rules")]
+        crate::rules::world::pick::client_ready(crate::actor_net_link::pick_upstream(
+            inbox.as_deref(),
+        ));
+        #[cfg(feature = "rules")]
+        for bytes in crate::actor_net::pick::take_outbox() {
+            if !crate::actor_net_link::send_pick(inbox.as_deref(), &bytes) {
+                eprintln!("actor-net: tick {tick}: no actor tunnel carries a pick upstream");
+            }
         }
     });
     features
@@ -242,7 +299,7 @@ pub(crate) fn register_core_film(
     features
         .add(&crate::h1_recordings::Playback)
         .map_err(|e| anyhow::anyhow!("recorded animation playback: {e}"))?;
-    layout_glue::install(rt, features, i.model, i.theater).context("installing the button layouts")?;
+    layout_glue::install(rt, features, i.model, i.theater.clone()).context("installing the button layouts")?;
     features
         .add(&crate::list_class::ScrollArrowLayout)
         .map_err(|e| anyhow::anyhow!("list scroll arrows: {e}"))?;
@@ -340,7 +397,12 @@ pub(crate) fn register_core_film(
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
-    level_boot::install(rt, features, i.level, i.perf_level).context("installing the level boot")?;
+    let mut level = i.level;
+    let preview_script = level
+        .as_mut()
+        .and_then(|level| level.variant.as_mut())
+        .and_then(|variant| variant.script.take());
+    level_boot::install(rt, features, level, i.perf_level).context("installing the level boot")?;
     // Campaign skulls kept per profile: a pickup is remembered and a
     // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
     // Headless runs (no settings store) leave skulls as retail. Hooks on
@@ -368,6 +430,13 @@ pub(crate) fn register_core_film(
         },
     )
     .context("installing the game-variant store")?;
+    if let Some(blob) = preview_script {
+        crate::game_variants::store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_script(blob)
+            .map_err(anyhow::Error::msg)?;
+    }
     if let Some(hle) = i.live.clone() {
         features
             .add(&crate::live_hopper::MapPackRotation(hle))
@@ -377,6 +446,10 @@ pub(crate) fn register_core_film(
     features
         .add(&variant_ext::Vitality)
         .map_err(|e| anyhow::anyhow!("variant options vitality: {e}"))?;
+    // Its movement speed, on the engine's per-player speed step.
+    features
+        .add(&variant_ext::Speed)
+        .map_err(|e| anyhow::anyhow!("variant options speed: {e}"))?;
     // Our own skulls (from 15): hidden in campaign levels, their effects
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.
@@ -386,6 +459,17 @@ pub(crate) fn register_core_film(
             crate::map_override::map_file_at(&mut v, name, path)
         })
     });
+    // The variant's other weapons as the starting and secondary weapon:
+    // their tags are read from the same file.
+    let weapon_maps: Option<skulls_custom::MapLocator> = i.vfs.clone().map(|vfs| -> skulls_custom::MapLocator {
+        Box::new(move |name, path| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            crate::map_override::map_file_at(&mut v, name, path)
+        })
+    });
+    features
+        .add(&variant_weapons::Weapons::new(weapon_maps))
+        .map_err(|e| anyhow::anyhow!("variant options weapons: {e}"))?;
     let skulls_custom_on = skulls_custom::install_for_maps(
         features, i.settings.clone(), telemetry.clone(), custom_maps, sources.as_deref(),
     )
@@ -448,6 +532,7 @@ pub(crate) fn register_core_film(
         crate::lobby_mode::install(
             features,
             crate::lobby_mode::LobbyMode {
+                theater: i.theater,
                 offer,
                 store: Some(Arc::clone(store)),
                 data: i.data_root.to_path_buf(),
@@ -465,6 +550,7 @@ pub(crate) fn register_core_film(
         features,
         i.live.clone(),
         features_off || film.as_ref().is_some_and(|f| f.plays_back()),
+        i.vfs.clone(),
     )
     .context("installing rules scripts")?;
     for effect in [
@@ -530,6 +616,16 @@ pub(crate) fn register_core_film(
     crate::hud_kit::install(features).context("installing the HUD kit")?;
     crate::superbounce_hud::install(features, i.settings.clone())
         .context("installing the superbounce HUD")?;
+    // The Firefight HUD on the kit, fed from the mode blob
+    // (docs/game/firefight.md, "The HUD").
+    if firefight_on {
+        crate::firefight::hud::install(features).context("installing the Firefight HUD")?;
+    }
+    // The base HUD (score and clock) of a game on the script index
+    // (docs/game/game-types-without-carriers.md, "The display"); hidden
+    // in every other game.
+    #[cfg(feature = "rules")]
+    crate::rules::base_hud::install(features).context("installing the base HUD")?;
     // The announcer speaks the HUD's medal lines (medal_announcer.rs,
     // docs/audio/audio.md, "Our medals' announcer lines"); boot gives it
     // the mixer once the audio is up.
@@ -604,9 +700,16 @@ pub struct LateInputs<'a> {
     /// The effective resolution source of the backend drawing this run.
     #[cfg(feature = "gpu")]
     pub view: Option<&'a crate::d3d_glue::DrawingView>,
-    /// Retail guest geometry, or a legacy film's recorded geometry.
+    /// A legacy film's recorded geometry multiplier; the guest walk is
+    /// retail otherwise, whatever the local display choice.
     #[cfg(feature = "gpu")]
-    pub fixed_lod: Option<f32>,
+    pub reference_lod: Option<f32>,
+    /// Single-copy rendering: the guest's own D3D draws render the display,
+    /// so they take the draw-boundary geometry swap.
+    #[cfg(feature = "gpu")]
+    pub d3d_display: bool,
+    #[cfg(feature = "gpu")]
+    pub viewer_lod: Option<settings::Setting<u32>>,
     #[cfg(feature = "gpu")]
     pub world_line_present: Option<Arc<dyn render_bridge::scene_step::PresentObserver>>,
     pub rt: &'a Arc<Runtime>,
@@ -695,6 +798,10 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    if features.switches().implementation(sim_bridge::sim_sound::SOUND, false) {
+        features.add(&sim_bridge::sim_sound::SimSound)
+            .map_err(|e| anyhow::anyhow!("sound simulation: {e}"))?;
+    }
     features.add(&sim_bridge::sim_physics::NativePhysics)
         .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // SimExt, the extension records saved with checkpoints and snapshots
@@ -720,11 +827,14 @@ pub(crate) fn register_late_for_profile(
         use render_bridge::native_scene_lists::NativeSceneLists;
 
         let view_scale = if let Some(view) = i.view {
-            let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
-            let lod = match i.fixed_lod {
-                Some(factor) => lod.with_fixed_multiplier(factor),
+            let lod = crate::lod_distance::LodDistance::new(
+                i.settings.as_deref(), view.scale_stats.clone(), i.viewer_lod,
+            )?;
+            let lod = match i.reference_lod {
+                Some(factor) => lod.with_reference_multiplier(factor),
                 None => lod,
             };
+            let lod = lod.with_d3d_display(i.d3d_display);
             features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
             lod.view_scale()
         } else {
@@ -758,7 +868,7 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_fog::NativeFog)
             .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
-        // World layers 1, 5, 7, 8 and 20 drawn from the scene's plan
+        // World layers 1, 2, 5, 7, 8, 17 and 20 drawn from the scene's plan
         // (frame-scene.layers, on with the native renderer;
         // docs/graphics/framescene.md, slice 4). The layer sets load with
         // the world (native_layers_glue).
@@ -785,7 +895,7 @@ pub(crate) fn register_late_for_profile(
         // layer draw sit inside render-timing's and the world's; the models
         // load per map through native_objects_glue.
         features
-            .add(&render_bridge::native_objects::NativeObjects)
+            .add(&render_bridge::native_objects::NativeObjects::with_lod_scale(view_scale))
             .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
         // The first-person arms and weapon on the native GPU renderer
         // (on by default since 2026-11-20;

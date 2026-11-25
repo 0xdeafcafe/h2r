@@ -6,7 +6,14 @@ license.workspace = true
 description = "The native collision world: BSPs decoded once, queries as single Rust calls (docs/engine/sim-rewrite-collision.md)"
 
 [dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+host-dirs.workspace = true
+memmap2 = "0.9"
+sha2.workspace = true
 sim-core.workspace = true
+# The MOPP bit model: opcode helpers for the decoder, and the oracle the
+# box query is tested against (`mopp::boxvm`).
+mopp = { path = "../../formats/mopp" }
 
 [features]
 # `synth`: synthetic collision BSPs laid out in guest form, for the unit

@@ -204,7 +204,7 @@ impl Prompt {
     }
 }
 
-/// A prompt's glyphs three spaces apart (`assets/ui/design.yaml`,
+/// A prompt's glyphs three spaces apart (`content/ui/design.yaml`,
 /// `legend.glyph_gap`): the fonts draw the d-pad's left and right arrows
 /// edge to edge, so side by side they read as one diamond, and the footer
 /// font's space is narrow enough that two still read as one pair.
@@ -220,7 +220,7 @@ fn glyphs(gs: &[Glyph]) -> String {
 /// The legend as the design system writes it, wherever it is drawn (the
 /// footer, a panel's edge, a HUD): [`footer_legend`]'s form, so the same
 /// prompts read the same on every screen (docs/game/ui-builder.md "The
-/// design system", `assets/ui/design.yaml` `legend`).
+/// design system", `content/ui/design.yaml` `legend`).
 pub fn legend(prompts: &[Prompt]) -> String {
     footer_legend(prompts)
 }

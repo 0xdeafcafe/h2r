@@ -11,7 +11,7 @@
 //!
 //! **The page** is the shared settings dialog ([`page`],
 //! `crate::ui_kit::settings`), declared by
-//! `assets/ui/screens/firefight.yaml`: six rows over [`DEFS`] on the
+//! `content/ui/screens/firefight.yaml`: six rows over [`DEFS`] on the
 //! lobby's own settings dialog, Quick Options, as the Clankers page is
 //! (`crate::clankers`). A row opens the value picker on A, and left and
 //! right step through the choices as a shortcut. No row is a "< All >"
@@ -42,6 +42,7 @@ use settings::{Apply, Choice, Def as Setting, Kind, Scope, Store, Tier, Value};
 
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
+use crate::lobby_start;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
 use crate::ui_kit::settings::Bindings;
@@ -88,8 +89,6 @@ const fn choice(value: i64, name: &'static str, label: &'static str) -> Choice {
     Choice { value, name, label }
 }
 
-/// [`WAVE_SET`]'s values are the built-in definitions' positions
-/// ([`builtin::definitions`]), in menu order.
 pub static ENABLED: Setting = setting(
     "firefight.enabled",
     "Firefight",
@@ -98,6 +97,11 @@ pub static ENABLED: Setting = setting(
     Kind::Bool,
     Value::Bool(true),
 );
+/// The values the store admits: the built-in definitions' positions
+/// ([`builtin::definitions`]), then the map-specific sets' from
+/// [`builtin::MAP_SET_BASE`]. The row offers the lobby map's own first
+/// ([`builtin::menu`]); a value the map has no set for plays the
+/// built-ins ([`builtin::resolve`]).
 pub static WAVE_SET: Setting = setting(
     "firefight.waveset",
     "Wave set",
@@ -107,6 +111,7 @@ pub static WAVE_SET: Setting = setting(
         choice(1, "attrition", "Attrition"),
         choice(2, "last_stand", "Last Stand"),
         choice(3, "crossfire", "Crossfire"),
+        choice(builtin::MAP_SET_BASE, "basin", "Basin"),
     ]),
     Value::Int(0),
 );
@@ -167,22 +172,66 @@ pub static DEFS: [&Setting; 6] = [&ENABLED, &WAVE_SET, &TEAMS, &DIFFICULTY, &LIV
 
 /// The Firefight page over `store`: the shared settings dialog
 /// (`crate::ui_kit::settings`) its doc declares,
-/// `assets/ui/screens/firefight.yaml`: its header, its six rows over
+/// `content/ui/screens/firefight.yaml`: its header, its six rows over
 /// [`DEFS`], their help and picker copy, and the Game Setup row's text
-/// and help (`settings.caller`).
+/// and help (`settings.caller`). The Wave set row offers the lobby map's
+/// own sets first ([`builtin::menu`]), so it is bound, not read from the
+/// setting's fixed choices.
 pub fn page(store: Arc<Store>) -> KitScreen {
-    crate::ui_kit::settings::screen(FEATURE, SCREEN, IDS, Some(store), Bindings::new())
+    let binds = Bindings::new().menu(
+        "waveset",
+        || {
+            builtin::menu(lobby_start::kit_map().as_deref())
+                .into_iter()
+                .map(|(_, def)| def.name)
+                .collect()
+        },
+        {
+            let store = Arc::clone(&store);
+            move || {
+                let held = match store.get(WAVE_SET.key) {
+                    Some(Value::Int(v)) => v,
+                    _ => 0,
+                };
+                builtin::menu(lobby_start::kit_map().as_deref())
+                    .iter()
+                    .position(|(value, _)| *value == held)
+                    .unwrap_or(0)
+            }
+        },
+        {
+            let store = Arc::clone(&store);
+            move |i: usize| {
+                let menu = builtin::menu(lobby_start::kit_map().as_deref());
+                let Some((value, def)) = menu.get(i) else {
+                    return format!("{}: no choice {i}", WAVE_SET.key);
+                };
+                match store.set(WAVE_SET.key, Value::Int(*value)) {
+                    Ok(o) => match o.not_saved {
+                        None => format!("{} -> {}", WAVE_SET.key, def.name),
+                        Some(why) => format!("{} -> {}; not saved: {why}", WAVE_SET.key, def.name),
+                    },
+                    Err(e) => format!("{}: {e}", WAVE_SET.key),
+                }
+            }
+        },
+    );
+    crate::ui_kit::settings::screen(FEATURE, SCREEN, IDS, Some(store), binds)
         .unwrap_or_else(|e| panic!("{e}"))
 }
 
 // --- What the match starts from ---------------------------------------------
 
 /// The page's choices, read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
     /// Firefight runs on a kit map.
     pub enabled: bool,
-    /// The position in [`builtin::definitions`].
+    /// The map the choices play on (`None`: none known): a map-specific
+    /// set plays only on its own map ([`builtin::resolve`]).
+    pub map: Option<String>,
+    /// The Wave set row's value ([`builtin::resolve`]: a built-in by its
+    /// position, a map-specific set from [`builtin::MAP_SET_BASE`]).
     pub wave_set: usize,
     /// The player teams, or the wave set's own.
     pub teams: Option<u8>,
@@ -194,11 +243,12 @@ pub struct Options {
 }
 
 impl Default for Options {
-    /// The settings' defaults: on, Holdout, its own teams, Normal, its own
-    /// lives, skulls.
+    /// The settings' defaults: on, no map, Holdout, its own teams, Normal,
+    /// its own lives, skulls.
     fn default() -> Self {
         Options {
             enabled: true,
+            map: None,
             wave_set: 0,
             teams: None,
             difficulty: Difficulty::Normal,
@@ -212,6 +262,12 @@ impl Options {
     /// The store's choices. A setting the store does not hold, or holds in
     /// a form it cannot be, is an error naming it.
     pub fn read(store: &Store) -> Result<Options, String> {
+        Self::for_map(store, None)
+    }
+
+    /// The store's choices for `map`, whose own sets the Wave set value
+    /// may name ([`builtin::menu`]).
+    pub fn for_map(store: &Store, map: Option<&str>) -> Result<Options, String> {
         let int = |def: &Setting| -> Result<i64, String> {
             match store.get(def.key) {
                 Some(Value::Int(v)) => Ok(v),
@@ -228,8 +284,8 @@ impl Options {
         };
         let wave_set = usize::try_from(int(&WAVE_SET)?)
             .ok()
-            .filter(|&i| i < builtin::definitions().len())
-            .ok_or_else(|| format!("{} names no built-in wave set", WAVE_SET.key))?;
+            .filter(|&v| builtin::names_set(v as i64))
+            .ok_or_else(|| format!("{} names no wave set", WAVE_SET.key))?;
         let difficulty = match int(&DIFFICULTY)? {
             0 => Difficulty::Easy,
             1 => Difficulty::Normal,
@@ -251,6 +307,7 @@ impl Options {
         };
         Ok(Options {
             enabled,
+            map: map.map(str::to_owned),
             wave_set,
             teams,
             difficulty,
@@ -259,14 +316,15 @@ impl Options {
         })
     }
 
-    /// The definition the match plays: the wave set, played by the teams
-    /// the page chose (`builtin::with_teams`), with the starting pool it
-    /// chose and, with skulls off, no skull on any round.
+    /// The definition the match plays: the wave set the value names on
+    /// [`Options::map`] ([`builtin::resolve`]), played by the teams the
+    /// page chose (`builtin::with_teams`), with the starting pool it chose
+    /// and, with skulls off, no skull on any round.
     pub fn definition(&self) -> Result<Def, String> {
-        let mut def = builtin::definitions()
-            .get(self.wave_set)
-            .cloned()
-            .ok_or_else(|| format!("no built-in wave set {}", self.wave_set))?;
+        let value = i64::try_from(self.wave_set)
+            .map_err(|_| format!("no wave set {}", self.wave_set))?;
+        let mut def = builtin::resolve(value, self.map.as_deref())
+            .ok_or_else(|| format!("no wave set {}", self.wave_set))?;
         if let Some(teams) = self.teams {
             def = builtin::with_teams(def, teams);
         }
@@ -285,10 +343,21 @@ impl Options {
     /// set's own (1 for a wave set the build does not have).
     pub fn player_teams(&self) -> u8 {
         self.teams.unwrap_or_else(|| {
-            builtin::definitions()
-                .get(self.wave_set)
+            i64::try_from(self.wave_set)
+                .ok()
+                .and_then(|value| builtin::resolve(value, self.map.as_deref()))
                 .map_or(1, |def| def.teams)
         })
+    }
+
+    /// The Wave set row's label: the set the value names on
+    /// [`Options::map`], or the built-in a map set falls back to.
+    pub fn wave_set_label(&self) -> String {
+        i64::try_from(self.wave_set)
+            .ok()
+            .and_then(|value| builtin::resolve(value, self.map.as_deref()))
+            .map(|def| def.name)
+            .unwrap_or_else(|| format!("wave set {}", self.wave_set))
     }
 }
 

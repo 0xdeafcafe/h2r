@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod data;
+pub mod ground;
+
 /// The `scnr` root is at least this long: the furthest block pair this crate
 /// reads is crates' palette at `+0x330`.
 const ROOT: u32 = 0x338;
@@ -204,6 +207,13 @@ pub struct Changes {
     pub geometry_refusal: Option<String>,
     /// The same for the Textures tool's edits.
     pub bitmap_refusal: Option<String>,
+    /// The same for the Sound window's mouth curve edits.
+    pub sound_refusal: Option<String>,
+    /// The areas record (`game_markers::record`) the map would carry,
+    /// when the areas differ from the ones it was opened with (empty when
+    /// they were all taken off); none otherwise. A save appends it to the map's tail
+    /// ([`Scenario::area_record`]).
+    pub areas: Option<Vec<u8>>,
 }
 impl Changes {
     pub fn is_empty(&self) -> bool {
@@ -218,6 +228,8 @@ impl Changes {
             && self.tag_moves.is_empty()
             && self.geometry_refusal.is_none()
             && self.bitmap_refusal.is_none()
+            && self.sound_refusal.is_none()
+            && self.areas.is_none()
     }
 }
 
@@ -437,11 +449,37 @@ pub struct Scenario {
     tag_grown: Vec<TagGrown>,
     /// New string IDs. See [`Self::set_tag_strings`].
     tag_strings: Vec<String>,
+    /// The recordings block's writes. See [`Self::set_recording_changes`].
+    recording_patches: Vec<(u32, Vec<u8>)>,
+    recording_grown: Vec<TagGrown>,
+    /// The script tables' writes. See [`Self::set_script_changes`].
+    script_patches: Vec<(u32, Vec<u8>)>,
+    script_grown: Vec<TagGrown>,
+    /// The payload as read, for the source of a resized data reference.
+    payload: std::sync::Arc<[u8]>,
+    /// Resized data references: each one's whole current payload, by the
+    /// virtual address of its `(size, address)` pair. See [`data`].
+    data: std::collections::BTreeMap<u32, Vec<u8>>,
     /// The Modeling tool's writes. See [`Self::set_geometry_changes`].
     geometry: GeometryChanges,
     /// The Textures tool's writes, in the same shape. See
     /// [`Self::set_bitmap_changes`].
     bitmap: GeometryChanges,
+    /// The Sound window's mouth curve writes (raw patches only). See
+    /// [`Self::set_sound_changes`].
+    sound: GeometryChanges,
+    /// The area of each netgame flag that has one, by placement, so a
+    /// swap-removal or an append moves nothing
+    /// (docs/game/gametype-markers.md, "In the document"). Edited through
+    /// [`Self::set_area`]; an entry whose flag is gone waits for its undo.
+    areas: std::collections::BTreeMap<PlacementId, game_markers::Area>,
+    /// The areas record the map was opened with, as it encodes now (empty
+    /// when it had none): a save writes the areas again, and
+    /// [`Changes::areas`] holds the record only when it differs from this.
+    areas_loaded: Vec<u8>,
+    /// The ground label of each netgame flag that has one, by placement
+    /// ([`ground`]).
+    labels: std::collections::BTreeMap<PlacementId, ground::FlagLabel>,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -655,8 +693,146 @@ impl Scenario {
             bsp_patches: Vec::new(),
             tag_grown: Vec::new(),
             tag_strings: Vec::new(),
+            recording_patches: Vec::new(),
+            recording_grown: Vec::new(),
+            script_patches: Vec::new(),
+            script_grown: Vec::new(),
+            payload: bytes.into(),
+            data: std::collections::BTreeMap::new(),
             geometry: GeometryChanges::default(),
             bitmap: GeometryChanges::default(),
+            sound: GeometryChanges::default(),
+            areas: std::collections::BTreeMap::new(),
+            areas_loaded: Vec::new(),
+            labels: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// Every netgame flag's type, identifier and position, by index: what
+    /// an areas record's rows find their flags by
+    /// ([`game_markers::record::place`]).
+    fn record_flags(&self) -> Vec<game_markers::record::Flag> {
+        let flags = BlockKind::NetgameFlags;
+        (0..self.block(flags).len())
+            .map(|i| game_markers::record::Flag {
+                flag_type: self
+                    .get(flags, i, "type")
+                    .ok()
+                    .and_then(Value::as_int)
+                    .and_then(|v| i16::try_from(v).ok())
+                    .unwrap_or(-1),
+                identifier: self
+                    .get(flags, i, "identifier")
+                    .ok()
+                    .and_then(Value::as_int)
+                    .and_then(|v| i16::try_from(v).ok())
+                    .unwrap_or(-1),
+                at: self
+                    .get(flags, i, "position")
+                    .ok()
+                    .and_then(Value::as_vec3)
+                    .unwrap_or([0.0; 3]),
+            })
+            .collect()
+    }
+
+    /// The rows of the areas record a save writes: one for each flag that
+    /// has an area, in flag order.
+    pub fn area_rows(&self) -> Vec<game_markers::record::Row> {
+        let flags = self.record_flags();
+        self.flag_areas()
+            .into_iter()
+            .map(|(i, area)| game_markers::record::Row {
+                index: i as u32,
+                flag_type: flags[i].flag_type,
+                identifier: flags[i].identifier,
+                at: flags[i].at,
+                area: area.clone(),
+            })
+            .collect()
+    }
+
+    /// The areas record a save appends to the map
+    /// (`game_markers::record`), or none when no flag has an area.
+    pub fn area_record(&self) -> Option<Vec<u8>> {
+        let rows = self.area_rows();
+        (!rows.is_empty()).then(|| game_markers::record::encode(&rows))
+    }
+
+    /// Takes the areas a map was saved with: each row goes to the flag it
+    /// finds ([`game_markers::record::place`]) and is not an edit. Returns
+    /// how many rows found no flag (the flag was moved or changed type
+    /// since); those are dropped.
+    pub fn load_areas(&mut self, rows: &[game_markers::record::Row]) -> usize {
+        let (placed, lost) = game_markers::record::place(rows, &self.record_flags());
+        for (index, area) in placed {
+            // Stored as read: `Area::validate` passed in the decoder.
+            let _ = self.write_area(index, Some(area));
+        }
+        self.areas_loaded = self.area_record().unwrap_or_default();
+        lost.len()
+    }
+
+    /// The area of netgame flag `index`, if it has one.
+    pub fn area(&self, index: usize) -> Option<&game_markers::Area> {
+        let id = self.block(BlockKind::NetgameFlags).placement_id(index)?;
+        self.areas.get(&id)
+    }
+
+    /// Every netgame flag's stored area, by flag index.
+    pub fn flag_areas(&self) -> Vec<(usize, &game_markers::Area)> {
+        (0..self.block(BlockKind::NetgameFlags).len())
+            .filter_map(|i| Some((i, self.area(i)?)))
+            .collect()
+    }
+
+    /// Whether flag `index` is one of three or more corners of one hill:
+    /// the same hill type and identifier (docs/game/gametype-markers.md,
+    /// "A hill is one flag or its corners").
+    pub fn is_hill_corner(&self, index: usize) -> bool {
+        let flags = BlockKind::NetgameFlags;
+        let key = |i: usize| {
+            let ty = self.get(flags, i, "type").ok()?.as_int()?;
+            let id = self.get(flags, i, "identifier").ok()?.as_int()?;
+            (11..=18).contains(&ty).then_some((ty, id))
+        };
+        let Some(mine) = key(index) else {
+            return false;
+        };
+        (0..self.block(flags).len()).filter(|&i| key(i) == Some(mine)).count() >= 3
+    }
+
+    /// Sets or clears (`None`) netgame flag `index`'s area, and returns
+    /// the one it replaced. Refused, with `Area::validate`'s sentence, for
+    /// an area the tools may not store, and for one on a hill's corner.
+    pub fn set_area(
+        &mut self,
+        index: usize,
+        area: Option<game_markers::Area>,
+    ) -> Result<Option<game_markers::Area>> {
+        if let Some(a) = &area {
+            a.validate().map_err(|e| Error::Declined(e.to_string()))?;
+            if self.is_hill_corner(index) {
+                return Err(Error::Declined("a hill with corners takes no area".into()));
+            }
+        }
+        self.write_area(index, area)
+    }
+
+    /// [`Self::set_area`] without the checks, for an undo.
+    pub(crate) fn write_area(
+        &mut self,
+        index: usize,
+        area: Option<game_markers::Area>,
+    ) -> Result<Option<game_markers::Area>> {
+        let flags = BlockKind::NetgameFlags;
+        let id = self
+            .block(flags)
+            .placement_id(index)
+            .ok_or(Error::NoEntry(flags, index))?;
+        Ok(match area {
+            Some(a) => self.areas.insert(id, a),
+            None => self.areas.remove(&id),
         })
     }
 
@@ -782,6 +958,7 @@ impl Scenario {
         self.blocks.iter().any(|b| b.entries != b.original)
             || self.names.entries != self.names.original
             || self.volume_blocks.iter().any(VolumeBlock::is_modified)
+            || self.data_modified()
     }
 
     /// What a save must write: the minimal fixed-size patches for blocks
@@ -801,6 +978,16 @@ impl Scenario {
             geometry_refusal: self.geometry.refusal.clone(),
             ..Changes::default()
         };
+        // The areas count as a change when they are not the ones the map
+        // was opened with; a map opened with areas and left alone has none.
+        let record = self.area_record().unwrap_or_default();
+        if record != self.areas_loaded {
+            out.areas = Some(record);
+        }
+        out.patches.extend(self.recording_patches.iter().cloned());
+        out.tag_grown.extend(self.recording_grown.iter().cloned());
+        out.patches.extend(self.script_patches.iter().cloned());
+        out.tag_grown.extend(self.script_grown.iter().cloned());
         out.patches.extend(self.geometry.patches.iter().cloned());
         out.bsp_patches
             .extend(self.geometry.bsp_patches.iter().cloned());
@@ -814,6 +1001,10 @@ impl Scenario {
         out.tag_moves.extend(self.geometry.moved.iter().cloned());
         out.tag_moves.extend(self.bitmap.moved.iter().cloned());
         out.bitmap_refusal = self.bitmap.refusal.clone();
+        // The Sound window's mouth curves: raw patches in the extra-info
+        // resource, a block no other tool patches.
+        out.raw_patches.extend(self.sound.raw_patches.iter().cloned());
+        out.sound_refusal = self.sound.refusal.clone();
         for b in &self.blocks {
             let root = self.address + b.def.offset;
             if b.len() > b.capacity() {
@@ -863,6 +1054,7 @@ impl Scenario {
                     .push((root, (b.len() as u32).to_le_bytes().to_vec()));
             }
         }
+        self.data_changes(&mut out.patches, &mut out.tag_grown);
         out.patches.sort();
         out
     }
@@ -962,6 +1154,112 @@ impl Scenario {
     /// The Textures tool's writes.
     pub fn bitmap_changes(&self) -> &GeometryChanges {
         &self.bitmap
+    }
+
+    /// Replace the Sound window's writes (all of them, not a delta): raw
+    /// block patches inside a sound's extra-info resource
+    /// (docs/editor/rich-editors.md, "Sounds and facial animation"). Only
+    /// `raw_patches` and `refusal` are taken; any other write is refused,
+    /// because a mouth curve edit never changes a length or a tag. The
+    /// `refusal` makes the save fail before it writes.
+    pub fn set_sound_changes(&mut self, changes: GeometryChanges) -> Result<()> {
+        if !(changes.patches.is_empty()
+            && changes.bsp_patches.is_empty()
+            && changes.raw_appends.is_empty()
+            && changes.grown.is_empty()
+            && changes.moved.is_empty())
+        {
+            return Err(Error::Refused(
+                "a mouth curve edit writes raw bytes in place and nothing else",
+            ));
+        }
+        self.sound = changes;
+        Ok(())
+    }
+    /// The Sound window's writes.
+    pub fn sound_changes(&self) -> &GeometryChanges {
+        &self.sound
+    }
+
+    /// Replace the recordings block's writes (all of them, not a delta):
+    /// patches to the scenario's own `recorded_animation` elements, their
+    /// count and the streams written in place, and the streams that
+    /// outgrew their source, appended at save with the element's
+    /// `(size, address)` pair pointed at the copy
+    /// (`hs::recording_edit::changes`). They are the scenario's bytes but
+    /// no placement block's, so they go out beside the blocks' own.
+    /// Refused when a grown stream's pair lies outside the scenario's
+    /// payload or a patch covers it.
+    pub fn set_recording_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<TagGrown>,
+    ) -> Result<()> {
+        let (lo, hi) = (self.address, self.address.saturating_add(self.size));
+        for g in &grown {
+            let end = g.root.saturating_add(8);
+            if g.root < lo || end > hi {
+                return Err(Error::Refused(
+                    "a grown recording's pair is outside the scenario's payload",
+                ));
+            }
+            if patches
+                .iter()
+                .any(|(a, b)| *a < end && g.root < a.saturating_add(b.len() as u32))
+            {
+                return Err(Error::Refused("a grown recording's pair is also patched"));
+            }
+            if g.bytes.is_empty() || g.count == 0 {
+                return Err(Error::Refused("a grown recording has no bytes"));
+            }
+        }
+        self.recording_patches = patches;
+        self.recording_grown = grown;
+        Ok(())
+    }
+    /// The recordings block's in-place writes and grown streams.
+    pub fn recording_changes(&self) -> (&[(u32, Vec<u8>)], &[TagGrown]) {
+        (&self.recording_patches, &self.recording_grown)
+    }
+
+    /// Replace the script tables' writes (all of them, not a delta): the
+    /// patches to the nodes, string data, scripts, globals and references
+    /// the scenario's header describes, written in place, and the tables
+    /// that outgrew their source, appended at save with the header's
+    /// `(count, address)` pair pointed at the copy (`hs::table_writes`).
+    /// They are the scenario's bytes but no placement block's, so they go
+    /// out beside the blocks' own. Refused when a grown table's pair lies
+    /// outside the scenario's payload or a patch covers it.
+    pub fn set_script_changes(
+        &mut self,
+        patches: Vec<(u32, Vec<u8>)>,
+        grown: Vec<TagGrown>,
+    ) -> Result<()> {
+        let (lo, hi) = (self.address, self.address.saturating_add(self.size));
+        for g in &grown {
+            let end = g.root.saturating_add(8);
+            if g.root < lo || end > hi {
+                return Err(Error::Refused(
+                    "a grown script table's pair is outside the scenario's payload",
+                ));
+            }
+            if patches
+                .iter()
+                .any(|(a, b)| *a < end && g.root < a.saturating_add(b.len() as u32))
+            {
+                return Err(Error::Refused("a grown script table's pair is also patched"));
+            }
+            if g.bytes.is_empty() || g.count == 0 {
+                return Err(Error::Refused("a grown script table has no bytes"));
+            }
+        }
+        self.script_patches = patches;
+        self.script_grown = grown;
+        Ok(())
+    }
+    /// The script tables' in-place writes and grown tables.
+    pub fn script_changes(&self) -> (&[(u32, Vec<u8>)], &[TagGrown]) {
+        (&self.script_patches, &self.script_grown)
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).

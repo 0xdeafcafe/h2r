@@ -107,6 +107,7 @@ review, as a name does: the evidence goes in the line's meaning text.
 | `axes=a\|b\|...` | an integer or float array | One word per component, as many as the array has. |
 | `title="..."` | a `group` or `struct` line | The kind in words (`Weapon`). |
 | `title=<field>` | a `block` line | The element's field whose value titles each element. It names a field with a value: not a block, data reference, struct, `unknown` or `pad`. |
+| `view=<word>` | a field line | How a rich editor shows the field: `rgb`, `hdr_rgb` (`f32[3]`), `argb` (`f32[4]`), `rgb8`, `argb8`, `xrgb8` (a `u32`) or `function` (a `data` reference). A word on another type, or any other word, fails the parse ([rich-editors.md](../editor/rich-editors.md)). Needs evidence of the stored form in the meaning text. |
 | `applies=frame\|use\|creation` | a field, `block`, `struct`, `group` line | When a live write shows. Inherited, below. |
 
 ```text
@@ -145,8 +146,8 @@ it has `None`, which the editor reads as "not known". The evidence for an
 `applies` on a `group`, `struct` or `block` line goes in that line's
 meaning text, naming the reader that reads every field below it.
 
-In the registry (`tags::registry`), `Field` carries `label`, `unit`
-and `axes`; `Layout::title` holds a group's or a block's `title`; and
+In the registry (`tags::registry`), `Field` carries `label`, `unit`,
+`axes` and `view`; `Layout::title` holds a group's or a block's `title`; and
 `Layout::section_titles` maps the path of each embedded struct
 (`Field::section`) to its `title="..."`.
 
@@ -338,9 +339,12 @@ summary:
 - **`jmad`**: [animation.md](animation.md), E fields of the animation
   record, events, modes, classes and actions (`0x001db170`), and static
   poses (`0x001dd8f0`).
-- **`snd!`**: the sample rate, encoding, compression (E `0x0021e421`) and
-  pitch ranges. Flags, class and playback index stay unknown (nothing of
-  ours supports their meaning).
+- **`snd!`**: the sample rate, encoding, compression (E `0x0021e421`),
+  pitch ranges and the extra-info index (E the engine requests the
+  sound's extra-info resource for lip sync, V the index names an `ugh!`
+  extra info or is `ffff`; [sounds.md](../halo1/sounds.md)). Flags, class
+  and playback index stay unknown (nothing of ours supports their
+  meaning).
 - **`lsnd`**: the Halo 2 layout the Halo 1 sound converter writes
   (`h1sounds::looping`), D.
 
@@ -361,7 +365,10 @@ file in the meaning text:
   `cli::extract_shaders`.
 - `ugh!`: `tags::sound` and [sound.md](sound.md). The playback distances
   and the permutation length come from
-  [halo1/sounds.md](../halo1/sounds.md) (E). The fields that doc marks S
+  [halo1/sounds.md](../halo1/sounds.md) (E). The extra-info names — the
+  permutation's descriptor index, the block, its resource, its locators
+  and the owner datum — come from the lip-sync read there ("Dialogue
+  mouth curves", E and V). The fields that doc marks S
   stay unnamed.
 - `pmov`: `tags::effects::movement`, with the property layout from
   `effects::mem`.

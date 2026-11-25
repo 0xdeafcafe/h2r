@@ -1,0 +1,14 @@
+[package]
+name = "anim-edit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tags.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

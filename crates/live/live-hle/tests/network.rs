@@ -1206,7 +1206,7 @@ fn film_replays_network_random_and_qos_without_a_live_socket() {
             );
             Some(c)
         }
-        fn record(&self, _: film::Tag, c: Call) {
+        fn record(&self, c: Call) {
             self.calls.lock().unwrap().push_back(c)
         }
         fn fault(&self, why: String) {
@@ -1256,5 +1256,70 @@ fn film_replays_network_random_and_qos_without_a_live_socket() {
     });
     replay.hle.set_film_tap(replay_tape.clone());
     assert_eq!(run(&mut replay, false), expected);
+    assert!(replay_tape.calls.lock().unwrap().is_empty());
+}
+
+/// The pure operations are computed in playback and take no call index, and
+/// the null network answers an operation on a socket the guest has not made
+/// without the tape. The first socket ends it: everything after is taped.
+#[test]
+fn film_holds_no_pure_call_and_no_call_on_a_network_nothing_opened() {
+    use film::tape::{Call, Tap};
+    use std::{collections::VecDeque, sync::Mutex};
+    #[derive(Default)]
+    struct Tape {
+        replay: bool,
+        calls: Mutex<VecDeque<Call>>,
+    }
+    impl Tap for Tape {
+        fn replaying(&self) -> bool {
+            self.replay
+        }
+        fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {
+            let c = self.calls.lock().unwrap().pop_front()?;
+            assert_eq!(
+                (c.op.as_str(), c.args.as_slice(), c.thread),
+                (op, args, thread)
+            );
+            Some(c)
+        }
+        fn record(&self, c: Call) {
+            self.calls.lock().unwrap().push_back(c)
+        }
+        fn fault(&self, why: String) {
+            panic!("{why}")
+        }
+    }
+    let run = |w: &mut World| {
+        w.start();
+        assert_eq!(w.call("htonl/ntohl", &[0x0102_0304]), 0x0403_0201);
+        assert_eq!(w.call("htons/ntohs", &[0x0102]), 0x0201);
+        // No socket 5 exists, and none has ever been made.
+        assert_eq!(w.call("closesocket", &[5]), ERROR);
+        assert_eq!(w.error(), 10038);
+        let id = w.socket(17);
+        w.bind(id, 1000);
+        assert_eq!(w.call("closesocket", &[id]), 0);
+        // Taped from the first socket on, even for a socket that is gone.
+        assert_eq!(w.call("closesocket", &[id]), ERROR);
+        assert_eq!(w.error(), 10038);
+        assert_eq!(w.call("htonl/ntohl", &[1]), 0x0100_0000);
+    };
+    let mut original = World::new();
+    let tape = Arc::new(Tape::default());
+    original.hle.set_film_tap(tape.clone());
+    run(&mut original);
+    let ops: Vec<String> = tape.calls.lock().unwrap().iter().map(|c| c.op.clone()).collect();
+    // The last error is read through the tape, so it is on it.
+    assert_eq!(ops, ["LastError", "Socket", "Bind", "Close", "Close", "LastError"]);
+    let indexes: Vec<u64> = tape.calls.lock().unwrap().iter().map(|c| c.index).collect();
+    assert!(indexes.iter().all(|&i| i == 0), "the recorder numbers calls, not the HLE");
+    let mut replay = World::with(original.config.clone());
+    let replay_tape = Arc::new(Tape {
+        replay: true,
+        calls: Mutex::new(tape.calls.lock().unwrap().clone()),
+    });
+    replay.hle.set_film_tap(replay_tape.clone());
+    run(&mut replay);
     assert!(replay_tape.calls.lock().unwrap().is_empty());
 }

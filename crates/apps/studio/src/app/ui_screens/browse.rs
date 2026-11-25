@@ -107,7 +107,7 @@ fn special_rank(key: &str) -> Option<usize> {
 }
 
 /// Our screens' folders: a screen goes in the folder of its name's first
-/// dotted segment (`forge.hud` in `forge`). A name with no dot that is
+/// dotted segment (`forge.objects` in `forge`). A name with no dot that is
 /// also that segment of other names joins their folder (`skulls` with
 /// `skulls.mp`); a name alone stays at the root. `design` and `layout`
 /// are always folders, labelled "Design system" and "Layouts", and list
@@ -382,8 +382,8 @@ mod tests {
     #[test]
     fn ours_groups_by_the_first_segment() {
         let t = ours(&[
-            "forge.hud",
-            "forge.menu",
+            "forge.objects",
+            "forge.tools",
             "skulls",
             "skulls.mp",
             "campaigns",
@@ -407,8 +407,8 @@ mod tests {
     #[test]
     fn design_and_layouts_come_first() {
         let t = ours(&[
-            "forge.hud",
-            "forge.menu",
+            "forge.objects",
+            "forge.tools",
             "layout.lobby",
             "design.button",
             "design.row",

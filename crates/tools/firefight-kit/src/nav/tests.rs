@@ -1,5 +1,5 @@
-use super::*;
 use super::fixture::{floors, grid_with_far_floor};
+use super::*;
 use tags::pathfinding::Ref;
 
 /// A square arena with shared collision edges. A detached square to
@@ -14,7 +14,17 @@ fn every_drop_zone_has_a_path_to_the_middle() {
     let (pf, data) = build_with_pathfinding(&grid(), 0, 7).unwrap();
     let middle = [14., 14., 0.];
     let starts = [middle, [2., 2., 0.]];
-    let arena = choose_zones(&pf, &data, &starts, &[], 2, |_| Some(3), &mut |_| {}).unwrap();
+    let arena = choose_zones(
+        &pf,
+        &data,
+        &starts,
+        &[],
+        2,
+        |_| Some(3),
+        &Labels::default(),
+        &mut |_| {},
+    )
+    .unwrap();
     assert!((6..=12).contains(&arena.zones.len()));
     assert!(arena.bases.is_empty());
     let center = data.nav.poly_near(middle).unwrap();
@@ -75,6 +85,7 @@ fn based_arena() -> (PathfindingData, MapData, Arena) {
         &BASES,
         2,
         |_| Some(3),
+        &Labels::default(),
         &mut |_| {},
     )
     .unwrap();
@@ -129,6 +140,7 @@ fn every_drop_zone_has_a_path_to_each_base() {
             &island,
             2,
             |_| Some(3),
+            &Labels::default(),
             &mut |_| {}
         )
         .is_none()
@@ -199,6 +211,7 @@ fn only_the_arenas_walkable_area_keeps_sectors() {
         &BASES,
         2,
         |_| Some(3),
+        &Labels::default(),
         &mut |_| {},
     )
     .unwrap();

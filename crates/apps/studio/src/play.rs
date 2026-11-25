@@ -20,7 +20,9 @@ pub mod launch;
 pub mod link;
 pub mod pair;
 pub mod objects;
+pub mod picture;
 pub mod playtest;
+pub mod recording_path;
 pub(crate) mod presence;
 pub(crate) mod collision_sync;
 pub(crate) mod raw_sync;
@@ -31,6 +33,7 @@ pub mod tag_sync;
 mod capabilities;
 mod edits;
 mod feedback;
+mod subject;
 pub use edits::Apply;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -174,6 +177,17 @@ pub enum LinkTone {
     Error,
 }
 
+/// The game this editor started (`game.status`'s `own`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnGame {
+    pub level: String,
+    pub socket: String,
+    /// Started with `--editor` (no window of its own).
+    pub editor: bool,
+    /// The link is up on it; until then it is starting.
+    pub running: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinkView {
     pub state: LinkState,
@@ -185,6 +199,8 @@ pub struct LinkView {
     pub can_play: bool,
     pub playtest_busy: bool,
     pub can_stop: bool,
+    /// The game this editor started: its level, socket and mode.
+    pub own: Option<OwnGame>,
     pub paired: bool,
     pub(crate) controls: capabilities::Controls,
     pub paused: bool,
@@ -210,6 +226,12 @@ pub(super) fn session_label(kind: SessionKind) -> &'static str {
         SessionKind::MpClient => "Multiplayer client",
         SessionKind::Unknown => "Unknown session kind",
     }
+}
+
+struct ScriptPreview {
+    endpoint: Endpoint,
+    params: Value,
+    deadline: Instant,
 }
 
 /// A pairing with a game, launched or attached.
@@ -253,6 +275,12 @@ pub struct Play {
     /// The launched game, its log, and the spawn it waits for.
     child: Option<Child>,
     child_endpoint: Option<Endpoint>,
+    /// The game last paired that this editor did not start: where the
+    /// mirror returns when the panel follows `attached`.
+    attached_endpoint: Option<Endpoint>,
+    /// The launched game's level and whether it runs in editor mode.
+    own_game: Option<(String, bool)>,
+    script_preview: Option<ScriptPreview>,
     /// Identity of the editor's launch copy, including when it pairs again.
     launched_copy: Option<(Endpoint, u64, u32)>,
     pub log_path: Option<PathBuf>,
@@ -282,6 +310,8 @@ pub struct Play {
     feedback: feedback::Feedback,
     /// UI requests taken at the next update.
     queue: Vec<Request>,
+    /// The object standing for the tag being edited, in the own game.
+    subject: subject::State,
 }
 
 impl Default for Play {
@@ -318,6 +348,9 @@ impl Play {
             paused: false,
             child: None,
             child_endpoint: None,
+            attached_endpoint: None,
+            own_game: None,
+            script_preview: None,
             launched_copy: None,
             log_path: None,
             pending_spawn: None,
@@ -341,6 +374,7 @@ impl Play {
             unpaired: auto::Unpaired::default(),
             feedback: feedback::Feedback::default(),
             queue: Vec::new(),
+            subject: Default::default(),
         }
     }
 
@@ -366,6 +400,18 @@ impl Play {
     /// Every panel in a frame reads the same issues and navigation targets.
     pub(crate) fn displayed_link(&self, app: &App) -> std::sync::Arc<LinkView> {
         app.pairing.link.clone().unwrap_or_else(|| self.link_view(app).into())
+    }
+
+    /// The game this editor started, and whether the link is on it.
+    fn own_view(&self) -> Option<OwnGame> {
+        let (level, editor) = self.own_game.clone()?;
+        self.child.as_ref()?;
+        let socket = match self.child_endpoint.as_ref()? {
+            Endpoint::Unix(p) => p.display().to_string(),
+            _ => return None,
+        };
+        let paired = self.is_paired() && self.endpoint() == self.child_endpoint.as_ref();
+        Some(OwnGame { level, socket, editor, running: paired })
     }
 
     /// The state shared by the bar, the Game panel and `pair.status`.
@@ -485,6 +531,7 @@ impl Play {
                 && !matches!(self.conn, Conn::Connecting | Conn::Reconnecting { .. }),
             playtest_busy: !matches!(self.waiting, Waiting::Idle | Waiting::Pick),
             can_stop: self.child.is_some(),
+            own: self.own_view(),
             paired,
             controls: self.controls(),
             paused,
@@ -591,6 +638,9 @@ impl Play {
         self.feedback.clear_moves();
         self.pair_source = pair::Source::Finder;
         self.paired_pid = self.pid_for(&endpoint);
+        if self.child_endpoint.as_ref() != Some(&endpoint) {
+            self.attached_endpoint = Some(endpoint.clone());
+        }
         if let Endpoint::Unix(path) = &endpoint {
             self.auto_tried.insert(path.clone());
             self.unpaired.allow(path, self.paired_pid);
@@ -647,14 +697,62 @@ impl Play {
         }
     }
 
+    /// `game.start`: the game in editor mode on the open map, paired. It
+    /// replaces a game this editor started before.
+    /// The panel shows it, and the mirror follows it.
+    pub fn start_own(&mut self, app: &mut App) -> Result<(), String> {
+        self.start_own_variant(app, None)
+    }
+
+    fn start_own_variant(&mut self, app: &mut App, variant: Option<&str>) -> Result<(), String> {
+        let launch = self.prepare_launch(app, true, variant)?;
+        self.run_launch(app, launch)?;
+        self.follow(app, pair::PanelMode::Own);
+        Ok(())
+    }
+
+    /// F5, the Play button and a reload's relaunch: the same start as
+    /// `game.start`.
     fn launch_copy(&mut self, app: &mut App) -> Result<(), String> {
-        let launch = self.prepare(app)?;
-        self.run_launch(app, launch)
+        self.start_own(app)
+    }
+
+    /// `game.mode`: the panel and the mirror follow `mode`. With one
+    /// link, the other game is left and paired again when the panel
+    /// switches back: the own game by its socket, an attached game by the
+    /// endpoint it was last paired at.
+    fn follow(&mut self, app: &mut App, mode: pair::PanelMode) {
+        app.pairing.panel = mode;
+        let own = self.child_endpoint.clone();
+        let want = match mode {
+            pair::PanelMode::Own => own.clone(),
+            pair::PanelMode::Attached => self.attached_endpoint.clone().filter(|e| Some(e) != own.as_ref()),
+        };
+        if let Some(endpoint) = want
+            && self.endpoint() != Some(&endpoint)
+        {
+            self.request_pair(app, endpoint, pair::Source::Finder);
+        }
     }
 
     /// The launch for the open map: writes the edited map to the scratch
     /// directory for `H2_MAP_DIR`.
     pub fn prepare(&mut self, app: &mut App) -> Result<launch::Launch, String> {
+        self.prepare_for(app, false)
+    }
+
+    /// [`Self::prepare`], for the game in editor mode (`game.start`) or
+    /// with its own window (F5).
+    pub fn prepare_for(&mut self, app: &mut App, editor: bool) -> Result<launch::Launch, String> {
+        self.prepare_launch(app, editor, None)
+    }
+
+    fn prepare_launch(
+        &mut self,
+        app: &mut App,
+        editor: bool,
+        variant: Option<&str>,
+    ) -> Result<launch::Launch, String> {
         let session = &app.session;
         let document = session.map_name().ok_or("open a map first")?;
         let h2 = launch::find_h2(Some(PathBuf::from(self.h2_path.trim())).as_deref())
@@ -670,7 +768,7 @@ impl Play {
             .map(PathBuf::from)
             .ok_or("no data root")?;
         let map_dir = launch::scratch().join("maps");
-        let level = launch::write_launch_copy(session, &disc, &data, &map_dir)?;
+        let level = launch::write_launch_copy(session, &disc, &data, &map_dir, variant)?;
         // A Map Pack map plays from the editor's bytes (the map override) on
         // the Halo 2 disc. `h2 play` installs the map pack itself from beside
         // that disc (`mappack.iso`); say so when this one is elsewhere.
@@ -691,6 +789,13 @@ impl Play {
             let _ = std::fs::create_dir_all(d);
         }
         let _ = std::fs::remove_file(&socket);
+        let variant_file = if let Some(text) = variant {
+            let path = launch::scratch().join("preview.h2variant");
+            std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+            Some(path)
+        } else {
+            None
+        };
         Ok(launch::Launch {
             h2,
             disc,
@@ -698,6 +803,8 @@ impl Play {
             level,
             socket,
             map_dir: Some(map_dir),
+            editor,
+            variant_file,
         })
     }
 
@@ -719,6 +826,7 @@ impl Play {
                 self.last_command = Some(line.clone());
                 let endpoint = Endpoint::Unix(l.socket.clone());
                 self.child_endpoint = Some(endpoint.clone());
+                self.own_game = Some((l.level.clone(), l.editor));
                 self.launched_copy = l.map_dir.as_ref().and_then(|dir| {
                     // The checksum of the saved launch copy includes unsaved
                     // edits to the document. Later edits keep this identity.
@@ -763,6 +871,10 @@ impl Play {
     }
 
     fn child_gone(&mut self, app: &mut App) {
+        self.own_game = None;
+        if app.pairing.panel == pair::PanelMode::Own {
+            app.pairing.panel = pair::PanelMode::Attached;
+        }
         if let Some(ep) = self.child_endpoint.take() {
             self.finder.forget(&ep);
             if self.launched_copy.as_ref().is_some_and(|(game, _, _)| game == &ep) {
@@ -826,7 +938,7 @@ impl Play {
         for e in events {
             self.on_event(app, e);
         }
-        if let Some(stream) = &app.pairing.mirror {
+        if let Some(stream) = app.pairing.mirror.clone() {
             let previous_epoch = app.pairing.shown.as_ref().map(|sample| sample.epoch);
             app.pairing.display.refresh(
                 stream.snapshot().as_deref(),
@@ -834,6 +946,10 @@ impl Play {
                 app.pairing.latest || self.paused,
                 &mut app.pairing.shown,
             );
+            let pairing = &mut app.pairing;
+            if let Some(sample) = &pairing.shown {
+                pairing.path.record(sample);
+            }
             if let Some(sample) = &app.pairing.shown
                 && (previous_epoch != Some(sample.epoch) || now >= self.next_live_status)
             {
@@ -847,8 +963,10 @@ impl Play {
             }
         }
         // Revalidate queued controls against the newest map, session and local unit.
-        self.take_requests(app);
+        self.take_requests(app, now);
         self.send_rules_reload(app);
+        self.send_script_preview(app, now);
+        self.send_shader_overrides(app);
         self.auto_pair(app);
         self.remember_place(app);
         self.maybe_spawn(app);
@@ -879,7 +997,7 @@ impl Play {
     }
 
     /// Game-link controls requested by the UI and by `pair.*`.
-    fn take_requests(&mut self, app: &mut App) {
+    fn take_requests(&mut self, app: &mut App, now: Instant) {
         let mut reqs = std::mem::take(&mut self.queue);
         reqs.append(&mut app.pairing.requests);
         for r in reqs {
@@ -906,6 +1024,22 @@ impl Play {
                     }
                 }
                 Request::Stop => self.stop_game(app),
+                Request::StartOwn | Request::StartOwnVariant(_) => {
+                    let variant = match &r {
+                        Request::StartOwnVariant(variant) => Some(variant.as_str()),
+                        _ => None,
+                    };
+                    if let Err(why) = self.start_own_variant(app, variant) {
+                        app.error(format!("Game: {why}"));
+                    }
+                }
+                Request::PreviewRules { params, hash, carrier } => {
+                    if let Err(why) = self.preview_rules(app, params, hash, carrier.as_deref(), now) {
+                        app.rules.reload = crate::app::rules_edit::ReloadState::Refused(why.clone());
+                        app.error(why);
+                    }
+                }
+                Request::Follow(mode) => self.follow(app, mode),
                 Request::Edit(true) => {
                     if let Err(why) = self.apply_edits(app, Apply::Send) {
                         app.error(why);
@@ -1247,9 +1381,80 @@ impl Play {
                 app.info(format!("game: {what}"));
             }
             (Purpose::Rules, result) => self.rules_answer(app, result),
+            (Purpose::ShaderOverride(program), result) => {
+                let result = result.map_err(|e| e.message);
+                let line = match &result {
+                    Ok(_) => None,
+                    Err(why) => Some(format!("shader override: {why}")),
+                };
+                app.shader_overrides.answered(program, result);
+                if let Some(line) = line {
+                    app.error(line);
+                }
+            }
+            (Purpose::Subject(ticket), result) => self.subject_answer(app, ticket, result),
             (Purpose::Other, _) if method == agent_proto::editor::method::MARKS => {}
             (_, Err(e)) => self.feedback.problem(app, format!("{method}: {e}")),
             (Purpose::Other, Ok(v)) => app.info(format!("{method}: {v}")),
+        }
+    }
+
+    fn preview_rules(
+        &mut self,
+        app: &mut App,
+        params: Value,
+        hash: String,
+        carrier: Option<&str>,
+        now: Instant,
+    ) -> Result<(), String> {
+        if self.child_endpoint.is_none() {
+            let carrier = carrier.ok_or("Studio's game stopped before the preview. Try In game again.")?;
+            self.start_own_variant(app, Some(carrier))?;
+        } else {
+            self.follow(app, pair::PanelMode::Own);
+        }
+        let endpoint = self.child_endpoint.clone().ok_or("Studio's game has no socket")?;
+        self.script_preview = Some(ScriptPreview {
+            endpoint,
+            params,
+            deadline: now + LAUNCH_WAIT,
+        });
+        app.rules.reload = crate::app::rules_edit::ReloadState::Sending(hash);
+        Ok(())
+    }
+
+    /// Wait for the own game's gameplay boundary and capabilities. Keep
+    /// this separate from the general reload outbox, which follows the
+    /// paired game even when Studio is attached to someone else's game.
+    fn send_script_preview(&mut self, app: &mut App, now: Instant) {
+        let Some(preview) = &self.script_preview else { return };
+        let failure = if self.child_endpoint.as_ref() != Some(&preview.endpoint)
+            || app.pairing.panel != pair::PanelMode::Own
+            || self.endpoint() != Some(&preview.endpoint)
+        {
+            Some("Studio's game stopped or the pairing changed")
+        } else if matches!(self.conn, Conn::Lost(_)) {
+            Some("the link to Studio's game closed before the script reload")
+        } else if now >= preview.deadline {
+            Some("Studio's game did not become ready for a script reload")
+        } else if !self.is_paired() || self.methods.is_none() {
+            return;
+        } else if !self.has_method(agent_proto::rules::method::RELOAD) {
+            Some("Studio's game has no rules.reload")
+        } else if let Some(status) = &self.status
+            && status.at.phase == Phase::Gameplay
+        {
+            (status.at.mode.as_deref() != Some("multiplayer"))
+                .then_some("a script preview needs a multiplayer level")
+        } else {
+            return;
+        };
+        let Some(preview) = self.script_preview.take() else { return };
+        if let Some(why) = failure {
+            app.rules.reload = crate::app::rules_edit::ReloadState::Refused(why.into());
+            app.error(why);
+        } else {
+            self.call(agent_proto::rules::method::RELOAD, preview.params, Purpose::Rules);
         }
     }
 
@@ -1273,6 +1478,44 @@ impl Play {
         match why {
             Some(why) => app.rules.reload = ReloadState::Refused(why),
             None => self.call(agent_proto::rules::method::RELOAD, params, Purpose::Rules),
+        }
+    }
+
+    /// Sends the Shader tab's queued override changes: the file is written
+    /// (or removed) here, then the game reads the directory again
+    /// (`render.reload {dir}`, docs/graphics/hot-iteration.md). Nothing is
+    /// written when the game cannot be told, so a refused push leaves no file.
+    fn send_shader_overrides(&mut self, app: &mut App) {
+        if !app.shader_overrides.waiting() {
+            return;
+        }
+        use agent_proto::hot::method::RENDER_RELOAD;
+        let why = if !self.is_paired() {
+            Some("pair with a running game first".to_string())
+        } else if !self.has_method(RENDER_RELOAD) {
+            Some(
+                "the paired game has no render.reload (a build without the render-overrides feature)"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        for out in app.shader_overrides.take_outgoing() {
+            let failed = match &why {
+                Some(why) => Some(why.clone()),
+                None => crate::app::shader_override::perform(&out).err(),
+            };
+            match failed {
+                Some(why) => app.shader_overrides.refused(&out, why),
+                None => {
+                    app.shader_overrides.sent(&out);
+                    self.call(
+                        RENDER_RELOAD,
+                        serde_json::json!({ "dir": out.dir.display().to_string() }),
+                        Purpose::ShaderOverride(out.program),
+                    );
+                }
+            }
         }
     }
 

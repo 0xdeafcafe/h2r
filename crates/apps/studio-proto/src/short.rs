@@ -26,6 +26,9 @@ pub const FORMS: &[(&str, &str)] = &[
     ("save-as <path> [doc]", "doc.save_as (map, playlists)"),
     ("diff [doc]", "doc.diff: what a save would write"),
     ("undo [doc] | redo [doc]", "doc.undo, doc.redo"),
+    ("tabs", "shell.tabs: the document tabs and the one in front"),
+    ("focus <doc>", "shell.focus: bring a tab to the front"),
+    ("close <doc>", "shell.close: close a tab"),
     ("tags [group] [name]", "tag.list"),
     ("tag <id|name>", "tag.read"),
     ("refs <id|name>", "tag.refs: the tags it references"),
@@ -59,6 +62,7 @@ pub const FORMS: &[(&str, &str)] = &[
     ("huds [map]", "hud.list: open a map in the HUD tool, list its HUDs"),
     ("hud [name]", "hud.read: a HUD's widgets and fields"),
     ("render-hud [out.png]", "hud.render"),
+    ("workspace", "workspace.status: the tags tree, the plan and the sizes"),
 ];
 
 /// Splits a script line into words; a JSON value (`{…}` or `[…]`) is one
@@ -156,6 +160,15 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
         "diff" => (m::DOC_DIFF, doc(a)),
         "undo" => (m::DOC_UNDO, doc(a)),
         "redo" => (m::DOC_REDO, doc(a)),
+        "tabs" => (m::SHELL_TABS, Value::Null),
+        "focus" => (
+            m::SHELL_FOCUS,
+            json!({ "doc": a.ok_or("focus needs a tab id (tabs lists them)")? }),
+        ),
+        "close" => (
+            m::SHELL_CLOSE,
+            json!({ "doc": a.ok_or("close needs a tab id (tabs lists them)")? }),
+        ),
         "tags" => {
             let mut p = json!({});
             if let Some(g) = a {
@@ -291,6 +304,7 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
             },
         ),
         "render-stats" => (m::VIEW_STATS, Value::Null),
+        "workspace" => (m::WORKSPACE_STATUS, Value::Null),
         "snapshot" => (
             m::VIEW_SNAPSHOT,
             match a {
@@ -308,7 +322,7 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
     // Bare forms take nothing more than they use.
     let used = match name {
         "status" | "methods" | "maps" | "docs" | "blocks" | "variants" | "variant"
-        | "playlists" | "screens" | "widgets" | "render-stats" => 1,
+        | "playlists" | "screens" | "widgets" | "render-stats" | "workspace" => 1,
         "log" | "source" | "open" | "save" | "diff" | "undo" | "redo" | "tag" | "refs"
         | "objects" | "object" | "delete" | "duplicate" | "select" | "volumes" | "playlist"
         | "screen" | "press" | "render-ui" | "snapshot" | "huds" | "hud" | "render-hud" => 2,

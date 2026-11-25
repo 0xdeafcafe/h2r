@@ -5,9 +5,9 @@ use super::objects::{ACTIVE_BSP, LIGHT_VIS, MAIN_VIS, VIEW_KIND};
 use super::*;
 use native_render::skip::{RENDER_RECORD_SIZE, RENDER_RECORDS};
 
-const COUNT: u32 = 0x004c_0b78;
+pub(super) const COUNT: u32 = 0x004c_0b78;
 const MAIN_COUNT: u32 = 0x004c_0b7c;
-const CURRENT_VIS: u32 = 0x004c_0b80;
+pub(super) const CURRENT_VIS: u32 = 0x004c_0b80;
 const PIXEL_SIZES: u32 = 0x004c_0b84;
 const ATTACHMENTS: u32 = 0x004c_0ed6;
 const ATTACHMENT_DATA: u32 = 0x004c_1228;
@@ -37,6 +37,7 @@ fn append(m: &dyn GuestMemory, cpu: &CpuAbi, scale: f32) -> Result<Output> {
         scale,
         |offset| stack(m, cpu, offset),
         None,
+        false,
     )?;
     out.pop = 0x54;
     Ok(out)
@@ -71,7 +72,7 @@ pub(super) struct ObjectRecord {
 }
 
 impl ObjectRecord {
-    pub(super) fn plan(&self, m: &dyn GuestMemory, scale: f32) -> Result<Output> {
+    pub(super) fn plan(&self, m: &dyn GuestMemory, scale: f32, mounted: bool) -> Result<Output> {
         let words = [
             self.flags,
             self.model,
@@ -106,6 +107,7 @@ impl ObjectRecord {
                     .ok_or(Refusal::Layout)
             },
             Some(self.sphere),
+            mounted,
         )
     }
 }
@@ -118,6 +120,7 @@ fn plan_append(
     scale: f32,
     args: impl Fn(u32) -> Result<u32>,
     sphere: Option<([f32; 3], f32)>,
+    mounted: bool,
 ) -> Result<Output> {
     let count = m.i32(COUNT)?;
     let count = u32::try_from(count).map_err(|_| Refusal::Layout)?;
@@ -139,7 +142,9 @@ fn plan_append(
     let section = at(ptr(m, at(model_data, 0x28)?)?, section_index * 0x5c)?;
     // The failed-geometry exit leaves a partly initialized scratch row.
     // Keep the guest writer for this path.
-    let _geometry = ptr(m, at(section, 0x34)?)?;
+    if !mounted {
+        let _geometry = ptr(m, at(section, 0x34)?)?;
+    }
     let lighting = args(0x10)?;
     let placement = selector & 0x7ff;
     let light_class = light_class(m, placement, lighting)?;

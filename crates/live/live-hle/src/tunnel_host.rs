@@ -698,6 +698,11 @@ fn pending(error: &tungstenite::Error) -> bool {
 // lazily at the first XNet call and keep the listener for the lease's lifetime.
 static HOST: OnceLock<Option<Arc<TunnelHost>>> = OnceLock::new();
 
+/// Whether a dedicated host's tunnel answers before the socket table.
+pub(super) fn active(network: &Network) -> bool {
+    enabled(network).is_some()
+}
+
 fn enabled(network: &Network) -> Option<&'static TunnelHost> {
     let tunnel = HOST.get_or_init(|| {
         let bind = std::env::var("H2_TUNNEL_LISTEN").ok()?;

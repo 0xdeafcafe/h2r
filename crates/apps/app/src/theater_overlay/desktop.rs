@@ -38,7 +38,6 @@ pub(crate) struct Renderer {
     sprite: Sprite,
     uploaded: Option<Arc<Page>>,
     timeline: Option<Viewport>,
-    page_rect: Option<Viewport>,
 }
 
 impl Renderer {
@@ -47,18 +46,7 @@ impl Renderer {
             sprite: Sprite::new(device, "Theater page"),
             uploaded: None,
             timeline: None,
-            page_rect: None,
         }
-    }
-
-    /// Invert the exact fit used by draw, including the game's letterbox.
-    pub fn page_point(&self, x: f64, y: f64) -> Option<(i32, i32)> {
-        let rect = self.page_rect?;
-        let size = self.uploaded.as_ref()?.size;
-        let x = (x - f64::from(rect.x)) / f64::from(rect.width);
-        let y = (y - f64::from(rect.y)) / f64::from(rect.height);
-        ((0.0..1.0).contains(&x) && (0.0..1.0).contains(&y))
-            .then(|| ((x * f64::from(size.0)) as i32, (y * f64::from(size.1)) as i32))
     }
 
     pub fn timeline_fraction(&self, x: f64, y: f64) -> Option<f32> {
@@ -81,7 +69,6 @@ impl Renderer {
         area: Viewport,
     ) {
         self.timeline = None;
-        self.page_rect = None;
         let Some(page) = &model.page else { return };
         // A cold seek can reach the transport before the child publishes
         // a guest frame. The progress overlay can use the window itself.
@@ -99,7 +86,6 @@ impl Renderer {
             y: area.y + rect.y,
             ..rect
         };
-        self.page_rect = Some(rect);
         if let Some([x, y, width, height]) = page.timeline {
             let sx = |x| (u64::from(x) * u64::from(rect.width) / u64::from(page.size.0)) as u32;
             let sy = |y| (u64::from(y) * u64::from(rect.height) / u64::from(page.size.1)) as u32;

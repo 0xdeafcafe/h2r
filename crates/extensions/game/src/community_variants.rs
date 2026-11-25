@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use ::rules::types::Type;
 use runtime::guest::Permissions;
 use runtime::{Guest, TransferAbi, abi};
 use variants::ext::{self, Ext};
@@ -82,8 +83,9 @@ pub const OPTION_SIZE: u32 = 0xc;
 pub const DATA_BASE: u32 = 0xa0fd_0000;
 const DATA_SIZE: u32 = 0x4000;
 const ENTRIES_AT: u32 = DATA_BASE + 0x2000;
-const MAX_ENTRIES: u32 = (DATA_SIZE - 0x2000) / ENTRY_SIZE;
-const _: () = assert!(MAX_ENTRIES > 64);
+const MAX_SLOTS: u32 = (DATA_SIZE - 0x2000) / ENTRY_SIZE;
+const _: () = assert!(MAX_SLOTS > 64);
+const _: () = assert!(MAX_ENTRIES as u32 <= MAX_SLOTS);
 
 /// The icon after every community name, where retail names carry U+E008.
 pub const ICON: char = '\u{e006}';
@@ -95,17 +97,24 @@ pub enum Row {
     Research,
     /// Party Games: the community's party modes.
     PartyGames,
+    Firefight,
+    Siege,
 }
 
 impl Row {
-    pub const ALL: [Row; 2] = [Row::Research, Row::PartyGames];
+    pub const ALL: [Row; 4] = [Row::Research, Row::PartyGames, Row::Firefight, Row::Siege];
 
-    /// The row a rules script's `list` line names.
-    pub fn of_list(list: ::rules::ir::List) -> Option<Row> {
-        match list {
-            ::rules::ir::List::GameType => None,
-            ::rules::ir::List::Research => Some(Row::Research),
-            ::rules::ir::List::PartyGames => Some(Row::PartyGames),
+    /// The custom row of this script type. Retail types use the existing rows.
+    pub fn of_type(ty: Type) -> Option<Row> {
+        Self::ALL.into_iter().find(|row| row.game_type() == ty)
+    }
+
+    pub fn game_type(self) -> Type {
+        match self {
+            Row::Research => Type::Research,
+            Row::PartyGames => Type::Party,
+            Row::Firefight => Type::Firefight,
+            Row::Siege => Type::Siege,
         }
     }
 
@@ -114,6 +123,8 @@ impl Row {
         match self {
             Row::Research => 1,
             Row::PartyGames => 2,
+            Row::Firefight => 3,
+            Row::Siege => 4,
         }
     }
 
@@ -123,10 +134,7 @@ impl Row {
 
     /// The label on the game type list.
     pub fn label(self) -> &'static str {
-        match self {
-            Row::Research => "Research and Devolution",
-            Row::PartyGames => "Party Games",
-        }
+        self.game_type().row().label
     }
 
     /// The title over its pane and its variant list, the label in capitals
@@ -135,6 +143,8 @@ impl Row {
         match self {
             Row::Research => "RESEARCH AND DEVOLUTION",
             Row::PartyGames => "PARTY GAMES",
+            Row::Firefight => "FIREFIGHT",
+            Row::Siege => "SIEGE",
         }
     }
 
@@ -143,6 +153,8 @@ impl Row {
             Row::Research => {
                 "Practice the tricks and find the glitches: superbounces, crouch jumps and the maps' secrets."
             }
+            Row::Firefight => "Fight waves of AI enemies.",
+            Row::Siege => "Capture the sites and break through the defenders' line.",
             Row::PartyGames => {
                 "Zombies, jousting, cops and robbers: the party games the community made up for custom games."
             }
@@ -153,6 +165,8 @@ impl Row {
         match self {
             Row::Research => 0x7a,
             Row::PartyGames => 0x7d,
+            Row::Firefight => 0x74,
+            Row::Siege => 0x77,
         }
     }
     pub fn label_id(self) -> u32 {
@@ -191,10 +205,11 @@ pub struct Listed {
     pub name: String,
     /// `header.about`: the entry's description.
     pub about: String,
-    /// `header.carrier` as a list type (its place in `GameType::ALL`).
+    /// The retail loader template's index in `GameType::ALL`. A script-index
+    /// record loads through the Slayer template.
     pub list_type: u32,
-    /// `header.list`: the row of ours its variants are filed under.
-    pub row: Option<Row>,
+    /// The category selected by the script, independent of its loader template.
+    pub game_type: Type,
     /// The record of the script (`variants::portable::record_for`, the
     /// default options): its settings, and the `hx` block that names it.
     pub record: GameVariant,
@@ -206,15 +221,13 @@ impl Listed {
         let record = variants::portable::record_for(&ir, &[])
             .map_err(|e| format!("its script makes no record: {e}"))?;
         let ty = record.game_type();
-        let list_type = GameType::ALL
-            .iter()
-            .position(|t| *t == ty)
+        let list_type = goof_type(ty)
             .ok_or_else(|| format!("engine {} has no list type", ty.engine()))?;
         Ok(Listed {
             name: ir.header.name.clone(),
             about: ir.header.about.clone(),
-            list_type: list_type as u32,
-            row: crate::rules::header::list_row(&ir.header),
+            list_type,
+            game_type: ir.header.game_type,
             record,
         })
     }
@@ -234,15 +247,70 @@ impl Listed {
     }
 }
 
-/// Every listed script, by its index in `rules::builtin::LISTED`: the
-/// entry's parts, or why it has none (named in the log at each load).
+/// The scripts a boot's packages list as built-in entries, in list order
+/// (`rules::builtin::Registry::listed`, from the `variant` items of the
+/// set), as many as the id ranges hold ([`MAX_ENTRIES`]).
+static REGISTRY: OnceLock<::rules::builtin::Registry> = OnceLock::new();
+
+/// Takes the set's scripts for the list. It must come before the first
+/// read of [`scripts`]; `false` when the list was already read, or a set
+/// was already given. With none given the list is the first-party
+/// scripts' (`Registry::baked`), which the tests run on.
+pub fn install_registry(registry: ::rules::builtin::Registry) -> bool {
+    REGISTRY.set(registry).is_ok()
+}
+
+fn registry() -> &'static ::rules::builtin::Registry {
+    REGISTRY.get_or_init(::rules::builtin::Registry::baked)
+}
+
+/// The most list entries: the description numbers between
+/// [`DESCRIPTION_BASE`] and the game-variant store's, and the name ids
+/// below our rows' (`0x74`).
+pub const MAX_ENTRIES: usize =
+    (crate::game_variants::inject::DESCRIPTION_BASE - DESCRIPTION_BASE) as usize;
+const _: () = assert!(MAX_ENTRIES <= 0x74);
+const SCRIPT_SLOTS: usize = MAX_ENTRIES - ::firefight::builtin::SETS.len() - ::firefight::builtin::MAP_SETS.len();
+const _: () = assert!(::rules::builtin::LISTED.len() <= SCRIPT_SLOTS);
+
+/// The listed scripts, by their index in the list: the entry's name, its
+/// engine and its source.
+pub fn scripts() -> &'static [::rules::builtin::Script] {
+    static SCRIPTS: OnceLock<Vec<::rules::builtin::Script>> = OnceLock::new();
+    SCRIPTS.get_or_init(|| {
+        let r = registry();
+        for p in &r.problems {
+            eprintln!("community variants: {p}");
+        }
+        let all: Vec<_> = r.listed().cloned().collect();
+        if all.len() > SCRIPT_SLOTS {
+            eprintln!(
+                "community variants: {} entries, the list holds {SCRIPT_SLOTS} scripts: the rest are left out",
+                all.len()
+            );
+        }
+        all.into_iter().take(SCRIPT_SLOTS).collect()
+    })
+}
+
+/// Every listed script, by its index in [`scripts`]: the entry's parts, or
+/// why it has none (named in the log at each load).
 pub fn listed() -> &'static [Result<Listed, String>] {
     static LISTED: OnceLock<Vec<Result<Listed, String>>> = OnceLock::new();
     LISTED.get_or_init(|| {
-        ::rules::builtin::LISTED
-            .iter()
-            .map(|b| Listed::of(b.source))
-            .collect()
+        let waves = ::firefight::builtin::variants().iter().map(|wave| {
+            let def = &wave.def;
+            let record = GameVariant::firefight(&def.name, def.teams, wave.prefix)
+                .map_err(|e| e.to_string())?;
+            Ok(Listed {
+                about: format!("Fight the {} wave set.", def.name),
+                name: def.name.clone(),
+                list_type: goof_type(record.game_type()).unwrap(),
+                game_type: Type::Firefight,
+                record,
+            })
+        });
+        scripts().iter().map(|b| Listed::of(&b.source)).chain(waves).collect()
     })
 }
 
@@ -254,20 +322,37 @@ pub fn listed_named(name: &str) -> Option<&'static Listed> {
 /// The listed script whose built-in this list name is (the name as the
 /// list holds it, with our icon).
 fn listed_by_display(name: &str) -> Option<&'static Listed> {
-    listed().iter().flatten().find(|l| l.display_name() == name)
+    listed_named(name.strip_suffix(ICON)?.strip_suffix(' ')?)
 }
 
-/// The row of ours a variant record with this name and extension block is
-/// listed under. A block naming a rules script (mode 2) decides it: the
-/// row the script's header names, when this machine has the script
-/// (`crate::rules::header::block_row`). A record with no script is filed
-/// by its name only when it is a listed built-in's as the list holds it:
-/// a built-in before [`write_blocks`] has given it its block.
-pub fn row_of(name: &str, block: &[u8; ext::LEN]) -> Option<Row> {
-    if Ext::in_effect(block).script.mode == ext::Mode::Rules {
-        return crate::rules::header::block_row(block);
+/// The retail template the goof loader can construct. After construction
+/// index-6 records receive their script index and empty type area.
+pub fn goof_type(ty: GameType) -> Option<u32> {
+    GameType::ALL.iter().position(|t| *t == ty.menu_template()).map(|i| i as u32)
+}
+
+/// Script references take precedence over the displayed name. The latter
+/// identifies a listed built-in while the goof loader is constructing it.
+pub fn script_type(name: &str, block: &[u8; ext::LEN]) -> Option<Type> {
+    let script = Ext::in_effect(block).script;
+    match script.mode {
+        ext::Mode::Rules => crate::rules::header::script_type(script),
+        ext::Mode::Firefight => Some(Type::Firefight),
+        ext::Mode::None => listed_by_display(name).map(|l| l.game_type),
+        ext::Mode::Unknown(_) => None,
     }
-    listed_by_display(name).and_then(|l| l.row)
+}
+
+/// The type shown by Change Rules, including renamed saves. With no local
+/// script, a record stays under its physical template.
+pub fn filed_type(name: &str, block: &[u8; ext::LEN], engine: GameType) -> Option<Type> {
+    let fallback = Type::of_engine(u8::try_from(engine.menu_template().engine()).ok()?)?;
+    Some(script_type(name, block).unwrap_or(fallback))
+}
+
+#[cfg(test)]
+pub(crate) fn row_of(name: &str, block: &[u8; ext::LEN]) -> Option<Row> {
+    script_type(name, block).and_then(Row::of_type)
 }
 
 // ---- guest memory seen by the logic ----
@@ -305,7 +390,7 @@ const ID_BASE: u32 = crate::ui_kit::ids::family("community variants").base;
 pub fn is_ours(id: u32) -> bool {
     id & 0xffff_ff00 == ID_BASE
 }
-/// The name id of listed script `i` (its index in `rules::builtin::LISTED`).
+/// The name id of listed script `i` (its index in [`scripts`]).
 pub fn name_id(i: usize) -> u32 {
     ID_BASE | i as u32
 }
@@ -314,14 +399,13 @@ pub fn description_id(i: usize) -> u32 {
 }
 /// Our rows' texts (`crate::tweakers`, [`Row`]): each row's label, the
 /// title of its pane and of its variant list, and their description. At
-/// the top of the name range (`0x7a` to `0x7f`), past every listed
+/// the top of the name range (`0x74` to `0x7f`), past every listed
 /// script's.
 pub fn row_ids() -> impl Iterator<Item = u32> {
     Row::ALL
         .into_iter()
         .flat_map(|r| [r.label_id(), r.title_id(), r.description_id()])
 }
-const _: () = assert!(::rules::builtin::LISTED.len() < 0x7a);
 
 /// The text for one of our ids: a listed script's name and icon, or its
 /// `about`.
@@ -345,15 +429,11 @@ pub fn text(id: u32) -> Option<String> {
 /// ([`crate::game_variants::inject::DESCRIPTION_BASE`]); listed script `i`
 /// has `DESCRIPTION_BASE + i`, 40 to 93 at most.
 pub const DESCRIPTION_BASE: u32 = 40;
-const _: () = assert!(
-    DESCRIPTION_BASE as usize + ::rules::builtin::LISTED.len()
-        <= crate::game_variants::inject::DESCRIPTION_BASE as usize
-);
 /// The id the variant list should show for description number `n`, if it
 /// is one of ours.
 pub fn description_for(n: u32) -> Option<u32> {
     let i = n.checked_sub(DESCRIPTION_BASE)? as usize;
-    (i < ::rules::builtin::LISTED.len()).then(|| description_id(i))
+    (i < listed().len()).then(|| description_id(i))
 }
 
 /// What `0x19fd00` returns instead of the original, given its return
@@ -454,7 +534,7 @@ pub fn last_offered() -> Option<HashMap<u32, Vec<i32>>> {
     LAST_OFFERED.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The listed scripts' entries, in `rules::builtin::LISTED`'s order: each
+/// The listed scripts' entries, in [`scripts`]' order: each
 /// its script's list type, its record's value of every setting of its
 /// type the editor offers (`crate::game_variants::inject::pairs`) and its
 /// description number. A script with a value the editor does not offer,
@@ -462,7 +542,10 @@ pub fn last_offered() -> Option<HashMap<u32, Vec<i32>>> {
 pub fn entries(offered: &HashMap<u32, Vec<i32>>) -> (Vec<NewEntry>, Vec<String>) {
     let mut out = Vec::new();
     let mut lines = Vec::new();
-    for (i, (l, b)) in listed().iter().zip(::rules::builtin::LISTED).enumerate() {
+    for (i, l) in listed().iter().enumerate() {
+        let name = l.as_ref().map(|l| l.name.as_str()).unwrap_or_else(|_| {
+            scripts().get(i).map_or("Firefight", |b| b.name.as_str())
+        });
         let entry = l.as_ref().map_err(String::clone).and_then(|l| {
             Ok(NewEntry {
                 name_id: name_id(i),
@@ -473,7 +556,7 @@ pub fn entries(offered: &HashMap<u32, Vec<i32>>) -> (Vec<NewEntry>, Vec<String>)
         });
         match entry {
             Ok(e) => out.push(e),
-            Err(why) => lines.push(format!("community variants: {} left out: {why}", b.name)),
+            Err(why) => lines.push(format!("community variants: {name} left out: {why}")),
         }
     }
     (out, lines)
@@ -601,19 +684,13 @@ pub fn extend_with<M: Mem>(
 
 // ---- the listed records' blocks ----
 
-/// The block of the listed script whose built-in record is at `record`:
-/// the record's name is the script's as the list shows it, and its engine
-/// the script's carrier.
-fn listed_block(m: &dyn engine::memory::GuestMemory, record: u32) -> Option<[u8; ext::LEN]> {
-    let name = crate::tweakers::record_name(m, record)?;
-    let engine = m
-        .u32(record.wrapping_add(variants::record::ENGINE_AT as u32))
-        .ok()? as i32;
-    listed()
-        .iter()
-        .flatten()
-        .find(|l| l.display_name() == name && l.record.game_type().engine() == engine)
-        .map(Listed::block)
+/// A listed record is identified by its display name and loader template.
+/// An already restored script record also matches on a second load.
+fn listed_record(m: &dyn engine::memory::GuestMemory, record: u32) -> Option<&'static Listed> {
+    let l = listed_by_display(&crate::tweakers::record_name(m, record)?)?;
+    let ty = GameType::from_engine(crate::tweakers::record_engine(m, record)?);
+    let want = l.record.game_type();
+    (ty == want || ty == want.menu_template()).then_some(l)
 }
 
 /// Writes each listed script's `hx` block into its built-in record in the
@@ -633,15 +710,50 @@ pub fn write_blocks(
     let mut changed = 0;
     for i in 0..n {
         let record = list + 4 + i * BUILTIN_RECORD + BUILTIN_VARIANT;
-        let Some(want) = listed_block(&*m, record) else {
+        if crate::game_variants::inject::restore_listed(m, record)? {
+            changed += 1;
+            continue;
+        }
+        let Some(l) = listed_record(&*m, record) else {
             continue;
         };
-        if crate::tweakers::record_block(&*m, record) != Some(want) {
-            m.write(record + ext::AT as u32, &want)?;
+        if restore_script_record(m, record, l.record.game_type(), &l.block())? {
             changed += 1;
         }
     }
     Ok(changed)
+}
+
+/// Finish the record built from the goof template. Keep the loader's
+/// name, flags and selected settings, including the built-in icon.
+pub(crate) fn restore_script_record(
+    m: &mut dyn engine::memory::GuestMemory,
+    record: u32,
+    ty: GameType,
+    block: &[u8; ext::LEN],
+) -> Result<bool, engine::memory::MemFault> {
+    let mut raw = [0; variants::record::RECORD_SIZE];
+    m.read(record, &mut raw)?;
+    let before = raw;
+    finish_record(&mut raw, ty, block);
+    if raw == before {
+        return Ok(false);
+    }
+    m.write(record, &raw)?;
+    Ok(true)
+}
+
+pub(crate) fn finish_record(
+    raw: &mut [u8; variants::record::RECORD_SIZE],
+    ty: GameType,
+    block: &[u8; ext::LEN],
+) {
+    use variants::record::{ENGINE_AT, TYPE_AREA};
+    if ty == GameType::Script {
+        raw[ENGINE_AT..ENGINE_AT + 4].copy_from_slice(&ty.engine().to_le_bytes());
+        raw[TYPE_AREA].fill(0);
+    }
+    raw[ext::AT..ext::AT + ext::LEN].copy_from_slice(block);
 }
 
 // ---- hooks ----

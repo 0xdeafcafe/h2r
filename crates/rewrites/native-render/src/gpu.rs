@@ -3,6 +3,8 @@
 //! frustum-culled indirect slots.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
@@ -13,11 +15,26 @@ use crate::light_gpu::{LightDraw, LightSet, LightTarget};
 use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
+/// The player viewport in physical target texels. External requests round
+/// both edges when scaling from guest pixels.
+pub(crate) fn viewport_scissor(viewport: [f32; 4], size: (u32, u32)) -> Option<[u32; 4]> {
+    let [x, y, w, h] = viewport.map(|v| v.max(0.0).round() as u32);
+    let (x, y) = (x.min(size.0), y.min(size.1));
+    let (w, h) = (w.min(size.0 - x), h.min(size.1 - y));
+    (w != 0 && h != 0).then_some([x, y, w, h])
+}
+
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
+/// Clones share the decoded storage across material programs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
+    pixels: Arc<ImagePixels>,
+}
+
+#[derive(Debug)]
+pub struct ImagePixels {
     pub rgba: Vec<u8>,
     /// Levels 1.. of the mip chain, each half the last (at least 1).
     pub mips: Vec<Vec<u8>>,
@@ -26,6 +43,36 @@ pub struct Image {
     /// device takes BC textures, so the GPU decodes them as it does the
     /// D3D path's (the CPU decoder rounds the interpolated colours down).
     pub blocks: Option<Blocks>,
+    bytes: mem_watch::Gauge,
+}
+
+impl Deref for Image {
+    type Target = ImagePixels;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pixels
+    }
+}
+
+impl PartialEq for ImagePixels {
+    fn eq(&self, other: &Self) -> bool {
+        self.rgba == other.rgba && self.mips == other.mips && self.blocks == other.blocks
+    }
+}
+
+impl ImagePixels {
+    fn new(rgba: Vec<u8>, mips: Vec<Vec<u8>>) -> Self {
+        static DECODED: mem_watch::Counter = mem_watch::Counter::new("native.decoded_image_bytes");
+        let bytes = DECODED.track((rgba.capacity() + mips.iter().map(Vec::capacity).sum::<usize>()) as u64);
+        Self { rgba, mips, blocks: None, bytes }
+    }
+
+    fn set_blocks(&mut self, blocks: Option<Blocks>) {
+        let capacity = |b: &Blocks| b.levels.iter().map(Vec::capacity).sum::<usize>() as u64;
+        self.bytes.set(self.bytes.get() - self.blocks.as_ref().map_or(0, capacity)
+            + blocks.as_ref().map_or(0, capacity));
+        self.blocks = blocks;
+    }
 }
 
 /// An image's levels as BC blocks ([`Image::blocks`]).
@@ -48,13 +95,28 @@ pub fn block_bytes(format: wgpu::TextureFormat) -> Option<usize> {
 
 impl Image {
     pub fn solid(rgba: [u8; 4]) -> Self {
-        Self {
-            width: 1,
-            height: 1,
-            rgba: rgba.to_vec(),
-            mips: Vec::new(),
-            blocks: None,
+        Self::from_rgba(1, 1, rgba.to_vec(), Vec::new())
+    }
+
+    /// Builds a caller-validated RGBA chain. Decoders use `from_levels`
+    /// when mip dimensions and sizes come from the source.
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>, mips: Vec<Vec<u8>>) -> Self {
+        Self { width, height, pixels: Arc::new(ImagePixels::new(rgba, mips)) }
+    }
+
+    fn uncompressed_mut(&mut self) -> &mut ImagePixels {
+        if Arc::get_mut(&mut self.pixels).is_none() {
+            self.pixels = Arc::new(ImagePixels::new(self.rgba.clone(), self.mips.clone()));
         }
+        let pixels = Arc::get_mut(&mut self.pixels).expect("image payload is unique");
+        pixels.set_blocks(None);
+        pixels
+    }
+
+    // Fixed lengths keep the payload's byte probe accurate.
+    pub(crate) fn edit_rgba(&mut self, edit: impl FnOnce(&mut [u8], &mut [Vec<u8>])) {
+        let pixels = self.uncompressed_mut();
+        edit(&mut pixels.rgba, &mut pixels.mips);
     }
 
     /// `self` with its levels as BC blocks too, when they fit it: a BC
@@ -71,7 +133,7 @@ impl Image {
             l.len() == w.div_ceil(4) as usize * h.div_ceil(4) as usize * unit
         });
         if fits {
-            self.blocks = Some(Blocks { format, levels });
+            self.uncompressed_mut().set_blocks(Some(Blocks { format, levels }));
         }
         self
     }
@@ -102,7 +164,7 @@ impl Image {
             }
             mips.push(bytes);
         }
-        Some(Self { width, height, rgba, mips, blocks: None })
+        Some(Self::from_rgba(width, height, rgba, mips))
     }
 }
 
@@ -211,9 +273,13 @@ impl PassStencil {
 /// A single guest list in draw order. Only uniform destinations are deduplicated.
 #[derive(Default)]
 pub struct WorldSelection {
+    pub texaccum: Option<crate::world_layers::Texaccum>,
     spans: Vec<(usize, usize, usize)>,
     pub(crate) materials: HashMap<u16, MaterialUse>,
     pub(crate) vertices: HashSet<(u16, Option<u32>)>,
+    /// The selected animated materials' constants at this frame's clock
+    /// ([`GpuWorld::animate_selection`]).
+    pub(crate) constants: HashMap<u16, crate::fog_gpu::LayerConstants>,
 }
 
 impl WorldSelection {
@@ -240,12 +306,15 @@ impl WorldSelection {
 pub struct GpuWorld {
     part_slots: std::collections::HashMap<(Owner, u8), usize>,
     world: World,
+    _geometry_bytes: mem_watch::Gauge,
     /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
     stencil: PassStencil,
     /// The cull the next pass's inheriting programs draw with
     /// ([`GpuWorld::set_inherited_cull`]).
     inherited_cull: crate::program::InheritedCull,
     vertices: wgpu::Buffer,
+    /// A retained light holds the current program vertex allocation.
+    light_mesh_device: Option<wgpu::Device>,
     /// [`World::program_vertices`]: what the material programs read.
     program_vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -686,11 +755,16 @@ impl GpuWorld {
         let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
         let fixed = WorldPipelines::new(device, SHADER, shader, layout, gfx::pipeline::ShaderId(0), "native world", attributes.to_vec());
         let part_slots = world.draws.iter().enumerate().map(|(i, d)| ((d.owner, d.part), i)).collect();
+        static GEOMETRY: mem_watch::Counter = mem_watch::Counter::new("native.world_cpu_geometry_bytes");
+        let geometry_bytes = (world.vertices.capacity() + world.program_vertices.capacity()) * size_of::<WorldVertex>()
+            + world.indices.capacity() * size_of::<u32>();
         Self {
             part_slots, world,
+            _geometry_bytes: GEOMETRY.track(geometry_bytes as u64),
             stencil: PassStencil::default(),
             inherited_cull: crate::program::InheritedCull::default(),
             vertices,
+            light_mesh_device: None,
             program_vertices,
             indices,
             indirect,
@@ -774,6 +848,23 @@ impl GpuWorld {
         held
     }
 
+    /// Rewrite the textures that hold material `material`'s base map (the
+    /// editor's base look, `HostStage::BaseMap`) with `image`, as
+    /// [`GpuWorld::rewrite_image`] does for a tag's image: the viewport
+    /// follows a painted bitmap. Returns how many textures were written;
+    /// a different size, level count or format refuses them all.
+    pub fn rewrite_base_map(&self, queue: &wgpu::Queue, material: u16, image: &Image) -> Result<usize, ImageRefusal> {
+        let want = crate::look::Stage::Host(crate::look::HostStage::BaseMap(material));
+        let mut held = Vec::new();
+        let mut layers: Vec<_> = self.layers.iter().collect();
+        layers.sort_by_key(|(l, _)| **l);
+        for (_, f) in layers {
+            held.extend(f.held_stage(want));
+        }
+        let decoded = held_stages(&held).into_iter().map(|n| (n, image.clone())).collect();
+        rewrite_held(queue, &held, &decoded)
+    }
+
     /// The stages of the world's textures that sample image `image` of
     /// `bitmap`, ascending, each once: what [`GpuWorld::rewrite_image`]
     /// needs decoded (a palettized image expands through its stage's
@@ -850,16 +941,42 @@ impl GpuWorld {
     /// Rewrite gel `datum`'s texture with `image` (image 0 of the gel's
     /// bitmap, as the light set uploaded it). Returns how many were
     /// written: none when the world has no light set or no such gel.
-    pub fn rewrite_gel(&self, queue: &wgpu::Queue, datum: u32, image: &Image) -> Result<usize, ImageRefusal> {
-        self.lights.as_ref().map_or(Ok(0), |l| l.rewrite_gel(queue, datum, image))
+    pub fn rewrite_gel(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, datum: u32, image: &Image) -> Result<usize, ImageRefusal> {
+        self.lights.as_mut().map_or(Ok(0), |l| l.rewrite_gel(device, queue, datum, image))
     }
 
-    fn write_run(&self, queue: &wgpu::Queue, run: crate::world::SectionRun) {
+    /// Pin the immutable index buffer, the current program vertices and the
+    /// light's textures. A subsequent edit publishes a new vertex allocation.
+    pub fn retain_light(
+        &mut self,
+        device: &wgpu::Device,
+        gel: Option<u32>,
+    ) -> Option<(LightSet, wgpu::Buffer, wgpu::Buffer)> {
+        let set = self.lights.as_ref()?.retain(gel);
+        self.light_mesh_device = Some(device.clone());
+        Some((set, self.program_vertices.clone(), self.indices.clone()))
+    }
+
+    fn write_run(&mut self, queue: &wgpu::Queue, run: crate::world::SectionRun) {
         let range = run.first_vertex as usize..(run.first_vertex + run.vertex_count) as usize;
         let offset = (run.first_vertex as usize * std::mem::size_of::<WorldVertex>()) as u64;
-        queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range.clone()]));
         let separate = self.world.program_vertices.len() == self.world.vertices.len()
             && !self.world.program_vertices.is_empty();
+        if let Some(device) = self.light_mesh_device.take() {
+            let vertices = if separate { &self.world.program_vertices } else { &self.world.vertices };
+            self.program_vertices = gfx::churn::create_buffer_init(&device, &wgpu::util::BufferInitDescriptor {
+                label: Some("edited light vertices"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+            if !separate {
+                self.vertices = self.program_vertices.clone();
+            } else {
+                queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range]));
+            }
+            return;
+        }
+        queue.write_buffer(&self.vertices, offset, bytemuck::cast_slice(&self.world.vertices[range.clone()]));
         if separate {
             queue.write_buffer(
                 &self.program_vertices,
@@ -893,7 +1010,8 @@ impl GpuWorld {
     /// D3D pass already open on these attachments, the uniforms as writes
     /// ahead of them ([`FogSet::draws_stencil`]; `fogs` the fog unit the
     /// passes hold and `stencil` the stencil state, both the device's at
-    /// the layer).
+    /// the layer). `samples` holds the registers the planner evaluates at
+    /// the layer call.
     pub fn layer_draws(
         &mut self,
         layer: u8,
@@ -905,6 +1023,7 @@ impl GpuWorld {
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
         stencil: &gfx::state::StencilState,
+        samples: &crate::fog_gpu::LayerSamples,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let Self { layers, packet_pipelines, program_vertices, indices, .. } = self;
         let set = layers.get_mut(&layer).ok_or("layer materials unavailable")?;
@@ -914,7 +1033,7 @@ impl GpuWorld {
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs, stencil)
+        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, gfx::ScissorRect::full(target_size.0, target_size.1), selected, view, fogs, stencil, samples)
     }
 
     /// Draws the water edge blend of `set`'s materials from now on.
@@ -956,10 +1075,12 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         target_copy: gfx::external::TargetCopy,
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
     ) -> usize {
+        let Some([x, y, w, h]) = viewport_scissor(viewport, target_size) else { return 0 };
         let Some(set) = self.water.as_mut() else { return 0 };
         set.pipelines(device, color_format, depth_format);
         let copy = set
@@ -996,6 +1117,7 @@ impl GpuWorld {
         // The programs carry the game's viewport in their constants: the
         // pass covers the whole target, as the world's programs do.
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+        pass.set_scissor_rect(x, y, w, h);
         pass.set_vertex_buffer(0, self.program_vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         set.draw(device, &mut pass, color_format, depth_format, copy.as_ref(), selected, sampled)
@@ -1013,11 +1135,14 @@ impl GpuWorld {
         color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        let [x, y, width, height] = viewport_scissor(viewport, target_size).ok_or("empty layer viewport")?;
+        let scissor = gfx::ScissorRect { x, y, width, height };
         let Self { water, packet_pipelines, program_vertices, indices, .. } = self;
         let set = water.as_mut().ok_or("water materials unavailable")?;
         if set.samples_view {
@@ -1028,7 +1153,7 @@ impl GpuWorld {
             packet_pipelines.clear();
         }
         let items = set.items(device, color_format, depth_format, None, selected, sampled)?;
-        let packets = crate::water_gpu::item_packets(&items, packet_pipelines, program_vertices, indices, target_size)?;
+        let packets = crate::water_gpu::item_packets(&items, packet_pipelines, program_vertices, indices, target_size, scissor)?;
         let writes = set.writes(view, fogs, selected)?;
         // Conservative: the programs' alpha tests and kill sources discard.
         Ok(gfx::external::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
@@ -1050,12 +1175,14 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         target_copy: gfx::external::TargetCopy,
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     ) -> Result<gfx::external::ExternalEncoded, &'static str> {
+        let [x, y, w, h] = viewport_scissor(viewport, target_size).ok_or("empty water viewport")?;
         let Self { water, program_vertices, indices, .. } = self;
         let set = water.as_mut().ok_or("water materials unavailable")?;
         set.pipelines(device, color_format, depth_format);
@@ -1103,11 +1230,12 @@ impl GpuWorld {
                 multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+            pass.set_scissor_rect(x, y, w, h);
             pass.set_vertex_buffer(0, vertices.slice(..));
             pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
             for it in &items {
                 pass.set_pipeline(&it.pipeline);
-                pass.set_bind_group(0, &it.uniforms, &[]);
+                pass.set_bind_group(0, &it.uniforms, it.offset.as_slice());
                 pass.set_bind_group(1, &it.textures, &[]);
                 pass.set_blend_constant(it.blend);
                 pass.draw_indexed(it.first..it.first + it.count, 0, 0..1);
@@ -1124,9 +1252,10 @@ impl GpuWorld {
         uploads: &mut gfx::ring::EncoderUploads<'_>,
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) {
         if let Some(set) = self.fog.as_ref() {
-            set.prepare(uploads, view, fogs);
+            set.prepare_layer(uploads, view, fogs, samples);
         }
     }
 
@@ -1144,25 +1273,27 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         selected: &[(Owner, u8)],
     ) -> usize {
         let Self { fog, program_vertices, indices, .. } = self;
         let Some(set) = fog.as_mut() else { return 0 };
-        encode_set(set, "native fog", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
+        encode_set(set, "native fog", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, viewport, selected)
     }
 
     /// The uniforms of `layer`'s set for one view ([`FogSet::prepare`];
-    /// `fogs` the fog unit each material draws with), through the
-    /// submission's upload arena.
+    /// `fogs` the fog unit each material draws with) and the material
+    /// constants at the preview time, through the submission's upload arena.
     pub fn prepare_layer(
         &mut self,
         layer: u8,
         uploads: &mut gfx::ring::EncoderUploads<'_>,
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) {
         if let Some(set) = self.layers.get(&layer) {
-            set.prepare(uploads, view, fogs);
+            set.prepare_layer(uploads, view, fogs, samples);
         }
     }
 
@@ -1185,7 +1316,7 @@ impl GpuWorld {
     ) -> usize {
         let Self { layers, program_vertices, indices, .. } = self;
         let Some(set) = layers.get_mut(&layer) else { return 0 };
-        encode_set(set, "native layer", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
+        encode_set(set, "native layer", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, [0.0, 0.0, target_size.0 as f32, target_size.1 as f32], selected)
     }
     /// [`GpuWorld::prepare_fog`] and [`GpuWorld::encode_fog`] as packets for
     /// the D3D pass already open on these attachments, the uniforms as
@@ -1196,17 +1327,21 @@ impl GpuWorld {
         color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        viewport: [f32; 4],
         selected: &[(Owner, u8)],
         view: &ViewInputs,
         fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        samples: &crate::fog_gpu::LayerSamples,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        let [x, y, width, height] = viewport_scissor(viewport, target_size).ok_or("empty layer viewport")?;
+        let scissor = gfx::ScissorRect { x, y, width, height };
         let Self { fog, packet_pipelines, program_vertices, indices, .. } = self;
         let set = fog.as_mut().ok_or("fog materials unavailable")?;
         set.pipelines(device, color_format, depth_format);
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, selected, view, fogs)
+        set.draws(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, scissor, selected, view, fogs, samples)
     }
 
     /// Draws lights with `set` from now on.
@@ -1326,6 +1461,29 @@ impl GpuWorld {
         Some(selection)
     }
 
+    /// The display-only parts this world can draw whole: every part of an
+    /// owner (a cluster or a placement) must be loaded and read no texture
+    /// accumulation target, or none of its parts is kept. A display-only
+    /// stage has no layer 1 of its own, so the accumulation target holds
+    /// nothing for those pixels, and a section drawn without some of its
+    /// parts is drawn half.
+    pub fn display_complete_parts(&self, parts: &[(Owner, u8)]) -> Vec<(Owner, u8)> {
+        complete_owners(parts, |part| {
+            let &slot = self.part_slots.get(part)?;
+            let material = self.world.draws[slot].material;
+            Some(!self.programs.as_ref().is_some_and(|p| p.program(material).is_some_and(|p| p.needs_texaccum())))
+        })
+    }
+
+    /// Bind the live target descriptor only for selections whose sampled stages or
+    /// vertex constants use it. A missing descriptor prevents their reservation.
+    pub fn select_texaccum(&self, selection: &mut WorldSelection, target: Option<crate::world_layers::Texaccum>) -> bool {
+        let needed = self.programs.as_ref().is_some_and(|p| selection.materials.keys()
+            .any(|&m| p.program(m).is_some_and(|p| p.needs_texaccum())));
+        selection.texaccum = target.filter(|_| needed);
+        !needed || selection.texaccum.is_some()
+    }
+
     /// Check bindings on this attachment pair before the guest parts can be suppressed.
     pub fn prepare_selection(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
@@ -1342,11 +1500,39 @@ impl GpuWorld {
         };
         let state = &self.stencil.state;
         p.selected_pipelines(device, color, depth, state, &selection.materials, usage)
-            && selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
+            && selection.spans.iter().all(|&(batch, _, _)| p.lit_batch_binding(batch, d3d::Lighting::Retail).is_some())
+            && (selection.texaccum.is_some() || !selection.materials.keys().any(|&m| p.program(m).is_some_and(|p| p.needs_texaccum())))
             && selection.vertices.iter().all(|&(material, instance)| match instance {
                 Some(n) => p.rigid(material, n, color, depth, state).is_some(),
                 None => p.cluster(material, color, depth, state).is_some(),
             })
+    }
+
+    /// Samples the selection's animated layer-3 materials at `time` (the
+    /// render clock, [`crate::layer_pass::render_time`]) into it: its
+    /// writes then upload their registers at that clock
+    /// ([`crate::program::MaterialProgram::animation`]). An error is how
+    /// many refused (the clock did not read); the view is then the D3D
+    /// path's.
+    pub fn animate_selection(&self, selection: &mut WorldSelection, time: Option<f64>) -> Result<(), usize> {
+        self.programs.as_ref().map_or(Ok(()), |p| p.animate(selection, time))
+    }
+
+    /// Both arms have bindings for all sampled layer-3 pages.
+    pub fn has_relight(&self) -> bool {
+        self.programs.as_ref().is_some_and(ProgramSet::has_relight)
+    }
+
+    /// Selected draws sampling a reconstructed page whose two arms differ.
+    pub fn relit_lightmap_ranges(&self, selection: &WorldSelection) -> usize {
+        let Some(programs) = self.programs.as_ref() else { return 0 };
+        selection.spans.iter().filter(|(batch, _, _)| programs.changed_lightmap_batch(*batch))
+            .map(|(_, first, last)| last - first).sum()
+    }
+
+    /// A live change to the geometry, lightmap or materials invalidates an offline bake.
+    pub fn discard_relight(&mut self) -> bool {
+        self.programs.as_mut().is_some_and(ProgramSet::discard_relight)
     }
 
     /// Stage one target copy of a selection admitted by `prepare_selection` on this world.
@@ -1451,7 +1637,7 @@ impl GpuWorld {
             }));
         }
         self.prepare_pipelines(device, color_format, depth_format);
-        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, false)
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, false, d3d::Lighting::Retail)
     }
 
     /// All selected draws passed the owner and frustum checks before admission.
@@ -1461,7 +1647,16 @@ impl GpuWorld {
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
         selection: &WorldSelection,
     ) -> usize {
-        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, true)
+        self.encode_selection_lit(encoder, color, color_format, depth, depth_format, viewport, target_size,
+            selection, d3d::Lighting::Retail)
+    }
+
+    pub fn encode_selection_lit(
+        &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
+        selection: &WorldSelection, lighting: d3d::Lighting,
+    ) -> usize {
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, true, lighting)
     }
 
     /// [`GpuWorld::write_selection`] and [`GpuWorld::encode_selection`] as
@@ -1475,6 +1670,22 @@ impl GpuWorld {
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        self.selection_draws_lit(color_format, depth_format, target_size, selection, view, d3d::Lighting::Retail)
+    }
+
+    pub fn selection_draws_lit(
+        &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        self.selection_draws_bound(color_format, depth_format, target_size, selection, view, lighting, None)
+    }
+
+    pub fn selection_draws_bound(
+        &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+        accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        use crate::program::BatchTextures;
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
         let p = programs.as_ref().ok_or("world programs unavailable")?;
@@ -1493,7 +1704,8 @@ impl GpuWorld {
         }
         let mut packets = Vec::new();
         let mut ranges = 0;
-        let mut bound: Option<((u16, &wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut bound: Option<((u16, wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut live_groups = HashMap::new();
         let mut pending: Option<std::ops::Range<u32>> = None;
         let emit = |packets: &mut Vec<RecordedDraw>, b: &Bound, range: std::ops::Range<u32>| {
             let count = range.end - range.start;
@@ -1511,7 +1723,18 @@ impl GpuWorld {
         };
         for &(i, first, last) in &selection.spans {
             let batch = &world.batches[i];
-            let textures = p.batch_textures(i).ok_or("world batch textures unavailable")?;
+            let textures: &wgpu::BindGroup = match p.lit_batch_binding(i, lighting).ok_or("world batch textures unavailable")? {
+                BatchTextures::Resident(group) => group,
+                BatchTextures::Accumulation { page } => {
+                    let (device, target) = accumulation.ok_or("world accumulation target unavailable")?;
+                    match live_groups.entry((batch.material, batch.lightmap)) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                            p.accumulation_group(device, batch.material, page.as_ref(), target)
+                                .ok_or("world accumulation binding unavailable")?),
+                    }
+                }
+            };
             let draws = &world.draws[first..last];
             let mut k = 0;
             while k < draws.len() {
@@ -1526,7 +1749,7 @@ impl GpuWorld {
                     Owner::Cluster(_) => None,
                     Owner::Instance(n) => Some(n),
                 };
-                let binding = (batch.material, textures, instance, reference);
+                let binding = (batch.material, textures.clone(), instance, reference);
                 if bound.as_ref().is_none_or(|(at, _)| *at != binding) {
                     if let (Some(range), Some((_, b))) = (pending.take(), &bound) {
                         emit(&mut packets, b, range);
@@ -1585,7 +1808,7 @@ impl GpuWorld {
     fn record_spans(
         &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
-        spans: &[(usize, usize, usize)], selected: bool,
+        spans: &[(usize, usize, usize)], selected: bool, lighting: d3d::Lighting,
     ) -> usize {
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1641,7 +1864,7 @@ impl GpuWorld {
         for &(i, first, last) in spans {
             let b = &self.world.batches[i];
             if let Some(p) = &self.programs {
-                let Some(textures) = p.batch_textures(i) else {
+                let Some(textures) = p.lit_batch_textures(i, lighting) else {
                     unbound += 1;
                     continue;
                 };
@@ -1756,8 +1979,10 @@ fn encode_set(
     depth: &wgpu::TextureView,
     depth_format: wgpu::TextureFormat,
     target_size: (u32, u32),
+    viewport: [f32; 4],
     selected: &[(Owner, u8)],
 ) -> usize {
+    let Some([x, y, w, h]) = viewport_scissor(viewport, target_size) else { return 0 };
     set.pipelines(device, color_format, depth_format);
     let set = &*set;
     let has_stencil = depth_format.has_stencil_aspect();
@@ -1794,6 +2019,7 @@ fn encode_set(
     // unplaced local coordinates, which its rigid program places with
     // its rows.
     pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+    pass.set_scissor_rect(x, y, w, h);
     pass.set_vertex_buffer(0, program_vertices.slice(..));
     pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
     set.draw(&mut pass, color_format, depth_format, selected)
@@ -1928,5 +2154,55 @@ mod tests {
         let small = Image::from_levels(vec![level(2, 8)]).unwrap();
         assert_eq!(small.with_blocks(F::Bc1RgbaUnorm, vec![vec![0; 16]]).blocks, None, "2x8: not whole blocks");
         assert_eq!(block_bytes(F::Bc2RgbaUnorm), Some(16));
+    }
+}
+
+
+/// The parts of every owner whose parts all pass `drawable` (`None`: not
+/// loaded), in their given order.
+fn complete_owners(parts: &[(Owner, u8)], drawable: impl Fn(&(Owner, u8)) -> Option<bool>) -> Vec<(Owner, u8)> {
+    let refused: HashSet<Owner> = parts.iter()
+        .filter(|part| drawable(part) != Some(true))
+        .map(|&(owner, _)| owner)
+        .collect();
+    parts.iter().copied().filter(|(owner, _)| !refused.contains(owner)).collect()
+}
+
+#[cfg(test)]
+mod display_parts_tests {
+    use super::*;
+
+    #[test]
+    fn a_display_owner_with_a_part_it_cannot_draw_is_left_out_whole() {
+        let (a, b, c) = (Owner::Cluster(4), Owner::Instance(9), Owner::Cluster(6));
+        let parts = [(a, 0), (b, 0), (a, 1), (b, 2), (c, 3)];
+        let kept = complete_owners(&parts, |&(owner, part)| match (owner, part) {
+            (o, 2) if o == b => Some(false), // samples the accumulation target
+            (o, _) if o == c => None,        // not loaded
+            _ => Some(true),
+        });
+        assert_eq!(kept, [(a, 0), (a, 1)]);
+        assert!(complete_owners(&[], |_| Some(true)).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod image_storage_tests {
+    use super::*;
+
+    #[test]
+    fn image_clones_share_accounted_storage_until_edited() {
+        let image = Image::solid([10, 20, 30, 255]);
+        let original = Arc::downgrade(&image.pixels);
+        let mut biased = image.clone();
+        assert!(Arc::ptr_eq(&image.pixels, &biased.pixels));
+        assert_eq!(image.pixels.bytes.get(), 4);
+
+        biased.edit_rgba(|rgba, _| rgba[0] = 32);
+        assert_eq!(image.rgba[0], 10);
+        assert_eq!(biased.rgba[0], 32);
+        assert_eq!(biased.pixels.bytes.get(), 4);
+        drop(image);
+        assert!(original.upgrade().is_none());
     }
 }

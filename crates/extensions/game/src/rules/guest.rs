@@ -70,6 +70,31 @@ pub fn block(m: &dyn GuestMemory) -> Result<Option<[u8; variants::ext::LEN]>, Me
     Ok(Some(b))
 }
 
+/// The options a built-in plays with under a retail record: its type
+/// area's settings mapped to the built-in's own options
+/// (`variants::portable::retail_options`). `None` for a record on the
+/// script index, whose options are the record's script options, and
+/// before the globals exist.
+pub fn retail_options(m: &dyn GuestMemory, ir: &::rules::Ir) -> Result<Option<u32>, String> {
+    let Some(g) = globals(m).map_err(|e| format!("{e:?}"))? else {
+        return Ok(None);
+    };
+    let mut raw = [0u8; variants::record::RECORD_SIZE];
+    m.read(g + VARIANT, &mut raw).map_err(|e| format!("{e:?}"))?;
+    let record = variants::GameVariant::from_bytes(&raw).map_err(|e| e.to_string())?;
+    // Slayer's type area maps to no option, so a Slayer record keeps the
+    // option bits it names, as a record on the script index does.
+    if matches!(
+        record.game_type(),
+        variants::record::GameType::Script | variants::record::GameType::Slayer
+    ) {
+        return Ok(None);
+    }
+    variants::portable::retail_options(ir, &record)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
 /// A record field by its [`VARIANT_FIELDS_READ`] name; 0 without globals
 /// and for a name not listed (the load refused such a script).
 pub fn variant(m: &dyn GuestMemory, field: &str) -> Result<i32, MemFault> {

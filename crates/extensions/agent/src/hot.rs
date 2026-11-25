@@ -8,9 +8,9 @@
 //! never inside one. The render methods only talk to the hub; the renderer
 //! picks changes up at its next frame.
 //!
-//! Raw edits (`raw` and `evict` in `edit.batch`, `edit.raw.append`,
-//! `edit.stage.put`, `edit.overlay`; docs/editor/realtime-edits.md) go
-//! through the editor's `hot_tags::RawFiles`, which the game's glue
+//! Raw edits (`raw` and `evict` in `edit.batch`, for sections, pixels and
+//! sound chunks; `edit.raw.append`, `edit.stage.put`, `edit.overlay`;
+//! docs/editor/realtime-edits.md) go through the editor's `hot_tags::RawFiles`, which the game's glue
 //! installs; bytes are base64 or `{stage, at, len}` naming staged bytes.
 //!
 //! Block moves (`moves` in `edit.batch`, `edit.arena`) copy a grown tag
@@ -380,7 +380,7 @@ pub fn add_edit_methods(
             let idx = hot_tags::index::index(g).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
             let mut reply = json!({"at":ctx.at,"name":ctx.at.map,"file":cached_file.as_ref().and_then(|(_, file)| file.as_ref()),
                 "checksum":checksum,"scenario":format!("{:#010x}",idx.scenario),"epoch":ctx.epoch,
-                "session":probe(g,ctx)});
+                "session":probe(g,ctx),"bsp":hot_tags::raw::loaded_bsp(g)});
             if p.get("known_epoch").is_some_and(|e| e.as_u64() != Some(ctx.epoch)) {
                 let entries = hot_tags::index::all(g,&idx).map_err(|e| RpcError::new(code::UNAVAILABLE,e))?;
                 reply["loaded"] = json!(entries.into_iter().map(|e| e.datum).collect::<Vec<_>>());

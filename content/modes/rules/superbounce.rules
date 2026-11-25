@@ -1,0 +1,99 @@
+// Superbounce: the superbounce mode's guide (the HUD, the marks over the
+// map, priming and the medals), which the host turns on for `requires
+// hud.superbounce`, and scoring by bounces alone. `type research` files
+// its variants under Research and Devolution. Its settings block (no score
+// or time limit, 3 s respawn, overshields, a magnum, nothing on the map)
+// is what a new variant of the script starts with. A kill scores nothing. A bounce
+// scores `bounce_points` times its place in its chain, capped at 6
+// (Bouncetacular), and twice that for a Monster Bounce; a Bounced (a fall
+// out of the map during a bounce) costs a point, and so does a death by
+// the player's own hand. The chain and the Monster test are this
+// script's, on the host's physics events: `on launch` for each landing the
+// host judges a bounce, `on grounded` when the ground (or a teleport, a
+// new unit, a fall through a strip) ends the run. The medals on the HUD,
+// the HUD's pieces (the eight options after the scoring ones) and the Pogo
+// Stick (the last two) are the host's. docs/game/superbounce.md, "The
+// superbounce game type", and docs/game/rules-world-api.md, "Physics".
+//
+// Entries a host cannot make yet (`verify::unhostable`): none.
+rules "Superbounce" 1
+type research
+requires hud.superbounce
+about "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you."
+quick respawn_time, starting_weapon, shields, bounce_points, suicide_costs
+
+settings {
+    score_limit = none
+    time_limit = none
+    respawn_time = 3s
+    suicide_penalty = 0s
+    shields = overshields
+    damage_resistance = true
+    starting_weapon = magnum
+    secondary_weapon = none
+    weapons_on_map = none
+    grenades_on_map = false
+}
+
+option suicide_costs: bool = true "Suicide penalty" "A death with no killer, or by your own hand, costs a point"
+option bounce_points: int 0..5 = 1 "Bounce points" "Points for each superbounce, times its place in the chain"
+option bounced_costs: bool = true "Bounced penalty" "A fall out of the map during a bounce costs a point"
+option monster_double: bool = true "Monster double" "A Monster Bounce scores double"
+
+// The HUD's pieces: the host reads these from the variant record by name
+// (`superbounce_options`), the script does not. Each is on unless a
+// variant turns it off. docs/game/superbounce.md, "The HUD's options".
+enum Targets { common, likely, all }
+
+option targets: Targets = Targets.likely "Seam targets" "Which seams get a navpoint: the proven ones, those likely to work, or every one the scan found"
+option velocity: bool = true "Velocity" "Speed and direction on the HUD while moving"
+option alignment: bool = true "Fall alignment" "On a fall, the speed against what the seam needs and which way to steer"
+option miss_info: bool = true "Miss info" "Why a landing did not bounce, on the HUD for a few seconds"
+option medals: bool = true "Medals" "Bounce medals in the list, and their announcer"
+option second_bounce: bool = true "Second bounce" "After a bounce, the seams the flight can reach, the best first, and which way to steer"
+option approach_guide: bool = true "Approach guide" "On the seam you are going for: where you will land, and whether the fall will bounce"
+option charge_segments: bool = true "Charge segments" "Round the motion tracker: how far you are through priming, and how long the charge has left"
+
+// The Pogo Stick: the host gives it as the secondary weapon and draws its
+// ride (`pogo_loadout`, `superbounce_options`); the script does not read
+// either option. docs/game/pogo-stick.md.
+enum PogoStyle { unsc, covenant, forerunner }
+
+option pogo: bool = true "Pogo Stick" "Everyone spawns with a pogo stick as the secondary weapon, and rides it through a bounce"
+option pogo_style: PogoStyle = PogoStyle.unsc "Pogo style" "Which stick the game hands out: the UNSC field spring, the Covenant grav hopper or the Forerunner strut"
+
+player var bounces: int = 0
+// The place of the last bounce in its chain, kept after the chain ends.
+player var chain: int = 0
+// Whether the next bounce adds to the chain: no ground since the last.
+player var flying: bool = false
+
+// A kill scores nothing; a suicide or a fall costs a point.
+on kill(victim, killer) {
+    if suicide_costs and (killer == none or killer == victim) { score(victim, -1) }
+}
+
+// A bounce with no ground since the last adds to the chain; any other
+// starts one. The multiplier stops at 6, Bouncetacular's count, so a long
+// chain cannot run away; a Monster doubles after the cap.
+on launch(p, spot, speed) {
+    if p.flying { p.chain = p.chain + 1 } else { p.chain = 1 }
+    p.flying = true
+    p.bounces = p.bounces + 1
+    if bounce_points > 0 {
+        let points = bounce_points * min(p.chain, 6)
+        // 16.0: the host's `superbounce_chain::MONSTER_VZ`, a Monster Bounce.
+        if speed > 16.0 and monster_double { score(p, points * 2) } else { score(p, points) }
+    }
+}
+
+on grounded(p) {
+    p.flying = false
+}
+
+// A Bounced is a fall out of the map, a death with no killer, so with
+// the suicide penalty on `on kill` has already taken its point: a Bounced
+// costs one point either way, never two.
+on bounced(p) {
+    if bounced_costs and not suicide_costs { score(p, -1) }
+}

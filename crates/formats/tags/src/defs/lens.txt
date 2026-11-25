@@ -31,7 +31,7 @@ group lens 0x64 align 4
     0x10 f32[2] radius_bounds -- V the values of Halo 1's reflection +0x28 pair; name D
     0x18 f32[2] brightness_bounds -- V 0.05 to 1, as Halo 1's reflection +0x34 pair; name D
     0x20 unknown 0x4 seen=9
-    0x24 f32[3] tint_colour -- V red, green, blue in 0..1, as Halo 1's reflection +0x44 (after its alpha of 1); name D
+    0x24 f32[3] tint_colour view=rgb -- V red, green, blue in 0..1, as Halo 1's reflection +0x44 (after its alpha of 1); name D
   0x48 unknown 0x4 seen=2
   0x4c block functions_4c 0x8 align 4 -- V each element a data reference to function bytes
     0x0 data function align 4

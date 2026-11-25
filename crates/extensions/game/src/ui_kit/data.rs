@@ -1,7 +1,7 @@
 //! Our screens' presentation as data (docs/game/ui-builder.md "Screens in
-//! YAML"): the design system's tokens in `assets/ui/design.yaml`
+//! YAML"): the design system's tokens in `content/ui/design.yaml`
 //! ([`DesignDoc`]) and each screen's widgets, texts, places and components
-//! in `assets/ui/screens/<name>.yaml` ([`ScreenDoc`]). Rust keeps
+//! in `content/ui/screens/<name>.yaml` ([`ScreenDoc`]). Rust keeps
 //! behaviour; it reads these, baked in at compile time ([`baked`]), and
 //! the editor swaps a doc it has edited in ([`reload`]).
 //!
@@ -61,7 +61,7 @@ impl std::error::Error for DataError {}
 
 // ---- the design system ----
 
-/// `assets/ui/design.yaml`: the palette, the fonts by role, spacing, the
+/// `content/ui/design.yaml`: the palette, the fonts by role, spacing, the
 /// legend's format and every component's preset.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -230,14 +230,14 @@ impl DesignDoc {
 
 // ---- a screen ----
 
-/// `assets/ui/screens/<name>.yaml`: one screen's presentation. Keys are in
+/// `content/ui/screens/<name>.yaml`: one screen's presentation. Keys are in
 /// the order [`to_yaml`] writes them.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenDoc {
     /// Its name in `crate::ui_kit::screens::NAMES`; the file's stem.
     pub screen: String,
-    /// `list`, `dialog`, `code_entry`, `picker` or `hud`.
+    /// `list`, `dialog`, `code_entry` or `picker`.
     pub kind: String,
     /// The list's place or the dialog's base, by name ([`LAYOUTS`]).
     pub layout: Option<String>,
@@ -264,7 +264,49 @@ pub struct ScreenDoc {
     /// Fixed rows, by row id (`row.0`).
     #[serde(default)]
     pub rows: IndexMap<String, RowDoc>,
+    /// A Forge page's rows bound to a property of the thing it shows, by
+    /// id (`prop.0`), in order (docs/game/forge-map-variants-ui.md, "The
+    /// Properties page"). Apart from `rows`, which are fixed by position.
+    #[serde(default)]
+    pub props: IndexMap<String, PropDoc>,
 }
+
+/// A row of a Forge page that is bound to a property of the thing shown:
+/// the kinds it is for, the property, what A does and a picker's values.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropDoc {
+    /// Its label.
+    pub text: String,
+    /// Its description, shown while it has the focus.
+    pub help: Option<String>,
+    /// The kinds of thing it is for ([`PROP_KINDS`]); none is any.
+    #[serde(default)]
+    pub on: Vec<String>,
+    /// The property: a name in `forge::props`, or one of
+    /// [`PROP_VIRTUAL`], which are not fields.
+    pub prop: String,
+    /// What A does: `picker`, `keyboard`, `act` (do it and close), or the
+    /// name of a Forge screen.
+    pub open: String,
+    /// A picker's choices, in order; the choice sent is the index.
+    pub values: Option<Vec<String>>,
+}
+
+/// The kinds a [`PropDoc`] may be `on`.
+pub const PROP_KINDS: [&str; 6] = ["any", "object", "spawner", "starting-point", "goal", "teleporter"];
+/// The properties that are not fields of a thing.
+pub const PROP_VIRTUAL: [&str; 9] = [
+    "coordinates",
+    "heading",
+    "label",
+    "label number",
+    "clear label",
+    "prefab",
+    "games",
+    "reset orientation",
+    "duplicate",
+];
 
 /// A settings dialog's own: which host it sits on, its static header
 /// (icon, name, what the window is for), the row elsewhere that opens it
@@ -424,14 +466,13 @@ pub struct RowDoc {
 }
 
 /// The kinds a screen doc may be.
-pub const KINDS: [&str; 5] = ["list", "dialog", "code_entry", "picker", "hud"];
+pub const KINDS: [&str; 4] = ["list", "dialog", "code_entry", "picker"];
 /// Each kind's layouts.
-pub const LAYOUTS: [(&str, &[&str]); 5] = [
+pub const LAYOUTS: [(&str, &[&str]); 4] = [
     ("list", &["controls", "level_select", "moved"]),
     ("dialog", &["settings", "large"]),
     ("code_entry", &["large"]),
     ("picker", &["picker", "large"]),
-    ("hud", &["none"]),
 ];
 pub const BACKINGS: [&str; 4] = ["shell", "over", "screen", "none"];
 pub const ROW_KINDS: [&str; 8] = ["", "action", "open", "value", "pick", "info", "text", "disabled"];
@@ -582,6 +623,30 @@ impl ScreenDoc {
                 return err(at("open"), "an open row names the screen it opens".into());
             }
             slots_of(&r.text).map_err(|what| DataError::new(&file, &at("text"), what))?;
+        }
+        for (id, p) in &self.props {
+            let at = |field: &str| format!("props.{id}.{field}");
+            if id.strip_prefix("prop.").and_then(|n| n.parse::<usize>().ok()).is_none() {
+                return err(format!("props.{id}"), "a prop id is prop.N".into());
+            }
+            slots_of(&p.text).map_err(|what| DataError::new(&file, &at("text"), what))?;
+            if !PROP_VIRTUAL.contains(&p.prop.as_str()) && forge::props::prop(&p.prop).is_none() {
+                return err(at("prop"), format!("{:?} is no property of forge::props", p.prop));
+            }
+            if let Some(k) = p.on.iter().find(|k| !PROP_KINDS.contains(&k.as_str())) {
+                return err(at("on"), format!("{k:?} is not one of {PROP_KINDS:?}"));
+            }
+            let screen = crate::forge_screens::sheet::Kind::of_screen(&p.open).is_some();
+            if !screen && !matches!(p.open.as_str(), "picker" | "keyboard" | "act") {
+                return err(at("open"), format!("{:?} is neither picker, keyboard, act nor a Forge screen", p.open));
+            }
+            let values = p.values.as_deref().unwrap_or(&[]);
+            if p.open == "picker" && values.is_empty() && p.prop != "heading" {
+                return err(at("values"), "a picker row has values".into());
+            }
+            if p.open != "picker" && !values.is_empty() {
+                return err(at("values"), "only a picker row has values".into());
+            }
         }
         self.validate_settings(design)?;
         let rows = self.rows.len();
@@ -862,23 +927,44 @@ pub const FROM_DOC: [&str; 11] = [
 
 // ---- where they are, and the loaded set ----
 
-/// A screen doc's path in a checkout: `assets/ui/screens/<name>.yaml`.
+/// A screen doc's path in a checkout: `content/ui/screens/<name>.yaml`.
 pub fn path_of(screen: &str) -> PathBuf {
-    PathBuf::from("assets/ui/screens").join(format!("{screen}.yaml"))
+    PathBuf::from("content/ui/screens").join(format!("{screen}.yaml"))
 }
 /// `design.yaml`'s path in a checkout.
 pub fn design_path() -> PathBuf {
-    PathBuf::from("assets/ui/design.yaml")
+    PathBuf::from("content/ui/design.yaml")
 }
 
-static DESIGN: LazyLock<DesignDoc> = LazyLock::new(|| {
-    DesignDoc::parse(baked::DESIGN).unwrap_or_else(|e| panic!("{e}"))
-});
+static DESIGN: LazyLock<Arc<DesignDoc>> =
+    LazyLock::new(|| Arc::new(DesignDoc::parse(baked::DESIGN).unwrap_or_else(|e| panic!("{e}"))));
 
 /// The baked design system. Panics with the named error when the baked
 /// file is wrong (the tests load it first).
 pub fn design() -> &'static DesignDoc {
     &DESIGN
+}
+
+thread_local! {
+    static SCOPED_DESIGN: std::cell::RefCell<Option<Arc<DesignDoc>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The design used by a screen sample during a package build, or the baked design.
+pub(crate) fn active_design() -> impl std::ops::Deref<Target = DesignDoc> {
+    SCOPED_DESIGN.with(|d| d.borrow().clone()).unwrap_or_else(|| Arc::clone(&DESIGN))
+}
+
+/// Runs a screen sample with the design supplied by the package.
+pub(crate) fn with_design<R>(design: DesignDoc, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Arc<DesignDoc>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCOPED_DESIGN.with(|d| *d.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(SCOPED_DESIGN.with(|d| d.borrow_mut().replace(Arc::new(design))));
+    f()
 }
 
 /// How many times the baked files have been parsed: once a process.

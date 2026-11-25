@@ -349,3 +349,78 @@ fn commit_copies_a_line_into_the_checkout_only_when_asked() {
     let e = fails(api2.call(&mut app2, m::VOICE_COMMIT, json!({"clip": "x", "repo": repo_s})));
     assert_eq!(e.code, code::INVALID_PARAMS);
 }
+
+/// An empty local package `id` under the data root.
+fn package(t: &Temp, id: &str) -> PathBuf {
+    let dir = t.0.join("data/packages").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("package.toml"),
+        format!("[package]\nformat = 1\nid = \"{id}\"\nname = \"{id}\"\n"),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn commit_with_a_tag_adds_the_line_to_the_edit_target_as_a_sound_item() {
+    let t = Temp::new("commit-sound");
+    let (mut app, mut api, _) = open(&t);
+    let dir = package(&t, "mine");
+    let r = call(&mut api, &mut app, m::VOICE_SAY, json!({"text": "Bounce", "play": false}));
+
+    // No edit target: NO_TARGET, and nothing is written.
+    let e = fails(api.call(&mut app, m::VOICE_COMMIT, json!({"tag": "sound\\voice\\bounce"})));
+    assert_eq!(e.code, code::NO_TARGET);
+
+    call(&mut api, &mut app, m::PACKAGE_TARGET, json!({"id": "mine"}));
+    let c = call(&mut api, &mut app, m::VOICE_COMMIT, json!({"tag": "sound\\voice\\bounce"}));
+    assert_eq!(c["package"], "mine");
+    assert_eq!(c["tag"], "tag:snd!:sound\\voice\\bounce");
+    // The WAV is copied in unchanged; the item is a `sound` item of that tag.
+    assert_eq!(
+        std::fs::read(dir.join("sounds/bounce.wav")).unwrap(),
+        std::fs::read(r["file"].as_str().unwrap()).unwrap()
+    );
+    let manifest = std::fs::read_to_string(dir.join("package.toml")).unwrap();
+    assert!(manifest.contains("sound\\\\voice\\\\bounce") || manifest.contains("sound\\voice\\bounce"), "{manifest}");
+    assert!(manifest.contains("sounds/bounce.wav"), "{manifest}");
+
+    // The same tag twice, and a tag that is not a path, are refused.
+    assert!(api.call(&mut app, m::VOICE_COMMIT, json!({"tag": "sound\\voice\\bounce"})).is_err());
+    let e = fails(api.call(&mut app, m::VOICE_COMMIT, json!({"tag": "..\\x"})));
+    assert_eq!(e.code, code::INVALID_PARAMS);
+
+    // The checkout's parameters do not go with a tag.
+    let e = fails(api.call(&mut app, m::VOICE_COMMIT, json!({"tag": "a\\b", "clip": "x"})));
+    assert_eq!(e.code, code::INVALID_PARAMS);
+}
+
+#[test]
+fn commit_with_a_tag_refuses_a_dataset_or_weights_path() {
+    let t = Temp::new("commit-refuse");
+    let (mut app, mut api, _) = open(&t);
+    let dir = package(&t, "mine");
+    call(&mut api, &mut app, m::PACKAGE_TARGET, json!({"id": "mine"}));
+    let voices = t.0.join("data/voices/chief");
+    std::fs::create_dir_all(voices.join("dataset")).unwrap();
+    std::fs::create_dir_all(voices.join("model")).unwrap();
+    for (sub, name) in [("dataset", "line.wav"), ("model", "sample.wav"), ("model", "weights.safetensors")] {
+        let f = voices.join(sub).join(name);
+        std::fs::write(&f, b"RIFF").unwrap();
+        let e = fails(api.call(
+            &mut app,
+            m::VOICE_COMMIT,
+            json!({"tag": "sound\\x", "from": f.display().to_string()}),
+        ));
+        assert_eq!(e.code, code::REFUSED, "{sub}/{name}: {}", e.message);
+    }
+    // Not a WAV elsewhere.
+    let f = t.0.join("notes.txt");
+    std::fs::write(&f, b"x").unwrap();
+    assert!(api
+        .call(&mut app, m::VOICE_COMMIT, json!({"tag": "sound\\x", "from": f.display().to_string()}))
+        .is_err());
+    // Nothing reached the package.
+    assert!(!dir.join("sounds").exists());
+}

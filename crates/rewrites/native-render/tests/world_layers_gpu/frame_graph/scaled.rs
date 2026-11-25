@@ -54,6 +54,7 @@ fn four_x_present_hands_the_menu_its_pixels_snapshot_and_guest_count() {
             of: MAIN,
             id: 5,
             how: ReplaySample::Snapshot { opaque: false },
+            into: None,
         },
     );
 
@@ -298,6 +299,7 @@ fn one_x_e3_wrapper_records_once_and_resumes_the_menu_with_a_live_view() {
             of: MAIN,
             id: 6,
             how: ReplaySample::InPlace,
+            into: None,
         },
     );
     assert!(backend.can_draw_scene(&frame, &targets));
@@ -568,4 +570,90 @@ fn original_two_copy_frame_with_divergent_history_declines_only_private_replay()
     assert!(frame.private_target_refusal().is_some());
     display.present(colour, 0).unwrap();
     assert_eq!(display.stats().view_frames, 1);
+}
+
+/// A grid that is not a whole number (3/2 across, 5/4 down) owns the
+/// frame: the scene draws on the view's rounded targets, the window is
+/// shown that image, and the owner counts it as fractional. A grid that
+/// minifies an axis is refused by its reason.
+#[test]
+fn a_fractional_grid_owns_the_frame_on_its_rounded_targets() {
+    use d3d::scaled::{RenderScale, SceneRefusal, scene_counters};
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else {
+        return;
+    };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("FrameScene pixel check skipped: adapter lacks Depth32FloatStencil8");
+        return;
+    }
+    let gpu = || {
+        GfxBackend::new(GfxContext {
+            instance: ctx.instance.clone(),
+            adapter: ctx.adapter.clone(),
+            device: ctx.device.clone(),
+            queue: ctx.queue.clone(),
+            caps: ctx.caps,
+        })
+    };
+    let fractional = || {
+        scene_counters()
+            .into_iter()
+            .find(|(name, _)| name == "scene_owned_scaled_fractional")
+            .map(|(_, n)| n)
+            .unwrap()
+    };
+    let grid = RenderScale::between((SIZE, SIZE), (SIZE * 3 / 2, SIZE * 5 / 4)).unwrap();
+    assert_eq!(grid.uniform_integer(), None);
+    let mut backend = ScaledBackend::with_resolution(gpu(), gpu(), grid, true).unwrap();
+    let colour = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    backend
+        .clear(colour, Some(depth), Clear::all([1.; 4]))
+        .unwrap();
+    let mut frame = replay();
+    op(&mut frame, Slot::Opaque, bind());
+    op(
+        &mut frame,
+        Slot::Opaque,
+        guest_triangle(2.0, [0.0, 1.0, 0.0, 1.0], None),
+    );
+    let targets = HashMap::from([(MAIN, colour), (Z, depth)]);
+    let physical = backend.view_surface(&colour).unwrap();
+    assert_eq!(
+        backend.view().surface_extent(physical),
+        Some((SIZE * 3 / 2, SIZE * 5 / 4))
+    );
+    assert_eq!(backend.scene_refusal(&frame, &targets), None);
+    assert!(backend.check_scene(&frame, &targets));
+
+    let owned = fractional();
+    draw_scaled_display_on(&mut backend, &sealed(), &frame, None, &targets).unwrap();
+    assert!(fractional() > owned);
+    assert_eq!(backend.reference().batch_stats().draws, 0);
+    assert_eq!(backend.view().last_presented(), Some(physical));
+    assert_eq!(backend.stats().view_frames, 1);
+    assert_eq!(backend.stats().display_draws, 1);
+    let (pixels, _) = backend.view_mut().read_color(physical).unwrap();
+    assert_eq!(pixels.len(), (SIZE * 3 / 2 * SIZE * 5 / 4 * 4) as usize);
+    assert_eq!(
+        &pixels[..4],
+        &[255; 4],
+        "pre-existing white outside the triangle"
+    );
+    assert!(
+        pixels.chunks_exact(4).any(|p| p == [0, 255, 0, 255]),
+        "the triangle on the fractional grid"
+    );
+
+    let minified = RenderScale::between((SIZE, SIZE), (SIZE / 2, SIZE)).unwrap();
+    let mut small = ScaledBackend::with_resolution(gpu(), gpu(), minified, true).unwrap();
+    let colour = small.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = small.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let targets = HashMap::from([(MAIN, colour), (Z, depth)]);
+    assert_eq!(
+        small.scene_refusal(&frame, &targets),
+        Some(SceneRefusal::Grid)
+    );
+    assert!(!small.can_draw_scene(&frame, &targets));
 }

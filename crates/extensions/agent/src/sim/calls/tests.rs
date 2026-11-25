@@ -1689,4 +1689,83 @@ fn reactivating_needs_a_loaded_active_structure_and_checks_what_it_left() {
 }
 
 mod base;
+mod definition;
 mod same_calls;
+
+#[test]
+fn a_sound_is_started_at_the_units_head_marker_as_a_dialogue_line_is() {
+    let w = world();
+    let unit = w.unit;
+    let (out, calls, _) = one(
+        w,
+        Call::Sound {
+            unit,
+            sound: 0xe400_0040,
+        },
+        |c, _| {
+            assert_eq!(c.target, addr::SOUND_START_AT_MARKER);
+            al(0x00cc_0001)
+        },
+    );
+    assert_eq!(out.unwrap()["instance"], "00cc0001");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].esi, Some(unit));
+    assert_eq!(calls[0].eax, Some(addr::HEAD_MARKER));
+    // The pointer, then the four words it points to.
+    assert_eq!(
+        calls[0].args[1..],
+        [u32::MAX, 0xe400_0040, 1.0f32.to_bits(), 0]
+    );
+}
+
+#[test]
+fn a_sound_the_game_does_not_start_is_an_error() {
+    let w = world();
+    let unit = w.unit;
+    let (out, _, _) = one(
+        w,
+        Call::Sound { unit, sound: 7 },
+        |_, _| al(u32::MAX),
+    );
+    assert!(out.unwrap_err().message.contains("started no sound"));
+}
+
+#[test]
+fn a_recording_is_played_by_the_recording_player_with_the_units_index_and_flags() {
+    let w = world();
+    let unit = w.unit;
+    let (out, calls, _) = one(
+        w,
+        Call::Recording {
+            unit,
+            index: 3,
+            flags: 8,
+        },
+        |c, _| {
+            assert_eq!(c.target, addr::RECORDING_PLAYER);
+            al(1)
+        },
+    );
+    assert_eq!(out.unwrap()["index"], 3);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].eax, Some(unit));
+    assert_eq!(calls[0].ecx, Some(3));
+    // The play flags are the one stack argument, after the return slot.
+    assert_eq!(calls[0].args, [8]);
+}
+
+#[test]
+fn a_recording_the_player_refuses_is_an_error() {
+    let w = world();
+    let unit = w.unit;
+    let (out, _, _) = one(
+        w,
+        Call::Recording {
+            unit,
+            index: 9,
+            flags: 0,
+        },
+        |_, _| al(0x7700),
+    );
+    assert!(out.unwrap_err().message.contains("started no recording 9"));
+}

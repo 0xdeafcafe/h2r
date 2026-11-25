@@ -110,8 +110,9 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   `theater.status` reports the same while it runs: the tape, whether a
   game is on it, the films cut, the last discard reason, the notes and any
   failure ([agent API](../runtime/agent-api.md#theater-transport)).
-- **Local only.** Default films stay in the local library. Only films the
-  player names are queued for the signed-in account's archive.
+- **Local recordings.** Both automatic and explicitly named machine recordings
+  stay on the player’s computer. The account archive accepts shareable split
+  input films. A dedicated host uploads its match through its lease.
 - **The tape records games.** Machine keyframes, D3D barriers and the
   local keyframe cache belong to games: outside one (main menu, lobby,
   pregame, Theater, settings) no capture is attempted and no capture mark
@@ -139,10 +140,19 @@ rules live in `crates/extensions/game/src/theater/autorecord.rs`.
   so its slice, tick and call counts are exact, and at most 150 ticks of
   the game are lost. Everything past that mark is dropped, including
   checkpoints and call batches recorded past it, so a replay is never
-  asked for state the tape does not hold. A recovered film lists with no
-  map, variant or scores, and opens at boot; a tape with no such mark —
+  asked for state the tape does not hold. The recorder
+  appends a header naming the game when it starts and when its roster
+  changes (`Session::describe_tape`: map, variant, players), and an empty
+  one when the game is cut or left; recovery takes the game from the
+  tape's last header, so a game a crash cut off is listed with its map and
+  players, without scores, and opens at boot. A tape of menus, or one
+  whose game was already cut into its own film, recovers with no map and
+  no players; Theater's list shows games only, so it is on disk and not
+  listed; a tape with no such mark —
   a session that died outside a game — is deleted, as a session that
   played no game leaves no film.
+
+Recent lists up to 25 unsaved games. Saving a film moves it to Saved. Opening Theater reads the local library even when Live has no archive entry for the game.
 
 What Theater's Recent tab shows:
 
@@ -312,20 +322,18 @@ scheduler boundaries, snapshots and the continuation data needed after a
 restore. It also covers cold replay when the first snapshot has yet to be
 taken. Absolute offsets preserve which calls preceded each snapshot.
 
-The private `BOOT` record preserves LOD Distance and other `View` settings,
-including their saved values and locks. Theater clears the viewer's LOD
-override before restoring them. Resolution has `Host` scope, so the viewer
-chooses the displayed raster. The recorded guest uses retail geometry for
-readbacks. Films that recorded both the legacy render scale and LOD Distance
-recover their original startup geometry multiplier. The private guest Video
-menu also retains its recorded choices during playback.
+The private `BOOT` record preserves the guest Video settings, including
+their saved values and locks. Theater reads the display raster and LOD
+Distance from the viewer's settings. The guest's reference uses retail
+geometry for readbacks. Films with both the legacy render scale and LOD
+Distance recover that startup geometry multiplier for the reference.
 [Startup settings](../../crates/extensions/game/src/theater/startup.rs).
 
 The private `INDX` is a JSON array in physical envelope order. Each row
 stores `tag` (four byte values), `offset` (u64) and `size` (u32).
 The first row of each contiguous machine run also stores `machine_span`
 (u32), the number of rows in that run, including itself. All other rows
-omit the field. For example, `HEAD DATA NETR TICK KEYF NETR TICK` has a
+omit the field. For example, `HEAD DATA TAPE TICK KEYF TAPE TICK` has a
 span of three at `HEAD` and two at `KEYF`. The writer can append a
 public time chunk as soon as it fills, so the machine section can occupy
 several disjoint byte ranges. All runs together form one section, and
@@ -378,7 +386,8 @@ sparse scene checkpoints in `CIDX`.
 | 4 | Hash | Eight little-endian bytes for the post-tick gameplay digest. The reader checks it after the matching tick completes. |
 | 5 | Marker | UTF-8 chapter name. The recording marks its start and the first active map. |
 | 6 | Clock | One ULEB for the current guest match tick, or empty while unavailable. The index mirrors clock discontinuities for clip lookup. |
-| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. The record is private: `film::privacy` never makes it public. |
+| 7 | Forge entry | A shared Forge session's stream: one-byte subtype, then the message. Subtype 0 is the welcome that opens the session (`forge::net::Welcome`), subtype 1 one stream item (`forge::net::Stamped`), at the tick the machine applied it. Watermarks are not recorded. Subtype 2 is a seat's monitor look (JSON) and subtype 3 its monitor pose (27 bytes, with its tick); both repeat at each seek checkpoint ([forge-monitor-appearance.md](forge-monitor-appearance.md), "Theater"). The record is private: `film::privacy` never makes it public. |
+| 8 | Firefight entry | One entry of the Firefight host log, its canonical JSON (`host_log::Entry::canonical_bytes`), at the tick the machine applied it; the mode state rides in its `ModeState` entries. Playback hands a tick's records to the replica before the tick ([firefight.md](firefight.md#theater)). The record is private: `film::privacy` never makes it public. |
 
 For tag 1, start each chunk with 16 empty seats. A state begins with a flags
 byte. Bit 0 selects the 18-byte Xbox gamepad, bit 1 the 92-byte retail
@@ -470,19 +479,23 @@ million entries. JSON payloads are UTF-8.
 | `DATA` | Initial guest file manifest. Entries identify a directory, an embedded file or a file to obtain locally by path and SHA-256. Installed content and converted campaign files are identified by digest. |
 | `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
 | `INPT` | Binary block of consecutive completed ticks, including actions, events and post-tick hashes. |
-| `PADR` | Indexed local XInput calls. Records the actual guest result and returned state, including packet number. Covers menu input and reads between ticks. Phantom actions use `BTAP`. |
-| `VSIZ` | Physical width and height observed by the local guest when it draws the Resolution row or opens its picker. |
-| `TEXT` | Virtual keyboard edit at the focused guest keyboard, including profile-name entry. Uses the common call cursor and the UI thread ID. |
-| `BTAP` | Call-indexed results of the phantom bot action builder, including guest cold-animation requests. |
+| `TAPE` | The call tape: batches of indexed calls in call order, every stream interleaved, in the binary encoding of `crates/live/film/src/tape/codec.rs` ([input-film.md](input-film.md#what-the-replay-depends-on)). A stream is told by its operation (`tape::stream_of`): `PADR` is the local XInput calls (the actual guest result and returned state, including packet number; menu input and reads between ticks), `VSIZ` the physical width and height the guest observes when it draws the Resolution row or opens its picker, `TEXT` a virtual keyboard edit at the focused guest keyboard (profile-name entry), `BTAP` the results of the phantom bot action builder including guest cold-animation requests, `NETR` and `RAND` the host boundary calls below. |
 | `BOTR` | Sparse bot roster changes at management boundaries. Current hosts record phantom seats. |
 | `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
-| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT`, `BTAP` and `VSIZ`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
+| `NETR`, `RAND` | The streams of `TAPE` that hold host boundary calls, on a common call index with the others. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. The pure operations `Htonl`, `Htons` and `FdIsSet` are computed in playback and are not on the tape; nor is an operation on a socket while the guest has made none. |
 | `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
 | `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. The arena digest folds in the `SimExt` records when there are any ([sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob"). Additional per-tick gameplay digests live in `INPT`. |
 | `KEYF` | Scheduler-boundary snapshot and cursors, described below. |
 | `SUMM` | Menu JSON, up to 128 KiB. Contains level, game type, mode, variant name, match duration in ticks and player results including score and medal counts. Player turnover can produce multiple results for the same seat. |
 | `TIDX` | Tick directory for independently decodable input blocks and keyframes. |
 | `INDX` | JSON array of `{tag, offset, size}` for every preceding chunk. A tag is four byte values and size excludes the eight-byte chunk prefix. |
+
+An encoded call over 1 MiB occupies consecutive `TPAR` chunks of at most
+1 MiB each. Its terminating `TAPE` chunk contains byte 0xc8, the call
+index and the part count (both little-endian u64). Playback and seek read
+the parts as one indexed call. Argument and guest-write counts vary by
+service operation. The recorder validates a call before buffering it so a
+rejected call leaves the preceding batch available to the final cut.
 
 A `TEXT` call uses operation `VirtualKeyboard`. Its six u32 arguments give
 the screen address, buffer address, caret address, capacity in UTF-16
@@ -661,7 +674,7 @@ and the ordering of HLE and lobby calls all affect replay. A film carries
 the host inputs; their apparent effects in telemetry are insufficient to
 reconstruct the simulation.
 
-Current writers put `h2-sim/1` in `HEAD.runtime_stamp`. This ABI covers
+Current writers put `h2-sim/2` in `HEAD.runtime_stamp`. This ABI covers
 the host scheduler, consumed input and guest-facing HLE semantics. A change
 that breaks those contracts must bump the ABI. The sealed header also stores
 `simulation_hooks`, a SHA-256 of the installed simulation hook chains in
@@ -669,8 +682,13 @@ execution order and the core game, clock, player and object table addresses.
 It includes hook owners, guest addresses, calling conventions, hook kinds,
 instruction sites, permitted continuation addresses, guest-callable entries
 and the allocations placed for those features.
-The player checks it after installing its features and before entering the
-guest. The guest image has its own stamp. Editing Live, the web viewer,
+The recorder's boot header is written before the features are installed, so
+it holds no digest: once the features are installed the recorder appends a
+header that carries it (`Session::set_simulation_hooks`). A cut copies the
+tape with that header and writes its final header from the tape's, and
+recovery takes the digest from the tape's later header, so every film
+carries it. The player checks it after installing its features and before
+entering the guest. The guest image has its own stamp. Editing Live, the web viewer,
 codecs, diagnostic labels or documentation leaves this contract intact.
 Earlier experimental v2/v3 recordings with source-based runtime stamps
 require their corresponding simulator for engine playback.
@@ -772,8 +790,8 @@ a cinematic, death or vehicle camera the window shows the recorded frame.
 
 A playerless host has no local director, first-person weapon or HUD. For
 a rendered host film the desktop player opens a separate GPU view at the
-viewer's selected resolution. Native follows the physical drawable within the default 4K pixel budget, including
-a resize while paused. The presented aspect sets the observer's horizontal
+viewer's selected resolution. Native follows the physical viewport, including
+a resize while paused, with a 4K pixel budget in fullscreen. The presented aspect sets the observer's horizontal
 field of view. The BSP and posed objects use the same projection for drawing
 and culling. The observer uses the selected unit’s posed camera
 marker, aim and unzoomed field of view. When the marker is unavailable,

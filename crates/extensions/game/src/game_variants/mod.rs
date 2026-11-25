@@ -9,6 +9,8 @@
 //!   retail and community built-ins, and their block put on the game at its
 //!   start;
 //! - [`port`]: the player's saved variants ported into the store at boot;
+//! - [`suggest`]: the map variants on this machine a bundle may suggest,
+//!   written by [`store::Store::set_maps`];
 //! - [`GameScripts`]: what the rules runtime asks for a blob the binary does
 //!   not have: the store first, then Live by full hash.
 //!
@@ -21,6 +23,7 @@ pub mod bundle;
 pub mod inject;
 pub mod port;
 pub mod store;
+pub mod suggest;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,7 +95,7 @@ pub fn install(registry: &mut hooks::Registry, boot: Boot) -> anyhow::Result<boo
         variants::save::SaveStore::root_under(&boot.data_root),
         None,
     );
-    // Every saved variant is ported with its engine's built-in script.
+    // Preserve a save's named script, or attach the retail type's built-in.
     let script = port::PortScript::Builtin;
     let to = store();
     let _ = std::thread::Builder::new()

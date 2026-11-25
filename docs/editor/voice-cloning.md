@@ -1,7 +1,7 @@
 # Voice cloning: new lines in a game character's voice
 
 Status: Partly built. The dataset builder, the jobs, the provider and the API are built and tested on invented maps and a fake sidecar; the Python sidecar, the tag-path rules and the subtitle pairing are not yet run against a disc.
-Code: `crates/apps/studio/src/voice/dataset.rs` (`build`), `voice/clone.rs` (`CloneVoice`), `voice/sidecar.rs` (`Managed`, `Process`), `crates/apps/studio/sidecar/voice_clone.py`, `app/voices.rs` (`AppLines`, the jobs), `app/announcer.rs` (`App::voice_say` with `Engine::Clone`), `api/voice_clone.rs`, `ui/announcer.rs` (the Voices window). Tests: `voice/dataset/tests.rs`, `voice/tests.rs`, `api/voice_clone/tests.rs`.
+Code: `crates/apps/studio/src/voice/dataset.rs` (`build`), `voice/clone.rs` (`CloneVoice`), `voice/sidecar.rs` (`Managed`, `Process`), `crates/apps/studio/sidecar/voice_clone.py`, `app/voices.rs` (`AppLines`, the jobs), `app/announcer.rs` (`App::voice_say` with `Engine::Clone`), `app/voice_batch.rs` (the batch), `api/voice_clone.rs`, `ui/voices.rs` and `ui/voices/{setup,lines}.rs` (the voice document). Tests: `voice/dataset/tests.rs`, `voice/tests.rs`, `api/voice_clone/tests.rs`.
 Switch: none.
 
 Studio makes new dialogue in the voice of a game character (Master Chief,
@@ -58,8 +58,8 @@ committed, and the model runs locally with the network off.
    character's own lines (`App::character_target`, the dataset's `lufs`,
    measured by `sound.measure`'s meter), saved under
    `<data root>/voices/<character>/lines` (or `clips/<clip>.wav`), and
-   played. `voice.commit` copies a clip into the checkout as it does a Fish
-   line.
+   played. `voice.commit` keeps a clip as it does a Fish line: a `sound` item of
+   the edit target with `tag`, or a file in the checkout with `clip`.
 
 ### Naming a character
 
@@ -94,8 +94,17 @@ sets `HF_HUB_OFFLINE=1` and `python -I`. The protocol is JSON lines on
 stdin and stdout (`voice/sidecar.rs` header); stderr is
 `sidecar.log`. The install, the transcription and the fine-tune run as
 background jobs, one at a time (`app::voices::Voices::start`);
-`voice.dataset.status` and the Voices window show their stage, progress
+`voice.dataset.status` and the voice document's Setup pane show their stage, progress
 and last log lines.
+
+`f5-tts-mlx` 0.2.6 draws its noise as `mx.random.normal((channels, dur))`
+with `dur` an element of a float32 `mx.array` of durations, which current
+MLX refuses as a shape (`TypeError: normal(): incompatible function
+arguments ... Invoked with types: tuple`). The script's
+`whole_number_shapes` wraps `mx.random.normal` so every shape is made of
+Python ints; `say` and `train` call it. The sidecar's tests are
+`crates/apps/studio/sidecar/test_voice_clone.py` (a fake `mlx.core`; run
+`python3 -I` on the file).
 
 ### The models
 
@@ -123,26 +132,72 @@ flow-matching loss of `model(mel_spec, text=, lens=)` as
 (default `max(2000, 4 × lines)` steps). The trainable parameters are saved
 to `model/model.safetensors` and recorded in `model/trained.json`; `say`
 loads them over the base model. It needs 10 minutes of speech with text
-unless `min_minutes` says otherwise.
+(`MIN_TRAIN_MINUTES`) unless `min_minutes` says otherwise; a small dataset
+(the announcer's lines come to a few minutes) can give an unstable voice.
+
+In a voice's Setup pane the dataset's minutes are shown, and while they are
+under 10 the button reads "Train anyway" and a "Least minutes" field
+(default 10, 0 or more) is the `min_minutes` it sends. The "Model" picker
+beside it chooses the backend that says and trains. `qwen3-tts` clones
+from a reference line with no fine-tune: a character with a dataset
+whose lines have text (the build transcribes the rest) is cloned by
+"Say it" with no training, from a dataset clip (default: the subtitled
+line nearest 7 s, else the longest line with text up to 12 s).
 
 ## Interfaces
 
 - Agent API: `voice.characters`, `voice.dataset.build`,
   `voice.dataset.status`, `voice.clone.train`, `voice.clone.say`
   ([agent-api.md](agent-api.md), "Voices").
-- The Voices window (View > Voices): the engine (the announcer's Fish
-  Audio voice, or a character's clone), the character, Build dataset,
-  Fine-tune, the job's progress, the reference line, and the line view
-  shared with the announcer.
+- Agent API: the batch, `voice.say_batch`, `voice.batch.status`,
+  `voice.batch.run`, `voice.batch.save` (agent-api.md, "Voices").
+- The voice document (`Doc::Voice`; a row of the Browser's **Voices** kind
+  or of Go to anything): the announcer's Fish Audio voice says one line;
+  a character's clone says a batch, in the flow below. The dataset, the
+  fine-tune and the model's jobs are its **Setup** pane. **New line** in a
+  sound's **Lines** pane (`ui/sound.rs`) runs `App::sound_new_line`: one
+  batch row whose target is that sound, said by the voice its path maps to
+  ([studio-flow.md](studio-flow.md), "Voices and the announcer").
 - `voice::sidecar::Launcher` and `Sidecar` are the seam the tests replace
   (`voice::fake::FakeLauncher`); `voice::dataset::LineSource` the one the
   dataset builder reads through (`voice::fake::FakeLines`).
+
+## The batch
+
+`app/voice_batch.rs` holds the rows the voice document and the API share. A row
+is a line, its voice (its own, else the batch's), an output name (a clip
+id) and optionally the `snd!` tag it replaces. Rows are added one at a
+time, pasted (one per line; `name<Tab>text` names a row) or imported from a
+text file of at most 1 MB. **Say all** (`Batch::queue`) fails a row with
+a problem at once (no text, no voice, a bad or repeated output name) and
+queues the rest; `App::poll_voice_batch` then moves one step per call: a
+queued row becomes `running`, the next call says it with
+`App::voice_say` and `Engine::Clone` (not played), so each row is cached,
+trimmed and levelled as `voice.clone.say` does it. The window calls it once
+a frame; `voice.say_batch {wait}` runs it to the end. A row that fails
+(for example, the model not installed yet, whose install starts) fails
+alone with why, and **Say all** asks the failed rows again. **Re-run**
+asks the model again instead of the cache. The document header's
+**Save** (`App::voice_batch_save`) writes done lines as `sound` items
+of the edit target. Each item's identity is its target sound or clip
+name. The picker for the tag lists the
+open map's dialogue sounds; a tag names a sound, not one permutation.
+
+The voice document adds two rules the API does not have. A row needs an output
+name or a game line it replaces (`Batch::blocked`): until it has one, its
+**Say** and **Say all** are off and the row says why. The tag picker is
+labelled "Replaces: <tag>", or "Replaces: nothing (saved as a new clip)"
+when it has none. A row's failure is shown as a sentence
+(`voice::readable`): a known library failure says what to do, a Python
+traceback is cut to its last line, and the whole text stays in the API's
+`why` and in `sidecar.log`.
 
 ## Rules and limits
 
 - Everything is written under `<data root>/voices/` or the caches dir,
   never in a checkout. `voice.commit` is the only step that copies a line
-  into one, and only a line the user asked for.
+  into a package or a checkout, and only a line the user asked for. It
+  refuses a path inside a `dataset` or `model` folder.
 - No audio, transcript or weight is sent anywhere. The only network the
   clone uses is the install's package and weight downloads.
 - One background job at a time; a build or a train while one runs is

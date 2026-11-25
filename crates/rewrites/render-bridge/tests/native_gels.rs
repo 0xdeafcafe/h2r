@@ -17,15 +17,22 @@ fn the_switch_places_gels_and_hooks_are_render_context_only() {
             .contains("native_gels_")
     );
     let on = plan("");
-    for name in ["TEMPLATE_PASS", "TEMPLATE_QUAD"] {
-        let chain = on
-            .chains
+    assert!(on.text().contains("native_gels_quad_end"));
+    let find = |name: &str| {
+        on.chains
             .values()
             .find(|c| c.point.name == name)
-            .expect("gel hook");
-        assert!(!chain.needs_shadow());
-        assert!(chain.render_thread().is_ok());
-    }
+            .expect("gel hook")
+    };
+    // The template hook is a plain before hook: it runs on the render thread.
+    let template = find("TEMPLATE_PASS");
+    assert!(!template.needs_shadow());
+    assert!(template.render_thread().is_ok());
+    // The quad helper has an exit hook, so its chain runs after the body
+    // through the shadow, and a chain like that stays on the game thread.
+    let quad = find("TEMPLATE_QUAD");
+    assert!(quad.needs_shadow());
+    assert!(quad.render_thread().is_err());
 }
 
 #[test]

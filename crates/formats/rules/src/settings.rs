@@ -89,6 +89,7 @@ pub enum ExtField {
     Damage,
     Shield,
     Health,
+    Speed,
     UnlimitedGrenades,
 }
 
@@ -126,6 +127,9 @@ pub struct Row {
 impl Row {
     /// Whether the row applies to the carrier with engine index `carrier`.
     pub fn applies(&self, carrier: u8) -> bool {
+        if carrier == crate::SCRIPT_INDEX {
+            return self.carriers.is_empty();
+        }
         CARRIERS.iter().any(|&(_, e)| e == carrier)
             && (self.carriers.is_empty() || self.carriers.contains(&carrier))
     }
@@ -193,6 +197,7 @@ pub fn carrier_label(carrier: u8) -> &'static str {
         2 => "Slayer",
         3 => "Oddball",
         4 => "King of the Hill",
+        crate::SCRIPT_INDEX => "Script",
         7 => "Juggernaut",
         8 => "Territories",
         9 => "Assault",
@@ -204,7 +209,7 @@ pub fn carrier_label(carrier: u8) -> &'static str {
 pub fn score_setting(carrier: u8) -> Option<u32> {
     match carrier {
         1 => Some(1),
-        2 => Some(2),
+        2 | crate::SCRIPT_INDEX => Some(2),
         3 => Some(3),
         4 => Some(4),
         7 => Some(7),
@@ -707,6 +712,15 @@ pub const TABLE: &[Row] = &[
         setting(80),
         ALL,
     ),
+    // The block's movement speed, appended after the rows a blob already
+    // names by index.
+    row(
+        "speed",
+        "Movement Speed",
+        percent(),
+        Store::Ext(ExtField::Speed),
+        ALL,
+    ),
 ];
 
 /// The row at `index`.
@@ -846,12 +860,9 @@ mod tests {
                 );
             }
         }
-        // Every variant field but the engine index is a setting of the
-        // same name.
+        // Every variant field is a setting of the same name.
         for (name, _) in VARIANT_FIELDS {
-            if *name != "engine" {
-                assert!(named(name).is_some(), "variant.{name} has no row");
-            }
+            assert!(named(name).is_some(), "variant.{name} has no row");
         }
     }
 
@@ -872,6 +883,7 @@ mod tests {
             assert_eq!(score.setting(engine), Some(want), "{name}");
             assert!(applies(at, engine), "{name}");
         }
+        assert_eq!(score.setting(crate::SCRIPT_INDEX), Some(2));
         assert_eq!(score.setting(5), None, "an engine no script rides");
         assert_eq!(score.none_value(), Some(0));
     }
@@ -882,6 +894,7 @@ mod tests {
         assert!(applies(at, 7) && !applies(at, 2));
         assert_eq!(jugg.setting(7), Some(96));
         assert_eq!(jugg.setting(2), None);
+        assert!(!jugg.applies(crate::SCRIPT_INDEX));
         assert_eq!(jugg.carrier_words(), "Juggernaut");
         let (_, flag) = named("ctf_flag_type").unwrap();
         assert_eq!(

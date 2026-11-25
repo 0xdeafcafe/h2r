@@ -97,12 +97,13 @@ pub(super) fn write_launch_copy(
     disc: &Path,
     data: &Path,
     dir: &Path,
+    variant: Option<&str>,
 ) -> Result<String, String> {
     let document = session.map_name().ok_or("open a map first")?;
     let (cache, scenario) = session.source_identity().ok_or("no map source")?;
     let names = [document, cache, scenario];
     let mut reason = String::new();
-    let mut level: Option<String> = None;
+    let mut level: Option<boot::level_boot::Request> = None;
     for (i, name) in names.iter().copied().enumerate() {
         if name.is_empty() || names[..i].iter().any(|seen| seen.eq_ignore_ascii_case(name)) {
             continue;
@@ -110,15 +111,15 @@ pub(super) fn write_launch_copy(
         match boot::level_boot::resolve_in(disc, Some(data), name, Default::default()) {
             Ok(request) => {
                 if let Some(other) = &level
-                    && !request.name.eq_ignore_ascii_case(other)
+                    && !request.name.eq_ignore_ascii_case(&other.name)
                 {
                     return Err(format!(
-                        "{document} identifies two launch levels ({other} and {}). \
+                        "{document} identifies two launch levels ({} and {}). \
                          Save it as a package and load it from the game's map list.",
-                        request.name
+                        other.name, request.name
                     ));
                 }
-                level = Some(request.name);
+                level = Some(request);
                 if i == 0 {
                     break;
                 }
@@ -129,14 +130,17 @@ pub(super) fn write_launch_copy(
             Err(_) => {}
         }
     }
-    let level = level.ok_or_else(|| {
+    let mut level = level.ok_or_else(|| {
         format!(
             "cannot launch {document} from the disc or an installed campaign ({reason}). \
              Save the map as a package and load it from the game's map list, or open a map from the disc."
         )
     })?;
-    write_copy(session, &level, dir)?;
-    Ok(level)
+    if let Some(text) = variant {
+        level.set_variant(text).map_err(|e| e.to_string())?;
+    }
+    write_copy(session, &level.name, dir)?;
+    Ok(level.name)
 }
 
 /// Write a play copy from the document, including its unsaved edits. Both
@@ -171,12 +175,16 @@ pub struct Launch {
     pub socket: PathBuf,
     /// A directory holding `<level>.map`, the editor's bytes.
     pub map_dir: Option<PathBuf>,
+    /// `--editor`: the game Studio holds, with no window of its own
+    /// (docs/editor/game-view.md, "Own mode").
+    pub editor: bool,
+    pub variant_file: Option<PathBuf>,
 }
 
 impl Launch {
     /// The program, its arguments and the environment it adds.
     pub fn command(&self) -> (PathBuf, Vec<String>, Vec<(String, String)>) {
-        let args = vec![
+        let mut args = vec![
             "play".to_owned(),
             self.disc.display().to_string(),
             "--data".to_owned(),
@@ -186,6 +194,12 @@ impl Launch {
             "--title".to_owned(),
             format!("Halo 2 - {} (h2-editor)", self.level),
         ];
+        if self.editor {
+            args.push("--editor".to_owned());
+        }
+        if let Some(path) = &self.variant_file {
+            args.extend(["--game-variant".to_owned(), path.display().to_string()]);
+        }
         let mut env = vec![(
             agent_proto::ENV.to_owned(),
             self.socket.display().to_string(),
@@ -321,7 +335,7 @@ mod tests {
             .open_derived(cache, "renamed", Some("my-package".into()), "")
             .unwrap();
         let dir = t.0.join("override");
-        let prepare = || write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir);
+        let prepare = || write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir, None);
 
         std::fs::copy(&source, maps.join("Fixture.map")).unwrap();
         assert_eq!(prepare().unwrap(), "Fixture");
@@ -349,14 +363,14 @@ mod tests {
         session.open(scenario_edit::MapSource::file(source)).unwrap();
 
         let dir = t.0.join("override");
-        let name = write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir).unwrap();
+        let name = write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir, None).unwrap();
         assert_eq!(name, "slot");
         assert!(dir.join("slot.map").is_file());
 
         // The header's short name also exists as a different boot level.
         // Neither cache alias is strong enough to choose between them.
         std::fs::write(maps.join("fixture.map"), scenario_edit::fixture::fixture()).unwrap();
-        let why = write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir).unwrap_err();
+        let why = write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir, None).unwrap_err();
         assert!(why.contains("two launch levels") && why.contains("slot") && why.contains("fixture"));
         assert!(!dir.join("fixture.map").exists());
     }
@@ -375,7 +389,7 @@ mod tests {
         let path = dir.join("invented.map");
         std::fs::write(&path, b"running copy").unwrap();
 
-        let why = write_launch_copy(&session, &disc, &t.0, &dir).unwrap_err();
+        let why = write_launch_copy(&session, &disc, &t.0, &dir, None).unwrap_err();
         assert!(
             why.contains("invented") && why.contains("game's map list"),
             "{why}"
@@ -392,6 +406,8 @@ mod tests {
             level: "ascension".into(),
             socket: "/c/editor-1-0.sock".into(),
             map_dir: Some("/tmp/play/maps".into()),
+            editor: false,
+            variant_file: None,
         };
         let (prog, args, env) = l.command();
         assert_eq!(prog, PathBuf::from("/home/u/.cargo/bin/h2"));
@@ -415,8 +431,62 @@ mod tests {
             ),
             "{line}"
         );
+        assert!(!args.iter().any(|a| a == "--editor"));
         let l = Launch { map_dir: None, ..l };
         assert!(!l.command().2.iter().any(|(k, _)| k == "H2_MAP_DIR"));
+    }
+
+    #[test]
+    fn an_editor_launch_adds_the_flag_after_the_level_and_title() {
+        let l = Launch {
+            h2: "/h2".into(),
+            disc: "/d.iso".into(),
+            data: "/data".into(),
+            level: "ascension".into(),
+            socket: "/c/editor-1-1.sock".into(),
+            map_dir: None,
+            editor: true,
+            variant_file: None,
+        };
+        let (_, args, env) = l.command();
+        assert_eq!(args.last().map(String::as_str), Some("--editor"));
+        assert_eq!(args.iter().filter(|a| *a == "--level").count(), 1);
+        assert!(env.contains(&("H2_AGENT".into(), "/c/editor-1-1.sock".into())));
+        assert!(l.shell_line().ends_with(" --editor"));
+        let l = Launch { variant_file: Some("/scratch/invented.h2variant".into()), ..l };
+        assert!(l.command().1.ends_with(&[
+            "--game-variant".into(),
+            "/scratch/invented.h2variant".into(),
+        ]));
+    }
+
+    #[test]
+    fn a_preview_record_replaces_the_default_variant_in_level_boot() {
+        use agent::sim::calls::GameStep;
+        use boot::level_boot::{self, Difficulty, Kind, OPT_VARIANT, VARIANT_DEFAULTS};
+
+        let (ir, _) = rules::build(crate::app::rules_edit::BLANK).unwrap();
+        let variant = variants::portable::record_for_named(&ir, "Invented variant", &[]).unwrap();
+        let mut req = level_boot::Request {
+            name: "invented".into(),
+            scenario: "scenarios\\multi\\invented".into(),
+            campaign: u32::MAX,
+            map: 1,
+            difficulty: Difficulty::Normal,
+            kind: Kind::Multiplayer,
+            variant: None,
+        };
+        let text = variants::portable::export(&variant);
+        req.set_variant(&text).unwrap();
+        let steps = level_boot::game_steps(&req).unwrap();
+        assert!(steps.iter().any(|step| matches!(
+            step, GameStep::Write { offset: OPT_VARIANT, bytes } if bytes.as_slice() == variant.bytes()
+        )));
+        assert!(!steps.iter().any(|step| matches!(
+            step, GameStep::Call { target: VARIANT_DEFAULTS, .. }
+        )));
+        req.kind = Kind::Campaign;
+        assert!(req.set_variant(&text).is_err());
     }
 
     #[test]

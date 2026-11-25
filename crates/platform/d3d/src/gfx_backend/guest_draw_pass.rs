@@ -28,9 +28,13 @@ pub(super) type TextureCache = HashMap<usize, (Weak<DecodedTexture>, HostTexture
 
 /// Records one sealed frame at display scale. Private captures and window
 /// frames have disjoint render targets even when they use the same device.
+/// The grid may be fractional on either axis (docs/graphics/framescene.md,
+/// slice 8, "Fractional grids"): each attachment is made at the grid's
+/// rounded size of its guest size, and draws, clears and scissors map
+/// through that surface's own ratio.
 pub struct GuestDrawPass<'a> {
     gpu: &'a mut GfxBackend,
-    scale: u32,
+    scale: RenderScale,
     targets: HashMap<TargetRef, SurfaceId>,
     commands: Commands<GfxBackend>,
     presented: TargetRef,
@@ -57,14 +61,15 @@ impl GfxBackend {
         frame: &ReplayFrame,
         targets: &HashMap<TargetRef, SurfaceId>,
     ) -> bool {
-        self.matches_scene_targets_at(frame, targets, 1) && self.raw_live_views_match(frame, targets)
+        self.matches_scene_targets_at(frame, targets, RenderScale::ONE)
+            && self.raw_live_views_match(frame, targets)
     }
 
     pub(crate) fn matches_scene_targets_at(
         &self,
         frame: &ReplayFrame,
         targets: &HashMap<TargetRef, SurfaceId>,
-        scale: u32,
+        scale: RenderScale,
     ) -> bool {
         let count = usize::from(frame.colour.is_some())
             + usize::from(frame.depth.is_some())
@@ -108,7 +113,7 @@ impl GfxBackend {
         let presented = targets
             .get(&frame.presented)
             .ok_or("missing present target for the input grid")?;
-        let scale = self.integral_scale(*presented).ok_or("the input grid is not an integer scale")?;
+        let scale = self.surface_grid(*presented);
         let physical = names
             .iter()
             .map(|&name| {
@@ -145,30 +150,39 @@ impl GfxBackend {
         Ok(([width, height], pixels))
     }
 
-    /// Check before committing a scene to an existing physical target.
-    pub(crate) fn scene_target_matches(&self, id: SurfaceId, desc: AuxTarget, scale: u32) -> bool {
+    /// Check before committing a scene to an existing physical target: it
+    /// has `grid`'s rounded size of the recorded one and that level's own
+    /// ratio ([`RenderScale::level`]), so draws into it map as on a target
+    /// the pass made itself.
+    pub(crate) fn scene_target_matches(&self, id: SurfaceId, desc: AuxTarget, grid: RenderScale) -> bool {
         let Ok(surface) = self.store.get(id) else {
             return false;
         };
+        let Some(level) = grid.level(desc.width, desc.height) else {
+            return false;
+        };
         let actual = surface.desc();
-        desc.width.checked_mul(scale) == Some(actual.width)
-            && desc.height.checked_mul(scale) == Some(actual.height)
+        grid.size(desc.width, desc.height) == (actual.width, actual.height)
             && D3DFormat::from_raw(desc.format) == Some(actual.format)
             && actual.samples == 1
             && (surface.kind() == gfx::surface::SurfaceKind::DepthStencil) == desc.depth
-            && self.scales.get(&id).copied().unwrap_or(RenderScale::ONE) == RenderScale::from(scale)
+            && self.surface_grid(id) == level
     }
 
-    /// A sealed scene replays on uniform integer grids only.
-    pub(crate) fn integral_scale(&self, id: SurfaceId) -> Option<u32> {
-        self.scales.get(&id).map_or(Some(1), |scale| scale.uniform_integer())
+    /// The grid a surface was made on; 1x when it has none.
+    pub(crate) fn surface_grid(&self, id: SurfaceId) -> RenderScale {
+        self.scales.get(&id).copied().unwrap_or(RenderScale::ONE)
     }
 }
 
 impl<'a> GuestDrawPass<'a> {
     /// A private target draw. It submits no guest visibility feedback.
-    pub fn new(gpu: &'a mut GfxBackend, frame: &ReplayFrame, scale: u32) -> Result<Self, String> {
-        Self::start(gpu, frame, scale, false, None, false)
+    pub fn new(
+        gpu: &'a mut GfxBackend,
+        frame: &ReplayFrame,
+        scale: impl Into<RenderScale>,
+    ) -> Result<Self, String> {
+        Self::start(gpu, frame, scale.into(), false, None, false)
     }
 
     /// A private target draw in `lighting`. E3 draws the guest's shadow
@@ -176,34 +190,36 @@ impl<'a> GuestDrawPass<'a> {
     pub fn new_lit(
         gpu: &'a mut GfxBackend,
         frame: &ReplayFrame,
-        scale: u32,
+        scale: impl Into<RenderScale>,
         lighting: crate::Lighting,
     ) -> Result<Self, String> {
-        Self::start(gpu, frame, scale, false, None, lighting == crate::Lighting::E3)
+        let mut pass = Self::start(gpu, frame, scale.into(), false, None, lighting == crate::Lighting::E3)?;
+        pass.commands.private_lighting = Some(lighting);
+        Ok(pass)
     }
 
     /// The window draw. Visibility reports belong only to this playback.
     pub fn new_display(
         gpu: &'a mut GfxBackend,
         frame: &ReplayFrame,
-        scale: u32,
+        scale: impl Into<RenderScale>,
     ) -> Result<Self, String> {
-        Self::start(gpu, frame, scale, true, None, false)
+        Self::start(gpu, frame, scale.into(), true, None, false)
     }
 
     /// The window draw in `lighting`, on fresh targets as [`Self::new_lit`].
     pub fn new_display_lit(
         gpu: &'a mut GfxBackend,
         frame: &ReplayFrame,
-        scale: u32,
+        scale: impl Into<RenderScale>,
         lighting: crate::Lighting,
     ) -> Result<Self, String> {
-        let mut pass = Self::start(gpu, frame, scale, true, None, lighting == crate::Lighting::E3)?;
+        let mut pass = Self::start(gpu, frame, scale.into(), true, None, lighting == crate::Lighting::E3)?;
         pass.lighting = lighting;
         Ok(pass)
     }
 
-    /// Draw on the renderer's existing targets at their common scale.
+    /// Draw on the renderer's existing targets at their common grid.
     /// Guest reads and the next view can use the contents directly.
     pub fn on_existing(
         gpu: &'a mut GfxBackend,
@@ -216,21 +232,21 @@ impl<'a> GuestDrawPass<'a> {
         let presented = targets
             .get(&frame.presented)
             .ok_or("missing existing present target")?;
-        let scale = gpu.integral_scale(*presented).ok_or("existing present target is not an integer scale")?;
+        let scale = gpu.surface_grid(*presented);
         Self::start(gpu, frame, scale, true, Some(targets), false)
     }
 
     fn start(
         gpu: &'a mut GfxBackend,
         frame: &ReplayFrame,
-        scale: u32,
+        scale: RenderScale,
         display: bool,
         existing: Option<&HashMap<TargetRef, SurfaceId>>,
         tiles: bool,
     ) -> Result<Self, String> {
-        if !(1..=crate::MAX_SCALE).contains(&scale) {
+        if !scale.replayable(crate::MAX_SCALE) {
             return Err(format!(
-                "scene scale {scale} is outside 1..={}",
+                "scene grid {scale} is outside 1x to {}x",
                 crate::MAX_SCALE
             ));
         }
@@ -278,7 +294,7 @@ impl<'a> GuestDrawPass<'a> {
             // The live attachments belong to the guest's device: their
             // shadow maps keep its size.
             tiles: (tiles && existing.is_none()).then(|| {
-                let factor = crate::scaled::shadow_scale(scale, crate::Lighting::E3);
+                let factor = crate::scaled::shadow_scale(scale.vertical_rounded(), crate::Lighting::E3);
                 tiles::ShadowTiles::plan(frame, factor)
             }),
         };
@@ -330,11 +346,12 @@ impl<'a> GuestDrawPass<'a> {
             .tiles
             .as_ref()
             .and_then(|t| t.factor_of(target))
-            .unwrap_or(self.scale);
-        let limit = self.gpu.ctx.device.limits().max_texture_dimension_2d / scale;
-        if desc.width == 0 || desc.height == 0 || desc.width > limit || desc.height > limit {
+            .map_or(self.scale, RenderScale::from);
+        let limit = self.gpu.ctx.device.limits().max_texture_dimension_2d;
+        let (width, height) = scale.size(desc.width, desc.height);
+        if desc.width == 0 || desc.height == 0 || width > limit || height > limit {
             return Err(format!(
-                "scene target {target:?} has invalid extent {}x{} at {scale}x",
+                "scene target {target:?} has invalid extent {}x{} on the {scale} grid",
                 desc.width, desc.height
             ));
         }
@@ -357,7 +374,7 @@ impl<'a> GuestDrawPass<'a> {
                 desc.width,
                 desc.height,
                 desc.depth,
-                RenderScale::from(scale),
+                scale,
             )?
         };
         self.targets.insert(target, surface);
@@ -375,6 +392,11 @@ impl<'a> GuestDrawPass<'a> {
     /// The GPU recording core used by both the typed and carried stages.
     pub fn backend_mut(&mut self) -> &mut GfxBackend {
         self.gpu
+    }
+
+    /// The grid this frame's attachments render at.
+    pub fn grid(&self) -> RenderScale {
+        self.scale
     }
 
     /// Applies an op in its slot. Merely changing slots does not close
@@ -412,6 +434,7 @@ impl<'a> GuestDrawPass<'a> {
 
     /// Reads the completed private frame. Its attachments are released.
     pub fn read_rgba(mut self) -> Result<([u32; 2], Vec<u8>), String> {
+        self.commands.check_private_lightmaps()?;
         self.read_target(self.presented)
     }
 
@@ -425,7 +448,7 @@ impl<'a> GuestDrawPass<'a> {
     /// guest Swap finish wait. Retain the shown target until the next
     /// display swap: callers may read the most recently presented surface.
     pub fn present(mut self, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
-        self.publish(flags, gamma)
+        self.publish(flags, gamma, None)
     }
 
     /// Submit and transfer the canonical frame's reports to its guest
@@ -435,18 +458,52 @@ impl<'a> GuestDrawPass<'a> {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<crate::threaded::owner::Outputs<HostTexture>, String> {
-        self.publish(flags, gamma)?;
+        self.publish(flags, gamma, None)?;
         Ok(std::mem::take(&mut self.commands.outputs))
     }
 
-    fn publish(&mut self, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+    /// [`Self::present_with_outputs`], with `shown` going to the window in
+    /// place of this frame's own target: the display frame of this Swap
+    /// drawn on its own targets ([`Self::into_image`]). The guest's
+    /// attachments, tickets and samples are this frame's as ever.
+    pub fn present_with_outputs_showing(
+        mut self,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+        shown: SurfaceId,
+    ) -> Result<crate::threaded::owner::Outputs<HostTexture>, String> {
+        self.publish(flags, gamma, Some(shown))?;
+        Ok(std::mem::take(&mut self.commands.outputs))
+    }
+
+    /// Completes a frame drawn on its own targets and hands its presented
+    /// target to the caller, which shows it ([`GfxBackend::show_between`])
+    /// or presents it for a Swap ([`Self::present_with_outputs_showing`]).
+    pub fn into_image(mut self) -> Result<SurfaceId, String> {
+        if !self.owns_targets {
+            return Err("a display frame draws on its own targets".into());
+        }
+        self.commands.check_private_lightmaps()?;
+        self.gpu.flush()?;
+        self.targets
+            .remove(&self.presented)
+            .ok_or_else(|| format!("missing scene target {:?}", self.presented))
+    }
+
+    fn publish(&mut self, flags: u32, gamma: Option<&[u8; 768]>, shown: Option<SurfaceId>) -> Result<(), String> {
         if !self.display {
             return Err("a private scene capture cannot be presented".into());
         }
-        let target = self.surface(self.presented)?;
+        let target = match shown {
+            Some(image) => image,
+            None => self.surface(self.presented)?,
+        };
         self.gpu
             .submit_present(None, target, flags, gamma, false, self.lighting)?;
-        let retained = if self.owns_targets {
+        if let Some(image) = shown {
+            self.gpu.retain_shown(image);
+        }
+        let retained = if self.owns_targets && shown.is_none() {
             self.targets.remove(&self.presented)
         } else {
             None
@@ -489,12 +546,20 @@ impl Drop for GuestDrawPass<'_> {
 }
 
 impl SceneDevice for GfxBackend {
+    fn can_replay_admission(&self, draw: &crate::ResolvedDraw) -> bool {
+        // A raw replay draws the packet as supplied. An ordinary external
+        // reference recording restores the retail projection and UI placement.
+        self.only_display || (draw.retail_constants.is_none() && draw.ui_fit.is_none())
+    }
+
+
     fn record_scene_stage(
         &mut self,
         stage: &crate::SceneStage<TargetRef>,
         surfaces: crate::ExternalSurfaces<SurfaceId>,
-    ) -> Result<(), String> {
-        self.record_replay_stage(stage, surfaces)
+        private_lighting: Option<crate::Lighting>,
+    ) -> Result<usize, String> {
+        self.record_replay_stage(stage, surfaces, private_lighting)
     }
 
     fn scene_upload(&mut self, asset: &Arc<DecodedTexture>) -> Result<HostTexture, String> {
@@ -511,10 +576,10 @@ impl SceneDevice for GfxBackend {
     fn frozen_texture(
         &self,
         sample: &crate::scene_sink::FrozenSample,
-        scale: u32,
+        grid: RenderScale,
     ) -> Option<HostTexture> {
         let images = sample.images()?;
-        let image = if scale == 1 {
+        let image = if grid == RenderScale::ONE {
             &images.reference
         } else {
             images.display.as_ref()?
@@ -530,9 +595,9 @@ impl SceneDevice for GfxBackend {
         target: SurfaceId,
         desc: &TextureDesc,
         bytes: &[u8],
-        scale: u32,
+        grid: RenderScale,
     ) -> Result<(), String> {
-        if scale == 1 {
+        if grid == RenderScale::ONE {
             return if self.write_surface(target, desc, bytes)? {
                 Ok(())
             } else {
@@ -541,12 +606,12 @@ impl SceneDevice for GfxBackend {
         }
         // Guest uploads have the original pitch. Expand on the GPU.
         let info = *self.store.get(target).map_err(|e| e.to_string())?.desc();
-        let stage = self.create_surface(
-            info.format,
-            info.width / scale,
-            info.height / scale,
-            info.format.is_depth(),
-        )?;
+        // A fractional level's own ratio inverts its size exactly.
+        let (width, height) = match grid.uniform_integer() {
+            Some(scale) => (info.width / scale, info.height / scale),
+            None => self.surface_grid(target).inverse().size(info.width, info.height),
+        };
+        let stage = self.create_surface(info.format, width, height, info.format.is_depth())?;
         let result = (|| {
             if !self.write_surface(stage, desc, bytes)? {
                 return Err("scene upload refused".into());

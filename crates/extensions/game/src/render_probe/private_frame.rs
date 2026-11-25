@@ -17,6 +17,8 @@ fn mode(lighting: Lighting) -> CaptureLighting {
     match lighting {
         Lighting::Retail => CaptureLighting::Retail,
         Lighting::E3 => CaptureLighting::E3,
+        Lighting::RelightOn => CaptureLighting::RelightOn,
+        Lighting::RelightOff => CaptureLighting::RelightOff,
     }
 }
 

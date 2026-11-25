@@ -160,6 +160,13 @@ impl SceneBuilder {
         self.cut(why);
     }
 
+    /// The view keys of the scene sealed before, sorted: with the open
+    /// scene's own, the views a frame step expects this frame (the E3
+    /// light choice's share, `native_render::light_choice::share_of`).
+    pub fn previous_views(&self) -> &[ViewKey] {
+        &self.previous.views
+    }
+
     /// The scene being written.
     pub fn scene(&self) -> Option<&FrameScene> {
         self.scene.as_ref()
@@ -202,6 +209,7 @@ impl SceneBuilder {
             order: o..o,
             world: WorldState::default(),
             remainder: 0,
+            display_visibility: None,
             aux_depth: None,
             lights: l..l,
             layers: p..p,
@@ -209,10 +217,30 @@ impl SceneBuilder {
             decorator_remainder: 0,
             fog: None,
             water: None,
+            water_composite: None,
             post: None,
         });
+        scene.cluster_gathers.push(None);
         self.open = Some(scene.views.len() - 1);
         Ok(scene.views.last().expect("just pushed"))
+    }
+
+    /// Attach shadow-only poses to the open view without adding visible instances.
+    pub fn add_nearby_casters(
+        &mut self,
+        casters: Vec<crate::NearbyCaster>,
+    ) -> Result<(), BuildError> {
+        let (scene, view) = self.open_mut()?;
+        scene
+            .nearby_casters
+            .extend(casters.into_iter().map(|c| (view as u32, c)));
+        Ok(())
+    }
+
+    /// The scene being written, for a write that belongs to no view (the
+    /// overlay, `crate::overlay`).
+    pub(crate) fn scene_mut(&mut self) -> Result<&mut FrameScene, BuildError> {
+        self.scene.as_mut().ok_or(BuildError::NoScene)
     }
 
     pub(crate) fn open_mut(&mut self) -> Result<(&mut FrameScene, usize), BuildError> {
@@ -247,6 +275,19 @@ impl SceneBuilder {
         scene.clusters.truncate(start as usize);
         scene.clusters.extend(clusters);
         scene.views[open].clusters = start..scene.clusters.len() as u32;
+        Ok(())
+    }
+
+    /// Record the main gather before the layer filters its cluster list.
+    pub fn set_cluster_gather(&mut self, gather: crate::scene::ClusterGather) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        scene.cluster_gathers[open] = Some(gather);
+        Ok(())
+    }
+
+    pub fn set_display_visibility(&mut self, visibility: crate::DisplayVisibility) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        scene.views[open].display_visibility = Some(visibility.into());
         Ok(())
     }
 
@@ -364,7 +405,9 @@ impl SceneBuilder {
     }
 
     /// Merges the visible candidates after the guest's last light pass.
-    /// The guest's groups keep their indices and draw order.
+    /// The guest's groups keep their indices and draw order. A host light
+    /// ([`crate::Light::host_light`]) has no datum to match: it is always
+    /// added, after the lights before it.
     pub fn add_light_candidates(
         &mut self,
         candidates: Vec<crate::Light>,
@@ -372,10 +415,17 @@ impl SceneBuilder {
         let (scene, open) = self.open_mut()?;
         let range = &mut scene.views[open].lights;
         let existing = range.start as usize..range.end as usize;
-        let indices: std::collections::HashMap<_, _> =
-            existing.map(|i| (scene.lights[i].handle, i)).collect();
+        let indices: std::collections::HashMap<_, _> = existing
+            .filter(|&i| scene.lights[i].host.is_none())
+            .map(|i| (scene.lights[i].handle, i))
+            .collect();
         for candidate in candidates {
-            if let Some(&i) = indices.get(&candidate.handle) {
+            let merged = candidate
+                .host
+                .is_none()
+                .then(|| indices.get(&candidate.handle).copied())
+                .flatten();
+            if let Some(i) = merged {
                 scene.lights[i].candidate = candidate.candidate;
             } else {
                 let end = scene.light_steps.len() as u32;
@@ -871,6 +921,60 @@ mod tests {
         let mut bad = (*s).clone();
         bad.views[1].lights = 1..3;
         assert!(bad.check().is_err());
+    }
+
+    /// Host lights (docs/game/forge-monitor-appearance.md, ML5) join the
+    /// open view after its candidates, one a seat even with no datum to
+    /// tell them apart; they have no steps and no shadow, and a game
+    /// light's candidate still merges by its datum.
+    #[test]
+    fn host_lights_join_the_view_last_with_no_steps_and_no_shadow() {
+        use crate::light::{LightStep, LightTarget, NO_DATUM, SceneLight};
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(key(0), camera()).unwrap();
+        let guest = SceneLight {
+            handle: 7,
+            definition: 0xe300_0000,
+            flags: 4,
+            steps: 0..0,
+            ..Default::default()
+        };
+        let shadow = LightStep {
+            layer: 10,
+            stencil: None,
+            target: LightTarget::ShadowMap,
+            draws: true,
+        };
+        b.push_light(guest.clone(), &[shadow]).unwrap();
+        let mut merged = SceneLight::host_light(9, [0.0; 3], [1.0; 3], 1.0);
+        merged.handle = 7;
+        merged.host = None;
+        let green = [0.0, 1.0, 0.0];
+        b.add_light_candidates(vec![
+            merged,
+            SceneLight::host_light(1, [1.0, 2.0, 3.0], green, 2.0),
+            SceneLight::host_light(3, [4.0, 5.0, 6.0], green, 4.0),
+        ])
+        .unwrap();
+        let s = b.seal(Stamp::default()).unwrap();
+        s.check().unwrap();
+        let lights = s.lights_of(&s.views[0]);
+        assert_eq!(lights.len(), 3, "the merged candidate adds no light");
+        assert_eq!(lights[0].handle, 7);
+        assert!(lights[0].candidate.is_some());
+        assert_eq!(
+            lights[1..].iter().map(|l| (l.handle, l.definition, l.host)).collect::<Vec<_>>(),
+            [(NO_DATUM, NO_DATUM, Some(1)), (NO_DATUM, NO_DATUM, Some(3))]
+        );
+        for l in &lights[1..] {
+            assert!(!l.shadowed() && !l.guest_selected);
+            assert!(s.steps_of(l).is_empty(), "no shadow map, no guest step");
+            let c = l.candidate.as_ref().unwrap();
+            assert_eq!((c.colour_a, c.colour_b), (green, green));
+            assert!(c.constants.is_none());
+        }
+        assert_eq!(s.counts(&s.views[0]).shadows, 1, "only the game's light");
     }
 
     #[test]

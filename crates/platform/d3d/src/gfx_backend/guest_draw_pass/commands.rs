@@ -7,28 +7,35 @@ use crate::backend::{ExternalSurfaces, SceneStage};
 use crate::threaded::owner::Outputs;
 
 pub(crate) trait SceneDevice: Backend {
+    /// Does the physical copy select the same projection for typed and carried draws?
+    fn can_replay_admission(&self, _draw: &crate::ResolvedDraw) -> bool { true }
+
     fn record_scene_stage(
         &mut self,
         stage: &SceneStage<TargetRef>,
         surfaces: ExternalSurfaces<Self::Surface>,
-    ) -> Result<(), String>;
+        private_lighting: Option<crate::Lighting>,
+    ) -> Result<usize, String>;
     fn scene_upload(&mut self, asset: &Arc<DecodedTexture>) -> Result<Self::Texture, String>;
     fn share_scene_texture(t: &Self::Texture) -> Self::Texture;
     fn frozen_texture(
         &self,
         sample: &crate::scene_sink::FrozenSample,
-        scale: u32,
+        grid: RenderScale,
     ) -> Option<Self::Texture>;
     fn write_scene_target(
         &mut self,
         target: Self::Surface,
         desc: &TextureDesc,
         bytes: &[u8],
-        scale: u32,
+        grid: RenderScale,
     ) -> Result<(), String>;
 }
 
 pub(crate) struct Commands<B: SceneDevice> {
+    /// Set only for isolated captures. The live attachments keep their display policy.
+    pub(crate) private_lighting: Option<crate::Lighting>,
+    relit_ranges: usize,
     bound: Option<(B::Surface, Option<B::Surface>)>,
     pub(crate) outputs: Outputs<B::Texture>,
 }
@@ -36,6 +43,8 @@ pub(crate) struct Commands<B: SceneDevice> {
 impl<B: SceneDevice> Default for Commands<B> {
     fn default() -> Self {
         Self {
+            private_lighting: None,
+            relit_ranges: 0,
             bound: None,
             outputs: Outputs::default(),
         }
@@ -43,12 +52,65 @@ impl<B: SceneDevice> Default for Commands<B> {
 }
 
 impl<B: SceneDevice> Commands<B> {
+    pub(crate) fn check_private_lightmaps(&self) -> Result<(), String> {
+        if self.private_lighting.is_some_and(crate::Lighting::is_relight)
+            && self.relit_ranges == 0
+        {
+            return Err("no native world range in this scene uses the installed lightmap".into());
+        }
+        Ok(())
+    }
+
+    /// The draw's typed replacement, prepared on this replay's own
+    /// attachments with the draw's own resolved texture inputs. It is used
+    /// only for the draw it was admitted for (an equal packet), on the
+    /// attachments that draw is bound to, in a private capture only at 1x
+    /// (a live display's backend answers for its own scale). Every copy is
+    /// prepared before any is committed, so a refusal leaves nothing drawn
+    /// and the caller draws the exact D3D packet.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_external(
+        &self,
+        gpu: &mut B,
+        targets: &HashMap<TargetRef, B::Surface>,
+        display: bool,
+        scale: RenderScale,
+        bound: (B::Surface, Option<B::Surface>),
+        draw: &Arc<crate::backend::ResolvedDraw>,
+        external: &crate::scene_sink::RetainedExternal,
+        handles: &[Option<B::Texture>; 4],
+    ) -> bool {
+        if !gpu.can_replay_admission(draw) {
+            return false;
+        }
+        let Some(surfaces) = external.resolve(draw, targets, bound, display, scale) else {
+            return false;
+        };
+        let Ok(Some(recordings)) = gpu.prepare_external(
+            surfaces,
+            external.request,
+            handles.each_ref().map(Option::as_ref),
+            &external.plan,
+            crate::TargetCopy::Reference,
+            Arc::clone(&external.pass),
+        ) else {
+            return false;
+        };
+        if !crate::device::complete_recordings(&external.plan, &recordings) {
+            return false;
+        }
+        for recording in recordings {
+            gpu.commit_external(recording);
+        }
+        true
+    }
+
     pub(crate) fn apply(
         &mut self,
         gpu: &mut B,
         targets: &HashMap<TargetRef, B::Surface>,
         display: bool,
-        scale: u32,
+        scale: RenderScale,
         op: &ReplayOp,
     ) -> Result<(), String> {
         let surface = |r: &TargetRef| {
@@ -71,10 +133,10 @@ impl<B: SceneDevice> Commands<B> {
                     .surfaces
                     .try_map(|r| targets.get(r).copied())
                     .ok_or("missing scene stage target")?;
-                gpu.record_scene_stage(stage, surfaces)?;
+                self.relit_ranges += gpu.record_scene_stage(stage, surfaces, self.private_lighting)?;
             }
             ReplayOp::Bind { colour, depth } => self.bound = Some(attachments(colour, depth)?),
-            ReplayOp::Draw { draw, textures, .. } => {
+            ReplayOp::Draw { draw, textures, external, .. } => {
                 let (colour, depth) = self.bound.ok_or("scene draw before target bind")?;
                 let mut handles: [Option<B::Texture>; 4] = Default::default();
                 for (dst, src) in handles.iter_mut().zip(textures) {
@@ -103,6 +165,12 @@ impl<B: SceneDevice> Commands<B> {
                         }
                     };
                 }
+                if let Some(external) = external {
+                    if self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles) {
+                        return Ok(());
+                    }
+                    external.plan.stage.count(timeline::native::Metric::RefusedReplay, 1);
+                }
                 drawn(gpu.draw(colour, depth, draw, handles.each_ref().map(Option::as_ref))?)?;
             }
             ReplayOp::Clear {
@@ -130,8 +198,22 @@ impl<B: SceneDevice> Commands<B> {
             ReplayOp::Upload { to, desc, bytes } => {
                 gpu.write_scene_target(surface(to)?, desc, bytes, scale)?
             }
-            ReplayOp::Sample { of, id, how } => {
+            ReplayOp::Sample { of, id, how, into } => {
                 let of = surface(of)?;
+                // A pooled frame-buffer copy refilled: the earlier sample's
+                // texture takes the new contents (draws applied before
+                // this read the old), and both ids name it, so this
+                // frame's copies are as many as the device's pool.
+                if let (ReplaySample::Snapshot { opaque }, Some(prev)) = (how, into)
+                    && let Some(t) = self.outputs.samples.get_mut(prev)
+                    && gpu.snapshot_surface_into(of, *opaque, t)?
+                {
+                    let t = B::share_scene_texture(t);
+                    if self.outputs.samples.insert(*id, t).is_some() {
+                        return Err(format!("duplicate scene sample {id}"));
+                    }
+                    return Ok(());
+                }
                 let t = match how {
                     ReplaySample::Snapshot { opaque } => gpu.snapshot_surface(of, *opaque)?,
                     ReplaySample::InPlace => gpu.surface_texture(of)?,
