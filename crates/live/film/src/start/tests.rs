@@ -45,6 +45,7 @@ pub(crate) fn sample() -> GameStart {
         },
         variant: Some(b"script bytes".to_vec()),
         map_variant: Some(vec![9; 3000]),
+        hash_detail: Some(HashDetail { ext: Some(7), pages: vec![1, 2, 3] }),
     }
 }
 
@@ -52,7 +53,7 @@ pub(crate) fn sample() -> GameStart {
 fn a_game_start_round_trips_with_and_without_its_optional_sections() {
     let full = sample();
     assert_eq!(GameStart::decode(&full.encode().unwrap()).unwrap(), full);
-    let bare = GameStart { variant: None, map_variant: None, ..sample() };
+    let bare = GameStart { variant: None, map_variant: None, hash_detail: None, ..sample() };
     let decoded = GameStart::decode(&bare.encode().unwrap()).unwrap();
     assert_eq!(decoded, bare);
     assert!(decoded.variant.is_none() && decoded.map_variant.is_none());
@@ -60,7 +61,7 @@ fn a_game_start_round_trips_with_and_without_its_optional_sections() {
 
 #[test]
 fn every_truncation_of_a_game_start_is_refused() {
-    for start in [sample(), GameStart { variant: None, map_variant: None, ..sample() }] {
+    for start in [sample(), GameStart { variant: None, map_variant: None, hash_detail: None, ..sample() }] {
         let bytes = start.to_bytes().unwrap();
         for len in 0..bytes.len() {
             assert!(GameStart::from_bytes(&bytes[..len]).is_err(), "{len} of {}", bytes.len());
@@ -178,4 +179,18 @@ fn an_options_block_of_another_size_is_refused() {
         list[at].1 = vec![0; len];
         assert!(GameStart::from_bytes(&sections(&list)).is_err(), "section {at} of {len}");
     }
+}
+
+#[test]
+fn the_hash_detail_names_what_differs() {
+    let a = HashDetail { ext: None, pages: vec![1, 2, 3, 4] };
+    let b = HashDetail { ext: Some(9), pages: vec![1, 5, 3, 6] };
+    assert_eq!(
+        a.differences(&b),
+        "2 arena page(s) differ, at offsets 0x1000 0x3000; extension records differ (film None, now Some(9))"
+    );
+    assert_eq!(a.differences(&a), "arena pages and extension records are the same");
+    assert!(HashDetail::from_bytes(&[0; 8]).is_err());
+    assert!(HashDetail::from_bytes(&[0; 10]).is_err());
+    assert!(HashDetail::from_bytes(&[2; 9]).is_err());
 }

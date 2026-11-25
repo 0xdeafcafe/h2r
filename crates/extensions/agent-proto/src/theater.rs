@@ -196,6 +196,10 @@ pub struct Status {
     pub notes: Vec<String>,
     /// The failure that stopped the recording, if one did.
     pub failure: Option<String>,
+    /// Why the last film watched in this game stopped before the viewer
+    /// left it (a start or digest divergence), if one did.
+    #[serde(default)]
+    pub watch_failure: Option<String>,
 }
 
 /// Host wall-clock timings and write-watch counts for an instrumented run.

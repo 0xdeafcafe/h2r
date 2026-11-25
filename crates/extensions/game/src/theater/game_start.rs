@@ -206,10 +206,26 @@ pub(super) fn first_update(
         random: random_words(g)?,
         start_hash: lockstep::hash_sim(g, lockstep::SimRegion::HALO2)
             .context("the arena has no hash at the game's first update")?,
+        hash_detail: hash_detail(g),
         settings: settings(store, &header.features),
         variant: script(g),
         map_variant: None,
     })
+}
+
+/// What the arena hash at this moment is made of: the extension records'
+/// digest and a hash of each page of the arena. `None` when the arena is
+/// not readable.
+pub(super) fn hash_detail(g: &Guest) -> Option<film::start::HashDetail> {
+    let (mut bytes, mut pages) = (Vec::new(), Vec::new());
+    lockstep::hash_sim_blocks(
+        g,
+        lockstep::SimRegion::HALO2,
+        film::start::DETAIL_PAGE,
+        &mut bytes,
+        &mut pages,
+    )?;
+    Some(film::start::HashDetail { ext: sim_ext::digest(), pages })
 }
 
 #[cfg(test)]

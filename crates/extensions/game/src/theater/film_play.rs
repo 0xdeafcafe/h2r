@@ -21,7 +21,7 @@
 //! item: the data directory is empty and private, and the guest's storage
 //! writes go to a scratch (`vfs::Vfs::guard_writes`).
 use super::{Session, State, metadata};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use film::file::FilmActions;
 use film::start::GameStart;
 use runtime::Guest;
@@ -163,11 +163,20 @@ impl Play {
         }
         let hash = lockstep::hash_sim(g, lockstep::SimRegion::HALO2)
             .context("the arena has no hash at the game's first update")?;
-        ensure!(
-            hash == self.start.start_hash,
-            "the game's start hash {hash:016x} differs from the film's {:016x}",
-            self.start.start_hash
-        );
+        if hash != self.start.start_hash {
+            // Name what differs, when the film says what it was made of.
+            let detail = self
+                .start
+                .hash_detail
+                .as_ref()
+                .zip(super::game_start::hash_detail(g))
+                .map(|(film, now)| format!(" ({})", film.differences(&now)))
+                .unwrap_or_default();
+            bail!(
+                "the game's start hash {hash:016x} differs from the film's {:016x}{detail}",
+                self.start.start_hash
+            );
+        }
         self.begun = true;
         Ok(())
     }
