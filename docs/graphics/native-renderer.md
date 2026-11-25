@@ -406,8 +406,11 @@ interpretations of the same framebuffer in one pass are refused.
 ## Checking a frame
 
 `H2_FRAME_STATS=1` and the agent's frame counters carry the
-`native_<stage>_walk_examined`, `walk_suppressed`, `walk_refused_inputs` and
-`walk_refused_reservation` counters; for post, `walk_suppressed` counts
+`native_<stage>_walk_examined`, `walk_suppressed`, `walk_refused_inputs`,
+`walk_refused_resume` and `walk_refused_reservation` counters
+(`walk_refused_resume`: the sorted range's end is not a resume point of
+the image, so the guest cannot be resumed past the skipped draw;
+`walk_refused_reservation`: the device declined the native draw); for post, `walk_suppressed` counts
 guest strip loops skipped.
 
 1. Use the agent API (`h2 agent`, [agent-api.md](../runtime/agent-api.md)):

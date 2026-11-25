@@ -91,8 +91,11 @@ pub enum Metric {
     /// Scene stages the render thread could not record after the guest
     /// was told to skip their items: a named error, not a fallback.
     SceneDropped,
+    /// A sorted range whose end the guest cannot be resumed at: the image
+    /// has no resume point there. Not a reservation refusal.
+    WalkRefusedResume,
 }
-const METRICS: [&str; 34] = [
+const METRICS: [&str; 35] = [
     "examined",
     "suppressed",
     "refused_ownership",
@@ -127,6 +130,7 @@ const METRICS: [&str; 34] = [
     "render_prepare_ns",
     "scene_stages",
     "scene_dropped",
+    "walk_refused_resume",
 ];
 
 // Four Xbox player views and a bucket for non-player views.
@@ -964,6 +968,8 @@ mod tests {
             (Metric::WorkerRoundTrips, "native_lights_worker_round_trips"),
             (Metric::ReferencePasses, "native_lights_reference_passes"),
             (Metric::DisplayPasses, "native_lights_display_passes"),
+            (Metric::WalkRefusedResume, "native_lights_walk_refused_resume"),
+            (Metric::WalkRefusedReservation, "native_lights_walk_refused_reservation"),
         ] {
             assert_eq!(
                 columns

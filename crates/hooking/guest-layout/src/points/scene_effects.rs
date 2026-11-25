@@ -37,7 +37,11 @@ pub const SCENE_TRANSPARENTS_END: Point = Point::new("SCENE_TRANSPARENTS_END", 0
 /// writes only EAX and falls through, so `[esp]` is still the wrapper's
 /// return address and its three arguments are at `esp+4..+0xc`.
 pub const WATER_INDEX_READY: Point = Point::new("WATER_INDEX_READY", 0x0001_c8a9, Sig::Site, RENDERER);
-pub const WATER_INDEX_END: u32 = 0x0001_c8b9;
+/// The wrapper's tail, past its `DrawIndexedVertices` call at 0x0001c8b4, is
+/// `mov al, 1; ret 0xc` (0x0001c8b9). A native draw returns from the
+/// wrapper at the site itself, popping this many argument bytes after the
+/// return address, so the tail needs no entry or resume of its own.
+pub const WATER_INDEX_ARG_BYTES: u32 = 0xc;
 
 pub const HUD_QUAD_READY: Point = Point::new("HUD_QUAD_READY", 0x0022_a7f6, Sig::Site, RENDERER);
 
@@ -128,7 +132,6 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
         WATER_INDEX_READY.base,
-        WATER_INDEX_END,
         HUD_QUAD_READY.base,
         SCREEN_STRIP_READY.base,
         PARTICLE_EMIT_READY.base,
@@ -188,5 +191,10 @@ mod tests {
         }
         assert!(seen.contains(&super::EFFECT_QUAD_READY.base));
         assert!(seen.contains(&super::DECAL_RENDER_END.base));
+        // The water wrapper's tail is not an entry: a native draw returns
+        // from the wrapper at the site.
+        assert!(seen.contains(&super::WATER_INDEX_READY.base));
+        assert!(!seen.contains(&0x0001_c8b9));
+        assert_eq!(super::WATER_INDEX_ARG_BYTES, 0xc);
     }
 }
