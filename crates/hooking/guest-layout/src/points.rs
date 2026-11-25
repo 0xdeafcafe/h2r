@@ -606,6 +606,11 @@ points! { ALL;
     DEVICE_FUNCTION_IMPORT @ 0x0010_6d70: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
     /// The `mach` and `bloc` levels' function import (slot `+4c`).
     MACHINE_FUNCTION_IMPORT @ 0x0011_bd60: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
+    /// The tag-function curve evaluator: the curve every object function
+    /// value, light and screen effect flows through. The reference (a
+    /// count and the function blob's address) in EDI, the input and range
+    /// input as two stack words.
+    OBJECT_FUNCTION_CURVE @ 0x0013_b390: [fn(reference: edi, input: stack 0, range: stack 1) -> xmm0 ret 8], Hot; "docs/engine/engine-map.md";
     AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
     /// Queue one replication event in a distributed game (world mode 4 or
     /// 5; a no-op otherwise): the event type, the number of entities it

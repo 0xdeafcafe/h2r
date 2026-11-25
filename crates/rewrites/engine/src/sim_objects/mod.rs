@@ -24,7 +24,7 @@ pub mod frame;
 mod object;
 mod wake;
 mod walks;
-mod functions;
+pub mod functions;
 // Slice 11: the small type updates.
 pub(crate) mod alu;
 mod bloc;

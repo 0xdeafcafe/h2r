@@ -1,5 +1,7 @@
 //! The named export search inside the object function evaluator.
 
+pub mod curve;
+
 /// The position saved by the caller while a matching export is evaluated.
 /// Both fields belong to the guest frame and are restored independently.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

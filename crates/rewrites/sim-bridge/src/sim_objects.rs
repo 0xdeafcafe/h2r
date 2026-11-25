@@ -78,7 +78,32 @@ pub(crate) fn install(b: &mut Builder) {
     if installed {
         install_table(b, bodies, OBJECTS, |_| &[]);
         install_events(b);
+        install_curve_arm(b);
     }
+}
+
+/// The object function evaluator's capture arm: the guest answers every
+/// call of the tag-function curve evaluator `13b390`, and the idiomatic
+/// kernel's prediction is compared with the result
+/// (`engine::sim_objects::functions::parity`, the pattern of phase 5's
+/// physics arms).
+fn install_curve_arm(b: &mut Builder) {
+    let point = &points::OBJECT_FUNCTION_CURVE;
+    b.raw()
+        .observe_before(point, "objects-curve-begin", move |o| {
+            if o.addr == point.base {
+                let guest = o.guest();
+                engine::sim_objects::functions::parity::curve_begin(o.thread_id, o.cpu, &*guest);
+            }
+        })
+        .optional();
+    b.raw()
+        .observe_after(point, "objects-curve-end", move |o| {
+            if o.addr == point.base {
+                engine::sim_objects::functions::parity::curve_end(o.thread_id, o.cpu);
+            }
+        })
+        .optional();
 }
 
 fn drive(
@@ -312,6 +337,24 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert!(chain.observe_before.iter().any(|h| h.label == label), "{}", point.name);
         }
+    }
+
+    #[test]
+    fn the_switch_installs_the_curve_evaluators_capture_arm() {
+        // On: the arm observes the curve evaluator's entry and return; it
+        // never implements the point.
+        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let chain = &plan.chains[&points::OBJECT_FUNCTION_CURVE.base];
+        assert!(chain.implement.is_none(), "the arm observes, it does not answer");
+        assert_eq!((chain.observe_before.len(), chain.observe_after.len()), (1, 1));
+        assert!(chain.observe_before[0].optional && chain.observe_after[0].optional);
+        // Off: nothing installs.
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        assert!(!plan.chains.contains_key(&points::OBJECT_FUNCTION_CURVE.base));
     }
 
     static DAMAGE_BODIES: [Body; 2] = [
