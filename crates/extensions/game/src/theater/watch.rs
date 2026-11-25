@@ -142,6 +142,10 @@ impl Session {
     /// state that plays it. Nothing changes in the session.
     pub fn plan_watch(&self, path: &Path, view: api::InitialView) -> Result<Planned> {
         ensure!(self.can_watch(), "this session does not watch films");
+        ensure!(
+            !self.watching(),
+            "a film is already being watched; leave it first (theater.end)"
+        );
         let own = &self.watch.own;
         let play = film_play::Play::open(path)?.context(NO_GAME_START)?;
         play.check_stamp(&own.xbe_sha256)?;
@@ -259,7 +263,7 @@ impl Session {
     pub fn disarm_watch(&self) {
         let armed = self.watch.armed.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(Armed { state }) = armed
-            && let Some(info) = state.watch
+            && let Some(info) = &state.watch
         {
             self.give_back(&info.loaned);
         }
