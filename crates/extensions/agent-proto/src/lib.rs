@@ -315,6 +315,9 @@ pub mod method {
     /// What the guest front-end still asks `d3d` to do, by caller and by
     /// producer, over a window of presents ([`crate::ResidualParams`]).
     pub const RENDER_RESIDUAL: &str = "render.residual";
+    /// The native particle path's geometry refusals by named check, each
+    /// with the first refused draw's shape (no params).
+    pub const RENDER_PARTICLES_REFUSALS: &str = "render.particles.refusals";
     /// Arm the in-process two-path comparison for one frame
     /// ([`crate::ParityParams`]); a diagnostic, deleted with the D3D
     /// backend.
