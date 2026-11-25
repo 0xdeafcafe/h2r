@@ -46,12 +46,8 @@ sim_native=(
   sim.native_unit_pose
   sim.native_animation_stream
   sim.native_marker_transforms
-  sim.native_mopp_box
 )
 sim_physics=(
-  sim.native_havok_solver
-  sim.native_havok_support_vertices
-  sim.native_havok_weld
   sim.native_unit_aim
   sim.native_first_person_pose
   sim.native_first_person_filters

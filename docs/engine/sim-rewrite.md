@@ -23,6 +23,14 @@ Phase 4 runs as an opt-in sound arm. Its synthetic differential harness compares
 guest and Rust sound bodies at each call and return. The owner-image, match,
 campaign, cross-architecture and timing results are pending.
 
+Phase 5 has landed its kernels and arms
+([sim-rewrite-havok.md](sim-rewrite-havok.md)): `impl.sim.native.physics`
+installs the world step, island collide and island integrate entries, the
+broadphase batch update, the two unconstrained-motion methods and the
+MOPP box query run as capture arms compared with the guest, and the Havok
+heap digest (`havok.digest`, the sim report's `havok.world` component)
+covers what the arena hash cannot. The per-function Havok and MOPP box
+switches are retired. The run ladder and the timing gate are open.
 The plan replaces the verdict in
 [feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
 15-18) that objects, AI and physics "stay recompiled". The user asked on

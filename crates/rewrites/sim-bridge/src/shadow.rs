@@ -3,10 +3,9 @@
 //! [`crate::sim_physics`]) and [`lifted::shadow`].
 //!
 //! Every port is registered with the process's registry at plan build,
-//! installed or not, under its switch name and its group. Each installed
-//! body runs through [`run`], which costs one atomic load until the agent
-//! API's `shadow.enable` turns checks on. There is no switch or variable:
-//! the agent call is the switch.
+//! installed or not, under its name and group. Authoritative bodies use
+//! [`run`]. Guest-authoritative arms use [`compare_only`] before running
+//! generated code. Both check the registry's atomic flag before doing work.
 
 pub use lifted::shadow::{Enabled, Error, Mismatch, Port, PortFn, SHADOW, Shadow, Status};
 
@@ -49,6 +48,17 @@ pub fn run(
     port: &mut PortFn<'_>,
 ) -> Result<TransferAbi, GuestFault> {
     SHADOW.run(name, cpu, guest, pc, game_tick, port)
+}
+
+/// Check a candidate on private state before dispatching the live guest.
+pub fn compare_only(
+    name: &'static str,
+    cpu: &CpuAbi,
+    guest: &Guest,
+    pc: u32,
+    port: &mut PortFn<'_>,
+) {
+    SHADOW.compare_only(name, cpu, guest, pc, game_tick, port);
 }
 
 #[cfg(test)]

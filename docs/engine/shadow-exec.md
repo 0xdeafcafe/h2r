@@ -63,9 +63,11 @@ carry their own copies; each moves when next touched.
    instruction for (a kernel import token, an address no function holds),
    an interpreter exit (a fault, an unsupported instruction), or the step
    limit.
-6. **The real call.** The port then runs on the live Guest as it does
-   without checks. If its transfer or registers differ from the copy's,
-   the call is a `nondeterministic` mismatch.
+6. **The real call.** For an authoritative port, `Shadow::run` runs the
+   port on the live Guest. If its transfer or registers differ from the
+   copy's, the call is a `nondeterministic` mismatch. A guest-authoritative
+   arm calls `Shadow::compare_only` and dispatches the generated original
+   on the live Guest. In that arm the Rust port runs only on sampled copies.
 
 Sim ports split at their callees (`sim_physics`) are entered at the
 function and at each registered resume; each segment is checked from the
@@ -73,16 +75,15 @@ state it starts in.
 
 Cost: one relaxed atomic load per port call while nothing is on. A check
 copies RAM copy-on-write (a VM remap on macOS, a 64 MB copy elsewhere),
-runs the port twice and the original once on the interpreter. Use
-`every` to sample hot ports.
+runs the port on the copy and the original on the interpreter before the
+live call. Use `every` to sample hot ports.
 
 ## Registration and the agent API
 
 `feature::sim_native` and `feature::sim_physics` register every port
 with the registry at plan build (`feature::shadow::register`), installed
-or not, under its switch name and its group (`sim.native`,
-`sim.physics`), and run each installed body through
-`feature::shadow::run`. Only installed ports are checked: a port's
+or not, under its name and group. Calls pass through `feature::shadow::run`
+or `feature::shadow::compare_only`. Only installed ports are checked: a port's
 `impl.` switch puts it in the plan, and `shadow.enable` turns its checks
 on. Boot's run gives the registry the image once the module is loaded
 (`recomp`'s [`fallback.rs`](../../crates/runtime/recomp/src/fallback.rs)
@@ -110,7 +111,7 @@ Methods ([agent-api.md](../runtime/agent-api.md#shadow-checks)):
 `shadow.enable`, `shadow.disable`, `shadow.status`.
 
 ```sh
-H2_FEATURES=impl.sim.native_unit_pose,impl.sim.native_havok_solver h2 serve ...
+H2_FEATURES=impl.sim.native_unit_pose,impl.sim.native.physics h2 serve ...
 h2 agent shadow.enable '{"ports":["sim.native_unit_pose","sim.physics"],"every":4}'
 h2 agent shadow.status
 ```

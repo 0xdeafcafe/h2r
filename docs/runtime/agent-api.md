@@ -42,7 +42,7 @@ connection to hold `session.claim`.
 | `actors.net` | read | [`actors.net`](#actorsnet) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
-| `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
+| `havok.bodies`, `havok.agents`, `havok.contacts`, `havok.digest` | read | [`havok`](#havok-the-physics-world) |
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
@@ -802,6 +802,7 @@ boundary. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
 | `havok.bodies` | `{near?, radius?, limit?}` | rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b`, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` defaults to 64 |
 | `havok.agents` | `{object}` | collision pairs and cached state ([below](#havokagents)) |
 | `havok.contacts` | `{object?}` | contact constraints: `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
+| `havok.digest` | `{}` | the ordered heap walk (sim-rewrite-havok.md §9.2): `digest` (16 hex digits, FNV-1a over every live byte and address), `bodies`, `constraints`, `pairs`, and `heap_used` (bytes in occupied pool slots). The arena hash does not cover the Havok heap, so this digest is what proves a physics rewrite; the sim report carries the same walk as its `havok.world` component |
 
 ```sh
 h2 agent havok.agents '{"object":"player.0"}'

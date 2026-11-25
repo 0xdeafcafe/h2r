@@ -882,7 +882,9 @@ parallel, S6, S7. S2 before S3 because the instance trace calls the segment
 kernel. A single collision switch selects these entries. The point,
 sphere, BSP segment, whole query, general ray, visit and portal
 register ports remain available to the differential harness.
-The separate integer MOPP interpreter belongs to the Havok world step.
+The separate integer MOPP interpreter belongs to the Havok world step:
+`impl.sim.native.physics` compares its box query with the guest as a
+capture arm, and no per-function `native_mopp_box` switch remains.
 
 Lane ownership: new `crates/rewrites/sim-collision`, `crates/rewrites/engine/src/sim_collision`,
 `crates/rewrites/engine/tests/sim_collision_differential.rs`,

@@ -79,11 +79,6 @@ pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
         "sim.native_marker_transforms",
         sim::marker::transforms,
     ),
-    (
-        &points::SIM_MOPP_BOX,
-        "sim.native_mopp_box",
-        sim::mopp_query::box_query,
-    ),
 ];
 
 /// `impl.sim.native_simd`: host vector lanes inside the native bodies'

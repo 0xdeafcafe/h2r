@@ -11,7 +11,7 @@ mod flood;
 pub use flood::spatial_parity;
 pub mod instance;
 pub mod layout;
-mod mopp_box;
+pub mod mopp_box;
 pub mod mopp_ray;
 mod point;
 mod preflight;

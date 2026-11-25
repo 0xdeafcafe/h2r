@@ -194,7 +194,10 @@ fn mopp_box_matches_the_guest() {
 #[test]
 fn mopp_box_edges_match_the_guest() {
     with_oracle("collision MOPP box edges", |oracle, image| {
-        let programs: [&[u8]; 9] = [
+        let programs: [&[u8]; 10] = [
+            // Both splits visit both sides. The duplicate surrounds a distinct
+            // key, so sorting, uniquing, or reversing a sibling pair differs.
+            &[0x10, 255, 0, 6, 0x10, 255, 0, 1, 0x37, 0x32, 0x37],
             &[0x10, 10, 20, 1, 0x31, 0x32],
             &[0x23, 10, 20, 0, 0, 0, 1, 0x31, 0x32],
             &[0x20, 10, 1, 0x31, 0x32],

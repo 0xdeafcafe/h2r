@@ -93,28 +93,121 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
     })
 }
 
+impl Plan {
+    fn vm_words(&self) -> [(u32, u32); 8] {
+        [
+            (l::ARRAY, self.array),
+            (l::CODE, self.code),
+            (l::LO, self.corners.lo[0] as u32),
+            (l::HI, self.corners.hi[0] as u32),
+            (l::LO + 4, self.corners.lo[1] as u32),
+            (l::HI + 4, self.corners.hi[1] as u32),
+            (l::LO + 8, self.corners.lo[2] as u32),
+            (l::HI + 8, self.corners.hi[2] as u32),
+        ]
+    }
+
+    fn final_size(&self) -> u32 {
+        self.size + self.keys.len() as u32
+    }
+
+    fn finish(&self, c: &mut CpuAbi) -> TransferAbi {
+        // The setup's epilogue keeps the flags of the root interpreter's add to ESP.
+        let aligned = self.sp.wrapping_sub(4) & !15;
+        add_flags(c, aligned.wrapping_sub(l::FLAGS_ESP), l::INTERPRETER_LOCALS);
+        finish(c, self.target, l::ARGS)
+    }
+}
+
 fn commit(c: &mut CpuAbi, g: &mut impl Memory, p: Plan) -> Result<TransferAbi, GuestFault> {
-    let vm = |offset: u32| p.vm.wrapping_add(offset);
-    g.set_u32(vm(l::ARRAY), p.array)?;
-    g.set_u32(vm(l::CODE), p.code)?;
-    for a in 0..3u32 {
-        g.set_u32(vm(l::LO + 4 * a), p.corners.lo[a as usize] as u32)?;
-        g.set_u32(vm(l::HI + 4 * a), p.corners.hi[a as usize] as u32)?;
+    for (offset, value) in p.vm_words() {
+        g.set_u32(p.vm.wrapping_add(offset), value)?;
     }
     for (i, &key) in p.keys.iter().enumerate() {
         g.set_u32(p.keys_at.wrapping_add(4 * i as u32), key)?;
     }
     if !p.keys.is_empty() {
-        g.set_u32(
-            p.array.wrapping_add(l::SIZE),
-            p.size.wrapping_add(p.keys.len() as u32),
-        )?;
+        g.set_u32(p.array.wrapping_add(l::SIZE), p.final_size())?;
     }
-    // The setup's own epilogue (pop, mov, pop, ret) leaves the flags of
-    // the root interpreter's `add esp, 0x38`.
-    let aligned = p.sp.wrapping_sub(4) & !15;
-    add_flags(c, aligned.wrapping_sub(l::FLAGS_ESP), l::INTERPRETER_LOCALS);
-    Ok(finish(c, p.target, l::ARGS))
+    Ok(p.finish(c))
+}
+
+/// Results held across the lifted query. The complete VM and array headers
+/// include the gaps between write sites, so an unexpected store there differs.
+pub struct Prediction {
+    plan: Plan,
+    vm: [u8; l::VM_SIZE as usize],
+    array: [u8; l::ARRAY_SIZE as usize],
+    cpu: CpuAbi,
+}
+
+/// Compute the physics parity arm's answer and let the guest execute the query.
+pub fn capture(c: &CpuAbi, g: &mut runtime::Guest) -> Option<Prediction> {
+    if g.has_trap() {
+        return None;
+    }
+    let p = plan(c, g, &super::WORLD).ok()?;
+    let mut vm = [0; l::VM_SIZE as usize];
+    g.read_bytes(p.vm, &mut vm, 1).ok()?;
+    for (at, word) in p.vm_words() {
+        vm[at as usize..at as usize + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    let mut array = [0; l::ARRAY_SIZE as usize];
+    g.read_bytes(p.array, &mut array, 1).ok()?;
+    array[l::SIZE as usize..l::SIZE as usize + 4].copy_from_slice(&p.final_size().to_le_bytes());
+    let mut cpu = *c;
+    p.finish(&mut cpu);
+    Some(Prediction {
+        plan: p,
+        vm,
+        array,
+        cpu,
+    })
+}
+
+impl Prediction {
+    /// Compare at the after-observer. EIP names its continuation. The entry
+    /// clobbers EAX, ECX, EDX, x87 condition codes and empty physical slots.
+    pub fn matches(&self, c: &CpuAbi, g: &runtime::Guest) -> bool {
+        let e = &self.cpu;
+        let mut vm = [0; l::VM_SIZE as usize];
+        let mut array = [0; l::ARRAY_SIZE as usize];
+        if g.has_trap()
+            || g.read_bytes(self.plan.vm, &mut vm, 1).is_err()
+            || vm != self.vm
+            || g.read_bytes(self.plan.array, &mut array, 1).is_err()
+            || array != self.array
+            || (c.ebx, c.ebp, c.esi, c.edi, c.esp) != (e.ebx, e.ebp, e.esi, e.edi, e.esp)
+            || (c.eflags, c.eflags_defined, c.fs_base) != (e.eflags, e.eflags_defined, e.fs_base)
+            || c.xmm != e.xmm
+            || c.mxcsr != e.mxcsr
+            || c.x87.control != e.x87.control
+            || c.x87.tag != e.x87.tag
+            || (c.x87.status ^ e.x87.status) & 0xb8ff != 0
+        {
+            return false;
+        }
+        for (i, expect) in e.x87.st.iter().enumerate() {
+            if (e.x87.tag >> (i * 2)) & 3 != 3 && c.x87.st[i] != *expect {
+                return false;
+            }
+        }
+        let mut actual = [0u8; 256];
+        let mut at = self.plan.keys_at;
+        for expected in self.plan.keys.chunks(actual.len() / 4) {
+            let bytes = &mut actual[..expected.len() * 4];
+            if g.read_bytes(at, bytes, 1).is_err()
+                || bytes
+                    .chunks_exact(4)
+                    .zip(expected)
+                    .any(|(word, key)| word != key.to_le_bytes().as_slice())
+            {
+                return false;
+            }
+            at = at.wrapping_add(bytes.len() as u32);
+        }
+        true
+    }
 }
 
 /// Entry F, `0x00300150`, natively.
@@ -134,6 +227,73 @@ pub fn mopp_box(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parity_compares_duplicate_keys_in_guest_emission_order_and_header_padding() {
+        use runtime::{Guest, guest::Permissions};
+        use sim_collision::mopp::{HEADER_BYTES, SIZE};
+
+        let base = 0x10000;
+        let (sp, vm, aabb, array, data, code) = (
+            base + 0x800,
+            base + 0x810,
+            base + 0x900,
+            base + 0xa00,
+            base + 0xb00,
+            base + 0xc00,
+        );
+        let mut g = Guest::new();
+        g.map(base, 0x2000, 0, Permissions::RW).unwrap();
+        // Both sides of two nested axis splits, with the first key repeated last.
+        let instructions = [0x10, 255, 0, 6, 0x10, 255, 0, 1, 0x37, 0x32, 0x37];
+        g.write_bytes(code + HEADER_BYTES, &instructions, 1)
+            .unwrap();
+        for (at, value) in [
+            (sp, base),
+            (sp + 4, code),
+            (sp + 8, aabb),
+            (sp + 12, array),
+            (code + 12, 1f32.to_bits()),
+            (code + SIZE, HEADER_BYTES + instructions.len() as u32),
+            (aabb + l::AABB_MAX, 2f32.to_bits()),
+            (array, data),
+            (array + l::SIZE, 1),
+            (array + l::CAPACITY, 4),
+            (data, 0x1234),
+            (data + 4, 0xbeef),
+            (vm + 4, 0xabcd),
+        ] {
+            g.set_u32(at, value).unwrap();
+        }
+        let mut cpu = CpuAbi {
+            esp: sp,
+            ecx: vm,
+            ..CpuAbi::default()
+        };
+        cpu.x87.control = 0x027f;
+        cpu.x87.status = l::X87_PE;
+        let p = capture(&cpu, &mut g).unwrap();
+        assert_eq!(g.u32(array + l::SIZE).unwrap(), 1);
+        assert_eq!(g.u32(data + 4).unwrap(), 0xbeef);
+        assert!(
+            mopp_box(&mut cpu, &mut g, &super::super::WORLD)
+                .unwrap()
+                .is_some()
+        );
+        assert!(p.matches(&cpu, &g));
+        assert_eq!(g.u32(data).unwrap(), 0x1234);
+        assert_eq!(
+            [4, 8, 12].map(|offset| g.u32(data + offset).unwrap()),
+            [7, 2, 7]
+        );
+        g.set_u32(data + 4, 2).unwrap();
+        g.set_u32(data + 8, 7).unwrap();
+        assert!(!p.matches(&cpu, &g));
+        g.set_u32(data + 4, 7).unwrap();
+        g.set_u32(data + 8, 2).unwrap();
+        g.set_u32(vm + 4, 0).unwrap();
+        assert!(!p.matches(&cpu, &g));
+    }
 
     #[test]
     fn the_dead_window_covers_alignment_and_every_frame() {

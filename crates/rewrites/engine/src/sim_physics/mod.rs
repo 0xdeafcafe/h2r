@@ -22,10 +22,14 @@ mod visit;
 pub(crate) mod unit_aim;
 mod weld;
 mod weapon_slots;
+mod broadphase;
+mod motion;
+pub mod parity;
+mod world;
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld }
+enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld, World }
 
 pub struct Port {
     pub point: &'static Point,
@@ -64,12 +68,6 @@ pub const PORTS: &[Port] = {
     use Controls::*;
     use points::*;
     &[
-        Port {
-            generated_sites: havok::SOLVER_REST,
-            ..port(&HAVOK_SOLVER, "sim.native_havok_solver", Mixed, havok::SOLVER_SITES, havok::solve)
-        },
-        port(&HAVOK_SUPPORT_VERTICES, "sim.native_havok_support_vertices", Mixed, support::SITES, support::vertices),
-        port(&HAVOK_WELD_CONTACTS, "sim.native_havok_weld", Weld, weld::SITES, weld::contacts),
         // The pose root runs under the pose-matrix switch: it inlines that
         // leaf and transform composition for the whole skeleton walk.
         port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
@@ -77,6 +75,19 @@ pub const PORTS: &[Port] = {
         port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
         port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
         port(&OBSERVER_RESULT, "sim.native_observer_camera", Camera, &[], observer::camera),
+    ]
+};
+
+/// The Havok world entries under `impl.sim.native.physics` phase 5
+/// (docs/engine/sim-rewrite-havok.md §7.8): the step wrapper, the island
+/// collide and the island integrate. The world phases between them stay
+/// guest code and drive these entries through the dispatcher.
+pub const PHYSICS_PORTS: &[Port] = {
+    use points::*;
+    &[
+        port(&HAVOK_WORLD_STEP, "sim.native.physics", Controls::World, world::WORLD_SITES, world::step),
+        port(&HAVOK_ISLAND_COLLIDE, "sim.native.physics", Controls::World, world::ISLAND_SITES, world::collide_island),
+        port(&HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island),
     ]
 };
 
@@ -94,6 +105,15 @@ pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;
     &[
+        // The Havok per-function ports retired by `impl.sim.native.physics`
+        // (sim-rewrite-havok.md, slice 8): their bodies are the differential
+        // oracles for the phase 5 kernels (sim_havok::solver, support, weld).
+        Port {
+            generated_sites: havok::SOLVER_REST,
+            ..port(&HAVOK_SOLVER, "oracle.havok_solver", Mixed, havok::SOLVER_SITES, havok::solve)
+        },
+        port(&HAVOK_SUPPORT_VERTICES, "oracle.havok_support_vertices", Mixed, support::SITES, support::vertices),
+        port(&HAVOK_WELD_CONTACTS, "oracle.havok_weld", Weld, weld::SITES, weld::contacts),
         port(&OBJECT_SPATIAL_VISIT, "oracle.spatial_visit", Sse, &visit::SITES, visit::objects),
         port(&OBJECT_SPATIAL_PORTAL, "oracle.spatial_portal", Mixed, &spatial::SITES, spatial::portal),
         port(&OBJECTS_PRE_PHYSICS, "oracle.objects_pre_physics", Integer, &objects::PRE_SITES, objects::pre),
@@ -182,6 +202,10 @@ pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
         Integer => true,
         Sse => cpu.mxcsr & 0x1f80 == 0x1f80,
         Weld => x87_masked && weld::supported(guest),
+        World => {
+            let masked = x87_masked && cpu.mxcsr & 0x1f80 == 0x1f80;
+            masked && cpu.x87.control & 0xc00 == 0 && world::monitor_off(guest)
+        }
         Mixed | Trig | Camera => {
             let masked = x87_masked && cpu.mxcsr & 0x1f80 == 0x1f80;
             masked && (port.controls == Mixed || cpu.x87.control & 0xc00 == 0)
