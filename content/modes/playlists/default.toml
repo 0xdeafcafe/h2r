@@ -199,7 +199,7 @@ weight = 3
 
 [[playlist]]
 id = 9
-title = "Rumble Pit"
+title = "Clanker Rumble"
 description = "Ranked Clanker free for all, up to 8. Bots fill every seat your party does not."
 rules = { kind = "free-for-all", ranked = false, players = [2, 8] }
 base_wait_ms = 30000

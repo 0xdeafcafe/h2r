@@ -698,8 +698,9 @@ mod tests {
         assert_eq!(placement_display_alpha(&m, at, 1., 0x027f), Some(143));
         // Each output pixel counts: twice the lines fade the placement in.
         assert_eq!(placement_display_alpha(&m, at, 2., 0x027f), Some(255));
-        // Half the lines fade it most of the way out.
-        assert_eq!(placement_display_alpha(&m, at, 0.5, 0x027f), Some(48));
+        // Half the lines fade it most of the way out (0.1875 x 255 =
+        // 47.8, which the walk's conversion truncates).
+        assert_eq!(placement_display_alpha(&m, at, 0.5, 0x027f), Some(47));
         assert_eq!(placement_display_alpha(&m, at, 0.25, 0x027f), Some(0));
         // A placement that does not read leaves the caller the record byte.
         assert_eq!(placement_display_alpha(&m, 0x2000_0000, 2., 0x027f), None);

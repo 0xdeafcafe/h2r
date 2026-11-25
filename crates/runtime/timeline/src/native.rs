@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(
             columns[ui - 1].1,
-            "native_scene_lists_typed_first_person_mismatch"
+            "native_scene_lists_window_record_mismatch"
         );
         for (stage, label) in [
             (SceneList::LightAdditionalCasters, "native_scene_lists_light_additional_casters_native"),
