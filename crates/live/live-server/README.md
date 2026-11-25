@@ -113,9 +113,17 @@ side) on `account-<xuid>`, and `SignedIn` / `PresenceChanged` /
 
 ## Design
 
-- **`store`**: `EventStore` (SQLite in `sqlite`, Postgres in `pg`, the
-  embedded server's `filestore`, `MemoryStore` for tests; one conformance
-  suite runs over all of them). SQLite runs in WAL mode; appends take an
+- **`store`**: three traits, none with a default body that drops data.
+  `EventStore` is the log and its checkpoints, `TitleBlobStore` the title
+  files and `UsageStore` the usage counters. `LogStore` (events and blobs,
+  what `store copy` reads and writes) and `Store` (all three, what `Live`
+  runs on) name the sets a caller needs, so a backend missing one is a
+  compile error where it is used. SQLite (`sqlite`), Postgres (`pg`), the
+  embedded server's `filestore` and `MemoryStore` for tests implement all
+  three; `httpstore` (a server over HTTPS, a copy end only) has events and
+  blobs and no usage, so it is a `LogStore`, not a `Store`. One conformance
+  suite per trait (`conformance::events`, `blobs`, `usage`; `run` for a
+  `Store`) runs over each backend. SQLite runs in WAL mode; appends take an
   in-process lock and `BEGIN IMMEDIATE`, so positions are handed out in
   commit order as Postgres's advisory lock does.
 - **`blobs`**: content, cloud saves and published art through the

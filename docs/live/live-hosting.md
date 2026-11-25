@@ -504,8 +504,8 @@ UDP 3074-3080 reachable for internet play.
   `serve --behind-cloudflared` names a new server only.
   `cargo metadata` path closures, atomic installs, the update menu lines,
   `[update]` config, and `--update-repo`/`--update-disc`/`--update-now`.
-- `crates/live/live-server/src/sqlite.rs`, `pg.rs`, `store.rs`: the one
-  event-store conformance suite over SQLite (a temporary file), memory,
+- `crates/live/live-server/src/sqlite.rs`, `pg.rs`, `store.rs`: the
+  store conformance suites (events, title blobs, usage counters) over SQLite (a temporary file), memory,
   the file store and Postgres (`H2_LIVE_TEST_DB`), the concurrent-append
   race on SQLite and Postgres, two handles on one SQLite file, WAL mode.
 - `crates/live/live-server/src/blobs.rs`: the blob-store conformance suite

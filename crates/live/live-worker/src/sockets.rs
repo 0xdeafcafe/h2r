@@ -405,7 +405,8 @@ mod tests {
     use async_trait::async_trait;
     use live_proto::sign::{AccountRequest, KeyPair, issue_token};
     use live_server::store::{
-        EventStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, Wake,
+        EventStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, TitleBlobStore,
+        UsageRow, UsageStore, Wake,
     };
 
     /// A memory store whose reads take a turn of the runtime, as a real
@@ -428,12 +429,6 @@ mod tests {
         async fn head(&self) -> Result<u64, StoreError> {
             self.0.head().await
         }
-        async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-            self.0.put_blob(sha256, bytes).await
-        }
-        async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-            self.0.blob(sha256).await
-        }
         async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
             self.0.load_checkpoint(name).await
         }
@@ -443,11 +438,34 @@ mod tests {
         async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {
             self.0.wake().await
         }
-        async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-            self.0.blob_names().await
+        fn kind(&self) -> &'static str {
+            self.0.kind()
         }
         async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
             self.0.checkpoints().await
+        }
+    }
+
+    #[async_trait]
+    impl TitleBlobStore for Slow {
+        async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+            self.0.put_blob(sha256, bytes).await
+        }
+        async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            self.0.blob(sha256).await
+        }
+        async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+            self.0.blob_names().await
+        }
+    }
+
+    #[async_trait]
+    impl UsageStore for Slow {
+        async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+            self.0.add_usage(rows, keep_from).await
+        }
+        async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+            self.0.usage().await
         }
     }
 

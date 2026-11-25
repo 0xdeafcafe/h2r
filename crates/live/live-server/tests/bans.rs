@@ -10,7 +10,7 @@ use axum::{body::Body, http::Method, http::StatusCode};
 use common::*;
 use live_proto::{Gamertag, bans, lxm};
 use live_server::app::Timers;
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,7 +115,7 @@ async fn writes_refused(h: &Harness, u: &User) {
 }
 
 async fn flow(timers: Timers) {
-    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let h = start_with(store.clone(), policy(), timers).await;
     let cheat = h.create("Cheat").await;
     let reporter = h.create("Reporter").await;

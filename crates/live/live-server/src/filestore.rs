@@ -28,7 +28,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
-    BatchDecoder, EventStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow,
+    BatchDecoder, EventStore, TitleBlobStore, UsageStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow,
     Wake,
 };
 
@@ -243,22 +243,6 @@ impl EventStore for FileStore {
         self.mem.head().await
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        let path = self.blob_path(sha256)?;
-        if !path.is_file() {
-            replace(&path, bytes).map_err(io)?;
-        }
-        Ok(())
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        match fs::read(self.blob_path(sha256)?) {
-            Ok(b) => Ok(Some(b)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(io(e)),
-        }
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         self.mem.load_checkpoint(name).await
     }
@@ -279,6 +263,45 @@ impl EventStore for FileStore {
         self.mem.wake().await
     }
 
+    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
+        self.mem.checkpoints().await
+    }
+}
+
+#[async_trait]
+impl TitleBlobStore for FileStore {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        let path = self.blob_path(sha256)?;
+        if !path.is_file() {
+            replace(&path, bytes).map_err(io)?;
+        }
+        Ok(())
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        match fs::read(self.blob_path(sha256)?) {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io(e)),
+        }
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        let mut names = Vec::new();
+        for entry in fs::read_dir(self.dir.join("blobs")).map_err(io)? {
+            let name = entry.map_err(io)?.file_name();
+            // Skip a write's temporary file (`<sha>.tmp-<pid>`).
+            if let Some(name) = name.to_str().filter(|n| !n.contains('.')) {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+}
+
+#[async_trait]
+impl UsageStore for FileStore {
     /// Written whole, through a temporary file and a rename, as
     /// checkpoints.json is: the server flushes at most once a minute.
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
@@ -294,23 +317,6 @@ impl EventStore for FileStore {
 
     async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
         self.mem.usage().await
-    }
-
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        let mut names = Vec::new();
-        for entry in fs::read_dir(self.dir.join("blobs")).map_err(io)? {
-            let name = entry.map_err(io)?.file_name();
-            // Skip a write's temporary file (`<sha>.tmp-<pid>`).
-            if let Some(name) = name.to_str().filter(|n| !n.contains('.')) {
-                names.push(name.to_string());
-            }
-        }
-        names.sort();
-        Ok(names)
-    }
-
-    async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
-        self.mem.checkpoints().await
     }
 }
 

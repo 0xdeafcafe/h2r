@@ -119,8 +119,8 @@ On wasm32 it uses getrandom's JavaScript backends (0.2 `js` and 0.3 `wasm_js`) a
 
 ### crates/live/live-worker
 
-- **`sqlstore`** (named `d1store` in slice 1): an `EventStore` over `Sql`. It builds and is tested natively against SQLite:
-  - it passes the shared store tests;
+- **`sqlstore`** (named `d1store` in slice 1): a `Store` (`EventStore`, `TitleBlobStore` and `UsageStore`) over `Sql`. It builds and is tested natively against SQLite:
+  - it passes the shared store tests for events, blobs and usage (`conformance::run`);
   - its rows are `SqliteStore`'s own, checked in both directions on one file.
 - **`dosql`** (slice 2; it replaced slice 1's `d1`): the hub's own storage as `Sql`.
 - **`r2`**: R2 as an `ObjectStore`. It covers get, range, head, put (overwrite, create-only, if-match), delete and list; multipart and copy are not done yet.

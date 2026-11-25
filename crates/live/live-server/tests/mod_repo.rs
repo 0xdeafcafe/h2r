@@ -17,7 +17,7 @@ use live_proto::lxm;
 use live_proto::maps::{MAP_DOWNLOADED, MAP_PUBLISHED, MapDocument, package_stream};
 use live_proto::sign::EventBody;
 use live_server::content::ContentLimits;
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use live_server::{Policy, filestore::FileStore};
 use serde_json::Value;
 
@@ -33,7 +33,7 @@ fn policy() -> Policy {
     }
 }
 
-async fn repo(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
+async fn repo(store: Arc<dyn Store>, policy: Policy) -> Harness {
     let h = start(store, policy).await;
     h.live.set_data_dir(&h.dir);
     h
@@ -408,7 +408,7 @@ async fn downloads_are_replayed_from_the_log() {
     let m = Mod::new("durable", "lockout", "Durable Mod");
     let id = MapId::of(&m.doc().manifest);
     {
-        let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+        let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
         let h = start(store, policy()).await;
         h.live.set_data_dir(&data_dir);
         let a = h.create("Modder").await;
@@ -417,7 +417,7 @@ async fn downloads_are_replayed_from_the_log() {
         fetch_as(&h, &x, &id).await;
         fetch_as(&h, &a, &id).await;
     }
-    let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
     let h = start(store, policy()).await;
     h.live.set_data_dir(&data_dir);
     assert_eq!(downloads(&h, &id).await, 2);
@@ -457,7 +457,7 @@ async fn the_credit_is_the_mods_makers_not_the_publishers() {
     m.source_url = Some("https://example.invalid/old");
     let id = MapId::of(&m.doc().manifest);
     {
-        let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+        let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
         let h = start(store, policy()).await;
         h.live.set_data_dir(&data_dir);
         let a = h.create("Publisher").await;
@@ -528,7 +528,7 @@ async fn the_credit_is_the_mods_makers_not_the_publishers() {
         assert_eq!(names(&list(&h, "q=importer").await), Vec::<String>::new());
     }
     // Replayed from the log; then cleared back to the publisher's.
-    let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
     let h = start(store, policy()).await;
     h.live.set_data_dir(&data_dir);
     let item = &list(&h, "").await["items"][0];
@@ -574,7 +574,7 @@ async fn details_and_packs_are_an_admins_and_are_listed() {
     let menu = b"\xff\xd8\xffinvented pack menu".to_vec();
     let text = b"not an image".to_vec();
     {
-        let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+        let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
         let h = start(store, policy()).await;
         h.live.set_data_dir(&data_dir);
         let a = h.create("Publisher").await;
@@ -655,7 +655,7 @@ async fn details_and_packs_are_an_admins_and_are_listed() {
         assert_eq!(r.status, StatusCode::OK, "{}", r.error());
     }
     // Replayed from the log.
-    let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
     let h = start(store, policy()).await;
     h.live.set_data_dir(&data_dir);
     let page = list(&h, "").await;
@@ -1286,7 +1286,7 @@ async fn screenshot_routes_hold_classifier_errors_and_invalid_scores() {
 
 #[tokio::test]
 async fn pack_migration_groups_by_base_suffix_and_uploader_and_replays() {
-    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let expected;
     {
         let h = repo(store.clone(), policy()).await;

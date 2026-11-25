@@ -16,7 +16,7 @@ use live_proto::maps::{MAP_PUBLISHED, MapDocument, package_stream};
 use live_proto::session::{NewSession, Slots};
 use live_proto::sign::EventBody;
 use live_server::content::{ContentLimits, RETAIL_FILE};
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use live_server::{Policy, filestore::FileStore};
 use serde_json::{Value, json};
 
@@ -1094,7 +1094,7 @@ async fn the_catalog_is_replayed_from_the_log() {
     let data_dir = temp_dir();
     std::fs::create_dir_all(&data_dir).unwrap();
     {
-        let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+        let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
         let h = start(store, small()).await;
         h.live.set_data_dir(&data_dir);
         let u = h.create("Modder").await;
@@ -1105,7 +1105,7 @@ async fn the_catalog_is_replayed_from_the_log() {
         );
         moderate(&h, "maps", &id.to_string(), "hide").await;
     }
-    let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+    let store: Arc<dyn Store> = Arc::new(FileStore::open(&store_dir).await.unwrap());
     let h = start(store, small()).await;
     h.live.set_data_dir(&data_dir);
     assert_eq!(

@@ -962,7 +962,7 @@ async fn short_codes_generated_and_custom_sign_up_once_in_any_case() {
 
 #[tokio::test]
 async fn operator_invites_are_logged_with_short_codes_and_survive_a_restart() {
-    let store: Arc<dyn live_server::store::EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn live_server::store::Store> = Arc::new(MemoryStore::new());
     let policy = || Policy {
         invite_only: true,
         ..Policy::default()

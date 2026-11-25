@@ -78,7 +78,7 @@ send_wrapper = { version = "0.6", features = ["futures"] }
 
 [features]
 default = ["native"]
-# The store tests every EventStore must pass, for stores in other crates
+# The store tests every Store must pass (events, blobs, usage), for stores in other crates
 # (the Worker's D1 store).
 conformance = []
 native = [

@@ -16,7 +16,7 @@ use sqlx::Row;
 use sqlx::postgres::{PgListener, PgPool, PgPoolOptions, PgRow};
 
 use crate::store::{
-    BatchDecoder, BatchRows, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
+    BatchDecoder, BatchRows, EventStore, TitleBlobStore, UsageStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
     UsageRow, Wake,
 };
 
@@ -282,26 +282,6 @@ impl EventStore for PostgresStore {
         Ok(p as u64)
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into blobs (sha256, bytes) values ($1, $2) on conflict (sha256) do nothing",
-        )
-        .bind(sha256)
-        .bind(bytes)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(
-            sqlx::query_scalar("select bytes from blobs where sha256 = $1")
-                .bind(sha256)
-                .fetch_optional(&self.pool)
-                .await?,
-        )
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         let p: Option<i64> =
             sqlx::query_scalar("select position from subscriptions where name = $1")
@@ -387,14 +367,6 @@ impl EventStore for PostgresStore {
         Ok(())
     }
 
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        Ok(
-            sqlx::query_scalar("select sha256 from blobs order by sha256")
-                .fetch_all(&self.pool)
-                .await?,
-        )
-    }
-
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
         let rows: Vec<(String, i64)> =
             sqlx::query_as("select name, position from subscriptions order by name")
@@ -403,6 +375,46 @@ impl EventStore for PostgresStore {
         Ok(rows.into_iter().map(|(n, p)| (n, p as u64)).collect())
     }
 
+    async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {
+        let mut listener = PgListener::connect_with(&self.pool).await?;
+        listener.listen(EVENTS_CHANNEL).await?;
+        Ok(Box::new(PgWake(listener)))
+    }
+}
+
+#[async_trait]
+impl TitleBlobStore for PostgresStore {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        sqlx::query(
+            "insert into blobs (sha256, bytes) values ($1, $2) on conflict (sha256) do nothing",
+        )
+        .bind(sha256)
+        .bind(bytes)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(
+            sqlx::query_scalar("select bytes from blobs where sha256 = $1")
+                .bind(sha256)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        Ok(
+            sqlx::query_scalar("select sha256 from blobs order by sha256")
+                .fetch_all(&self.pool)
+                .await?,
+        )
+    }
+}
+
+#[async_trait]
+impl UsageStore for PostgresStore {
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         let mut tx = self.pool.begin().await?;
         for r in rows {
@@ -441,12 +453,6 @@ impl EventStore for PostgresStore {
                 n,
             })
             .collect())
-    }
-
-    async fn wake(&self) -> Result<Box<dyn Wake>, StoreError> {
-        let mut listener = PgListener::connect_with(&self.pool).await?;
-        listener.listen(EVENTS_CHANNEL).await?;
-        Ok(Box::new(PgWake(listener)))
     }
 }
 

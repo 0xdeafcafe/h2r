@@ -14,20 +14,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
-use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow, Wake};
+use crate::store::{EventStore, Store, TitleBlobStore, UsageStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow, Wake};
 
 /// The checkpoint that keeps the hold: 1 held, 0 (or none) not.
 pub const HOLD: &str = "live.import-hold";
 
 /// `inner`, with appends refused while `held`.
 pub struct HeldStore {
-    inner: Arc<dyn EventStore>,
+    inner: Arc<dyn Store>,
     held: Arc<AtomicBool>,
 }
 
 impl HeldStore {
     /// Wraps `inner`, held if its [`HOLD`] checkpoint says so.
-    pub async fn open(inner: Arc<dyn EventStore>) -> Result<Self, StoreError> {
+    pub async fn open(inner: Arc<dyn Store>) -> Result<Self, StoreError> {
         let held = inner.load_checkpoint(HOLD).await?.is_some_and(|p| p > 0);
         Ok(HeldStore {
             inner,
@@ -68,14 +68,6 @@ impl EventStore for HeldStore {
         self.inner.head().await
     }
 
-    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        self.inner.put_blob(sha256, bytes).await
-    }
-
-    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        self.inner.blob(sha256).await
-    }
-
     async fn load_checkpoint(&self, name: &str) -> Result<Option<u64>, StoreError> {
         self.inner.load_checkpoint(name).await
     }
@@ -96,17 +88,31 @@ impl EventStore for HeldStore {
         self.inner.import(events).await
     }
 
-    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
-        self.inner.blob_names().await
-    }
-
     /// Not the hold: it is this server's, not part of the log a copy takes.
     async fn checkpoints(&self) -> Result<Vec<(String, u64)>, StoreError> {
         let mut all = self.inner.checkpoints().await?;
         all.retain(|(name, _)| name != HOLD);
         Ok(all)
     }
+}
 
+#[async_trait]
+impl TitleBlobStore for HeldStore {
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        self.inner.put_blob(sha256, bytes).await
+    }
+
+    async fn blob(&self, sha256: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        self.inner.blob(sha256).await
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.blob_names().await
+    }
+}
+
+#[async_trait]
+impl UsageStore for HeldStore {
     async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
         self.inner.add_usage(rows, keep_from).await
     }
@@ -126,7 +132,7 @@ mod tests {
     #[tokio::test]
     async fn a_hold_refuses_appends_survives_a_restart_and_is_not_copied() {
         let key = KeyPair::generate();
-        let inner: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+        let inner: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let store = HeldStore::open(inner.clone()).await.unwrap();
         store.append(vec![event(&key, "a", 0)], &[]).await.unwrap();
         store.set_held(true).await.unwrap();

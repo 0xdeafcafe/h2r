@@ -14,7 +14,7 @@ use live_proto::recovery::{RecoverRequest, RecoveryInfo, TotpSecret, format_code
 use live_proto::sign::{AccountRequest, Invite, KeyPair};
 use live_proto::{Xuid, lxm};
 use live_server::Policy;
-use live_server::store::{EventStore, MemoryStore};
+use live_server::store::{MemoryStore, Store};
 use serde_json::json;
 
 /// Creates `tag`; the user and the recovery info the reply carried.
@@ -468,10 +468,10 @@ async fn only_the_account_reads_or_resets_its_secret_and_reset_retires_the_old()
 
 #[tokio::test]
 async fn old_accounts_set_up_recovery_and_a_restart_keeps_secrets() {
-    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let dir = temp_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    let boot = |store: Arc<dyn EventStore>, dir: std::path::PathBuf| async move {
+    let boot = |store: Arc<dyn Store>, dir: std::path::PathBuf| async move {
         let identity = live_server::ServerIdentity::open(&dir, Some("live.test")).unwrap();
         let live = live_server::Live::start(store, identity, Policy::default())
             .await
