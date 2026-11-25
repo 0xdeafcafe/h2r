@@ -252,6 +252,8 @@ mod tests {
     const STACK: u32 = 0x0020_0000;
     const HANDLES: u32 = 0x0035_0000;
     const BOXES: u32 = 0x0036_0000;
+    /// The moved object: the batch lists its address, its first word is the node id.
+    const OBJECT: u32 = 0x0035_1000;
     /// The removed and added pair arrays' data, in `Array::bytes` order.
     const PAIRS: [u32; 2] = [0x0037_1000, 0x0037_0000];
     const ADDED: u32 = 0x0038_1000;
@@ -316,13 +318,23 @@ mod tests {
         g.set_u32(WORLD + NODE_ARRAY + 8, 8).unwrap();
         // Node 1 spans 2..5 everywhere; nodes 2 and 3 sit beyond it on X
         // and share its span on Y and Z, so a move on X crosses both.
-        node(&mut g, 0, [0, 0, 0], [99, 99, 99], 0);
-        node(&mut g, 1, [2, 2, 2], [5, 5, 5], 8);
-        node(&mut g, 2, [6, 2, 2], [9, 5, 5], 16);
-        node(&mut g, 3, [10, 2, 2], [13, 5, 5], 24);
-        axis(&mut g, 0, &[(0, 0), (2, 1), (5, 1), (6, 2), (9, 2), (10, 3), (13, 3), (99, 0)]);
-        for i in 1..3 {
-            axis(&mut g, i, &[(0, 0), (2, 1), (2, 2), (2, 3), (5, 1), (5, 2), (5, 3), (99, 0)]);
+        let x: &[(u16, u16)] = &[(0, 0), (2, 1), (5, 1), (6, 2), (9, 2), (10, 3), (13, 3), (99, 0)];
+        let flat: &[(u16, u16)] = &[(0, 0), (2, 1), (2, 2), (2, 3), (5, 1), (5, 2), (5, 3), (99, 0)];
+        let axes = [x, flat, flat];
+        for (i, ends) in axes.iter().enumerate() {
+            axis(&mut g, i, ends);
+        }
+        // A node row holds the *slots* of its endpoints in each axis array,
+        // not their values (`sim_havok::broadphase::Node`). Odd values are
+        // upper ends.
+        for id in 0..4u16 {
+            let slot = |a: usize, upper: bool| {
+                let at = axes[a].iter().position(|&(v, n)| n == id && (v & 1 != 0) == upper).unwrap();
+                at as u16
+            };
+            let lower = std::array::from_fn(|a| slot(a, false));
+            let upper = std::array::from_fn(|a| slot(a, true));
+            node(&mut g, usize::from(id), lower, upper, u32::from(id) * 8);
         }
         for (at, data) in [(ADDED, PAIRS[1]), (REMOVED, PAIRS[0])] {
             g.set_u32(at, data).unwrap();
@@ -338,7 +350,8 @@ mod tests {
         g.set_u32(STACK + 12, n).unwrap();
         g.set_u32(STACK + 16, ADDED).unwrap();
         g.set_u32(STACK + 20, REMOVED).unwrap();
-        g.set_u32(HANDLES, 1).unwrap(); // the batch moves node 1
+        g.set_u32(HANDLES, OBJECT).unwrap();
+        g.set_u32(OBJECT, 1).unwrap(); // the batch moves node 1
         vector(g, BOXES, [coord(min[0]), coord(min[1]), coord(min[2]), 0]);
         vector(g, BOXES + 16, [coord(max[0]), coord(max[1]), coord(max[2]), 0]);
         CpuAbi { ecx: WORLD, esp: STACK, ..CpuAbi::default() }
@@ -402,7 +415,7 @@ mod tests {
         assert!(capture(&c, &g).is_none());
         // A node id the sweep does not know.
         g.set_u32(STACK + 8, BOXES).unwrap();
-        g.set_u32(HANDLES, 9).unwrap();
+        g.set_u32(OBJECT, 9).unwrap();
         assert!(capture(&c, &g).is_none());
     }
 }

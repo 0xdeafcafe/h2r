@@ -70,6 +70,8 @@ pub mod sim_effects;
 pub mod sim_native;
 #[cfg(feature = "runtime-glue")]
 pub mod sim_objects;
+#[cfg(feature = "runtime-glue")]
+pub mod sim_seats;
 
 #[cfg(feature = "runtime-glue")]
 pub mod native_sound_ambience;

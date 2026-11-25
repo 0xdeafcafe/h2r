@@ -13,7 +13,7 @@ pub(crate) mod first_person;
 mod pose_layers;
 mod light;
 mod support;
-mod observer;
+pub(crate) mod observer;
 mod objects;
 mod object_update;
 pub(crate) mod node_matrices;
@@ -74,7 +74,6 @@ pub const PORTS: &[Port] = {
         port(&UNIT_AIM_UPDATE, "sim.native_unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
         port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
         port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
-        port(&OBSERVER_RESULT, "sim.native_observer_camera", Camera, &[], observer::camera),
     ]
 };
 
@@ -100,7 +99,9 @@ pub const PHYSICS_PORTS: &[Port] = {
 /// `impl.sim.native.objects` (`crate::sim_objects`); their `oracle.*` names
 /// are labels, not switches. The unit aim port stays in `PORTS` under its
 /// own switch, and the unit movement body runs the same code
-/// (`unit_aim::step`).
+/// (`unit_aim::step`). The observer camera is a seat
+/// (`crate::sim_seats::camera`) under `impl.sim.native.seats`, which
+/// retired its switch.
 pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;
@@ -127,6 +128,7 @@ pub const ORACLES: &[Port] = {
         port(&UNIT_UPDATE, "oracle.unit_update", Integer, &objects::UNIT_SITES, objects::unit),
         // Other codecs are guest calls that resume at the call's return.
         port(&ANIM_ADDITIVE_NODES, "sim.native.anim", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
+        port(&OBSERVER_RESULT, "oracle.observer_camera", Camera, &[], observer::camera),
     ]
 };
 

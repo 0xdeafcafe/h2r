@@ -94,6 +94,8 @@ pub const TABLE: &[Switch] = &[
         "HaloScript VM: retire after the campaign parity and timing ladder"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
+    sw("impl.sim.native.seats", Off, "sim", "2026-11-25",
+        "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
         "phase 4 sound simulation: promote after voice, arena and timing parity"),
     sw("impl.sim.native.physics", Off, "sim", "2026-11-25",
@@ -118,7 +120,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_unit_aim", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_pose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_filters", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_observer_camera", Off, "sim", "2026-11-20", SIM_PORT),
 ];
 
 /// The row named `name`.

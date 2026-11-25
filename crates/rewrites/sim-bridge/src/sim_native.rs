@@ -108,6 +108,9 @@ impl Feature for SimNative {
             if crate::sim_objects::owns(b.switches(), point.base) {
                 continue;
             }
+            if crate::sim_seats::owns(b.switches(), point.base) {
+                continue;
+            }
             let installed = b.switches().implementation(name, false);
             crate::shadow::register(name, crate::shadow::SIM_NATIVE, point, installed);
             if installed {
@@ -150,6 +153,10 @@ impl Feature for SimNative {
         // Registers the effect ports with the shadow registry whatever
         // the switch says; installs them when it is on.
         crate::sim_effects::install(b);
+        // Phase 7: the seats, as the shadow's guest-authoritative arm
+        // first (crate::sim_seats). Registers every seat with the shadow
+        // whatever the switch says; installs them when it is on.
+        crate::sim_seats::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.

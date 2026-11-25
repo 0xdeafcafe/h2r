@@ -10,5 +10,6 @@ pub mod sim_objects;
 pub mod sim_sound;
 pub mod sim_ext;
 pub mod sim_physics;
+pub mod sim_seats;
 pub mod sim_status_poll;
 pub mod sim_observer;

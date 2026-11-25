@@ -1006,6 +1006,7 @@ fn viewer_skips_follow_the_light_profile_and_independent_switches() {
         (false, "impl.sim=on", false),
         (true, "", true),
         (true, "-impl.sim.observer-resources", false),
+        (true, "impl.sim.native.seats", false),
         (true, "-impl.sim", false),
     ] {
         let mut registry = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());

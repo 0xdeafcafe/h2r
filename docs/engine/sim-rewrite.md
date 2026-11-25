@@ -490,6 +490,25 @@ local seats drive 16% of the thread. Phantom seats may not run most of it,
 so census A's phantom arm decides whether this phase matters to hosts or
 only to players.
 
+Built behind `impl.sim.native.seats` (`crates/rewrites/engine/src/sim_seats`,
+one entry per function): the observer camera `171d90`, the look curve
+`185b30`, the player-control update `185be0` (the unbound entry, which the
+phantom seats take, and every segment from the first look-curve return on —
+the bound controller's device reading stays guest), the action `1505f0`,
+neutral `150790` and unit `c6de0` control packet builders, the HUD's
+per-seat update `13a838`, the aim-assist cone `1a50a0`, the target
+comparator `1a66f0` and the observer resource walk `16e5e0`. The target
+search `1a5370`, the follow update `1a4900` and the shot aim `1a4c00` are
+bodies too, proven on the disc by the shadow arm rather than the synthetic
+differential. The entries install as the shadow's guest-authoritative arm:
+`shadow.enable` on, the original answers and each body is checked against
+it on a copy; checks off, the bodies answer. The switch retires
+`native_observer_camera`. `observer-resources` (the trim that spares the
+headless host most of the prediction walk) stays on by default until the
+seats are promoted: with the seats on it stands down, because the seats'
+resource walk covers its point, and with them off it keeps hosts fast.
+It goes when the seats default on.
+
 **Network replication.** Stays guest. Rust subsystems feed it the same arena
 state.
 
@@ -512,7 +531,7 @@ still uses them.
 | **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm. Promote after the ladder matches, including voice start and completion order per tick, and Waterworks saves ≥ 0.6 ms/tick. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |
 | **6** | Effects, particles, decals | `impl.sim.native.effects` | Ladder clean. ≥ 0.4 ms more. **Waterworks ≤ 7.5 ms/tick** if *k* ≥ 3.3; otherwise after phase 7. |
-| **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | `impl.sim.native.seats` | Ladder clean. ≥ 0.9 ms more on four local seats. Retires `native_observer_camera` and `observer-resources`. Skipped for hosts if phantom seats do not run it. |
+| **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | `impl.sim.native.seats` (built) | Ladder clean. ≥ 0.9 ms more on four local seats. Retires `native_observer_camera` (done) and, when the seats default on, `observer-resources`. Skipped for hosts if phantom seats do not run it. |
 | **campaign** | HaloScript VM, AI, pathfinding, in the order census B gives; may move ahead of 4 | one per subsystem | Campaign guest CPU ≤ 12 ms at the user's 4x case. |
 
 Projected Waterworks ms/tick after each phase, from the attribution's model
