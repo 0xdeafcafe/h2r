@@ -39,11 +39,12 @@ fn seat(displayed: f32, age: f32, last_tick: u32, shield: f32, tick: u32, step: 
     word(&mut g, points::GAME_TIME.base, TIME);
     word(&mut g, points::OBJECTS.base, HEADER);
     word(&mut g, HEADER + crate::datum::layout::DATA, DATA);
-    word(&mut g, DATA + 3 * 4 + 8, BODY);
+    word(&mut g, DATA + 2 * 12 + 8, BODY);
     word(&mut g, points::PLAYERS.base, PLAYER);
     word(&mut g, PLAYER + crate::datum::layout::DATA, DATA);
     let mut c = CpuAbi {
-        eax: 0x0003_0004,
+        // The player the seat reports: mask 2 against ebx 3.
+        eax: 0x0003_0002,
         ebx: 0x0000_0003,
         ecx: 0x1234_5678,
         edx: TIME,
@@ -75,7 +76,6 @@ fn the_fade_rises_by_the_frame_speed_and_latches_at_full() {
     g.set_u8(STACK - 0x144, 1).unwrap();
     g.set_u8(STACK - 0x141, 1).unwrap();
     c.ebp = STACK;
-    c.eax = 0x0003_0004;
     g.set_u32(SEAT + 0x28, 0.9f32.to_bits()).unwrap();
     update_fade(&mut c, &mut g).unwrap();
     // 0.5 speed over the 2-frame count, clamped at 1.0.
