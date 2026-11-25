@@ -147,6 +147,47 @@ pub(crate) fn local_forge(
         }
 }
 
+/// What decides the lab takeover ([`lab_takeover`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TakeoverInputs {
+    /// The boot has a window (or a Theater observer window).
+    pub window: bool,
+    /// The guest's own D3D draws.
+    pub d3d: bool,
+    /// XAPI pads are in.
+    pub xapi: bool,
+    pub lockstep: bool,
+    pub host_light: bool,
+    pub sim: bool,
+    /// Theater's playback child.
+    pub replaying: bool,
+}
+
+/// The lab takeover (`lab_takeover`, docs/runtime/lab.md, "Player consent
+/// before a job"): whether a boot plans its dialog's hooks, and whether it
+/// takes a lab's request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Takeover {
+    pub plan: bool,
+    pub accept: bool,
+}
+
+/// A game drawn by its own D3D with XAPI pads, outside lockstep, the light
+/// host and the sim, plans the dialog with or without a window and whether
+/// it records or plays a film. A film's replay installs its recording's
+/// simulation hooks (`theater::compatibility`'s hook digest): the
+/// recording is a windowed game, and its replay is Theater's child, with a
+/// window or none. Only a windowed game that is not a replay takes a
+/// request, so the dialog never opens in a replay; its hooks act on a
+/// request only.
+pub(crate) fn lab_takeover(i: TakeoverInputs) -> Takeover {
+    let plan = i.d3d && i.xapi && !i.lockstep && !i.host_light && !i.sim;
+    Takeover {
+        plan,
+        accept: plan && i.window && !i.replaying,
+    }
+}
+
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
     register_core_film(features, i, None, false, None)

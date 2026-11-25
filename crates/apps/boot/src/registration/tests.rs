@@ -61,8 +61,9 @@ pub(crate) struct Case {
     /// Boot's own co-op arming then comes from `register_late`, so
     /// `coop_live` adds nothing.
     pub live: bool,
-    /// The windowed game with player input: the lab takeover consent and
-    /// its dialog (`AgentGlue::configure_takeover`, needs `agent`).
+    /// A window: the lab takeover takes requests (`AgentGlue::configure_takeover`,
+    /// needs `agent`). Its dialog is planned with `xapi` alone
+    /// (`registration::lab_takeover`).
     pub takeover: bool,
     /// The light host: the viewer skips, the native sim, `sim-frame`, no
     /// window (so no drawing, takeover or return to the menu) and no
@@ -316,12 +317,20 @@ fn registry_with_film(
         .unwrap();
     }
     if let Some(a) = &mut late.agent {
-        a.configure_takeover(
-            &mut features,
-            case.takeover && !case.light,
-            case.takeover && !case.light,
-        )
-        .unwrap();
+        // Boot's decision, from the same function (lib.rs): pads plan the
+        // dialog, and `takeover` is the window that takes requests.
+        let window = case.takeover && !case.light;
+        let takeover = super::lab_takeover(super::TakeoverInputs {
+            window,
+            d3d: true,
+            xapi: case.xapi,
+            lockstep: case.lockstep,
+            host_light: case.light,
+            sim: false,
+            replaying: case.replaying,
+        });
+        a.configure_takeover(&mut features, window, takeover.plan, takeover.accept)
+            .unwrap();
     }
     if let (Some(theater), Some(a)) = (&theater, &late.agent) {
         theater.connect(&a.agent);
@@ -1188,6 +1197,80 @@ fn a_default_recordings_replay_installs_the_recordings_hooks() {
         );
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The film's hook digest (`theater::hook_digest`) of `registry`'s plan,
+/// every address placed as install places it on a full image.
+fn hook_digest(registry: hooks::Registry) -> String {
+    let plan = registry.build(&hooks::Base).unwrap();
+    let placed = plan
+        .chains
+        .values()
+        .flat_map(|c| [Some(c.addr), c.shadow])
+        .flatten()
+        .chain(plan.entries.iter().map(|e| e.addr))
+        .collect();
+    let installed = hooks::Installed { placed, ..Default::default() };
+    crate::theater::hook_digest(&plan, &installed)
+}
+
+/// `h2 play` records in a window that takes lab requests; `h2 theater
+/// play` replays it in Theater's window or with none (`--render-every 0`).
+/// Each replay's digest is the recording's, or the replay refuses the
+/// film ("Installed simulation hooks differ from the film"): the lab
+/// takeover's dialog was planned only in a window that takes requests, so
+/// every replay of a windowed recording refused it.
+#[test]
+fn a_recording_and_its_replays_have_one_hook_digest() {
+    let dir = std::env::temp_dir().join(format!("h2-registration-digest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let profile = super::compiled_render_hooks();
+    let play = Case { coop_live: true, ..Case::full("") };
+    assert!(play.takeover && play.xapi);
+    let window = Case { replaying: true, ..play.clone() };
+    let no_window = Case { takeover: false, ..window.clone() };
+    for (name, auto) in [("auto.h2film", true), ("explicit.h2film", false)] {
+        let film = recording(&dir, name, auto);
+        let digest = |case: &Case| hook_digest(registry_with_film(case, profile, Some(Arc::clone(&film))));
+        let recorded = digest(&play);
+        assert_eq!(digest(&window), recorded, "{name}: Theater's window");
+        assert_eq!(digest(&no_window), recorded, "{name}: no window");
+        assert!(on_features(registry_with_film(&window, profile, Some(Arc::clone(&film)))).contains("lab-takeover"));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Pads plan the lab takeover's dialog; only a player's window that is not
+/// a replay takes a lab's request.
+#[test]
+fn the_lab_takeover_plans_with_pads_and_accepts_in_the_players_window() {
+    use super::{Takeover, TakeoverInputs, lab_takeover};
+    let play = TakeoverInputs {
+        window: true,
+        d3d: true,
+        xapi: true,
+        lockstep: false,
+        host_light: false,
+        sim: false,
+        replaying: false,
+    };
+    assert_eq!(lab_takeover(play), Takeover { plan: true, accept: true });
+    for replay in [
+        TakeoverInputs { replaying: true, ..play },
+        TakeoverInputs { replaying: true, window: false, ..play },
+        TakeoverInputs { window: false, ..play },
+    ] {
+        assert_eq!(lab_takeover(replay), Takeover { plan: true, accept: false }, "{replay:?}");
+    }
+    for off in [
+        TakeoverInputs { xapi: false, ..play },
+        TakeoverInputs { d3d: false, ..play },
+        TakeoverInputs { lockstep: true, ..play },
+        TakeoverInputs { host_light: true, ..play },
+        TakeoverInputs { sim: true, ..play },
+    ] {
+        assert_eq!(lab_takeover(off), Takeover { plan: false, accept: false }, "{off:?}");
+    }
 }
 
 #[test]

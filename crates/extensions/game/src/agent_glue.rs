@@ -530,16 +530,20 @@ impl AgentGlue {
     }
 
     /// Windowed macOS games advertise an enabled agent to the lab even when
-    /// the player uses a custom endpoint.
+    /// the player uses a custom endpoint. `plan` registers the consent
+    /// dialog's hooks; `accept` also takes the lab's requests (boot's
+    /// `registration::lab_takeover`: a film's recording and its replay
+    /// plan the same hooks, and only the player's game accepts).
     pub fn configure_takeover(
         &mut self,
         features: &mut hooks::Registry,
         window: bool,
-        accepts_player_input: bool,
+        plan: bool,
+        accept: bool,
     ) -> Result<()> {
         crate::lab_takeover::add_info(&self.agent, window);
-        if window && accepts_player_input {
-            crate::lab_takeover::install(features, &self.agent)?;
+        if plan {
+            crate::lab_takeover::install(features, &self.agent, accept)?;
         }
         if cfg!(target_os = "macos")
             && window

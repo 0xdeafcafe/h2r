@@ -1331,13 +1331,19 @@ fn run_configured(
         )));
     }
     if let Some(a) = &mut agent {
-        a.configure_takeover(
-            &mut features,
-            !headless || observer_window,
-            !headless && opts.d3d && xa.is_some() && !replaying && !lockstep_on && !host_light
-                && sim_mode.is_none(),
-        )
-        .context("installing lab takeover consent")?;
+        // A film's replay plans the dialog as its recording did, window or
+        // none (theater::compatibility's hook digest), and takes no request.
+        let takeover = registration::lab_takeover(registration::TakeoverInputs {
+            window: !headless,
+            d3d: opts.d3d,
+            xapi: xa.is_some(),
+            lockstep: lockstep_on,
+            host_light,
+            sim: sim_mode.is_some(),
+            replaying,
+        });
+        a.configure_takeover(&mut features, !headless || observer_window, takeover.plan, takeover.accept)
+            .context("installing lab takeover consent")?;
     }
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
