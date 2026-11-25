@@ -723,6 +723,7 @@ impl Session {
             last_discard: s.outcome.discard.clone(),
             notes: s.outcome.notes.clone(),
             failure: s.failure.clone(),
+            watch_failure: self.watch_failure(),
         }
     }
 
@@ -960,6 +961,11 @@ impl Session {
     }
 
     pub fn finish(&self, slices: u64, teardown: bool) -> Result<()> {
+        // A film that diverged while watched ends like End Film; the game
+        // goes on (`watch.rs`).
+        if !teardown && self.watch_diverged() {
+            return Ok(());
+        }
         if teardown {
             // A film still playing is dropped: the recorder seals its own.
             self.drop_watch();

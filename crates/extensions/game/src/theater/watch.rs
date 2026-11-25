@@ -50,6 +50,8 @@ pub(super) struct Hub {
     /// The call that queued the latest game. A call leaves the queue when
     /// its ticket drops, so the ticket is kept until the next game is queued.
     ticket: Mutex<Option<calls::PendingCall>>,
+    /// Why the last watched film stopped on its own.
+    failed: Mutex<Option<String>>,
     /// Told the film's id when a watch ends by leaving, so the menu can
     /// open the film page again.
     returned: OnceLock<Box<dyn Fn(&str) + Send + Sync>>,
@@ -63,6 +65,7 @@ impl Hub {
             armed: Mutex::new(None),
             calls: OnceLock::new(),
             ticket: Mutex::new(None),
+            failed: Mutex::new(None),
             returned: OnceLock::new(),
         }
     }
@@ -361,6 +364,7 @@ impl Session {
             eprintln!("theater: a game started that is not the film's; the film is not watched");
             return false;
         }
+        *self.watch.failed.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut s = self.lock();
         // The game in play, if any, is left as it is when its player quits
         // to the menu: no film is made of it.
@@ -395,6 +399,43 @@ impl Session {
     pub(super) fn drop_watch(&self) {
         self.disarm_watch();
         self.finish_watch(false);
+    }
+
+    /// Why the last film watched here stopped before the viewer left it.
+    pub(super) fn watch_failure(&self) -> Option<String> {
+        self.watch.failed.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// A film being watched has diverged (the game's start hash, a digest,
+    /// an update the film cannot apply). The film stops and the viewer
+    /// leaves it as End Film does: the main menu is queued, the settings
+    /// are put back at its activation and the film's page opens with the
+    /// reason, which `theater.status` keeps as `watch_failure`. The game
+    /// stays alive: the failure is the film's, not the guest's. Returns
+    /// whether a watch was ended this way.
+    pub(super) fn watch_diverged(&self) -> bool {
+        let (film, why) = {
+            let mut s = self.lock();
+            let Some(why) = s.failure.clone() else { return false };
+            let Some(info) = &mut s.watch else { return false };
+            let film = info.film.clone();
+            info.leaving = true;
+            // The film is stopped: its ticks no longer count and the game
+            // runs on its own while the menu loads.
+            s.failure = None;
+            s.complete = true;
+            s.seeking = None;
+            (film, why)
+        };
+        eprintln!("theater: film {film} stopped: {why}; leaving it for the main menu");
+        *self.watch.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+        if let Err(e) = self.queue(crate::game_menu::steps()) {
+            // No way to the menu: the game in play is the film's, and the
+            // recorder takes the session back as it is.
+            eprintln!("theater: could not queue the main menu: {e}");
+            self.finish_watch(true);
+        }
+        true
     }
 
     /// Leave the film for the main menu (`theater.end`, End Film). The game

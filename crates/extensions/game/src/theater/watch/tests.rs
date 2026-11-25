@@ -468,3 +468,42 @@ fn watch_and_end_are_methods_of_a_game_that_records_and_end_needs_a_film() {
     let state = call(api::STATE, json!({}));
     assert_eq!(state["result"]["id"], json!(v.rec.film_id_of(&v.film)), "{state}");
 }
+
+#[test]
+fn a_film_that_diverges_in_the_running_game_ends_like_end_film_and_the_game_goes_on() {
+    let v = viewer();
+    let rec = &v.rec;
+    let store = store(rec);
+    store.run_as(SETTING, Setting::Bool(false)).unwrap();
+    let planned = rec.plan_watch(&v.film, api::InitialView::default()).unwrap();
+    rec.arm_watch(planned);
+    // The game's arena at its first update is not the one the film started
+    // from.
+    let mut g = machine(&v.options, [999, 888]);
+    rec.game_activated(&g);
+    assert!(rec.watching());
+    g.set_u32(STATE, 0xbad0_bad0).unwrap();
+    assert!(tick(rec, &mut g, 0));
+    let why = rec.lock().failure.clone().expect("the start hash differs");
+    assert!(why.contains("start hash"), "{why}");
+
+    // The slice's end turns the failure into leaving the film: no error
+    // for the guest, the main menu queued, the film's reason kept.
+    rec.finish(1, false).expect("the guest goes on");
+    assert_eq!(v.pending(), vec![Call::QueueGame { steps: crate::game_menu::steps() }]);
+    {
+        let s = rec.lock();
+        assert!(s.watch.is_some() && s.failure.is_none() && !s.holds_in_game());
+    }
+    assert_eq!(rec.status().watch_failure, Some(why));
+    rec.finish(2, false).expect("and keeps going while the menu loads");
+    assert_eq!(store.get(SETTING), Some(Setting::Bool(true)), "the film's settings stay until the menu");
+
+    rec.game_activated(&game(&block(MODE_MAINMENU, 0), [0, 0]));
+    assert!(!rec.watching());
+    assert_eq!(*v.returned.lock().unwrap(), vec![rec.film_id_of(&v.film)]);
+    assert_eq!(store.get(SETTING), Some(Setting::Bool(false)), "the viewer's setting is back");
+    // Nothing of the film was recorded: the library has the one game.
+    assert_eq!(cuts(rec).len(), 1);
+    assert!(rec.status().watch_failure.is_some(), "kept for the page");
+}

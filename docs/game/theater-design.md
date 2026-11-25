@@ -258,6 +258,14 @@ export only.
    game is recorded from the tick the recording stopped at; none of the
    film's ticks are in any film file. A session that ends while a film
    plays drops the film and seals the recorder's own games.
+6. A film that diverges while watched (a start hash that is not
+   reproduced, a digest, an update it cannot apply) is left as End Film
+   leaves it, from the slice's end (`Session::watch_diverged`): the
+   failure is not the guest's, the game goes on, and the reason is kept as
+   `theater.status`'s `watch_failure`. The start hash is made of the arena
+   and the extension records' digest; the film's `HDET` section holds both
+   by page, so the reason names the arena pages or the extension state
+   that differ.
 
 No process is started and nothing is booted to watch a film or to seek in
 one. `h2 theater play FILE`, `h2 theater verify` and the clip export

@@ -638,6 +638,7 @@ mod tests {
                 settings: Default::default(),
                 variant: None,
                 map_variant: None,
+                hash_detail: None,
             };
             let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
             let path = film::file::beside(&dir.0.join("current.h2film"));
