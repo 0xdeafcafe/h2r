@@ -36,6 +36,16 @@ fn render_frame_and_stats_through_the_socket() {
             display_rate: Box::new(|| {
                 Some(agent_proto::DisplayRateStats { rate_hz: 60, swaps: 7, blended: 6, ..Default::default() })
             }),
+            ui: Box::new(|| {
+                Some(agent_proto::UiStats {
+                    output: [1920, 1080],
+                    scale: [0.75, 1.0],
+                    offset: [80.0, 0.0],
+                    anchor: "pinned".into(),
+                    atlas_scale: 3,
+                    atlas_page: 2048,
+                })
+            }),
             counters: Box::new(|| None),
         },
     );
@@ -56,6 +66,10 @@ fn render_frame_and_stats_through_the_socket() {
     let s = c.call(method::RENDER_STATS, Value::Null).unwrap();
     assert_eq!(s["display_rate"]["blended"], 6);
     assert_eq!(s["display_rate"]["rate_hz"], 60);
+    assert_eq!(s["ui"]["output"], serde_json::json!([1920, 1080]));
+    assert_eq!(s["ui"]["scale"], serde_json::json!([0.75, 1.0]));
+    assert_eq!(s["ui"]["anchor"], "pinned");
+    assert_eq!(s["ui"]["atlas_scale"], 3);
 
     let r = c.call(method::RENDER_FRAME, Value::Null).unwrap();
     assert_eq!(r["armed"], false);

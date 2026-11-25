@@ -1553,6 +1553,31 @@ The object-shadow list, row gather and caster each count calls to their own
 entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
 `counters` is `null` where the frame-stats window is not running.
 
+`ui` is the layout the menus and the HUD are drawn with
+([high-resolution.md](../graphics/high-resolution.md#the-games-640x480-assumptions)),
+as the game's UI scopes last set it; absent before the first one drew. Its
+fields:
+
+| Field | Meaning |
+|---|---|
+| `output` | `[width, height]`, the window the UI is drawn at; the guest's 640x480 canvas before the first menu scope |
+| `scale` | the menu fit's `[sx, sy]`, guest window units: guest `p` draws at `p * scale + offset` |
+| `offset` | the fit's translation, guest window units |
+| `anchor` | how the HUD's corner groups anchor: `pinned` to the window's edges at their physical scale, or `centered` on the safe area's edges |
+| `atlas_scale` | the whole multiple of a glyph's own size the text atlas rasterises at (0 before the first text run) |
+| `atlas_page` | the side of a glyph page in texels |
+
+The fit is `render_bridge::ui_layout`'s one rule: the safe area is the
+largest centred 4:3 box (`min(w/640, h/480)` display pixels per guest
+pixel), and a live resize moves it on the next frame. A check resizes the
+window (`host.window.resize`), reads `render.stats`'s `ui`, and expects
+`scale` to hold the new window's uniform fit while `anchor` and
+`atlas_scale` stay.
+
+```sh
+h2 agent render.stats | jq .ui
+```
+
 `display_rate` is present while a paced frame owner runs it: a window
 or GPU serve with the render thread on, `frame-scene.sink` not off, and no
 locked mailbox (`H2_BOOT_STOP_AT_PRESENT`, an unpaced display or a

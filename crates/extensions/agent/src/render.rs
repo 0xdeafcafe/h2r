@@ -583,6 +583,7 @@ fn reply(s: &ProbeState) -> FrameReply {
 /// What `render.stats` reads, each `None` where that piece isn't running.
 pub struct RenderSources {
     pub display_rate: Box<dyn Fn() -> Option<agent_proto::DisplayRateStats> + Send>,
+    pub ui: Box<dyn Fn() -> Option<agent_proto::UiStats> + Send>,
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
@@ -634,6 +635,7 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
             display_frame: private_graph::display_stats(),
             private_frame: private_graph::last_stats(),
             display_rate: (sources.display_rate)(),
+            ui: (sources.ui)(),
             counters: (sources.counters)().unwrap_or(Value::Null),
         };
         serde_json::to_value(s).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))

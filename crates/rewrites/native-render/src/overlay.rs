@@ -97,6 +97,11 @@ impl GlyphPages {
         GlyphPages { size, pages: std::collections::BTreeMap::new() }
     }
 
+    /// The side of a page in texels, as `new` was given.
+    pub fn side(&self) -> u32 {
+        self.size
+    }
+
     /// Whether glyph `index` of font `font` is in its page.
     pub fn has(&self, font: u16, index: u32) -> bool {
         self.pages.get(&font).is_some_and(|p| p.glyphs.contains_key(&index))

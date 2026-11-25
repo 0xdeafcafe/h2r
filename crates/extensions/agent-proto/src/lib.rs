@@ -67,7 +67,7 @@ pub use render::{
     DisplayRateStats, DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
     LayoutTexture, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
     ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
-    ResidualUnattributed, ResidualWindow, SceneCarried,
+    ResidualUnattributed, ResidualWindow, SceneCarried, UiStats,
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
     SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
     SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,

@@ -18,6 +18,7 @@
 use std::fmt;
 
 pub mod arrows;
+pub mod coverage;
 pub mod encode;
 pub mod gear;
 pub mod icons;

@@ -1076,6 +1076,13 @@ pub struct UiFit {
 impl UiFit {
     pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true, screen_input: None };
 
+    /// A fit from a placement in guest window units
+    /// (`render_bridge::ui_layout`'s rule): x' = x*sx + ox, y' = y*sy + oy,
+    /// scissors fitted with it.
+    pub fn from_transform(transform: [f32; 4]) -> Self {
+        Self { transform, fit_scissor: true, screen_input: None }
+    }
+
     /// Fit guest pixels uniformly on the output, about a pivot in guest
     /// window coordinates. Each player's viewport has its own pivot.
     pub fn about(output: (u32, u32), pivot: [f32; 2]) -> Option<Self> {
