@@ -68,7 +68,7 @@ connection to hold `session.claim`.
 | `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.picture.open`, `render.picture.close` | read | [Picture feed](#picture-feed-renderpicture) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
-| `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.compare`, `render.capture`, `render.scene`, `render.view.current`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.spawn_view`, `render.view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.residual` | read | [Residual D3D work](#renderresidual-residual-d3d-work) |
@@ -1889,6 +1889,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.view` | act | `{eye: [x,y,z], yaw, pitch, fov?}` or `{reset: true}` | `{eye, yaw, pitch, fov}` or `{reset: true}` |
+| `render.view.current` | read | `{seat?}` | `{eye: [x,y,z], yaw, pitch, fov, private?}` |
 | `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, visibility_first_mismatch?, light_visibility_first_mismatch?, first_person_visibility_first_mismatch?, view_record_first_mismatch?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
@@ -1938,6 +1939,28 @@ h2 agent render.parity '{"arm": true}'
   with a pose, give `INVALID_PARAMS`; no loaded scenario gives
   `UNAVAILABLE`. Types: `ViewParams` and its `check` in
   `crates/extensions/agent-proto/src/render.rs`.
+- **`render.view.current`.** Reads the pose of the view the game draws for
+  local player `seat` (0 to 3, default 0), at the tick boundary, in
+  `render.view`'s conventions: `eye` in world units, `yaw` the heading
+  about +z from +x towards +y wrapped into 0 to 2π, `pitch` up positive
+  (within ±1.55), `fov` the horizontal lens in degrees. The reply also
+  carries the usual `at` stamp. A user who sees a rendering fault in their
+  own game gives the coordinator this pose, and `render.view` with its
+  `eye`, `yaw`, `pitch` and `fov` (not `at` or `private`) draws the same
+  view in a test boot. The pose comes from the seat's view record in the
+  game's view table (`spectator_view::drawn_view`: the render camera's
+  position, forward and vertical lens, the lens converted to horizontal);
+  yaw and pitch derive from the forward vector (`CurrentView::looking`).
+  While a `render.view` or `render.spawn_view` camera is selected and its
+  scenario is loaded, the reply is that camera's pose with `private: true`
+  (its lens is the one given, else the game view's); `private` is absent
+  otherwise. No view record for the seat (no world loaded, a cinematic,
+  a seat without a screen) gives `UNAVAILABLE`; a `seat` outside 0 to 3
+  or unknown params give `INVALID_PARAMS`. A Theater camera is not
+  reported: the reply is the underlying game view. Types:
+  `CurrentViewParams` and `CurrentView` in
+  `crates/extensions/agent-proto/src/render.rs`, the method in
+  `crates/extensions/game/src/agent_spawn_view.rs`.
 - **`render.capture`.** With `lighting: "retail" | "e3" | "relight-on" |
   "relight-off"`, the native
   renderer draws a sealed scene into a private target. The default is
