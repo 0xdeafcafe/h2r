@@ -266,6 +266,8 @@ fn registry_with_film(
             #[cfg(feature = "gpu")]
             reference_lod: protected.then_some(1.0),
             #[cfg(feature = "gpu")]
+            d3d_display: !protected,
+            #[cfg(feature = "gpu")]
             viewer_lod: None,
             #[cfg(feature = "gpu")]
             world_line_present: None,

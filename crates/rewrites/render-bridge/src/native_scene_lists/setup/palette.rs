@@ -8,8 +8,8 @@ use super::residency;
 use super::staged::Staged;
 use super::*;
 
-pub(super) const PALETTE_CURSOR: u32 = NODE_BLOCKS - 4;
-const PALETTE_LIMIT: u32 = 0x27000;
+pub(in crate::native_scene_lists) const PALETTE_CURSOR: u32 = NODE_BLOCKS - 4;
+pub(in crate::native_scene_lists) const PALETTE_LIMIT: u32 = 0x27000;
 type Matrix = [f32; 12];
 
 pub(super) fn size(m: &dyn GuestMemory, model: u32, lod: u8, sections: &[u8]) -> Result<u32> {
@@ -60,7 +60,11 @@ fn single(m: &dyn GuestMemory, model: u32) -> Result<bool> {
     Ok(m.u8(at(model, 4)?)? & 4 != 0)
 }
 
-fn blend_group(m: &dyn GuestMemory, model: u32, lod: u8) -> Result<(u32, u32)> {
+pub(in crate::native_scene_lists) fn blend_group(
+    m: &dyn GuestMemory,
+    model: u32,
+    lod: u8,
+) -> Result<(u32, u32)> {
     if lod > 5 {
         return Err(Refusal::ObjectModel);
     }

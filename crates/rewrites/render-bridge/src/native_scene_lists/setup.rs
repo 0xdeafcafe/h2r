@@ -7,9 +7,12 @@ mod residency;
 mod sections;
 mod staged;
 
+pub(in crate::native_scene_lists) use palette::{PALETTE_CURSOR, PALETTE_LIMIT, blend_group};
 use records::ObjectRecord;
+pub(in crate::native_scene_lists) use residency::resource_cache_in_use;
 use sections::Prepared;
 pub(super) use sections::{HIGHEST_LOD, LOD_FRACTION_MAX};
+pub(in crate::native_scene_lists) use sections::{finest_lod, permutations, section_index};
 use staged::Staged;
 
 use super::lights::{MIN_DEPTH, PIXEL_SCALE, PROJECTION_DEPTH, SIZE_FACTOR};

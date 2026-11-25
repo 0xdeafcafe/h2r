@@ -946,8 +946,14 @@ fn run_configured(
     let single = opts.d3d && host.gfx_view.is_some()
         && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
     #[cfg(feature = "gpu")]
-    let reference_lod = (protected_readbacks || (!single && host.gfx_view.is_some()))
-        .then(|| legacy_lod.unwrap_or(1.0));
+    // A legacy film's recorded geometry multiplier. The guest walk is retail
+    // otherwise, whatever the local display choice (lod_distance), so no
+    // run forces retail for the network, film or lockstep of it.
+    let reference_lod = legacy_lod;
+    #[cfg(feature = "gpu")]
+    // The display can draw different geometry than the copy the guest
+    // readbacks read: every non-single-copy drawing view.
+    let display_split = !single && host.gfx_view.is_some();
     #[cfg(feature = "gpu")]
     if single && d3d_glue::locked_retail_target(host.settings.as_deref())
         && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
@@ -987,7 +993,7 @@ fn run_configured(
                 let (width, height) = output();
                 let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                if reference_lod.is_some() && hooks::switches::native_render_on(features.switches()) {
+                if display_split && hooks::switches::native_render_on(features.switches()) {
                     b.keep_display_copy();
                 }
                 let (dw, dh) = native_target().drawable;
@@ -1269,6 +1275,8 @@ fn run_configured(
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
             reference_lod,
+            #[cfg(feature = "gpu")]
+            d3d_display: single,
             #[cfg(feature = "gpu")]
             viewer_lod,
             #[cfg(feature = "gpu")]

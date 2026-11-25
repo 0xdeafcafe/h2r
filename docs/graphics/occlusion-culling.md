@@ -149,32 +149,61 @@ projection accounts for the viewport and FOV, including split screen.
 **Retail** uses the original distances and pixel sizes.
 [Video settings](../game/settings-menu.md#video-screen).
 
-- **View setup.** The record reset at `0x0002cb30` samples LOD Distance
-  into the render context's guest words. Choose Profile and Appearance
-  reach the world reset caller `0x00031ef5` through `0x0002bcd0` and
-  `0x00031c80`. The Rust light frame body identifies that caller through
-  `light_gather::frame::call_site`. The display and exact reference each
-  have a latched selection. The reference uses the original projection
-  and geometry, including retail detail for menu widgets.
-- **BSP clusters and placements.** In single-copy rendering, numeric
-  multipliers scale the projection for the guest and Rust `world_walk`
-  record builders. A placement's world-space radius still decides whether
-  to apply its small-object factor. Its projected size controls the fade
-  and zero-alpha cull, and the record stores a size byte saturated at 255.
-  Highest leaves projected sizes at their original values. The reset
-  repairs an interrupted walk's projection, and object setup restores it
-  before object lighting computes its pixel radius.
+The setting changes only what is drawn, on every path. The record reset at
+`0x0002cb30` samples LOD Distance into the render context's two words: the
+guest word the record walks read, and the display word the substituting
+render paths read. The guest word is always the retail/sim selection —
+whatever the setting, the walk's records, its pose evaluation, the live
+node matrices the marker lookup reads, and the lockstep and film digests
+are the retail ones — with one exception: a legacy film's recorded
+multiplier takes the guest word, so the playback reproduces the walk that
+recorded it. Choose Profile and Appearance reach the world reset caller
+`0x00031ef5` through `0x0002bcd0` and `0x00031c80`. The Rust light frame
+body identifies that caller through `light_gather::frame::call_site`.
+Menu model widgets use the same record walk and draw at retail, like the
+reference. No run forces retail for the network, film or lockstep of it:
+the protected sessions keep their own reference copy, and the choice
+reaches only the display draws.
+
+- **The native display passes.** The display word reaches the object
+  layer's walk (`native_objects`), which plans substituted draws for
+  complete supported objects in the same sorted run and draws the display
+  gather's additional objects. Section selection, lighting, palette
+  construction and record emission run against a private overlay of guest
+  memory (`native_scene_lists::display_model`), which publishes no pose,
+  palette, cache or record write and requests no guest resources; it uses
+  the mounted model's node maps even when the guest has yet to stream
+  those sections. The exact reference and every guest readback keep the
+  retail records.
+- **The D3D fallback.** In single-copy rendering the guest's own D3D draws
+  are the display: at the sorted geometry handler (`0x0004d0b0`, after the
+  native objects walk has taken its runs) the Highest choice swaps the
+  record's section, its palette block and the part's index range to the
+  finest tier that classifies and materials identically, whose geometry
+  is resident and whose remap rows are already in the palette
+  (`native_scene_lists/display_swap.rs`). No pose step runs for the
+  substituted tier, and numeric multipliers keep their retail D3D draws.
+  With a distinct reference copy (Live, System Link, co-op, Theater, or a
+  relit or multi-copy local run) the guest's D3D draws are that reference
+  and keep the retail geometry.
+- **BSP clusters and placements.** A legacy film's recorded multiplier
+  scales the projection for the guest and Rust `world_walk` record
+  builders; the local setting never touches it. A placement's world-space
+  radius still decides whether to apply its small-object factor. Its
+  projected size controls the fade and zero-alpha cull, and the record
+  stores a size byte saturated at 255. The reset repairs an interrupted
+  walk's projection, and object setup restores it before object lighting
+  computes its pixel radius.
 - **Object models.** The chooser at `0x0004c450` compares the
-  camera-to-centre distance to the model's cutoffs at `hlmt + 0x34`.
-  Numeric choices divide that distance by the multiplier. Highest selects
-  the finest tier directly. Shared setup keeps retail selection for
-  pose-dependent sections (`hlmt + 0xc4`). Their render setup can clear the
-  live object's dirty bit and evaluate shared node matrices at
-  `0x000bd7b2`. The native opaque object pass can instead build display
-  sections and palettes against a private overlay. It uses the mounted
-  model's node maps even when the guest has yet to stream those sections.
-  The pass replaces complete supported objects in the same sorted run.
-  Draws outside that coverage use their original records.
+  camera-to-centre distance to the model's cutoffs at `hlmt + 0x34`; the
+  guest's chooser always runs at retail selection (a legacy film's
+  multiplier divides the distance for pose-independent models). The
+  substituting paths take the finest authored tier that can draw every
+  active region, the next when a section is absent. Shared setup keeps
+  retail selection for pose-dependent sections (`hlmt + 0xc4`). Their
+  render setup can clear the live object's dirty bit and evaluate shared
+  node matrices at `0x000bd7b2`. Draws outside the display substitution's
+  coverage use their original records.
   [Determinism](high-resolution.md#determinism).
 - **First person and decorators.** First-person setup starts each viewmodel
   at the finest tier and uses its own pose slots. Native first-person draws

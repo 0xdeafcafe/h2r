@@ -1,8 +1,12 @@
 //! Pixel-based detail in the structure record walks. Each of their three
 //! callers resets the record counters, builds clusters and placements, then
 //! builds object records. Menu model widgets use the same record walk.
-//! Exact readbacks use the guest selection. Native display passes can sample
-//! a separate detail without publishing its pose, palette or cache writes.
+//! The guest selection is always the retail/sim one, so the walk's records,
+//! pose evaluation, node matrices and marker data are identical whatever the
+//! setting; only a legacy film's recorded multiplier reaches it. The display
+//! word carries the local choice to the render paths that substitute
+//! geometry without publishing pose, palette or cache writes: the native
+//! display passes, and the D3D fallback's draw-boundary swap.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -18,6 +22,9 @@ pub struct LodDistance {
     distance: Option<settings::Setting<u32>>,
     startup_distance: u32,
     reference_multiplier: Option<f32>,
+    /// The guest's own D3D draws render the display (single-copy: no
+    /// distinct reference copy), so they take the draw-boundary swap.
+    d3d_display: bool,
     /// Guest address published during registration for the native object walk.
     view_scale: OnceLock<ViewLodScale>,
 }
@@ -42,13 +49,23 @@ impl LodDistance {
             view_scale: OnceLock::new(),
             distance,
             reference_multiplier: None,
+            d3d_display: false,
             startup_distance: value.as_int().expect("LOD Distance is a numeric choice") as u32,
         })
     }
 
-    /// Keep protected geometry independent of the local display and settings.
+    /// Keep the recorded reference geometry (a legacy film's multiplier)
+    /// independent of the local display and settings.
     pub fn with_reference_multiplier(mut self, multiplier: f32) -> Self {
         self.reference_multiplier = Some(multiplier);
+        self
+    }
+
+    /// The guest's own D3D draws render the display (single-copy: no
+    /// distinct reference copy takes the readbacks), so the Highest choice
+    /// swaps their drawn geometry at the draw boundary.
+    pub fn with_d3d_display(mut self, display: bool) -> Self {
+        self.d3d_display = display;
         self
     }
 
@@ -88,7 +105,11 @@ impl Feature for LodDistance {
         self.view_scale
             .set(view_scale)
             .map_err(|_| BuildError("LOD distance already registered".into()))?;
-        NativeSceneLists::install_guest_lod(b, view_scale);
+        // Without a distinct reference copy (single-copy rendering), the
+        // guest's own D3D draws are the display and take the draw-boundary
+        // geometry swap.
+        let d3d_display = self.d3d_display;
+        NativeSceneLists::install_guest_lod(b, view_scale, d3d_display);
         let setting = self.clone();
         b.raw()
             .before(
@@ -168,10 +189,15 @@ pub(super) fn reset_view(
     let world = matches!(caller, 0x0002_cbcc | 0x0003_1ef5 | 0x0003_f3b9);
     let model_view = mem.u32(saved + 8)? & ViewLodScale::MODEL_VIEW;
     let (guest, display) = if world {
+        // The guest walk keeps the retail/sim selection whatever the local
+        // display choice: the record walk, its pose evaluation and the
+        // matrices the sim's marker lookup reads never follow the setting.
+        // A legacy film's recorded multiplier is the one exception: its
+        // playback must reproduce the walk that recorded it.
         let guest = match reference {
             Some(_) if model_view != 0 => LodDetail::Retail,
             Some(multiplier) => scaled(multiplier),
-            None => display,
+            None => LodDetail::Retail,
         };
         (guest, display)
     } else {
@@ -260,6 +286,8 @@ mod tests {
         mem.map_zeroed(points::PIXEL_SCALE & !0xfff, 0x1000, Permissions::RW)
             .unwrap();
         mem.set_f32(points::PIXEL_SCALE, 30.0).unwrap();
+        // A legacy film's recorded multiplier scales the guest projection and
+        // survives an interrupted walk.
         for (next_caller, factor, pixels, kept) in [
             (caller, 4.0, 120.0, 4.0),
             (caller, 1.5, 45.0, 1.5),
@@ -269,7 +297,7 @@ mod tests {
             (0, 3.0, 30.0, 1.0),
             (caller, 3.0, 90.0, 3.0),
         ] {
-            reset_view(&mut mem, saved, next_caller, scaled(factor), None).unwrap();
+            reset_view(&mut mem, saved, next_caller, scaled(factor), Some(factor)).unwrap();
             assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), pixels);
             assert_eq!(cached.read(&mem), scaled(kept));
         }
@@ -280,6 +308,15 @@ mod tests {
             LodDetail::Scaled(3.0),
             "object records retain this view's factor"
         );
+        // The local display detail never scales the guest projection.
+        for display in [LodDetail::Highest, scaled(4.0), LodDetail::Retail] {
+            reset_view(&mut mem, saved, caller, display, None).unwrap();
+            assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 30.0);
+            assert_eq!(cached.read(&mem), LodDetail::Retail);
+            assert_eq!(cached.display(&mem), display);
+        }
+        end_structure(&mut mem, saved).unwrap();
+        assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), 30.0);
     }
 
     #[test]
@@ -289,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_model_view_uses_the_requested_detail() {
+    fn a_menu_model_view_keeps_the_retail_walk_and_the_requested_display() {
         let mut mem = Guest::new();
         let saved = 0x1000;
         let cached = ViewLodScale::new(saved + 4);
@@ -300,7 +337,7 @@ mod tests {
 
         set_model_view(&mut mem, saved, true).unwrap();
         reset_view(&mut mem, saved, caller, LodDetail::Highest, None).unwrap();
-        assert_eq!(cached.read(&mem), LodDetail::Highest);
+        assert_eq!(cached.read(&mem), LodDetail::Retail);
         assert_eq!(cached.display(&mem), LodDetail::Highest);
 
         reset_view(&mut mem, saved, caller, LodDetail::Scaled(4.0), Some(2.5)).unwrap();
@@ -317,7 +354,35 @@ mod tests {
     }
 
     #[test]
-    fn projected_structure_pixels_follow_the_view_and_object_lighting_keeps_the_retail_bits() {
+    fn the_display_detail_never_reaches_the_guest_walk() {
+        // Whatever the setting, the words the record walk reads — the guest
+        // selection and the projection's pixel scale — stay at their retail
+        // values, so the walk's published records, pose evaluation, the live
+        // node matrices the marker lookup reads and the lockstep and film
+        // digests are the same for Retail and Highest.
+        let mut mem = Guest::new();
+        let saved = 0x1000;
+        let cached = ViewLodScale::new(saved + 4);
+        let caller = 0x0003_f3b9;
+        mem.map_zeroed(saved, 0x1000, Permissions::RW).unwrap();
+        mem.map_zeroed(points::PIXEL_SCALE & !0xfff, 0x1000, Permissions::RW)
+            .unwrap();
+        mem.set_f32(points::PIXEL_SCALE, 30.0).unwrap();
+        reset_view(&mut mem, saved, caller, LodDetail::Retail, None).unwrap();
+        let guest_word = cached.read(&mem);
+        let pixels = mem.f32(points::PIXEL_SCALE).unwrap();
+        for display in [LodDetail::Highest, scaled(2.0), LodDetail::Retail] {
+            reset_view(&mut mem, saved, caller, display, None).unwrap();
+            assert_eq!(cached.read(&mem), guest_word);
+            assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), pixels);
+            assert_eq!(cached.display(&mem), display);
+            end_structure(&mut mem, saved).unwrap();
+            assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), pixels);
+        }
+    }
+
+    #[test]
+    fn projected_structure_pixels_follow_the_recorded_reference_and_keep_object_lighting_retail() {
         let mut mem = Guest::new();
         let saved = 0x1000;
         mem.map_zeroed(saved, 0x1000, Permissions::RW).unwrap();
@@ -330,15 +395,21 @@ mod tests {
             (2160, 0, 24.0, 24.0), // Retail after a scaled view.
         ] {
             mem.set_f32(points::PIXEL_SCALE, guest_y).unwrap();
+            // The multiplier a legacy film recorded at this raster size.
+            let multiplier = lod_pixel_multiplier(output_height, half_units);
             reset_view(
                 &mut mem,
                 saved,
                 0x0003_f3b9,
-                scaled(lod_pixel_multiplier(output_height, half_units)),
-                None,
+                scaled(multiplier),
+                Some(multiplier),
             )
             .unwrap();
             assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), want);
+            // The same display choice without a recorded reference leaves
+            // the guest projection untouched.
+            reset_view(&mut mem, saved, 0x0003_f3b9, scaled(multiplier), None).unwrap();
+            assert_eq!(mem.f32(points::PIXEL_SCALE).unwrap(), guest_y);
             end_structure(&mut mem, saved).unwrap();
             assert_eq!(mem.u32(points::PIXEL_SCALE).unwrap(), guest_y.to_bits());
             assert_eq!(mem.u32(saved).unwrap(), 0);

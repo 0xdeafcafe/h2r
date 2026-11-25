@@ -196,10 +196,13 @@ multipliers keep detail farther away. **Retail** uses the original
 480-line distances at any resolution.
 
 Choose Profile and Appearance sample the same setting as a world view.
-In Live, System Link, co-op and Theater, the native renderer can apply
-the choice to supported display draws while the exact reference keeps
-its own model records. Guest-only draws in exact mode retain the
-reference detail.
+The setting changes only what is drawn: the guest walk, its pose
+evaluation and the lockstep and film digests stay retail whatever the
+choice, so no mode forces retail for it. The native renderer applies the
+choice to supported display draws, and in single-copy rendering the D3D
+fallback swaps its drawn geometry at the draw boundary; the exact
+reference, menu model widgets and every readback keep the retail
+records.
 [Projected size and level of detail](../graphics/occlusion-culling.md#projected-size-and-level-of-detail).
 
 Pinned keeps corner-anchored HUD groups near the edges of each player's
