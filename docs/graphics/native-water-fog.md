@@ -223,8 +223,13 @@ the cached pipelines with their own uniforms and sampled textures.
   Under a retaining scene sink the committed composite is carried as the
   replay's admitted draw (`Backend::begin_native_carry`; see
   [framescene.md](framescene.md)); without that the sink refuses the
-  reservation ("the scene recorder cannot retain an unsealed
-  reservation") and the guest draws the water.
+  reservation and the guest draws the water.
+  The layer-6 counters (`scene_water_views`, `scene_water_drawn`,
+  `scene_water_parts` and `native_water_walk_*`) count only layer 6 and its
+  composite, which Old Mombasa and Zanzibar use. They stay zero on a map
+  whose water is a sorted pool, such as the Delta Towers bay: the pool is
+  left to the guest on purpose (above), counted as
+  `layer_plan_15_pool_on_d3d`, and counts under no water stage.
   Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses
   its own model rows at the rigid program's dynamic uniform offset.
   Each pass must compile the rigid classification and the part must supply
