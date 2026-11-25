@@ -27,8 +27,18 @@
 //!     u8 tick and its u32 bits
 //! u8      seat record count; each: u8 tick, u8 seat, u8 kind, u16 length,
 //!         bytes (at most 8,192 in all)
+//! n       tails, per tick: ULEB run count; each run a ULEB skip (the bytes
+//!         from the end of the run before, or the start, that are
+//!         unchanged), a ULEB length and that many bytes
 //! u64     the arena hash after the chunk's last tick
 //! ```
+//!
+//! A tail is the update's bytes after its action block and before its
+//! stamp ([`BODY_BYTES`]: the player entries, the player-set change, the
+//! event list and the save flag). A tick's runs are the bytes that differ
+//! from the tick before, and the chunk's first tick differs from zeros, so
+//! a chunk's tails decode without the chunk before. A tick that was given
+//! no tail holds the tick before's, and costs one zero byte.
 //!
 //! A residual is the value minus its prediction as a 32-bit integer,
 //! zigzag-coded: `none` predicts zero (the bits as they are), `previous`
@@ -50,6 +60,16 @@ pub const CHUNK_TICKS: usize = 256;
 pub const RECORD_BYTES: usize = 8192;
 /// The most seat records in a chunk.
 pub const RECORD_LIMIT: usize = 255;
+/// The update's bytes between its action block and its stamp: `0x5cc`
+/// through `0x403f` of the `0x4048`-byte record
+/// (`theater/actions.rs`, `BODY_AT`).
+pub const BODY_BYTES: usize = 0x4040 - 0x5cc;
+/// The most bytes of tails in a chunk; a chunk whose changes are more is
+/// refused.
+pub const TAIL_LIMIT: usize = 512 << 10;
+/// Unchanged bytes between two changed ones that a run bridges, rather
+/// than ending and starting a run.
+const RUN_GAP: usize = 3;
 const GRID_MAX: u32 = 1 << 20;
 /// A bound on one inflated chunk: the header, flags, digests, every seat
 /// with every field present and every residual plane, 255 exceptions a
@@ -60,6 +80,8 @@ const RAW_CAP: usize = 4
     + 1
     + RECORD_LIMIT * 6
     + RECORD_BYTES
+    + TAIL_LIMIT
+    + CHUNK_TICKS
     + 8;
 pub const FRAME_CAP: usize = 192 << 10;
 /// The grids the encoder tries: the sizes of an 8-bit, 10-bit and 16-bit
@@ -188,6 +210,49 @@ fn words_of(action: &[u8; ACTION_BYTES], out: &mut [u32]) {
     for (word, bytes) in out.iter_mut().zip(action.chunks_exact(4)) {
         *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     }
+}
+
+/// The bytes of `value` as a ULEB128 number.
+fn uleb_len(mut value: usize) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
+}
+
+fn put_uleb(out: &mut Out, mut value: usize) -> Result<()> {
+    while value >= 0x80 {
+        out.put(&[(value as u8 & 0x7f) | 0x80])?;
+        value >>= 7;
+    }
+    out.put(&[value as u8])
+}
+
+/// The runs of `new` that differ from `old`, as (start, length) in order.
+/// Two changed bytes with at most [`RUN_GAP`] unchanged between them are
+/// one run.
+fn runs(old: &[u8], new: &[u8], mut each: impl FnMut(usize, usize) -> Result<()>) -> Result<()> {
+    let mut i = 0;
+    while i < new.len() {
+        if old[i] == new[i] {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut end = i + 1;
+        let mut j = end;
+        while j < new.len() && j - end <= RUN_GAP {
+            if old[j] != new[j] {
+                end = j + 1;
+            }
+            j += 1;
+        }
+        each(start, end - start)?;
+        i = end;
+    }
+    Ok(())
 }
 
 /// Values the grid cannot say, by tick.
@@ -439,6 +504,13 @@ pub struct ChunkEncoder {
     records: Out,
     record_count: usize,
     record_payload: usize,
+    /// The tails of the chunk's ticks so far, in the order they are stored.
+    tails: Out,
+    /// The update body the last tail left: what the next tail is a change
+    /// against. Zeros at a chunk's start.
+    body: Box<[u8]>,
+    /// The tick last pushed has no tail yet.
+    tail_open: bool,
     raw: Out,
     scratch: Scratch,
     frame: Box<[u8]>,
@@ -462,6 +534,12 @@ impl ChunkEncoder {
             },
             record_count: 0,
             record_payload: 0,
+            tails: Out {
+                buf: vec![0; TAIL_LIMIT + CHUNK_TICKS].into(),
+                len: 0,
+            },
+            body: vec![0; BODY_BYTES].into(),
+            tail_open: false,
             raw: Out {
                 buf: vec![0; RAW_CAP].into(),
                 len: 0,
@@ -491,7 +569,9 @@ impl ChunkEncoder {
         seats: &[Option<[u8; ACTION_BYTES]>; SEATS],
     ) -> Result<()> {
         ensure!(self.n < CHUNK_TICKS, "film chunk is full");
+        self.close_tail()?;
         let t = self.n;
+        self.tail_open = true;
         self.flags[t] = flags;
         self.digests[t] = digest as u16;
         for (s, action) in seats.iter().enumerate() {
@@ -504,6 +584,55 @@ impl ChunkEncoder {
             }
         }
         self.n += 1;
+        Ok(())
+    }
+
+    /// The update body of the tick just pushed: stored as the bytes that
+    /// differ from the tick before's body (zeros, for a chunk's first). A
+    /// tick given none holds the tick before's.
+    pub fn tail(&mut self, body: &[u8]) -> Result<()> {
+        ensure!(
+            self.tail_open,
+            "a film tail needs a tick that has none yet"
+        );
+        ensure!(
+            body.len() == BODY_BYTES,
+            "a film tail is {BODY_BYTES} bytes, not {}",
+            body.len()
+        );
+        let (mut count, mut size, mut end) = (0, 0, 0);
+        runs(&self.body, body, |start, len| {
+            size += uleb_len(start - end) + uleb_len(len) + len;
+            end = start + len;
+            count += 1;
+            Ok(())
+        })?;
+        size += uleb_len(count);
+        ensure!(
+            self.tails.len + size <= TAIL_LIMIT,
+            "film tails exceed their limit"
+        );
+        put_uleb(&mut self.tails, count)?;
+        let mut end = 0;
+        let (tails, old) = (&mut self.tails, &self.body);
+        runs(old, body, |start, len| {
+            put_uleb(tails, start - end)?;
+            put_uleb(tails, len)?;
+            tails.put(&body[start..start + len])?;
+            end = start + len;
+            Ok(())
+        })?;
+        self.body.copy_from_slice(body);
+        self.tail_open = false;
+        Ok(())
+    }
+
+    /// End the last tick's tail: a tick with none changes nothing.
+    fn close_tail(&mut self) -> Result<()> {
+        if self.tail_open {
+            self.tails.put(&[0])?;
+            self.tail_open = false;
+        }
         Ok(())
     }
 
@@ -536,6 +665,7 @@ impl ChunkEncoder {
     pub fn finish(&mut self, arena_hash: u64) -> Result<&[u8]> {
         let n = self.n;
         ensure!(n > 0, "empty film chunk");
+        self.close_tail()?;
         self.raw.len = 0;
         let mut seat_mask = 0u16;
         for s in 0..SEATS {
@@ -602,6 +732,7 @@ impl ChunkEncoder {
         }
         self.raw.put(&[self.record_count as u8])?;
         self.raw.put(&self.records.buf[..self.records.len])?;
+        self.raw.put(&self.tails.buf[..self.tails.len])?;
         self.raw.put(&arena_hash.to_le_bytes())?;
         let size = self
             .zstd
@@ -612,6 +743,8 @@ impl ChunkEncoder {
         self.records.len = 0;
         self.record_count = 0;
         self.record_payload = 0;
+        self.tails.len = 0;
+        self.body.fill(0);
         Ok(&self.frame[..size])
     }
 }
@@ -624,12 +757,16 @@ impl ChunkEncoder {
     pub fn finish_copy(&mut self, arena_hash: u64) -> Result<Vec<u8>> {
         let (n, state) = (self.n, self.state);
         let (len, count, payload) = (self.records.len, self.record_count, self.record_payload);
+        let (tails, open, body) = (self.tails.len, self.tail_open, self.body.clone());
         let frame = self.finish(arena_hash)?.to_vec();
         self.n = n;
         self.state = state;
         self.records.len = len;
         self.record_count = count;
         self.record_payload = payload;
+        self.tails.len = tails;
+        self.tail_open = open;
+        self.body = body;
         Ok(frame)
     }
 }
@@ -656,6 +793,12 @@ pub struct ChunkDecoder {
     records: Box<[Record]>,
     record_count: usize,
     arena_hash: u64,
+    /// Where each tick's tail starts in the inflated chunk.
+    tail_at: Box<[u32]>,
+    /// The body as of the tick `cached` and that tick, zeros before the
+    /// chunk's first.
+    cached: Box<[u8]>,
+    cached_tick: Option<usize>,
     zstd: zstd::bulk::Decompressor<'static>,
 }
 
@@ -681,6 +824,19 @@ impl<'a> Cursor<'a> {
     fn u32(&mut self) -> Result<u32> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    /// A ULEB128 number of at most 32 bits.
+    fn uleb(&mut self) -> Result<usize> {
+        let mut value = 0u64;
+        for shift in (0..35).step_by(7) {
+            let b = self.u8()?;
+            value |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                ensure!(value <= u64::from(u32::MAX), "film chunk number is too large");
+                return Ok(value as usize);
+            }
+        }
+        bail!("film chunk number is too long")
     }
     fn u64(&mut self) -> Result<u64> {
         let b = self.take(8)?;
@@ -714,6 +870,9 @@ impl ChunkDecoder {
             .into(),
             record_count: 0,
             arena_hash: 0,
+            tail_at: vec![0; CHUNK_TICKS].into(),
+            cached: vec![0; BODY_BYTES].into(),
+            cached_tick: None,
             zstd: zstd::bulk::Decompressor::new()?,
         })
     }
@@ -741,6 +900,7 @@ impl ChunkDecoder {
     /// seat rows as they were; no tick of it can be read.
     pub fn load(&mut self, first_tick: u64, frame: &[u8]) -> Result<()> {
         self.n = 0;
+        self.cached_tick = None;
         self.read(frame).with_context(|| {
             format!(
                 "film chunk for ticks {first_tick} through {}",
@@ -907,6 +1067,25 @@ impl ChunkDecoder {
                 len: size,
             };
         }
+        for t in 0..n {
+            self.tail_at[t] = (len - input.0.len()) as u32;
+            let count = input.uleb()?;
+            ensure!(count <= BODY_BYTES, "film chunk has more tail runs than bytes");
+            let mut at = 0usize;
+            for _ in 0..count {
+                let skip = input.uleb()?;
+                let size = input.uleb()?;
+                let start = at
+                    .checked_add(skip)
+                    .context("film chunk tail run is out of bounds")?;
+                ensure!(
+                    size > 0 && start + size <= BODY_BYTES,
+                    "film chunk tail run is out of bounds"
+                );
+                input.take(size)?;
+                at = start + size;
+            }
+        }
         self.arena_hash = input.u64()?;
         ensure!(input.0.is_empty(), "film chunk has bytes after its end");
         self.state.advance(&self.values, n);
@@ -943,6 +1122,48 @@ impl ChunkDecoder {
             bytes.copy_from_slice(&word.to_le_bytes());
         }
         true
+    }
+
+    /// The update body of the tick, written into `out`, or false if the
+    /// tick is not in the chunk. Ticks in order cost one tick's runs each.
+    pub fn body(&mut self, tick: usize, out: &mut [u8; BODY_BYTES]) -> bool {
+        if tick >= self.n {
+            return false;
+        }
+        let from = match self.cached_tick {
+            Some(t) if t <= tick => t + 1,
+            _ => {
+                self.cached.fill(0);
+                0
+            }
+        };
+        for t in from..=tick {
+            if self.apply_tail(t).is_none() {
+                self.cached_tick = None;
+                return false;
+            }
+        }
+        self.cached_tick = Some(tick);
+        out.copy_from_slice(&self.cached);
+        true
+    }
+
+    /// Lay the runs of tick `t`'s tail over the cached body. They were
+    /// checked when the chunk loaded.
+    fn apply_tail(&mut self, t: usize) -> Option<()> {
+        let at = self.tail_at[t] as usize;
+        let mut input = Cursor(self.raw.get(at..)?);
+        let count = input.uleb().ok()?;
+        let mut end = 0usize;
+        for _ in 0..count {
+            let start = end + input.uleb().ok()?;
+            let size = input.uleb().ok()?;
+            self.cached
+                .get_mut(start..start + size)?
+                .copy_from_slice(input.take(size).ok()?);
+            end = start + size;
+        }
+        Some(())
     }
 
     pub fn seat_records(&self) -> impl Iterator<Item = SeatRecord<'_>> {

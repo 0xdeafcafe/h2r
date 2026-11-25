@@ -10,10 +10,12 @@
 //!   map is checked against the film's, and the arena hash is compared
 //!   with the film's start hash. A difference stops the film before the
 //!   update is applied.
-//! - **Each update after** has the film's actions for its tick written over
-//!   the engine's at `SIM_UPDATE_APPLY` (`actions::at_update`), and each
-//!   tick's gameplay digest is compared at the tick's end
-//!   ([`tick_done`]). The film ends after its last tick.
+//! - **Each update after** has the film's actions and body for its film
+//!   tick written over the engine's at `SIM_UPDATE_APPLY`
+//!   (`actions::at_update`), and the gameplay digest of the film tick a
+//!   game tick ends on is compared at the tick's end ([`tick_done`]). A
+//!   film tick is one application of the update: a game tick that applies
+//!   it twice takes two. The film ends after its last tick.
 //!
 //! A player needs no manifest, call tape or keyframe, and opens no `DATA`
 //! item: the data directory is empty and private, and the guest's storage
@@ -38,8 +40,11 @@ pub(super) struct Play {
     length: u64,
     /// The game has taken its first update and the film is being played.
     begun: bool,
-    /// The film tick being played has had its actions written.
-    applied: bool,
+    /// The last film tick a game tick ended on.
+    at: u64,
+    /// Updates applied in the game tick in progress: each took the film
+    /// tick after the last.
+    applied: u64,
     /// The mounted maps, to check the game's map against the film's.
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
 }
@@ -68,7 +73,8 @@ impl Play {
             start,
             length,
             begun: false,
-            applied: false,
+            at: 0,
+            applied: 0,
             map_vfs: None,
         }))
     }
@@ -151,46 +157,47 @@ pub(super) fn ports(options: &[u8]) -> u32 {
         .clamp(1, PORTS)
 }
 
-/// An update entered `SIM_UPDATE_APPLY`: the film's actions for its tick
-/// are written over the engine's. The game's first update starts the film
-/// ([`Play::begin`]); a failure there leaves the update as the engine built
-/// it. A second update in one film tick is refused: one application of the
-/// update to a tick.
+/// An update entered `SIM_UPDATE_APPLY`: the film's actions and body for
+/// its film tick are written over the engine's, the film's head and stamp
+/// untouched. The game's first update starts the film ([`Play::begin`]); a
+/// failure there leaves the update as the engine built it. Each update the
+/// game tick applies takes the next film tick.
 pub(super) fn update(state: &mut State, g: &mut Guest, update: u32) -> Result<()> {
     let play = state.play.as_mut().context("no film is being played")?;
     if !play.begun {
         let first = play.start.game.first_update;
         state.tick = first - 1;
         play.begin(g)?;
+        play.at = first - 1;
     }
-    let tick = state.tick + 1;
+    let tick = play.at + play.applied + 1;
     ensure!(
         tick <= play.length,
         "the game ran past the film's last tick {}",
         play.length
     );
-    ensure!(
-        !play.applied,
-        "two action updates in the same film tick"
-    );
     let row = play.actions.row(tick)?;
-    play.applied = true;
-    super::actions::apply(g, update, &row.inputs)
+    play.applied += 1;
+    super::actions::apply(g, update, &row.inputs)?;
+    super::actions::apply_body(g, update, &row.body)
 }
 
-/// A tick ended (`Session::checkpoint`, with `state.tick` already advanced
-/// to it): the tick must have taken the update the film has for it, and its
-/// gameplay digest must be the film's. The film's last tick completes it.
+/// A game tick ended (`Session::checkpoint`, with `state.tick` already
+/// advanced by it): it must have taken the updates the film has for the
+/// film ticks it covers, and the gameplay digest it ended on must be the
+/// film's. A game tick that applied no update covers one film tick, which
+/// must have none. The film's last tick completes it.
 pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
-    let tick = state.tick;
     let Some(play) = state.play.as_mut() else {
         return;
     };
+    let applied = std::mem::take(&mut play.applied);
+    let tick = play.at + applied.max(1);
+    state.tick = tick;
     let checked = (|| -> Result<bool> {
         let row = play.actions.row(tick)?;
-        let applied = std::mem::take(&mut play.applied);
         ensure!(
-            applied || row.inputs.is_empty(),
+            applied > 0 || row.inputs.is_empty(),
             "simulation skipped the recorded player update"
         );
         if let Some(low) = row.digest {
@@ -209,6 +216,7 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
         }
         Ok(tick >= play.length)
     })();
+    play.at = tick;
     match checked {
         Ok(true) => state.complete = true,
         Ok(false) => {}
