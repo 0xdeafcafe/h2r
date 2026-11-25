@@ -768,6 +768,21 @@ pub struct SceneStage<S> {
     pub pass: SharedReplacement,
 }
 
+/// Logs once per stage, site and cause (stderr) that a typed external pass
+/// was declined before it could record, so a stage that silently stays on
+/// its D3D draw names where it stopped. The cause counters of each stage
+/// (`timeline::native`) stay the totals.
+pub(crate) fn note_declined(stage: timeline::native::Stage, site: &'static str, line: u32, why: &str) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<(String, &'static str, u32, String)>>> = Mutex::new(None);
+    let key = (format!("{stage:?}"), site, line, why.to_owned());
+    let fresh = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().insert(key);
+    if fresh {
+        eprintln!("d3d: {stage:?} external pass declined at {site}:{line}: {why} (logged once)");
+    }
+}
+
 /// Validate and seal every copy, either on the worker or over pinned handles
 /// on the device thread. Refusal discards all copies and their uploads.
 #[cfg(feature = "gpu")]
@@ -778,24 +793,28 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     use timeline::native::{Metric, Timer};
     let item_count = pass.lock().map_err(|_| "native pass poisoned")?.items(plan.ranges) as u64;
     plan.stage.count(Metric::Examined, item_count);
-    let refuse = |reason| { plan.stage.count(reason, item_count); Ok(None) };
+    let refuse = |reason: Metric, line: u32| {
+        note_declined(plan.stage, "backend.rs", line, &format!("{reason:?}"));
+        plan.stage.count(reason, item_count);
+        Ok(None)
+    };
     let preparing = Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
-    if plan.ranges == 0 { return refuse(Metric::RefusedRanges); }
+    if plan.ranges == 0 { return refuse(Metric::RefusedRanges, line!()); }
     let (x, y, w, h) = request.rect;
     let (sw, sh) = request.surface_size;
     if w == 0 || h == 0 || x.checked_add(w).is_none_or(|r| r > sw)
         || y.checked_add(h).is_none_or(|b| b > sh)
     {
-        return refuse(Metric::RefusedResources);
+        return refuse(Metric::RefusedResources, line!());
     }
     if !slots_valid {
-        return refuse(Metric::RefusedResources);
+        return refuse(Metric::RefusedResources, line!());
     }
     let targets = match pin() {
         Ok(ExternalCopies::Ready(targets)) => targets,
         Ok(ExternalCopies::Missing(copy)) => {
             plan.stage.copy_refused(plan.view, copy == TargetCopy::Display);
-            return refuse(Metric::RefusedResources);
+            return refuse(Metric::RefusedResources, line!());
         }
         Err(e) => { plan.stage.count(Metric::RefusedResources, item_count); return Err(e) }
     };
@@ -803,7 +822,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     if !matches!(targets, [one] if one.copy == copy || (one.copy == TargetCopy::Display && one.single_display))
         && !matches!(targets, [r, d] if r.copy == TargetCopy::Reference && d.copy == TargetCopy::Display)
     {
-        return refuse(Metric::RefusedResources);
+        return refuse(Metric::RefusedResources, line!());
     }
     enum Prepared {
         Draws(ExternalDraws),
@@ -861,7 +880,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
             }
         }
     }
-    if let Some(why) = failure { return refuse(why); }
+    if let Some(why) = failure { return refuse(why, line!()); }
     drop(preparing);
 
     let _encode = Timer::start(plan.stage, Metric::EncodeNs);
@@ -919,7 +938,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
             on_submit,
         });
     }
-    if let Some(why) = failure { return refuse(why); }
+    if let Some(why) = failure { return refuse(why, line!()); }
     Ok(Some(recordings))
 }
 
