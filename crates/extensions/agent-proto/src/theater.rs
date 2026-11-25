@@ -36,6 +36,14 @@ pub const MEASUREMENTS: &str = "theater.measurements";
 pub const STEP: &str = "theater.step";
 pub const VERIFY: &str = "theater.verify";
 pub const STATUS: &str = "theater.status";
+/// Watch a film in the running game: queue its options as the next game
+/// (`theater.watch`).
+pub const WATCH: &str = "theater.watch";
+/// Leave the film being watched for the film page (`theater.end`).
+pub const END: &str = "theater.end";
+/// The methods of a game that records and watches in one session. They are
+/// not in [`METHODS`], which a film player process answers.
+pub const WATCH_METHODS: [&str; 2] = [WATCH, END];
 pub const TRANSPORT_METHODS: [&str; 9] = [
     PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, KEYFRAMES, STEP,
 ];
@@ -57,6 +65,50 @@ pub const METHODS: [&str; 16] = [
     CLIP_STATUS,
     STATUS,
 ];
+
+/// `theater.watch`: the film to watch, by library id or by path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Watch {
+    /// A film of the library (`theater.list`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// A film file, container path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The tick to watch from: the film plays unrendered to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<CameraMode>,
+}
+
+impl Watch {
+    /// The view the film opens with.
+    pub fn view(&self) -> InitialView {
+        InitialView { tick: self.tick, seat: self.seat, camera: self.camera }
+    }
+
+    /// Exactly one of `id` and `path` names the film.
+    pub fn check(&self) -> Result<(), &'static str> {
+        match (&self.id, &self.path) {
+            (Some(_), None) | (None, Some(_)) => Ok(()),
+            _ => Err("name the film by id or by path, not both and not neither"),
+        }
+    }
+}
+
+/// What `theater.watch` queued. The game loads the film's map next;
+/// `theater.state` reports the film once its first update has run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Watching {
+    pub id: String,
+    pub length_ticks: u64,
+    /// The film's options are queued as the next game.
+    pub queued: bool,
+}
 
 /// Make a start point of the running game's arena and write it to a file
 /// (`theater.start_point.capture`). The game agent answers it at a tick
@@ -345,6 +397,8 @@ pub struct Camera {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SeekSource {
+    /// The film runs on from the tick shown, unrendered.
+    Forward,
     Ring,
     Keyframe,
     Sidecar,
@@ -509,6 +563,30 @@ mod tests {
         let r: StartPointLoaded = from_value(loaded.clone()).unwrap();
         assert_eq!(to_value(r).unwrap(), loaded);
         assert!(!METHODS.iter().any(|m| START_POINT_METHODS.contains(m)));
+    }
+
+    #[test]
+    fn watch_params_and_result_round_trip() {
+        for wire in [
+            json!({"id":"auto-1"}),
+            json!({"path":"/films/a.h2film","tick":300,"seat":2,"camera":"first-person"}),
+        ] {
+            let watch: Watch = from_value(wire.clone()).unwrap();
+            assert_eq!(watch.check(), Ok(()));
+            assert_eq!(to_value(watch).unwrap(), wire);
+        }
+        let both: Watch = from_value(json!({"id":"a","path":"b"})).unwrap();
+        assert!(both.check().is_err());
+        assert!(from_value::<Watch>(json!({})).unwrap().check().is_err());
+        assert!(from_value::<Watch>(json!({"id":"a","paused":true})).is_err());
+        let view = from_value::<Watch>(json!({"id":"a","tick":9,"seat":1})).unwrap().view();
+        assert_eq!((view.tick, view.seat, view.camera), (Some(9), Some(1), None));
+        let queued = json!({"id":"a","length_ticks":900,"queued":true});
+        let result: Watching = from_value(queued.clone()).unwrap();
+        assert_eq!(to_value(result).unwrap(), queued);
+        assert_eq!(WATCH_METHODS, ["theater.watch", "theater.end"]);
+        assert!(!METHODS.iter().any(|m| WATCH_METHODS.contains(m)));
+        assert_eq!(to_value(SeekSource::Forward).unwrap(), json!("forward"));
     }
 
     #[test]

@@ -421,6 +421,26 @@ impl Store {
         Ok(())
     }
 
+    /// The run uses `v` for `key` for a while, whatever set it before
+    /// (a flag, the environment, the file or the run itself), and nothing
+    /// is written: the saved value and the source stay as they were.
+    /// Returns the value the run was using; giving it back to `run_as`
+    /// puts the setting as it was. A film plays under the settings it was
+    /// recorded with and hands the viewer's back afterwards
+    /// (docs/game/theater-design.md, "Starting a film in the running game").
+    pub fn run_as(&self, key: &str, v: Value) -> Result<Value, SetError> {
+        let (before, fire) = {
+            let mut g = self.lock();
+            let i = Self::index(&g, key).ok_or_else(|| SetError::Unknown(key.into()))?;
+            let v = g.entries[i].def.check(v).map_err(SetError::Invalid)?;
+            let e = &mut g.entries[i];
+            let before = e.running;
+            (before, e.run_with(v).then(|| callbacks(&g, i)))
+        };
+        fire_all(fire, v);
+        Ok(before)
+    }
+
     /// Sets the user's choice of `key` and saves it. A `Live` setting
     /// changes the handles at once and runs the `on_change` callbacks
     /// (after the store's lock is released); the others keep running with
@@ -671,6 +691,29 @@ mod tests {
         let (s, p) = load(&path, &[("H2_FOV", " ")], &[]);
         assert!(p.is_empty());
         assert_eq!(s.get("graphics.fov"), Some(Value::Int(90)));
+    }
+
+    #[test]
+    fn a_borrowed_value_runs_and_the_viewers_comes_back_without_a_write() {
+        let path = tmp("borrow");
+        std::fs::write(&path, "[graphics]\nfov = 90\n").unwrap();
+        let (s, _) = load(&path, &[("H2_FPS", "60")], &[]);
+        let fov = s.handle::<i64>("graphics.fov");
+        let file = std::fs::read_to_string(&path).unwrap();
+        // A file value and an environment one (locked) are both borrowed.
+        let was_fov = s.run_as("graphics.fov", Value::Int(100)).unwrap();
+        let was_fps = s.run_as("graphics.fps", Value::Int(120)).unwrap();
+        assert_eq!((was_fov, was_fps), (Value::Int(90), Value::Int(60)));
+        assert_eq!(fov.get(), 100);
+        assert_eq!(s.get("graphics.fps"), Some(Value::Int(120)));
+        s.run_as("graphics.fov", was_fov).unwrap();
+        s.run_as("graphics.fps", was_fps).unwrap();
+        assert_eq!(fov.get(), 90);
+        let fps = s.state("graphics.fps").unwrap();
+        assert_eq!((fps.value, fps.source, fps.saved), (Value::Int(60), Source::Env("H2_FPS"), Value::Int(30)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), file, "nothing was written");
+        assert!(matches!(s.run_as("no.such", Value::Int(1)), Err(SetError::Unknown(_))));
+        assert!(matches!(s.run_as("graphics.fov", Value::Int(1)), Err(SetError::Invalid(_))));
     }
 
     #[test]
